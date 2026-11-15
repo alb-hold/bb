@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   hostProc,
+  processCredentialsFromStatus,
+  processStartFromStat,
   useProcReaderForTests,
   type ProcReader,
 } from "@bb/process-utils";
@@ -117,6 +119,29 @@ function readerWatching(pid: number) {
     },
   };
   return { counts, reader };
+}
+
+async function liveStart(pid: number): Promise<string | null> {
+  try {
+    return processStartFromStat(await fs.readFile(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function liveCredentials(pid: number): Promise<string | null> {
+  try {
+    return processCredentialsFromStatus(
+      await fs.readFile(`/proc/${pid}/status`, "utf8"),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function stopped(child: ChildProcess) {
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
 }
 
 async function attempt(directory: string): Promise<string> {
@@ -322,9 +347,9 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     skip(!(await unreadable(pid)), "the kernel lets this user read it");
     let now = 1_000_000;
     useHolderRefusalClockForTests(() => now);
-    let start = "100";
+    let start: string | null = null;
     useProcessStartReaderForTests(async (asked) =>
-      asked === pid ? start : null,
+      asked === pid ? (start ?? (await liveStart(pid))) : null,
     );
     const { counts, reader } = readerWatching(pid);
     useProcReaderForTests(reader);
@@ -387,9 +412,9 @@ describe.skipIf(!runsHere)("a remembered refusal whose blocker changed", () => {
     skip(!(await unreadable(pid)), "the kernel lets this user read it");
     let now = 1_000_000;
     useHolderRefusalClockForTests(() => now);
-    let credentials = "1000,1000,1000,1000 0000000800000000";
+    let credentials: string | null = null;
     useProcessCredentialsReaderForTests(async (asked) =>
-      asked === pid ? credentials : null,
+      asked === pid ? (credentials ?? (await liveCredentials(pid))) : null,
     );
     const { counts, reader } = readerWatching(pid);
     useProcReaderForTests(reader);
@@ -397,13 +422,180 @@ describe.skipIf(!runsHere)("a remembered refusal whose blocker changed", () => {
     now += 1;
     await attempt(directory);
     expect(counts.scans).toBe(1);
-    credentials = "1000,1000,1000,1000 0000000000000000";
+    credentials = "65534,65534,65534,65534 0000000000000000";
     now += 1;
     const again = await attempt(directory);
     expect(counts.scans).toBe(2);
     expect(again).not.toContain("The same processes have blocked it since");
   });
 });
+
+describe.skipIf(!runsHere)(
+  "a refusal whose blocking pid passed to another process",
+  () => {
+    async function blockedTarget(
+      skip: (skipped: boolean, note: string) => void,
+    ) {
+      const directory = await target();
+      const child = await startProcess({
+        comm: "notagent",
+        dumpable: false,
+        inside: directory,
+      });
+      const pid = child.pid ?? 0;
+      skip(!(await unreadable(pid)), "the kernel lets this user read it");
+      const seen = {
+        start: (await liveStart(pid)) ?? "",
+        credentials: (await liveCredentials(pid)) ?? "",
+      };
+      expect(seen.start).not.toBe("");
+      expect(seen.credentials).not.toBe("");
+      return { directory, child, pid, seen };
+    }
+
+    beforeEach(() => {
+      let now = 1_000_000;
+      useHolderRefusalClockForTests(() => {
+        now += 1;
+        return now;
+      });
+    });
+
+    function successor(
+      pid: number,
+      next: { start: string; credentials: string },
+    ) {
+      return {
+        start: async (asked: number) => (asked === pid ? next.start : null),
+        credentials: async (asked: number) =>
+          asked === pid ? next.credentials : null,
+      };
+    }
+
+    it("remembers a refusal whose blocker is unchanged, so the next attempt does not scan", async ({
+      skip,
+    }) => {
+      const { directory, pid } = await blockedTarget(skip);
+      const { counts, reader } = readerWatching(pid);
+      useProcReaderForTests(reader);
+      expect(await attempt(directory)).toContain("could not be established");
+      expect(await attempt(directory)).toContain(
+        "The same processes have blocked it since",
+      );
+      expect(counts.scans).toBe(1);
+    });
+
+    it("scans again and removes when the pid passed to a foreign-user process after the scan", async ({
+      skip,
+    }) => {
+      const { directory, child, pid, seen } = await blockedTarget(skip);
+      expect(seen.credentials).not.toMatch(/^65534,/u);
+      const later = successor(pid, {
+        start: `${Number(seen.start) + 1}`,
+        credentials: "65534,65534,65534,65534 0000000000000000",
+      });
+      useProcessStartReaderForTests(later.start);
+      useProcessCredentialsReaderForTests(later.credentials);
+      const { counts, reader } = readerWatching(pid);
+      useProcReaderForTests(reader);
+      expect(await attempt(directory)).toContain("could not be established");
+      await stopped(child);
+      expect(await attempt(directory)).toBe("removed");
+      expect(counts.scans).toBe(2);
+      expect(existsSync(directory)).toBe(false);
+    });
+
+    it("scans again and removes when the pid passed to a same-user process after the scan", async ({
+      skip,
+    }) => {
+      const { directory, child, pid, seen } = await blockedTarget(skip);
+      const later = successor(pid, {
+        start: `${Number(seen.start) + 1}`,
+        credentials: seen.credentials,
+      });
+      useProcessStartReaderForTests(later.start);
+      useProcessCredentialsReaderForTests(later.credentials);
+      const { counts, reader } = readerWatching(pid);
+      useProcReaderForTests(reader);
+      expect(await attempt(directory)).toContain("could not be established");
+      await stopped(child);
+      expect(await attempt(directory)).toBe("removed");
+      expect(counts.scans).toBe(2);
+      expect(existsSync(directory)).toBe(false);
+    });
+
+    it("scans again and removes when the pid passed to another process while it was being classified", async ({
+      skip,
+    }) => {
+      const { directory, child, pid, seen } = await blockedTarget(skip);
+      const next = {
+        start: `${Number(seen.start) + 1}`,
+        credentials: "65534,65534,65534,65534 0000000000000000",
+      };
+      const later = successor(pid, next);
+      useProcessStartReaderForTests(later.start);
+      useProcessCredentialsReaderForTests(later.credentials);
+      const watched = readerWatching(pid);
+      let classifying = false;
+      const own = `/proc/${pid}/`;
+      const identityLeaf = (target: string) =>
+        target === `${own}stat` || target === `${own}status`;
+      const note = (target: string) => {
+        if (target.startsWith(own) && !identityLeaf(target)) classifying = true;
+      };
+      const reader: ProcReader = {
+        ...watched.reader,
+        readlink: async (target) => {
+          note(target);
+          return watched.reader.readlink(target);
+        },
+        statAccess: async (target) => {
+          note(target);
+          return watched.reader.statAccess(target);
+        },
+        readFile: async (target) => {
+          note(target);
+          if (classifying && target === `${own}stat`)
+            return `${pid} (other) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${next.start} 0 0\n`;
+          if (classifying && target === `${own}status`)
+            return `Name:\tother\nState:\tS (sleeping)\nUid:\t65534\t65534\t65534\t65534\nGid:\t65534\t65534\t65534\t65534\nCapPrm:\t0000000000000000\n`;
+          return watched.reader.readFile(target);
+        },
+        readdir: async (target) => {
+          note(target);
+          return watched.reader.readdir(target);
+        },
+      };
+      useProcReaderForTests(reader);
+      expect(await attempt(directory)).toContain("could not be established");
+      await stopped(child);
+      expect(await attempt(directory)).toBe("removed");
+      expect(watched.counts.scans).toBe(2);
+      expect(existsSync(directory)).toBe(false);
+    });
+
+    it("does not remember a refusal whose blocker's identity could not be read before classification", async ({
+      skip,
+    }) => {
+      const { directory, pid } = await blockedTarget(skip);
+      const watched = readerWatching(pid);
+      const reader: ProcReader = {
+        ...watched.reader,
+        readFile: async (target) => {
+          if (target === `/proc/${pid}/stat`)
+            throw Object.assign(new Error(target), { code: "EACCES" });
+          return watched.reader.readFile(target);
+        },
+      };
+      useProcReaderForTests(reader);
+      expect(await attempt(directory)).toContain("could not be established");
+      const again = await attempt(directory);
+      expect(again).toContain("could not be established");
+      expect(again).not.toContain("The same processes have blocked it since");
+      expect(watched.counts.scans).toBe(2);
+    });
+  },
+);
 
 describe("a removal refused without named processes", () => {
   it("never answers from a remembered refusal", async () => {

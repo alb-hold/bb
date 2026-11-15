@@ -78,8 +78,42 @@ export type WorktreeHolderScan =
       clearances?: FallbackClearance[];
     }
   | { status: "held"; holders: WorktreeHolder[] }
-  | { status: "uncertain"; reason: string; blockingProcesses?: number[] }
-  | { status: "unknown"; reason: string; blockingProcesses?: number[] };
+  | {
+      status: "uncertain";
+      reason: string;
+      blockingProcesses?: BlockingProcess[];
+    }
+  | {
+      status: "unknown";
+      reason: string;
+      blockingProcesses?: BlockingProcess[];
+    };
+
+export interface ProcessIdentity {
+  start: string;
+  credentials: string;
+}
+
+export interface BlockingProcess {
+  pid: number;
+  identity: ProcessIdentity | null;
+}
+
+export function processStartFromStat(stat: string): string | null {
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 1)
+    .trim()
+    .split(/\s+/u);
+  const start = fields[19];
+  return start !== undefined && /^\d+$/u.test(start) ? start : null;
+}
+
+export function processCredentialsFromStatus(status: string): string | null {
+  const uid = /^Uid:\s+(.+)$/mu.exec(status)?.[1];
+  const capabilities = /^CapPrm:\s+([0-9a-f]+)$/mu.exec(status)?.[1];
+  if (uid === undefined || capabilities === undefined) return null;
+  return `${uid.trim().split(/\s+/u).join(",")} ${capabilities}`;
+}
 
 function errorCode(error: unknown): string | null {
   return error instanceof Error &&
@@ -1482,6 +1516,21 @@ export async function linuxVisibilityProblem(
 interface ProcessDoubt {
   pid: number;
   detail: string;
+  identity: ProcessIdentity | null;
+}
+
+async function readProcessIdentity(
+  proc: ProcReader,
+  pid: number,
+): Promise<ProcessIdentity | null> {
+  const [stat, status] = await Promise.all([
+    readOptional(() => proc.readFile(`/proc/${pid}/stat`)),
+    readOptional(() => proc.readFile(`/proc/${pid}/status`)),
+  ]);
+  if (!("value" in stat) || !("value" in status)) return null;
+  const start = processStartFromStat(stat.value);
+  const credentials = processCredentialsFromStatus(status.value);
+  return start === null || credentials === null ? null : { start, credentials };
 }
 
 function permittedCapabilities(status: string): bigint | null {
@@ -1596,19 +1645,20 @@ export async function scanLinux(
     if (offset > 0) await new Promise((resolve) => setImmediate(resolve));
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
-      batch.map((pid) =>
-        scanLinuxProcess(
+      batch.map(async (pid) => {
+        const identity = await readProcessIdentity(proc, pid);
+        const result = await scanLinuxProcess(
           proc,
           pid,
           directory,
           visibility.mountNamespace,
           visibility.self,
           context,
-        ),
-      ),
+        );
+        return { pid, identity, result };
+      }),
     );
-    for (const [index, result] of results.entries()) {
-      const pid = batch[index] ?? -1;
+    for (const { pid, identity, result } of results) {
       if (result === null) continue;
       if ("cleared" in result) {
         clearances.push(...result.cleared);
@@ -1616,11 +1666,11 @@ export async function scanLinux(
       }
       if ("otherUser" in result) continue;
       if ("uncertain" in result) {
-        uncertain.push({ pid, detail: result.uncertain });
+        uncertain.push({ pid, detail: result.uncertain, identity });
         continue;
       }
       if ("unknown" in result) {
-        unknown.push({ pid, detail: result.unknown });
+        unknown.push({ pid, detail: result.unknown, identity });
         continue;
       }
       holders.push(result);
@@ -1633,7 +1683,7 @@ export async function scanLinux(
     return {
       status: uncertain.length > 0 ? "uncertain" : "unknown",
       reason: `${doubts.length} ${doubts.length === 1 ? "process" : "processes"} could not be inspected or proven unrelated: ${described.join("; ")}`,
-      blockingProcesses: doubts.map((doubt) => doubt.pid),
+      blockingProcesses: doubts.map(({ pid, identity }) => ({ pid, identity })),
     };
   }
   return clearances.length > 0
