@@ -23,6 +23,11 @@ const CONFIG_FILES = [
   "vitest.config.js",
   "vitest.config.mjs",
 ];
+const PROJECT_CONFIG_FILES = ["vitest.config", "vite.config"].flatMap((name) =>
+  ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
+    (extension) => `${name}.${extension}`,
+  ),
+);
 const UNRESOLVED = { testTimeout: null, hookTimeout: null };
 const PROJECT_CONFIG_FILE =
   /(?:^|[./-])vite(?:st)?(?:\.[\w-]+)*\.config(?:\.[\w-]+)*\.[cm]?[jt]s$/u;
@@ -49,8 +54,8 @@ function ownTimeouts(config, inherited) {
 }
 
 function projectConfigIn(directory) {
-  const file = CONFIG_FILES.map((name) => join(directory, name)).find((path) =>
-    existsSync(path),
+  const file = PROJECT_CONFIG_FILES.map((name) => join(directory, name)).find(
+    (path) => existsSync(path),
   );
   return file === undefined ? { path: directory, config: {} } : { path: file };
 }
@@ -262,6 +267,28 @@ describe("plugin test timeouts", () => {
       join(root, "packages/notes.md"),
       join(root, "packages/short-hooks/vitest.config.mjs"),
     ]);
+  });
+
+  it("resolves a directory project from its vite.config file when it has no vitest.config, and prefers vitest.config when it has both", async () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-timeouts-"));
+    fixtures.push(root);
+    const good = { test: { testTimeout: 20_000, hookTimeout: 20_000 } };
+    const config = writeConfig(join(root, "vitest.config.mjs"), {
+      test: { projects: ["packages/*"] },
+    });
+    writeConfig(join(root, "packages/vite-only/vite.config.ts"), good);
+    writeConfig(join(root, "packages/both/vite.config.mjs"), {
+      test: { testTimeout: 1, hookTimeout: 1 },
+    });
+    writeConfig(join(root, "packages/both/vitest.config.mjs"), good);
+
+    const resolved = await resolvedTimeouts(config, await loadConfig(config));
+
+    expect(resolved).toEqual([
+      { name: join(root, "packages/both/vitest.config.mjs"), ...good.test },
+      { name: join(root, "packages/vite-only/vite.config.ts"), ...good.test },
+    ]);
+    expect(belowMinimum(resolved)).toEqual([]);
   });
 
   it("fails each project pattern that matches nothing, even when another pattern matches", async () => {
