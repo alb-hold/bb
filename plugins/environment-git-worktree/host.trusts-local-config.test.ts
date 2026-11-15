@@ -16,7 +16,9 @@ import {
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireRemoteEvidence,
@@ -719,6 +721,7 @@ describe("the published check, run against fresh remote branches and the source'
       (await git(fixture.path, "rev-parse", "HEAD")).trim(),
     );
     await clearFetchMemo();
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
     await removeWorktree({
       path: fixture.path,
