@@ -84,7 +84,7 @@ async function unreadable(pid: number): Promise<boolean> {
   }
 }
 
-function watchOnly(pid: number) {
+function readerWatching(pid: number) {
   const counts = { scans: 0 };
   const reader: ProcReader = {
     ...hostProc,
@@ -94,8 +94,7 @@ function watchOnly(pid: number) {
       return ["self", String(pid)];
     },
   };
-  useProcReaderForTests(reader);
-  return counts;
+  return { counts, reader };
 }
 
 async function attempt(directory: string): Promise<string> {
@@ -123,7 +122,7 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     });
     const pid = child.pid ?? 0;
     skip(!(await unreadable(pid)), "the kernel lets this user read it");
-    watchOnly(pid);
+    useProcReaderForTests(readerWatching(pid).reader);
     const outcome = await attempt(directory);
     expect(outcome).toContain("could not be established");
     expect(outcome).toContain(`process ${pid} (`);
@@ -144,7 +143,7 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     expect((await fs.readFile(`/proc/${pid}/comm`, "utf8")).trim()).toBe(
       "ssh-agent",
     );
-    watchOnly(pid);
+    useProcReaderForTests(readerWatching(pid).reader);
     expect(await attempt(directory)).toBe("removed");
     expect(existsSync(directory)).toBe(false);
   });
@@ -162,7 +161,8 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     skip(!(await unreadable(pid)), "the kernel lets this user read it");
     let now = 1_000_000;
     useHolderRefusalClockForTests(() => now);
-    const counts = watchOnly(pid);
+    const { counts, reader } = readerWatching(pid);
+    useProcReaderForTests(reader);
     const first = await attempt(directory);
     expect(first).toContain("could not be established");
     expect(counts.scans).toBe(1);
@@ -206,7 +206,8 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     skip(!(await unreadable(pid)), "the kernel lets this user read it");
     let now = 1_000_000;
     useHolderRefusalClockForTests(() => now);
-    const counts = watchOnly(pid);
+    const { counts, reader } = readerWatching(pid);
+    useProcReaderForTests(reader);
     expect(await attempt(directory)).toContain("could not be established");
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
@@ -232,7 +233,8 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     useProcessStartReaderForTests(async (asked) =>
       asked === pid ? start : null,
     );
-    const counts = watchOnly(pid);
+    const { counts, reader } = readerWatching(pid);
+    useProcReaderForTests(reader);
     await attempt(directory);
     now += 1;
     await attempt(directory);
