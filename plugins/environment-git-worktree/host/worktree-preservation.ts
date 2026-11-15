@@ -372,6 +372,87 @@ export function nonInteractiveFetchEnvironment(
     GIT_SSH_COMMAND: `${sshCommand} ${BATCH_MODE_OPTION}`,
   };
 }
+const CREDENTIAL_HELPER_KEYS = "^credential\\..*helper$";
+const TRUSTED_SCOPES = new Set(["system", "global"]);
+const FILE_ORIGIN = "file:";
+const NON_INTERACTIVE_HELPER = /^(?:!|(?:store|cache)(?:\s|$))/u;
+const DIALOG_HELPER =
+  /osxkeychain|credential-manager|manager-core|wincred|libsecret|(?:^|[\s!/])manager(?:\s|$)/u;
+
+function isCredentialHelperKey(key: string): boolean {
+  return (
+    !key.includes("=") &&
+    (key === "credential.helper" ||
+      (key.startsWith("credential.") && key.endsWith(".helper")))
+  );
+}
+
+export function replayedCredentialHelpers(configured: string): {
+  args: string[];
+  env: Record<string, string>;
+} {
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  const fields = configured.split("\0");
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const scope = fields[index];
+    const origin = fields[index + 1];
+    const entry = fields[index + 2];
+    if (scope === undefined || origin === undefined || entry === undefined)
+      continue;
+    if (!TRUSTED_SCOPES.has(scope)) continue;
+    if (!origin.startsWith(FILE_ORIGIN)) continue;
+    const newline = entry.indexOf("\n");
+    if (newline === -1) continue;
+    const key = entry.slice(0, newline);
+    const value = entry.slice(newline + 1);
+    if (!isCredentialHelperKey(key)) continue;
+    if (value === "") {
+      args.push("-c", `${key}=`);
+      continue;
+    }
+    if (!NON_INTERACTIVE_HELPER.test(value) || DIALOG_HELPER.test(value))
+      continue;
+    const name = `BB_FETCH_CREDENTIAL_HELPER_${Object.keys(env).length}`;
+    env[name] = value;
+    args.push(`--config-env=${key}=${name}`);
+  }
+  return { args, env };
+}
+
+const AUTHENTICATION_FAILURE =
+  /Authentication failed for '([^']+)'|could not read (?:Username|Password) for '([^']+)'|Permission denied \(publickey/u;
+const UNFETCHED_REMOTE = /^error: could not fetch (\S+)$/u;
+
+function redactUrlCredentials(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s']+@/giu, "$1");
+}
+
+function authenticationFailures(stderr: string): string[] {
+  const failed: string[] = [];
+  let block: string[] = [];
+  for (const line of stderr.split("\n")) {
+    const remote = UNFETCHED_REMOTE.exec(line)?.[1];
+    if (remote === undefined) {
+      block.push(line);
+      continue;
+    }
+    if (AUTHENTICATION_FAILURE.test(block.join("\n"))) failed.push(remote);
+    block = [];
+  }
+  const unnamed = AUTHENTICATION_FAILURE.exec(block.join("\n"));
+  if (unnamed !== null) failed.push(unnamed[1] ?? unnamed[2] ?? "its remote");
+  return failed;
+}
+
+export function fetchFailureReason(stderr: string): string {
+  const detail = redactUrlCredentials(stderr.trim());
+  const suffix = detail ? ` (${detail})` : "";
+  const failed = authenticationFailures(detail);
+  return failed.length > 0
+    ? `could not verify remotes: authentication failed for ${failed.join(", ")}${suffix}`
+    : `could not fetch its remotes to verify its commits are published${suffix}`;
+}
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
 function stashBranch(subject: string): string | null {
   return STASH_SUBJECT.exec(subject)?.[1] ?? null;
@@ -497,10 +578,27 @@ export async function findPreservationReasons(
             ["--no-optional-locks", "config", "--get", "core.sshCommand"],
             gitOptions,
           );
+          const helpers = await runGit(
+            [
+              "--no-optional-locks",
+              "config",
+              "--null",
+              "--no-includes",
+              "--show-scope",
+              "--show-origin",
+              "--get-regexp",
+              CREDENTIAL_HELPER_KEYS,
+            ],
+            gitOptions,
+          );
+          const replayed = replayedCredentialHelpers(
+            helpers.exitCode === 0 ? helpers.stdout : "",
+          );
           const fetched = await runGit(
             [
               "-c",
               "credential.helper=",
+              ...replayed.args,
               "fetch",
               "--all",
               "--quiet",
@@ -508,19 +606,22 @@ export async function findPreservationReasons(
             ],
             {
               ...gitOptions,
-              env: nonInteractiveFetchEnvironment(
-                gitOptions.env,
-                process.env,
-                configured.exitCode === 0 && configured.stdout.trim() !== ""
-                  ? configured.stdout.trim()
-                  : null,
-              ),
+              env: {
+                ...nonInteractiveFetchEnvironment(
+                  gitOptions.env,
+                  process.env,
+                  configured.exitCode === 0 && configured.stdout.trim() !== ""
+                    ? configured.stdout.trim()
+                    : null,
+                ),
+                ...replayed.env,
+              },
               timeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
             },
           );
           return fetched.exitCode === 0
             ? null
-            : `could not fetch its remotes to verify its commits are published${fetched.stderr.trim() ? ` (${fetched.stderr.trim()})` : ""}`;
+            : fetchFailureReason(fetched.stderr);
         } catch (error) {
           return `could not fetch its remotes to verify its commits are published (${describeError(error)})`;
         }
