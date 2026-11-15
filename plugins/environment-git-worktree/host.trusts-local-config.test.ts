@@ -36,6 +36,7 @@ const restoredVariables = [
   "GIT_CONFIG_SYSTEM",
   "GIT_SSH",
   "GIT_SSH_COMMAND",
+  "GIT_TEMPLATE_DIR",
   "TMPDIR",
 ] as const;
 const inherited = restoredVariables.map(
@@ -376,6 +377,43 @@ describe("teardown's fetch never runs a program from the repository's own config
     expect(await markerText(fixture)).toBe("");
     expect(reasons).toEqual([]);
   });
+
+  it.each([
+    ["a worktree file the global config includes", "included"],
+    ["GIT_TEMPLATE_DIR in teardown's own environment", "environment"],
+  ] as const)(
+    "does not copy hooks from a template named by %s into the temporary repository it fetches into",
+    async (_source, through) => {
+      const fixture = await createFixture();
+      const template = join(fixture.root, "template");
+      await mkdir(join(template, "hooks"), { recursive: true });
+      await script(
+        join(template, "hooks"),
+        "reference-transaction",
+        `${fixture.mark} "$@"`,
+      );
+      if (through === "included")
+        await setGlobal(
+          fixture.globalConfig,
+          "include.path",
+          await plantInWorktree(fixture, ["init.templateDir", template]),
+        );
+      else process.env.GIT_TEMPLATE_DIR = template;
+      await git(
+        fixture.root,
+        "--git-dir",
+        fixture.originPath,
+        "update-ref",
+        "refs/heads/later",
+        "refs/heads/main",
+      );
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(await markerText(fixture)).toBe("");
+      expect(reasons.join("\n")).not.toContain("could not fetch its remotes");
+    },
+  );
 
   it("does not fetch submodules through fetch.recurseSubmodules, which runs their own config", async () => {
     const fixture = await createFixture();
