@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import type { AgentRuntimeOptions } from "@bb/agent-runtime";
 import type {
   HostDaemonBridgeLaunch,
@@ -1514,6 +1516,7 @@ describe("thread command dispatch", () => {
       },
       harness.dispatchOptions({ threadStorageRootPath }),
     );
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
     await expect(
       dispatchCommand(
