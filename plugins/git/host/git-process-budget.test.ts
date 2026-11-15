@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initRepo, makeTempDir } from "@bb/test-helpers";
 import { runGit } from "bb-environment-provider-host/workspace-git";
 import type { GitReadFreshness } from "../contract.js";
-import { WorkspaceReads } from "./workspace-reads.js";
+import { FINE_RACY_SIGNATURE_WINDOW_MS, WorkspaceReads } from "./workspace-reads.js";
 
 const STATUS_BUDGET = {
   maxFiles: 200,
@@ -97,6 +97,7 @@ describe("git processes per workspace change", () => {
 
     await fs.appendFile(path.join(repo, "README.md"), "edit 1\n");
     await fs.writeFile(path.join(repo, "new-1.txt"), "new 1\n");
+    await new Promise((resolve) => setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10));
     await readLikeTheDiffTab(reads, { work: "w2", refs: "r1" }, [
       "README.md",
       "new-1.txt",
@@ -115,6 +116,7 @@ describe("git processes per workspace change", () => {
     );
 
     await fs.appendFile(path.join(repo, "README.md"), "edit 2\n");
+    await new Promise((resolve) => setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10));
     await readLikeTheDiffTab(reads, { work: "w3", refs: "r1" }, ["README.md"]);
     expect(await takeCalls()).toEqual(
       [
