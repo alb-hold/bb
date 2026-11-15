@@ -2353,7 +2353,7 @@ export interface PendingThreadStorageDeletion {
 
 export function listPendingThreadStorageDeletions(
   db: ThreadWriteConnection,
-  args: { hostId?: string } = {},
+  args: { hostId?: string; projectId?: string } = {},
 ): PendingThreadStorageDeletion[] {
   const pendingWhere = and(
     isNotNull(threads.deletedAt),
@@ -2389,18 +2389,24 @@ export function listPendingThreadStorageDeletions(
       })
       .from(threads)
       .where(
-        args.hostId === undefined
-          ? pendingWhere
-          : and(
-              pendingWhere,
-              inArray(
+        and(
+          pendingWhere,
+          args.hostId === undefined
+            ? undefined
+            : inArray(
                 threads.environmentId,
                 tx
                   .select({ id: environments.id })
                   .from(environments)
                   .where(eq(environments.hostId, args.hostId)),
               ),
-            ),
+          args.projectId === undefined
+            ? undefined
+            : inArray(
+                threads.id,
+                deletionThreadTreeIdsForProject(args.projectId),
+              ),
+        ),
       )
       .orderBy(asc(threads.storageDeleteSeq), asc(threads.id))
       .all();

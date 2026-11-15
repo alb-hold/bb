@@ -1,5 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { getThread, markThreadDeleted, projects } from "@bb/db";
+import {
+  getThread,
+  listPendingThreadStorageDeletions,
+  markThreadDeleted,
+  projects,
+} from "@bb/db";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -337,6 +342,24 @@ describe("refused thread storage deletes", () => {
         refusedThreadRetryAtMs + threadsDueAheadOfRefusedThread * 60_000,
       );
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
+
+  it("lists only the deleting project's pending storage deletes, in queue order", async () => {
+    await withTestHarness(async (harness) => {
+      const deleting = seedDeletedThreads(harness, 2, "host-deleting");
+      const other = seedDeletedThreads(harness, 2, "host-other-project");
+
+      const pending = listPendingThreadStorageDeletions(harness.db, {
+        projectId: deleting.projectId,
+      });
+
+      expect(pending.map((thread) => thread.id)).toEqual(deleting.threadIds);
+      expect(
+        listPendingThreadStorageDeletions(harness.db).map(
+          (thread) => thread.id,
+        ),
+      ).toEqual([...deleting.threadIds, ...other.threadIds]);
     });
   });
 
