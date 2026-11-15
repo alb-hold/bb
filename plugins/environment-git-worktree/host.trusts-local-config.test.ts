@@ -49,6 +49,8 @@ const restoredVariables = [
   "LANG",
   "TEARDOWN_UNLISTED_PROBE",
   "TMPDIR",
+  "HOME",
+  "XDG_CONFIG_HOME",
 ] as const;
 const inherited = restoredVariables.map(
   (name) => [name, process.env[name]] as const,
@@ -1266,6 +1268,35 @@ describe("teardown's git commands see only an allowlisted environment", () => {
     expect(await readFile(log, "utf8")).toContain(
       `SSH_AUTH_SOCK=${join(fixture.root, "agent.sock")} LANG=C.UTF-8 PROBE=unset`,
     );
+  });
+
+  it("fetches under its generated global when an inherited GIT_CONFIG_GLOBAL names a file that sets core.gitProxy", async () => {
+    const fixture = await createFixture();
+    await setGlobal(fixture.globalConfig, "core.gitProxy", fixture.mark);
+    await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe(fixture.globalConfig);
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+
+  it("ignores an inherited XDG_CONFIG_HOME git config in its fetch", async () => {
+    const fixture = await createFixture();
+    const xdg = join(fixture.root, "xdg");
+    await mkdir(join(xdg, "git"), { recursive: true });
+    await setGlobal(join(xdg, "git", "config"), "core.gitProxy", fixture.mark);
+    delete process.env.GIT_CONFIG_GLOBAL;
+    process.env.HOME = join(fixture.root, "home");
+    await mkdir(process.env.HOME);
+    process.env.XDG_CONFIG_HOME = xdg;
+    await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
   });
 
   it("still fetches the owner's remotes with the agent socket and a benign GIT_CONFIG_COUNT in its environment", async () => {
