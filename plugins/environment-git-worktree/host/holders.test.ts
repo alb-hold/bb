@@ -2268,6 +2268,14 @@ describe("system processes in another mount namespace", () => {
       "uncertain",
     ],
     [
+      "a mount stacked over an older one at the worktree's mount point, the older on another device",
+      rootLine +
+        "60 25 8:1 /old /work rw - ext4 /dev/sdb rw\n65 25 8:48 / /work rw - ext4 /dev/sda rw\n",
+      async () => "65",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
       "a complete table whose worktree mount ID matches",
       rootLine + workLine,
       async () => "60",
