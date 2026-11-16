@@ -361,20 +361,55 @@ async function verifyFileContents(
     throw new Error("Recovered file contents do not match the held original");
 }
 
-async function verifyPathContents(
+type MountCheck = (entry: string, fd: number) => Promise<boolean>;
+
+async function openSameFile(
   candidate: string,
   original: FileHandle,
   hooks: RemoveDirectoryTreeHooks,
-): Promise<void> {
-  const info = await lstat(candidate, { bigint: true });
-  if (!info.isFile())
-    throw new Error(`Recovered path is not a file: ${candidate}`);
+  crossesMount: MountCheck,
+): Promise<FileHandle> {
   await hooks.beforeFileOpen?.(candidate);
-  const recovered = await open(
+  const opened = await open(
     candidate,
     constants.O_RDONLY |
       (constants.O_NOFOLLOW ?? 0) |
       (constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const [openedInfo, originalInfo] = await Promise.all([
+      opened.stat({ bigint: true }),
+      original.stat({ bigint: true }),
+    ]);
+    if (
+      !openedInfo.isFile() ||
+      openedInfo.dev !== originalInfo.dev ||
+      openedInfo.ino !== originalInfo.ino
+    )
+      throw new Error(`Recovered path is not the held file: ${candidate}`);
+    if (await crossesMount(candidate, opened.fd))
+      throw new Error(`Recovered path is on another mount: ${candidate}`);
+    return opened;
+  } catch (error) {
+    await opened.close();
+    throw error;
+  }
+}
+
+async function verifyPathContents(
+  candidate: string,
+  original: FileHandle,
+  hooks: RemoveDirectoryTreeHooks,
+  crossesMount: MountCheck,
+): Promise<void> {
+  const info = await lstat(candidate, { bigint: true });
+  if (!info.isFile())
+    throw new Error(`Recovered path is not a file: ${candidate}`);
+  const recovered = await openSameFile(
+    candidate,
+    original,
+    hooks,
+    crossesMount,
   );
   try {
     await verifyFileContents(recovered, original);
@@ -444,6 +479,7 @@ async function recoverFileFromPin(
   source: FileHandle,
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
+  crossesMount: MountCheck,
 ): Promise<string> {
   return createRecoveredEntry(
     parentDirectory,
@@ -469,12 +505,11 @@ async function recoverFileFromPin(
         candidateInfo.ino !== heldInfo.ino
       )
         throw new Error(`Recovery pin identity changed at ${pin}`);
-      await hooks.beforeFileOpen?.(candidate);
-      const recovered = await open(
+      const recovered = await openSameFile(
         candidate,
-        constants.O_RDONLY |
-          (constants.O_NOFOLLOW ?? 0) |
-          (constants.O_NONBLOCK ?? 0),
+        source,
+        hooks,
+        crossesMount,
       );
       try {
         await verifyFileContents(recovered, source);
@@ -1190,6 +1225,7 @@ export async function removeDirectoryTree(
               fileHandle,
               originalMode,
               hooks,
+              crossesMount,
             );
           }
           reportRetainedPath(recoveredPath);
@@ -1307,7 +1343,12 @@ export async function removeDirectoryTree(
           )
             return await recoverFromPin();
           if (fileHandle !== null)
-            await verifyPathContents(anchoredEntry, fileHandle, hooks);
+            await verifyPathContents(
+              anchoredEntry,
+              fileHandle,
+              hooks,
+              crossesMount,
+            );
           else if ((await readlink(anchoredEntry)) !== symbolicLinkTarget)
             return await recoverFromPin();
           reportRetainedPath(anchoredEntry);
@@ -1784,11 +1825,21 @@ export async function removeDirectoryTree(
           ) {
             throw new Error("Restored Git marker identity did not match");
           }
-          await verifyPathContents(destination, heldGitMarkerHandle, hooks);
+          await verifyPathContents(
+            destination,
+            heldGitMarkerHandle,
+            hooks,
+            crossesMount,
+          );
           reportRetainedPath(destination);
           reportRetainedPath(heldGitMarker);
           await hooks.afterGitMarkerLinked?.(heldGitMarker, destination);
-          await verifyPathContents(destination, heldGitMarkerHandle, hooks);
+          await verifyPathContents(
+            destination,
+            heldGitMarkerHandle,
+            hooks,
+            crossesMount,
+          );
           if (gitMarkerPinName !== null) {
             await hooks.beforePinCleanup?.(pinPath, destination);
             const [pinInfo, heldInfoAfterHook] = await Promise.all([
@@ -1814,6 +1865,7 @@ export async function removeDirectoryTree(
                 heldGitMarkerHandle,
                 heldGitMarkerMode,
                 hooks,
+                crossesMount,
               );
               recoveredGitMarkerPath = recoveredPath;
               racedGitMarkerDestination = destination;
@@ -2044,7 +2096,12 @@ export async function removeDirectoryTree(
           ]);
           if (pinInfo.dev !== heldInfo.dev || pinInfo.ino !== heldInfo.ino)
             return await retain();
-          await verifyPathContents(markerPin, heldGitMarkerHandle!, hooks);
+          await verifyPathContents(
+            markerPin,
+            heldGitMarkerHandle!,
+            hooks,
+            crossesMount,
+          );
           await hooks.beforePinCleanup?.(markerPin, heldGitMarker);
           await unlink(markerPin);
           activePins.delete(markerPin);

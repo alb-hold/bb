@@ -560,7 +560,8 @@ function realEntry(root: string, candidate: string): string {
     candidate,
   )?.[1];
   if (rest === undefined) return candidate;
-  return rest.startsWith(".bb-removing-")
+  const first = rest.split("/")[0] ?? "";
+  return first === path.basename(root) || first.startsWith(".bb-removing-")
     ? path.join(path.dirname(root), rest)
     : path.join(root, rest);
 }
@@ -646,4 +647,143 @@ describe.runIf(linux)("reopening the held .git marker", () => {
       "gitdir: /nowhere\n",
     );
   });
+});
+
+async function stillLinked(
+  directory: string,
+  original: { dev: number; ino: number },
+): Promise<boolean> {
+  for (const entry of await fs.readdir(directory, {
+    recursive: true,
+    withFileTypes: true,
+  })) {
+    if (!entry.isFile()) continue;
+    const info = await fs.lstat(path.join(entry.parentPath, entry.name));
+    if (
+      info.dev === original.dev &&
+      info.ino === original.ino &&
+      !entry.name.startsWith(".bb-removing-")
+    )
+      return true;
+  }
+  return false;
+}
+
+async function forcedRestore(
+  root: string,
+  target: string,
+  swapAt: (candidate: string, opens: number) => boolean,
+  occupy?: string,
+  readDescriptorInfo?: (entry: string, fd: number) => Promise<string>,
+) {
+  const content = await fs.readFile(target, "utf8");
+  let opens = 0;
+  let swapped = "";
+  const outcome = await removeDirectoryTree(root, {
+    startedAt: Number.MAX_SAFE_INTEGER,
+    ...(readDescriptorInfo === undefined ? {} : { readDescriptorInfo }),
+    afterEntryQuarantined: async (removed) => {
+      if (path.basename(removed) !== "top.txt") return;
+      if (occupy !== undefined) await fs.writeFile(removed, occupy);
+      throw new Error("force a restore");
+    },
+    beforeFileOpen: async (candidate) => {
+      if (swapped !== "") return;
+      opens += 1;
+      if (!swapAt(candidate, opens)) return;
+      const real = realEntry(root, candidate);
+      await fs.rm(real);
+      await fs.writeFile(real, content);
+      swapped = real;
+    },
+  }).catch((error: unknown) => ({ thrown: String(error) }));
+  return { outcome, swapped };
+}
+
+describe("verifying a recovered file", () => {
+  it("never accepts a same-content file swapped in for an entry restored to its own name", async () => {
+    const root = await settledTree();
+    const top = path.join(root, "top.txt");
+    const original = await fs.stat(top);
+    let topOpens = 0;
+    const { outcome, swapped } = await forcedRestore(root, top, (candidate) => {
+      if (realEntry(root, candidate) !== top) return false;
+      topOpens += 1;
+      return topOpens === 2;
+    });
+    expect(swapped).toBe(top);
+    expect(outcome).not.toMatchObject({ status: "removed" });
+    expect(await stillLinked(path.dirname(root), original)).toBe(true);
+  });
+
+  it("never accepts a same-content file swapped in for an entry restored under a recovery name", async () => {
+    const root = await settledTree();
+    const top = path.join(root, "top.txt");
+    const original = await fs.stat(top);
+    const { outcome, swapped } = await forcedRestore(
+      root,
+      top,
+      (candidate) => path.basename(candidate).includes(".bb-recovered-"),
+      "occupied\n",
+    );
+    expect(swapped).not.toBe("");
+    expect(outcome).not.toMatchObject({ status: "removed" });
+    expect(await stillLinked(path.dirname(root), original)).toBe(true);
+  });
+
+  it("never accepts a same-content file swapped in for the restored .git marker", async () => {
+    const root = await settledTree();
+    const marker = path.join(root, ".git");
+    await fs.writeFile(marker, "gitdir: /nowhere\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const original = await fs.stat(marker);
+    let swapped = "";
+    const outcome = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      afterRootMarkerDetached: async (quarantined) => {
+        await fs.writeFile(path.join(quarantined, "late.txt"), "late\n");
+      },
+      beforeFileOpen: async (candidate) => {
+        if (swapped !== "" || path.basename(candidate) !== ".git") return;
+        const real = realEntry(root, candidate);
+        await fs.rm(real);
+        await fs.writeFile(real, "gitdir: /nowhere\n");
+        swapped = real;
+      },
+    }).catch((error: unknown) => ({ thrown: String(error) }));
+    expect(swapped).not.toBe("");
+    expect(outcome).not.toMatchObject({ status: "removed" });
+    expect(await stillLinked(path.dirname(root), original)).toBe(true);
+  });
+
+  it.runIf(linux)(
+    "never accepts an entry restored to its own name whose descriptor is on another mount",
+    async () => {
+      const root = await settledTree();
+      const top = path.join(root, "top.txt");
+      const original = await fs.stat(top);
+      let topReads = 0;
+      let shiftedReads = 0;
+      const { outcome } = await forcedRestore(
+        root,
+        top,
+        () => false,
+        undefined,
+        async (entry, fd) => {
+          const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+          if (path.basename(entry) !== "top.txt") return info;
+          topReads += 1;
+          if (topReads !== 2) return info;
+          shiftedReads += 1;
+          return info.replace(
+            /^mnt_id:\s*(\d+)$/mu,
+            (_line, id: string) => `mnt_id:\t${Number(id) + 1}`,
+          );
+        },
+      );
+      expect(shiftedReads).toBe(1);
+      expect(outcome).not.toMatchObject({ status: "removed" });
+      expect(await stillLinked(path.dirname(root), original)).toBe(true);
+    },
+  );
 });
