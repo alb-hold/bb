@@ -793,9 +793,37 @@ export async function removeDirectoryTree(
     reportRetainedPath(entry);
     return true;
   };
+  const markerCrossesMount = async (
+    marker: string,
+    info: { dev: number; ino: number },
+  ): Promise<boolean> => {
+    if (rootMountId === null) return false;
+    let handle;
+    try {
+      handle = await open(
+        marker,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+    } catch {
+      unanchoredPaths.add(displayPath(marker));
+      reportRetainedPath(marker);
+      return true;
+    }
+    try {
+      const opened = await handle.stat();
+      if (opened.dev !== info.dev || opened.ino !== info.ino) {
+        reportRetainedPath(marker);
+        return true;
+      }
+      return await crossesMount(marker, handle.fd);
+    } finally {
+      await handle.close();
+    }
+  };
   const inspectBeforeRemoval = async (
     directory: string,
     rootEntry = false,
+    rootMarker = false,
   ): Promise<boolean> => {
     const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(directory);
     if (ownWrite !== undefined) {
@@ -829,7 +857,8 @@ export async function removeDirectoryTree(
         : changedSince(info, startedAt)
     )
       return false;
-    if (!info.isDirectory()) return true;
+    if (!info.isDirectory())
+      return !(rootMarker && (await markerCrossesMount(directory, info)));
     const handle = await openDirectory(directory);
     if (handle === null) return false;
     try {
@@ -873,7 +902,13 @@ export async function removeDirectoryTree(
       )
         return false;
       for (const name of listed) {
-        if (!(await inspectBeforeRemoval(path.join(directory, name))))
+        if (
+          !(await inspectBeforeRemoval(
+            path.join(directory, name),
+            false,
+            rootEntry && name === ".git",
+          ))
+        )
           return false;
       }
       return true;
@@ -1871,6 +1906,8 @@ export async function removeDirectoryTree(
             path.join(directoryPath, ".git"),
             constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
           );
+          if (await crossesMount(rootGitMarker, heldGitMarkerHandle.fd))
+            return await retain();
           const originalMarkerInfo = await heldGitMarkerHandle.stat({
             bigint: true,
           });

@@ -172,6 +172,89 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     ).resolves.toBe("keep too\n");
   });
 
+  it("keeps a tree whose .git marker is a bound file, before removing any sibling, and leaves the bind source unchanged", async (context) => {
+    if (!mountNamespacesAvailable()) context.skip();
+    const { source, root } = await boundTree();
+    const marker = path.join(root, ".git");
+    await fs.writeFile(marker, "gitdir: /nowhere\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const removal = await removeWithBind(
+      path.join(source, "a.txt"),
+      marker,
+      root,
+    );
+    expect(removal.thrown).toBeUndefined();
+    expect(removal.value).toMatchObject({
+      status: "retained",
+      mountedPaths: [marker],
+      removalStarted: false,
+    });
+    await expect(
+      fs.readFile(path.join(root, "plain", "c.txt"), "utf8"),
+    ).resolves.toBe("removable\n");
+    await expect(fs.readFile(path.join(root, "f.txt"), "utf8")).resolves.toBe(
+      "",
+    );
+    await expect(fs.readFile(marker, "utf8")).resolves.toBe(
+      "gitdir: /nowhere\n",
+    );
+    const after = await fs.stat(path.join(source, "a.txt"));
+    expect(after.mode & 0o777).toBe(0o644);
+    await expect(fs.readFile(path.join(source, "a.txt"), "utf8")).resolves.toBe(
+      "keep\n",
+    );
+  });
+
+  it("keeps a tree whose .git marker is on another mount, before removing any sibling", async () => {
+    const root = await settledTree();
+    const marker = path.join(root, ".git");
+    await fs.writeFile(marker, "gitdir: /nowhere\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readDescriptorInfo: async (entry, fd) => {
+        const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+        return path.resolve(entry) === marker ? shifted(info) : info;
+      },
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      mountedPaths: [marker],
+      removalStarted: false,
+    });
+    await expect(fs.readFile(path.join(root, "top.txt"), "utf8")).resolves.toBe(
+      "top\n",
+    );
+  });
+
+  it("keeps the .git marker when it becomes a mount after inspection, before pinning or moving it", async () => {
+    const root = await settledTree();
+    await fs.writeFile(path.join(root, ".git"), "gitdir: /nowhere\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readDescriptorInfo: async (entry, fd) => {
+        const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+        return path.basename(entry) === ".git" &&
+          path.basename(path.dirname(entry)).startsWith(".bb-removing-")
+          ? shifted(info)
+          : info;
+      },
+    });
+    expect(result.status).toBe("retained");
+    expect(result.mountedPaths).toHaveLength(1);
+    expect(path.basename(result.mountedPaths[0] ?? "")).toBe(".git");
+    const left = await fs.readdir(path.dirname(root));
+    const kept = left.includes("tree")
+      ? path.join(path.dirname(root), "tree", ".git")
+      : path.join(
+          path.dirname(root),
+          left.find((name) => name.startsWith(".bb-removing-")) ?? "",
+          ".git",
+        );
+    await expect(fs.readFile(kept, "utf8")).resolves.toBe("gitdir: /nowhere\n");
+  });
+
   it("keeps a tree whose root is on another mount than its parent", async () => {
     const root = await settledTree();
     const result = await removeDirectoryTree(root, {
