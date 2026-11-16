@@ -205,6 +205,30 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     );
   });
 
+  it("keeps a tree whose .git is a FIFO with no writer, promptly and without opening it", async () => {
+    const root = await settledTree();
+    const marker = path.join(root, ".git");
+    execFileSync("mkfifo", [marker]);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const started = performance.now();
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(result).toMatchObject({
+      status: "retained",
+      unanchoredPaths: [marker],
+      removalStarted: false,
+    });
+    expect((await fs.lstat(marker)).isFIFO()).toBe(true);
+    await expect(fs.readFile(path.join(root, "top.txt"), "utf8")).resolves.toBe(
+      "top\n",
+    );
+    await expect(
+      fs.readFile(path.join(root, "nested", "kept.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+  }, 5_000);
+
   it("keeps a tree whose .git marker is on another mount, before removing any sibling", async () => {
     const root = await settledTree();
     const marker = path.join(root, ".git");

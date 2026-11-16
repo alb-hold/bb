@@ -802,7 +802,9 @@ export async function removeDirectoryTree(
     try {
       handle = await open(
         marker,
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        constants.O_RDONLY |
+          (constants.O_NOFOLLOW ?? 0) |
+          (constants.O_NONBLOCK ?? 0),
       );
     } catch {
       unanchoredPaths.add(displayPath(marker));
@@ -857,8 +859,16 @@ export async function removeDirectoryTree(
         : changedSince(info, startedAt)
     )
       return false;
-    if (!info.isDirectory())
-      return !(rootMarker && (await markerCrossesMount(directory, info)));
+    if (!info.isDirectory()) {
+      if (!rootMarker || rootMountId === null || info.isSymbolicLink())
+        return true;
+      if (!info.isFile()) {
+        unanchoredPaths.add(displayPath(directory));
+        reportRetainedPath(directory);
+        return false;
+      }
+      return !(await markerCrossesMount(directory, info));
+    }
     const handle = await openDirectory(directory);
     if (handle === null) return false;
     try {
@@ -1904,7 +1914,9 @@ export async function removeDirectoryTree(
         if (rootGitMarker !== null && heldGitMarker !== null) {
           heldGitMarkerHandle = await open(
             path.join(directoryPath, ".git"),
-            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+            constants.O_RDONLY |
+              (constants.O_NOFOLLOW ?? 0) |
+              (constants.O_NONBLOCK ?? 0),
           );
           if (await crossesMount(rootGitMarker, heldGitMarkerHandle.fd))
             return await retain();
