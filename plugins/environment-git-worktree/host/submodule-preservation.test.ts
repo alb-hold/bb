@@ -6,7 +6,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import type {
   DirectoryEntry,
@@ -27,6 +27,20 @@ const GIT_CONFIG = [
   "-c",
   "init.defaultBranch=main",
 ];
+
+const unhandled: unknown[] = [];
+const recordUnhandled = (reason: unknown) => {
+  unhandled.push(reason);
+};
+beforeAll(() => {
+  process.on("unhandledRejection", recordUnhandled);
+});
+afterAll(() => {
+  process.off("unhandledRejection", recordUnhandled);
+});
+afterEach(() => {
+  expect(unhandled.splice(0)).toEqual([]);
+});
 
 afterEach(async () => {
   for (const root of roots.splice(0)) {
@@ -655,6 +669,128 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
       expect(performance.now() - started).toBeLessThan(5_000);
     },
   );
+
+  const stalled = (): AsyncIterable<DirectoryEntry> => ({
+    [Symbol.asyncIterator]: () => ({
+      next: () => new Promise<IteratorResult<DirectoryEntry>>(() => undefined),
+    }),
+  });
+
+  it("gives the budget reason within its deadline when a modules listing stalls", async () => {
+    const worktree = await fixture();
+    const modules = path.join(worktree.gitDir, "modules");
+    await fs.mkdir(modules);
+    await settle();
+    const started = performance.now();
+    const reasons = await removal(
+      worktree,
+      scan({
+        budgetMs: 300,
+        openDirectoryEntries: async (directory, entry) =>
+          entry === modules ? stalled() : listed(directory),
+      }),
+    );
+    expect(reasons).toEqual([
+      "could not check for submodule repositories (it took longer than 300 ms)",
+      `${UNFINISHED}it took longer than 300 ms)`,
+    ]);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  });
+
+  it("gives the budget reason within its deadline when a directory listing stalls", async () => {
+    const worktree = await fixture();
+    await fs.mkdir(path.join(worktree.path, "node_modules", "stall"), {
+      recursive: true,
+    });
+    await settle();
+    const started = performance.now();
+    const reasons = await removal(
+      worktree,
+      scan({
+        budgetMs: 300,
+        openDirectoryEntries: async (directory, entry) =>
+          path.basename(entry) === "stall" ? stalled() : listed(directory),
+      }),
+    );
+    expect(reasons).toEqual([`${UNFINISHED}it took longer than 300 ms)`]);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  });
+
+  it("never lists a directory that modules is swapped for between its lstat and its open", async () => {
+    const worktree = await fixture();
+    const modules = path.join(worktree.gitDir, "modules");
+    await fs.mkdir(modules);
+    const elsewhere = path.join(worktree.outside, "elsewhere");
+    await fs.mkdir(elsewhere);
+    await fs.writeFile(path.join(elsewhere, "outside-name"), "");
+    await settle();
+    let swapped = false;
+    const reasons = await removal(
+      worktree,
+      scan({
+        beforeDirectoryOpen: async (directory) => {
+          if (directory !== modules || swapped) return;
+          swapped = true;
+          await fs.rm(modules, { recursive: true });
+          await fs.symlink(elsewhere, modules);
+        },
+      }),
+    );
+    expect(swapped).toBe(true);
+    expect(reasons).not.toBe("removed");
+    expect(
+      (reasons as string[]).some((reason) => reason.includes("outside-name")),
+    ).toBe(false);
+    expect(
+      (reasons as string[]).filter((reason) =>
+        reason.startsWith("could not check for submodule repositories ("),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.skipIf(asRoot)(
+    "keeps the worktree when a listed directory's entries cannot be checked",
+    async () => {
+      const worktree = await fixture();
+      const shaped = path.join(worktree.path, "node_modules", "shaped");
+      await fs.mkdir(path.join(shaped, "refs"), { recursive: true });
+      await fs.mkdir(path.join(shaped, "objects"));
+      await fs.writeFile(path.join(shaped, "HEAD"), "ref: refs/heads/main\n");
+      await fs.chmod(shaped, 0o444);
+      await settle();
+      const reasons = await removal(worktree);
+      await fs.chmod(shaped, 0o755);
+      expect(reasons).not.toBe("removed");
+      expect(
+        (reasons as string[]).filter((reason) =>
+          reason.startsWith(`${UNFINISHED}EACCES`),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("keeps the worktree when a directory listing fails part way through", async () => {
+    const worktree = await fixture();
+    await fs.mkdir(path.join(worktree.path, "node_modules", "failing"), {
+      recursive: true,
+    });
+    await settle();
+    const reasons = await removal(
+      worktree,
+      scan({
+        openDirectoryEntries: async (directory, entry) =>
+          path.basename(entry) === "failing"
+            ? (async function* () {
+                yield unknownType("first");
+                throw Object.assign(new Error("EIO: i/o error, read"), {
+                  code: "EIO",
+                });
+              })()
+            : listed(directory),
+      }),
+    );
+    expect(reasons).toEqual([`${UNFINISHED}EIO: i/o error, read)`]);
+  });
 
   it("keeps the worktree when a directory chain is deeper than a path can be", async () => {
     const worktree = await fixture();
