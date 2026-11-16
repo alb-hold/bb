@@ -3090,7 +3090,7 @@ describe("same-user processes in another mount namespace", () => {
       "mirrors and an fd whose link cannot be read",
       mirror,
       { fdDenied: true },
-      "uncertain",
+      "unknown",
     ],
     ["only mirrors from one of its threads", mirror, { thread: true }, "clear"],
   ] as const;
