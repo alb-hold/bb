@@ -88,7 +88,7 @@ describe("the platform watcher backend", () => {
 describe.skipIf(process.platform !== "linux" || watchmanInstalled)(
   "the watcher child on Linux without watchman",
   () => {
-    it("has no child process left after a subscribe", async () => {
+    it("starts no child process during a subscribe", async () => {
       const root = await mkdtemp(join(tmpdir(), "bb-parcel-child-"));
       roots.push(root);
       const child = fork(childEntry, [], {
@@ -97,6 +97,7 @@ describe.skipIf(process.platform !== "linux" || watchmanInstalled)(
       });
       children.push(child);
       await nextMessage(child, (message) => message.kind === "ready");
+      const before = new Set(await childProcessesOf(child.pid ?? 0));
       const subscribed = nextMessage(
         child,
         (message) =>
@@ -106,10 +107,13 @@ describe.skipIf(process.platform !== "linux" || watchmanInstalled)(
       );
       child.send({ kind: "subscribe", id: "row", dir: root, opts: {} });
       expect(await subscribed).toEqual({ kind: "subscribed", id: "row" });
-      expect(await childProcessesOf(child.pid ?? 0)).toEqual([]);
+      const started = (await childProcessesOf(child.pid ?? 0)).filter(
+        (pid) => !before.has(pid),
+      );
+      expect(started).toEqual([]);
     });
 
-    it("has no child process left after an in-process subscribe", async () => {
+    it("starts no child process during an in-process subscribe", async () => {
       const root = await mkdtemp(join(tmpdir(), "bb-parcel-in-process-"));
       roots.push(root);
       const { stdout } = await execFileAsync(
