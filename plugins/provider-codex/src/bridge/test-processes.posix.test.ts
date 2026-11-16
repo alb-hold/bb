@@ -15,19 +15,19 @@ describe.runIf(process.platform !== "win32")(
         detached: true,
         stdio: "ignore",
       });
-      const cleanup = trackTestProcess(child);
+      const cleanup = trackTestProcess(child, 500);
       const started = Date.now();
       try {
         await expect(cleanup()).rejects.toThrow(
           new RegExp(`pid ${child.pid} .*sh -c while`),
         );
-        expect(Date.now() - started).toBeLessThan(35_000);
+        expect(Date.now() - started).toBeLessThan(2_000);
       } finally {
         try {
           process.kill(-child.pid!, "SIGKILL");
         } catch {}
       }
-    }, 36_000);
+    }, 3_000);
 
     it.each([
       { name: "a descendant that keeps writing", lifetime: null },

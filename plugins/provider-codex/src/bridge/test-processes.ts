@@ -152,7 +152,10 @@ export function killTestProcessGroup(
   }
 }
 
-export function trackTestProcess(child: ChildProcess): () => Promise<void> {
+export function trackTestProcess(
+  child: ChildProcess,
+  timeoutMs = TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): () => Promise<void> {
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
     child.once("error", () => resolve());
@@ -198,7 +201,7 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   }
   return async () => {
     if (pid === undefined) return;
-    const deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     const stillWriting = () => {
       let writer: string | undefined;
       if (process.platform !== "win32") {
