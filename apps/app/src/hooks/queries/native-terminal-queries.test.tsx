@@ -101,7 +101,7 @@ describe("useSendNativeTerminalMessage", () => {
     vi.clearAllMocks();
   });
 
-  it("marks the native composer's send with the app origin", async () => {
+  it("marks the native composer's send as coming from the composer", async () => {
     const { wrapper } = createQueryClientTestHarness();
     vi.mocked(sdk.threads.send).mockResolvedValueOnce({
       ok: true,
@@ -122,7 +122,7 @@ describe("useSendNativeTerminalMessage", () => {
       threadId: "thread-1",
       input,
       mode: "auto",
-      origin: "app",
+      sendSurface: "composer",
     });
   });
 });

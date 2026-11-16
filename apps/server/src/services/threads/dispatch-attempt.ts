@@ -493,6 +493,7 @@ async function runDispatchAttempt(
       waitingOn,
       sendAt,
       claimed,
+      composerSend: false,
     });
     if (entry === null) {
       return { kind: "dispatched" };

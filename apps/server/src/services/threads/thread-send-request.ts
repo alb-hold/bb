@@ -2,7 +2,6 @@ import {
   isStandaloneBuiltinClearCommand,
   isStandaloneBuiltinCompactCommand,
   type Thread,
-  type ThreadCreateOrigin,
 } from "@bb/domain";
 import { getThreadSpawner, isNativeTerminalThread } from "@bb/db";
 import { ApiError } from "../../errors.js";
@@ -33,13 +32,6 @@ interface AcceptThreadSendRequestArgs {
   deviceHandoffClientToken?: string;
 }
 
-function sendRequestOrigin(
-  payload: SendMessageRequest,
-): ThreadCreateOrigin | null {
-  if (payload.originPluginId !== undefined) return "plugin";
-  return payload.origin ?? null;
-}
-
 export async function acceptThreadSendRequest(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: AcceptThreadSendRequestArgs,
@@ -65,8 +57,9 @@ export async function acceptThreadSendRequest(
           : {}),
         targetThread: args.thread,
       }),
-      origin: sendRequestOrigin(args.payload),
+      origin: args.payload.originPluginId === undefined ? null : "plugin",
       originPluginId: args.payload.originPluginId ?? null,
+      composerSend: args.payload.sendSurface === "composer",
       startedOnBehalfOf: null,
     } as const;
     if (args.thread.status === "pending") {
@@ -167,7 +160,7 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
-        origin: sendRequestOrigin(payload),
+        origin: payload.originPluginId === undefined ? null : "plugin",
         originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,
         onTurnRequestCreated: (turnRequestId, turnId) =>

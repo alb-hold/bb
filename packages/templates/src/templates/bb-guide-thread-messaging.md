@@ -45,7 +45,8 @@ Messaging:
   At the host's concurrency limit, a tell or SDK send to an idle native
   terminal thread waits in the queue until a slot frees, the same as a send to
   any other thread. Only a message typed in the app's composer (sent with
-  `origin: "app"`) goes straight into a running native terminal at the limit.
+  `sendSurface: "composer"`) goes straight into a running native terminal at
+  the limit.
 
   --plan sends the same structured /plan command the composer's plan action
   sends, so the agent proposes a plan for approval before executing (Claude

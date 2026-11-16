@@ -5,6 +5,7 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getThread,
+  listComposerQueuedMessageIds,
   listNativeTerminalDeliveryMarks,
   listQueuedThreadMessages,
   markNativeTerminalDeliveriesSubmitting,
@@ -83,6 +84,7 @@ export interface NativeTerminalAdmissionArgs {
   senderThreadId: string | null;
   origin: ThreadCreateOrigin | null;
   originPluginId: string | null;
+  composerSend: boolean;
   startedOnBehalfOf: StartedOnBehalfOf | null;
   systemNotice: QueuedMessageSystemNotice | null;
   admitted: NativeTerminalAdmittedWork;
@@ -128,23 +130,29 @@ function hasRunningNativeTerminal(
 }
 
 function isOwnerComposerSend(
+  deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
   author: DispatchAuthor,
 ): boolean {
-  if (
-    author.initiator !== "user" ||
-    args.origin !== "app" ||
-    args.originPluginId !== null
-  )
+  if (author.initiator !== "user" || args.originPluginId !== null) {
     return false;
-  return (args.claimed ?? []).every((row) => {
-    const queued = toThreadQueuedMessage(row);
-    return (
-      queued.initiator === "user" &&
-      queued.origin === "app" &&
-      queued.originPluginId === null
-    );
-  });
+  }
+  if (args.claimed === null) return args.composerSend;
+  const composerIds = listComposerQueuedMessageIds(
+    deps.db,
+    args.claimed.map((row) => row.id),
+  );
+  return (
+    args.claimed.length > 0 &&
+    args.claimed.every((row) => {
+      const queued = toThreadQueuedMessage(row);
+      return (
+        composerIds.has(row.id) &&
+        queued.initiator === "user" &&
+        queued.originPluginId === null
+      );
+    })
+  );
 }
 
 function holdUntilInteractionSettles(
@@ -237,7 +245,7 @@ export async function admitNativeTerminalDispatch(
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
   if (
-    isOwnerComposerSend(args, author) &&
+    isOwnerComposerSend(deps, args, author) &&
     hasRunningNativeTerminal(deps, args.thread)
   ) {
     return runNativeTerminalAdmittedWork(deps, args);
@@ -326,6 +334,7 @@ function recordNativeTerminalWait(
     waitingOn: args.waitingOn,
     sendAt: args.sendAt,
     claimed: args.claimed,
+    composerSend: args.composerSend,
   });
   return entry === null ? { kind: "dispatched" } : { kind: "queued", entry };
 }
@@ -455,6 +464,7 @@ export async function dispatchClaimedNativeTerminalMessages(
     senderThreadId: lead.senderThreadId,
     origin: lead.origin,
     originPluginId: lead.originPluginId,
+    composerSend: false,
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
     systemNotice,
   };

@@ -365,7 +365,7 @@ describe("thread runtime mutations", () => {
     );
   });
 
-  it("marks the thread composer's send with the app origin", async () => {
+  it("marks the thread composer's send as coming from the composer", async () => {
     const queryClient = createTestQueryClient();
     const mutation = new MutationObserver(
       queryClient,
@@ -379,7 +379,10 @@ describe("thread runtime mutations", () => {
     });
 
     expect(sdk.threads.send).toHaveBeenCalledWith(
-      expect.objectContaining({ origin: "app", threadId: "thread-1" }),
+      expect.objectContaining({
+        sendSurface: "composer",
+        threadId: "thread-1",
+      }),
     );
   });
 

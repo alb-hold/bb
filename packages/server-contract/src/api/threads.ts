@@ -323,7 +323,7 @@ const sendMessageRequestFieldsSchema = z.object({
   mode: sendMessageModeSchema,
   senderThreadId: z.string().min(1).optional(),
   sendAt: z.number().int().nonnegative().optional(),
-  origin: z.literal("app").optional(),
+  sendSurface: z.literal("composer").optional(),
   originPluginId: pluginIdSchema.optional(),
   pluginSubmission: z
     .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
@@ -373,7 +373,7 @@ export const editMessageRequestSchema = sendMessageRequestFieldsSchema
   .omit({
     mode: true,
     sendAt: true,
-    origin: true,
+    sendSurface: true,
     pluginSubmission: true,
     compactFirst: true,
   })
