@@ -161,6 +161,16 @@ type Mount = {
   point: string;
 };
 
+function decodeMountPath(value: string | undefined): string | null {
+  if (value === undefined || !value.startsWith("/")) return null;
+  const decoded = value.replace(
+    /\\(040|011|012|134)/gu,
+    (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+  if (/\\(?![\\])/u.test(decoded)) return null;
+  return path.posix.normalize(decoded);
+}
+
 function parseMountinfo(text: string): Mount[] | null {
   const mounts: Mount[] = [];
   for (const line of text.trim().split("\n")) {
@@ -173,18 +183,8 @@ function parseMountinfo(text: string): Mount[] | null {
     )
       return null;
     if (fields[separator + 1] === "nsfs") continue;
-    const decode = (value: string | undefined): string | null => {
-      if (value === undefined || !value.startsWith("/")) return null;
-      const decoded = value.replace(
-        /\\(040|011|012|134)/gu,
-        (_match, octal: string) =>
-          String.fromCharCode(Number.parseInt(octal, 8)),
-      );
-      if (/\\(?![\\])/u.test(decoded)) return null;
-      return path.posix.normalize(decoded);
-    };
-    const mountRoot = decode(fields[3]);
-    const point = decode(fields[4]);
+    const mountRoot = decodeMountPath(fields[3]);
+    const point = decodeMountPath(fields[4]);
     if (mountRoot === null || point === null) return null;
     mounts.push({
       id: fields[0]!,
@@ -198,6 +198,16 @@ function parseMountinfo(text: string): Mount[] | null {
 
 function mountContains(candidate: string, ancestor: string): boolean {
   return ancestor === "/" || isUnder(candidate, ancestor);
+}
+
+function nsfsInside(text: string, directory: string): boolean {
+  for (const line of text.trim().split("\n")) {
+    const fields = line.split(" ");
+    if (fields[fields.indexOf("-") + 1] !== "nsfs") continue;
+    const point = decodeMountPath(fields[4]);
+    if (point === null || mountContains(point, directory)) return true;
+  }
+  return false;
 }
 
 async function worktreeAliases(
@@ -254,6 +264,7 @@ async function foreignWorktreeView(
   const ownMounts = parseMountinfo(own.value);
   const foreignMounts = parseMountinfo(foreign.value);
   if (ownMounts === null || foreignMounts === null) return "unknown";
+  if (nsfsInside(foreign.value, directory)) return "unknown";
   return worktreeExposure(ownMounts, foreignMounts, directory);
 }
 
@@ -715,6 +726,21 @@ async function scanMountAliases(
     if ("failed" in value) doubt = `${target} could not be read`;
     return found;
   };
+  const rooted = async (
+    rootBase: string,
+  ): Promise<WorktreeHolder | { gone: true } | string | null> => {
+    const target = `${rootBase}/root`;
+    const value = await readOptional(() => proc.readlink(target));
+    if ("gone" in value) return value;
+    if ("value" in value && matches(value.value))
+      return holder("working folder");
+    const found = await identity(target, "working folder");
+    if (found !== null) return found;
+    if ("failed" in value) return `${target} could not be read`;
+    return value.value === "/"
+      ? null
+      : `${rootBase} runs under a different root folder`;
+  };
   for (const [leaf, through, stat] of [
     ["cwd", "working folder", true],
     ["exe", "open file", false],
@@ -844,6 +870,16 @@ async function scanMountAliases(
       }
       if ("failed" in taskNamespace)
         identityDoubt = `${taskBase} mount namespace could not be read`;
+      const taskRoot =
+        "value" in taskNamespace && taskNamespace.value !== mountNamespace
+          ? await rooted(taskBase)
+          : null;
+      if (taskRoot !== null && typeof taskRoot !== "string") {
+        if ("pid" in taskRoot) return taskRoot;
+        doubt = beforeTask.doubt;
+        identityDoubt = beforeTask.identityDoubt;
+        continue;
+      }
       if (
         taskFiles !== null &&
         "uncertain" in taskFiles &&
@@ -860,12 +896,19 @@ async function scanMountAliases(
       if (
         "value" in taskNamespace &&
         taskNamespace.value !== mountNamespace &&
-        (!("value" in namespace) || taskNamespace.value !== namespace.value) &&
-        !viewKeepsPaths(
-          await foreignWorktreeView(proc, taskBase, directory, mountNamespace),
-        )
-      )
-        identityDoubt = `${taskBase} mount isolation could not be proven`;
+        (!("value" in namespace) || taskNamespace.value !== namespace.value)
+      ) {
+        const taskView = await foreignWorktreeView(
+          proc,
+          taskBase,
+          directory,
+          mountNamespace,
+        );
+        if (!viewKeepsPaths(taskView))
+          identityDoubt = `${taskBase} mount isolation could not be proven`;
+        else if (taskView === "mirrored" && taskRoot !== null)
+          identityDoubt = taskRoot;
+      } else if (taskRoot !== null) doubt = taskRoot;
     }
   if (sharedMaps) {
     const late = await mappings(base, false);
@@ -889,7 +932,11 @@ async function scanMountAliases(
       mountNamespace,
     );
     if (view === "hidden") return { isolated: true };
-    if (view !== "mirrored")
+    if (view === "mirrored") {
+      const root = await rooted(base);
+      if (typeof root === "string") doubt = root;
+      else if (root !== null) return root;
+    } else
       doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
   }
   const current = await readOptional(() => proc.readFile(`${base}/status`));
@@ -1432,8 +1479,13 @@ async function scanOwnProcess(
   if ("gone" in mount) return null;
   if ("failed" in mount)
     return unreadable(`process ${pid} mount namespace`, mount.failed);
-  if (mount.value !== mountNamespace)
+  if (mount.value !== mountNamespace) {
+    const foreignRoot = await readOptional(() => proc.readlink(`${base}/root`));
+    if ("gone" in foreignRoot) return null;
+    if ("failed" in foreignRoot)
+      return unreadable(`process ${pid} root folder`, foreignRoot.failed);
     return reachesWorktree(proc, pid, base, command, tree);
+  }
   const root = await readOptional(() => proc.readlink(`${base}/root`));
   if ("gone" in root) return null;
   if ("failed" in root)
@@ -1454,8 +1506,17 @@ async function scanOwnProcess(
         `process ${pid} thread ${task} mount namespace`,
         taskMount.failed,
       );
-    if ("value" in taskMount && taskMount.value !== mountNamespace)
+    if ("value" in taskMount && taskMount.value !== mountNamespace) {
+      const taskRoot = await readOptional(() =>
+        proc.readlink(`${base}/task/${task}/root`),
+      );
+      if ("failed" in taskRoot)
+        return unreadable(
+          `process ${pid} thread ${task} root folder`,
+          taskRoot.failed,
+        );
       return reachesWorktree(proc, pid, base, command, tree);
+    }
     const found = await checkLink(
       proc,
       pid,
