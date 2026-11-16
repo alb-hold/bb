@@ -15818,7 +15818,7 @@ else {
     expect(result.stdout + result.stderr).not.toContain("direct-credential-must-not-leak");
     expect(await hubSend(token)).toBe(401);
     expect(await listRoutes()).toEqual([]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("applies the 1-hour cache variable for a subscription pool and strips every inherited auth variable", async () => {
     const { run, threadProof } = await harness({ subscription: true });
@@ -15834,14 +15834,14 @@ else {
       "status=200 tool_search=true first_party=1 cache1h=1 oauth=unset",
     );
     expect(result.stdout + result.stderr).not.toContain("inherited-");
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("drops an inherited cache variable for an API-key-only pool", async () => {
     const { run, threadProof } = await harness();
     const result = await run(["--proof-env", "THREAD_POOL_PROOF"], { THREAD_POOL_PROOF: threadProof, ENABLE_PROMPT_CACHING_1H: "1", ANTHROPIC_AUTH_TOKEN: "inherited-auth-must-not-win" }).done;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("cache1h=undefined");
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it.each([
     ["foreign https", (_base: string) => "https://example.com"],
@@ -15857,7 +15857,7 @@ else {
     await expect(fs.stat(marker)).rejects.toThrow();
     await expect(fs.stat(tokenFile)).rejects.toThrow();
     expect(await listRoutes()).toEqual([]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("does not revoke a newer route that another launch rotated in when the first launch exits", async () => {
     const { run, hubSend, listRoutes, work, threadCli } = await harness();
@@ -15887,7 +15887,7 @@ else {
     const result = await run([], {}, ["definitely-not-a-command-for-pool-launch"]).done;
     expect(result.code).toBe(127);
     expect(await listRoutes()).toEqual([]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("waits for a launch failure even when the liveness probe reports the child absent", async () => {
     const { run, listRoutes, work } = await harness();
@@ -15907,7 +15907,7 @@ else {
     expect(await fs.readFile(sourced, "utf8")).toBe("sourced");
     expect(result.code).toBe(127);
     expect(await listRoutes()).toEqual([]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("signals only its own child and never matches processes by name", async () => {
     const { run, listRoutes } = await harness();
@@ -15935,7 +15935,7 @@ else {
     expect(await listRoutes()).toEqual([]);
     expect(readToken).toBeDefined();
     expect(hubSend).toBeDefined();
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("exits non-zero when revocation fails even though the child succeeded", async () => {
     const { run, listRoutes } = await harness();
@@ -15943,7 +15943,7 @@ else {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("FAILED to revoke");
     expect(await listRoutes()).toHaveLength(1);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("revokes when the launcher is terminated and forwards the signal to the child", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
@@ -16026,6 +16026,7 @@ else {
       expect(refused.stderr).toContain("No proof for thread thread-other");
       expect(await listRoutes()).toEqual([]);
     },
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
   );
 
   it.skipIf(process.env.POOL_E2E_CLAUDE !== "1")(
@@ -16055,7 +16056,7 @@ else {
       expect(hubSend).toBeDefined();
       expect(readToken).toBeDefined();
     },
-    120_000,
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
   );
 
   it("fails closed when issuance is refused and never starts the command", async () => {
@@ -16082,7 +16083,7 @@ else {
     expect(rotated.code).toBe(0);
     expect(await hubSend(existing)).toBe(401);
     expect(await readToken()).not.toBe(existing);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 });
 
 describe("Account Pool provider health", () => {
