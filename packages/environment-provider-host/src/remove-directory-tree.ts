@@ -70,6 +70,7 @@ export interface RemoveDirectoryTreeHooks {
   readDescriptorInfo?: (entry: string, fd: number) => Promise<string>;
   beforeMarkerOpen?: (marker: string) => Promise<void>;
   beforeFileOpen?: (candidate: string) => Promise<void>;
+  beforeDirectoryOpen?: (directory: string) => Promise<void>;
   afterMarkerReopen?: (reopened: FileHandle) => Promise<void>;
 }
 
@@ -210,10 +211,39 @@ async function openDirectory(directory: string) {
   try {
     return await open(
       directory,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      (process.platform === "linux" ? LINUX_O_PATH : constants.O_RDONLY) |
+        constants.O_DIRECTORY |
+        constants.O_NOFOLLOW,
     );
   } catch {
     return null;
+  }
+}
+
+async function readableDirectory(located: FileHandle): Promise<FileHandle> {
+  if (process.platform !== "linux") return located;
+  try {
+    const reopened = await open(
+      `/proc/self/fd/${located.fd}`,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0),
+    );
+    try {
+      const [reopenedInfo, locatedInfo] = await Promise.all([
+        reopened.stat({ bigint: true }),
+        located.stat({ bigint: true }),
+      ]);
+      if (
+        reopenedInfo.dev !== locatedInfo.dev ||
+        reopenedInfo.ino !== locatedInfo.ino
+      )
+        throw new Error("Reopened directory is not the checked directory");
+      return reopened;
+    } catch (error) {
+      await reopened.close();
+      throw error;
+    }
+  } finally {
+    await located.close();
   }
 }
 
@@ -410,6 +440,8 @@ async function openSameFile(
   await hooks.beforeFileOpen?.(candidate);
   const opened = await locateFile(candidate);
   try {
+    if (await crossesMount(candidate, opened.fd))
+      throw new Error(`Recovered path is on another mount: ${candidate}`);
     const [openedInfo, originalInfo] = await Promise.all([
       opened.stat({ bigint: true }),
       original.stat({ bigint: true }),
@@ -420,8 +452,6 @@ async function openSameFile(
       openedInfo.ino !== originalInfo.ino
     )
       throw new Error(`Recovered path is not the held file: ${candidate}`);
-    if (await crossesMount(candidate, opened.fd))
-      throw new Error(`Recovered path is on another mount: ${candidate}`);
   } catch (error) {
     await opened.close();
     throw error;
@@ -894,6 +924,7 @@ export async function removeDirectoryTree(
       return true;
     }
     try {
+      if (await crossesMount(marker, handle.fd)) return true;
       const opened = await handle.stat();
       if (
         !opened.isFile() ||
@@ -904,7 +935,7 @@ export async function removeDirectoryTree(
         reportRetainedPath(marker);
         return true;
       }
-      return await crossesMount(marker, handle.fd);
+      return false;
     } finally {
       await handle.close();
     }
@@ -929,9 +960,9 @@ export async function removeDirectoryTree(
     const located = await openMarkerPath(marker);
     if (located === null) return null;
     try {
+      if (await crossesMount(shown, located.fd)) return null;
       const info = await located.stat();
-      if (!info.isFile() || (await crossesMount(shown, located.fd)))
-        return null;
+      if (!info.isFile()) return null;
       const reopened = await open(
         `/proc/self/fd/${located.fd}`,
         constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
@@ -995,12 +1026,13 @@ export async function removeDirectoryTree(
       }
       return !(await markerCrossesMount(directory, info));
     }
+    await hooks.beforeDirectoryOpen?.(directory);
     const handle = await openDirectory(directory);
     if (handle === null) return false;
     try {
+      if (await crossesMount(directory, handle.fd)) return false;
       const openedInfo = await handle.stat();
       if (!sameDirectory(info, openedInfo)) return false;
-      if (await crossesMount(directory, handle.fd)) return false;
       const openedPath = await anchorDirectory(handle, directory);
       if (openedPath === null) return false;
       displayPathMappings.set(openedPath, path.resolve(directory));
@@ -1404,6 +1436,11 @@ export async function removeDirectoryTree(
         if (checkedPreciseInfo.isFile()) {
           await hooks.beforeFileOpen?.(anchoredEntry);
           fileHandle = await locateFile(anchoredEntry);
+          if (await crossesMount(entry, fileHandle.fd)) {
+            await fileHandle.close();
+            fileHandle = null;
+            return "retained";
+          }
           const openedInfo = await fileHandle.stat({ bigint: true });
           if (
             openedInfo.dev !== checkedPreciseInfo.dev ||
@@ -1416,11 +1453,6 @@ export async function removeDirectoryTree(
             await fileHandle.close();
             fileHandle = null;
             return retainedEntry();
-          }
-          if (await crossesMount(entry, fileHandle.fd)) {
-            await fileHandle.close();
-            fileHandle = null;
-            return "retained";
           }
           const located = fileHandle;
           fileHandle = null;
@@ -1605,13 +1637,24 @@ export async function removeDirectoryTree(
         await fileHandle?.close();
       }
     }
-    const directory = await openDirectory(anchoredEntry);
+    await hooks.beforeDirectoryOpen?.(anchoredEntry);
+    const located = await openDirectory(anchoredEntry);
+    if (located === null) return retainedEntry();
+    if (await crossesMount(entry, located.fd)) {
+      await located.close();
+      return "retained";
+    }
+    const locatedInfo = await located.stat().catch(() => null);
+    if (locatedInfo === null || !sameDirectory(info, locatedInfo)) {
+      await located.close();
+      return retainedEntry();
+    }
+    const directory = await readableDirectory(located).catch(() => null);
     if (directory === null) return retainedEntry();
     let heldGitMarkerHandle: FileHandle | null = null;
     try {
       const openedInfo = await directory.stat();
       if (!sameDirectory(info, openedInfo)) return retainedEntry();
-      if (await crossesMount(entry, directory.fd)) return "retained";
       const directoryPath = await anchorDirectory(directory, entry);
       if (directoryPath === null) return retainedEntry();
       displayPathMappings.set(directoryPath, path.resolve(entry));

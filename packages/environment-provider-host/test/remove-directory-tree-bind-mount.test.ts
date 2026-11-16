@@ -650,6 +650,169 @@ describe("opening a file swapped for a FIFO during removal", () => {
   }, 10_000);
 });
 
+function fuseOverlayAvailable(): boolean {
+  if (!existsSync("/dev/fuse")) return false;
+  try {
+    execFileSync("fuse-overlayfs", ["--version"], { stdio: "ignore" });
+    execFileSync("fusermount3", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fuseMountsUnder(parent: string): Promise<string[]> {
+  const table = await fs.readFile("/proc/self/mountinfo", "utf8");
+  return table
+    .split("\n")
+    .map((line) => line.split(" "))
+    .filter(
+      (fields) =>
+        fields[4]?.startsWith(`${parent}/`) === true &&
+        fields.includes("fuse.fuse-overlayfs"),
+    )
+    .map((fields) => fields[4] ?? "");
+}
+
+describe.runIf(linux)("a FUSE mount already inside the tree", () => {
+  it("keeps a directory on a FUSE mount without sending it an open", async (context) => {
+    if (!fuseOverlayAvailable()) context.skip();
+    const parent = await fs.mkdtemp(path.join(tmpdir(), "bb-fuse-"));
+    roots.push(parent);
+    const lower = path.join(parent, "lower");
+    const root = path.join(parent, "tree");
+    const mounted = path.join(root, "mounted");
+    await fs.mkdir(path.join(lower, "sub"), { recursive: true });
+    await fs.writeFile(path.join(lower, "sub", "kept.txt"), "kept\n");
+    await fs.mkdir(path.join(parent, "upper"));
+    await fs.mkdir(path.join(parent, "work"));
+    await fs.mkdir(mounted, { recursive: true });
+    await fs.writeFile(path.join(root, "top.txt"), "top\n");
+    const log = path.join(parent, "requests.log");
+    const logFile = await fs.open(log, "w");
+    const daemon = spawn(
+      "fuse-overlayfs",
+      [
+        "-f",
+        "-d",
+        "-o",
+        `lowerdir=${lower},upperdir=${path.join(parent, "upper")},workdir=${path.join(parent, "work")}`,
+        mounted,
+      ],
+      { stdio: ["ignore", "ignore", logFile.fd] },
+    );
+    await logFile.close();
+    try {
+      for (let wait = 0; (await fuseMountsUnder(parent)).length === 0; wait++) {
+        if (wait === 400)
+          throw new Error(
+            `FUSE mount never appeared\n${await fs.readFile(log, "utf8")}`,
+          );
+        await delay(50);
+      }
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      const opensBefore =
+        (await fs.readFile(log, "utf8")).match(/\bOPENDIR\b/gu)?.length ?? 0;
+      const outcome = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+      });
+      await delay(100);
+      const requests = await fs.readFile(log, "utf8");
+      expect(requests).toMatch(/\bINIT\b/u);
+      expect(requests.match(/\bOPENDIR\b/gu)?.length ?? 0).toBe(opensBefore);
+      expect(outcome).toMatchObject({ status: "retained" });
+      expect(outcome.mountedPaths).toContain(mounted);
+      await expect(
+        fs.readFile(path.join(lower, "sub", "kept.txt"), "utf8"),
+      ).resolves.toBe("kept\n");
+    } finally {
+      for (const point of await fuseMountsUnder(parent))
+        await new Promise((resolve) =>
+          execFile("fusermount3", ["-u", point], resolve),
+        );
+      daemon.kill();
+    }
+  }, 60_000);
+
+  it("never sends an open to a FUSE directory bound into a tree on the same FUSE mount", async (context) => {
+    if (!fuseOverlayAvailable() || !mountNamespacesAvailable()) context.skip();
+    const parent = await fs.mkdtemp(path.join(tmpdir(), "bb-fuse-bind-"));
+    roots.push(parent);
+    const lower = path.join(parent, "lower");
+    await fs.mkdir(path.join(lower, "tree", "mounted"), { recursive: true });
+    await fs.mkdir(path.join(lower, "other", "x"), { recursive: true });
+    await fs.writeFile(path.join(lower, "other", "x", "kept.txt"), "kept\n");
+    await fs.writeFile(path.join(lower, "tree", "top.txt"), "top\n");
+    await fs.mkdir(path.join(parent, "upper"));
+    await fs.mkdir(path.join(parent, "work"));
+    await fs.mkdir(path.join(parent, "merged"));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const log = path.join(parent, "requests.log");
+    const merged = path.join(parent, "merged");
+    const script = [
+      'fuse-overlayfs -f -d -o "lowerdir=$1,upperdir=$2,workdir=$3" "$4" 2>"$5" & daemon=$!',
+      "tries=0",
+      'until grep -q " $4 " /proc/self/mountinfo; do tries=$((tries + 1)); [ "$tries" -gt 100 ] && exit 3; sleep 0.05; done',
+      'mount --bind "$4/other" "$4/tree/mounted" || { kill "$daemon"; exit 4; }',
+      'test -e "$4/tree/mounted/.bb-fuse-probe"',
+      '"$6" --input-type=module -e "$7" "$8" "$4/tree" > "$9"; status=$?',
+      'umount "$4/tree/mounted"; umount "$4" || kill "$daemon"; wait "$daemon"',
+      'exit "$status"',
+    ].join("\n");
+    const output = path.join(parent, "result.json");
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "unshare",
+        [
+          "--user",
+          "--map-root-user",
+          "--mount",
+          "sh",
+          "-c",
+          script,
+          "sh",
+          lower,
+          path.join(parent, "upper"),
+          path.join(parent, "work"),
+          merged,
+          log,
+          process.execPath,
+          runRemoval,
+          modulePath,
+          output,
+        ],
+        { timeout: 50_000 },
+        (error, _out, stderr) =>
+          error === null
+            ? resolve()
+            : reject(new Error(`${error.message}\n${stderr}`)),
+      );
+    });
+    const requests = await fs.readFile(log, "utf8");
+    const probed = /ovl_lookup\(parent=(\d+), name=\.bb-fuse-probe\)/u.exec(
+      requests,
+    )?.[1];
+    expect(probed).toBeDefined();
+    expect(requests).toMatch(/opcode: OPENDIR \(27\)/u);
+    expect(requests).not.toMatch(
+      new RegExp(`opcode: OPENDIR \\(27\\), nodeid: ${probed},`, "u"),
+    );
+    const removal = JSON.parse(await fs.readFile(output, "utf8")) as {
+      value?: RemoveDirectoryTreeResult;
+      thrown?: string;
+    };
+    expect(removal.thrown).toBeUndefined();
+    expect(removal.value).toMatchObject({ status: "retained" });
+    expect(removal.value?.mountedPaths).toContain(
+      path.join(merged, "tree", "mounted"),
+    );
+    expect(existsSync(path.join(parent, "upper", "other"))).toBe(false);
+    await expect(
+      fs.readFile(path.join(lower, "other", "x", "kept.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+  }, 60_000);
+});
+
 describe.runIf(linux)(
   "never opening a FIFO swapped in before a checked open",
   () => {
