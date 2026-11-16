@@ -1018,6 +1018,37 @@ describe("same-user processes in another mount namespace", () => {
       "unknown",
     ],
     ["only mirrors from one of its threads", mirror, { thread: true }, "clear"],
+    [
+      "mirrors and a root folder at the worktree",
+      mirror,
+      { root: "/work/tree" },
+      "held",
+    ],
+    [
+      "mirrors and a root folder elsewhere",
+      mirror,
+      { root: "/srv/jail" },
+      "uncertain",
+    ],
+    [
+      "mirrors and a root folder that cannot be read",
+      mirror,
+      { rootDenied: true },
+      "unknown",
+    ],
+    [
+      "mirrors and an nsfs bind inside the worktree",
+      mirror +
+        "52 50 0:4 net:[4026532364] /work/tree/netns rw - nsfs nsfs rw\n",
+      {},
+      "uncertain",
+    ],
+    [
+      "only mirrors from a thread whose root folder is the worktree",
+      mirror,
+      { thread: true, root: "/work/tree" },
+      "held",
+    ],
   ] as const;
   it.each(
     ["earlier", "final"].flatMap((scan) =>
@@ -1034,7 +1065,11 @@ describe("same-user processes in another mount namespace", () => {
         fd?: string;
         fdDenied?: boolean;
         thread?: boolean;
+        root?: string;
+        rootDenied?: boolean;
       } = links;
+      const rootLink =
+        extra.thread === true ? "/proc/101/task/102/root" : "/proc/101/root";
       const proc = mountAliasProc(
         "/work/tree",
         extra.thread === true ? "same" : "different isolated",
@@ -1061,6 +1096,10 @@ describe("same-user processes in another mount namespace", () => {
             throw Object.assign(new Error("denied"), { code: "EACCES" });
           if (extra.thread === true && target === "/proc/101/task/102/ns/mnt")
             return "mnt:[3]";
+          if (extra.root !== undefined && target === rootLink)
+            return extra.root;
+          if (extra.rootDenied === true && target === rootLink)
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
           return proc.readlink(target);
         },
         readFile: async (target) => {
