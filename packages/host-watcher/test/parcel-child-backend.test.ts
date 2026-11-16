@@ -4,7 +4,15 @@ import {
   spawnSync,
   type ChildProcess,
 } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,16 +69,74 @@ async function childProcessesOf(pid: number): Promise<string[]> {
   return listed;
 }
 
+async function pathWith(watchman: "executable" | "plain" | "directory") {
+  const root = await mkdtemp(join(tmpdir(), "bb-parcel-path-"));
+  roots.push(root);
+  const empty = join(root, "empty");
+  const bin = join(root, "bin");
+  await mkdir(empty);
+  await mkdir(bin);
+  const target = join(bin, "watchman");
+  if (watchman === "directory") await mkdir(target);
+  else {
+    await writeFile(target, "#!/bin/sh\nexit 0\n");
+    await chmod(target, watchman === "executable" ? 0o755 : 0o644);
+  }
+  return { PATH: [join(root, "missing"), empty, bin].join(":") };
+}
+
 describe("the platform watcher backend", () => {
   it.each([
     ["linux", "inotify"],
     ["darwin", "fs-events"],
-  ] as const)("picks %s's native backend", (platform, backend) => {
-    expect(withPlatformParcelBackend({}, platform)).toEqual({ backend });
-    expect(withPlatformParcelBackend(undefined, platform)).toEqual({ backend });
-    expect(withPlatformParcelBackend({ ignore: ["logs"] }, platform)).toEqual({
-      ignore: ["logs"],
-      backend,
+  ] as const)(
+    "picks %s's native backend when no watchman is on PATH",
+    async (platform, backend) => {
+      const env = { PATH: await mkdtemp(join(tmpdir(), "bb-parcel-path-")) };
+      roots.push(env.PATH);
+      expect(withPlatformParcelBackend({}, platform, env)).toEqual({ backend });
+      expect(withPlatformParcelBackend(undefined, platform, env)).toEqual({
+        backend,
+      });
+      expect(
+        withPlatformParcelBackend({ ignore: ["logs"] }, platform, env),
+      ).toEqual({ ignore: ["logs"], backend });
+    },
+  );
+
+  it.each(["linux", "darwin"] as const)(
+    "leaves %s on parcel's default when an executable watchman is on PATH after a missing directory",
+    async (platform) => {
+      const env = await pathWith("executable");
+      expect(withPlatformParcelBackend({}, platform, env)).toEqual({});
+      expect(
+        withPlatformParcelBackend(undefined, platform, env),
+      ).toBeUndefined();
+      expect(
+        withPlatformParcelBackend({ ignore: ["logs"] }, platform, env),
+      ).toEqual({ ignore: ["logs"] });
+    },
+  );
+
+  it.each(["plain", "directory"] as const)(
+    "treats a watchman that is a %s, not an executable file, as absent",
+    async (watchman) => {
+      const env = await pathWith(watchman);
+      expect(withPlatformParcelBackend({}, "linux", env)).toEqual({
+        backend: "inotify",
+      });
+    },
+  );
+
+  it.each([
+    ["an empty", { PATH: "" }],
+    ["a missing", {}],
+  ] as const)("picks the native backend with %s PATH", (_label, env) => {
+    expect(withPlatformParcelBackend({}, "linux", env)).toEqual({
+      backend: "inotify",
+    });
+    expect(withPlatformParcelBackend({}, "darwin", env)).toEqual({
+      backend: "fs-events",
     });
   });
 
