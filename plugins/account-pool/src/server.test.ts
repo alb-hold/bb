@@ -16056,7 +16056,7 @@ else {
       expect(hubSend).toBeDefined();
       expect(readToken).toBeDefined();
     },
-    CHILD_PROCESS_TEST_TIMEOUT_MS,
+    120_000,
   );
 
   it("fails closed when issuance is refused and never starts the command", async () => {
