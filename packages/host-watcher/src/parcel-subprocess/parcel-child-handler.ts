@@ -1,5 +1,5 @@
 import path from "node:path";
-import { withPlatformParcelBackend } from "../parcel-backend-choice.js";
+import { choosePlatformParcelBackend } from "../parcel-backend-choice.js";
 import type {
   ParcelAsyncSubscription,
   ParcelWatcherBackend,
@@ -60,37 +60,39 @@ export function createParcelChildHandler(args: {
   function handleSubscribe(
     message: Extract<ParentToChildMessage, { kind: "subscribe" }>,
   ): void {
-    args.parcel
-      .subscribe(
-        message.dir,
-        (error, events) => {
-          if (error) {
-            const errorMessage = toWatchErrorMessage(error);
+    choosePlatformParcelBackend(message.opts)
+      .then((opts) =>
+        args.parcel.subscribe(
+          message.dir,
+          (error, events) => {
+            if (error) {
+              const errorMessage = toWatchErrorMessage(error);
+              args.send({
+                kind: "watch-error",
+                id: message.id,
+                message: errorMessage,
+                recovery: isRescanRequiredMessage(errorMessage)
+                  ? "rescan-subscription"
+                  : "recycle-child",
+              });
+              return;
+            }
+            if (events.length > MAX_EVENTS_PER_MESSAGE) {
+              args.send({
+                kind: "events-dropped",
+                id: message.id,
+                count: events.length,
+              });
+              return;
+            }
             args.send({
-              kind: "watch-error",
+              kind: "events",
               id: message.id,
-              message: errorMessage,
-              recovery: isRescanRequiredMessage(errorMessage)
-                ? "rescan-subscription"
-                : "recycle-child",
+              events: serializeEvents(events),
             });
-            return;
-          }
-          if (events.length > MAX_EVENTS_PER_MESSAGE) {
-            args.send({
-              kind: "events-dropped",
-              id: message.id,
-              count: events.length,
-            });
-            return;
-          }
-          args.send({
-            kind: "events",
-            id: message.id,
-            events: serializeEvents(events),
-          });
-        },
-        withPlatformParcelBackend(message.opts),
+          },
+          opts,
+        ),
       )
       .then(async (subscription) => {
         if (cancelledBeforeReady.delete(message.id)) {

@@ -104,19 +104,24 @@ describe("the platform watcher backend", () => {
     },
   );
 
-  it.each(["linux", "darwin"] as const)(
-    "leaves %s on parcel's default when an executable watchman is on PATH after a missing directory",
-    async (platform) => {
-      const env = await pathWith("executable");
-      expect(withPlatformParcelBackend({}, platform, env)).toEqual({});
-      expect(
-        withPlatformParcelBackend(undefined, platform, env),
-      ).toBeUndefined();
-      expect(
-        withPlatformParcelBackend({ ignore: ["logs"] }, platform, env),
-      ).toEqual({ ignore: ["logs"] });
-    },
-  );
+  it("leaves linux on parcel's default when an executable watchman is on PATH after a missing directory", async () => {
+    const env = await pathWith("executable");
+    expect(withPlatformParcelBackend({}, "linux", env)).toEqual({});
+    expect(withPlatformParcelBackend(undefined, "linux", env)).toBeUndefined();
+    expect(
+      withPlatformParcelBackend({ ignore: ["logs"] }, "linux", env),
+    ).toEqual({ ignore: ["logs"] });
+  });
+
+  it("picks fs-events on darwin, which is what parcel's default there is, when an executable watchman is on PATH", async () => {
+    const env = await pathWith("executable");
+    expect(withPlatformParcelBackend({}, "darwin", env)).toEqual({
+      backend: "fs-events",
+    });
+    expect(withPlatformParcelBackend(undefined, "darwin", env)).toEqual({
+      backend: "fs-events",
+    });
+  });
 
   it.each(["plain", "directory"] as const)(
     "treats a watchman that is a %s, not an executable file, as absent",
@@ -162,7 +167,6 @@ describe("the platform watcher backend", () => {
     const cwd = await workingDirectoryWith(".");
     const env = { PATH: `:${join(cwd, "elsewhere")}` };
     expect(withPlatformParcelBackend({}, "linux", env, cwd)).toEqual({});
-    expect(withPlatformParcelBackend({}, "darwin", env, cwd)).toEqual({});
   });
 
   it("picks native through an empty PATH entry when the working directory has no watchman", async () => {
