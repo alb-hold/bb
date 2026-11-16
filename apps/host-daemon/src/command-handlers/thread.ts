@@ -60,6 +60,11 @@ export async function deleteThreadStorage(
   command: CommandOf<"thread.storage.delete">,
   options: CommandDispatchOptions,
 ): Promise<void> {
+  if (!isSinglePathComponent(command.threadId))
+    throw new CommandDispatchError(
+      "invalid_path",
+      `Thread id ${JSON.stringify(command.threadId)} is not a single path component, so no thread storage is removed`,
+    );
   const lexicalPath = requireContainedPath(
     options.threadStorageRootPath,
     path.join(options.threadStorageRootPath, command.threadId),
@@ -93,6 +98,16 @@ export async function deleteThreadStorage(
       ? {}
       : { testWorktreeHolderScan: options.testWorktreeHolderScan }),
   });
+}
+
+function isSinglePathComponent(name: string): boolean {
+  return (
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("\0") &&
+    !name.includes("/") &&
+    path.basename(name) === name
+  );
 }
 
 function errorCodeOf(error: unknown): string | undefined {

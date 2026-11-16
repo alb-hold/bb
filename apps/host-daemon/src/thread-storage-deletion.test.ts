@@ -265,7 +265,7 @@ it.for([
       await expect(
         fs.readFile(path.join(target, "kept.txt"), "utf8"),
       ).resolves.toBe("kept\n");
-      await expect(fs.readdir(storageRoot)).resolves.toEqual(
+      expect((await fs.readdir(storageRoot)).sort()).toEqual(
         ["thr_link", "thr_other"].sort(),
       );
     } finally {
@@ -281,8 +281,69 @@ it("treats a storage root that does not exist as already deleted", async () => {
     await expect(
       deleteStorage("thr_gone", path.join(root, "missing", "thread-storage")),
     ).resolves.toBeDefined();
-    await expect(fs.readdir(root)).resolves.toEqual(
+    expect((await fs.readdir(root)).sort()).toEqual(
       ["linked", "outside", "real"].sort(),
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses a thread id with more than one path component whose first component is a symbolic link to another thread's directory, and removes nothing", async () => {
+  const { root, real } = await storageFixture();
+  const storageRoot = path.join(real, "thread-storage");
+  const sibling = path.join(storageRoot, "thr_other");
+  await fs.mkdir(path.join(sibling, "child"), { recursive: true });
+  await fs.writeFile(path.join(sibling, "child", "kept.txt"), "kept\n");
+  await fs.symlink(sibling, path.join(storageRoot, "alias"));
+  await delay(FILE_TIMESTAMP_LAG_MS + 50);
+  useOnlyTheseProcessesForTests();
+  try {
+    await expect(
+      deleteStorage("alias/child", storageRoot),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      fs.readFile(path.join(sibling, "child", "kept.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+    expect((await fs.readdir(storageRoot)).sort()).toEqual(
+      ["alias", "thr_other"].sort(),
+    );
+  } finally {
+    useProcReaderForTests(null);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it.for([".", ".."] as const)(
+  "refuses the thread id %s, and removes nothing",
+  async (threadId) => {
+    const { root, real } = await storageFixture();
+    const storageRoot = path.join(real, "thread-storage");
+    await fs.mkdir(path.join(storageRoot, "thr_kept"));
+    try {
+      await expect(deleteStorage(threadId, storageRoot)).rejects.toMatchObject({
+        code: "invalid_path",
+      });
+      expect((await fs.readdir(storageRoot)).sort()).toEqual(["thr_kept"]);
+      expect((await fs.readdir(root)).sort()).toEqual(
+        ["linked", "outside", "real"].sort(),
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("fails with ELOOP for a storage root that is a symbolic link loop, and removes nothing", async () => {
+  const { root } = await storageFixture();
+  await fs.symlink(path.join(root, "loop-b"), path.join(root, "loop-a"));
+  await fs.symlink(path.join(root, "loop-a"), path.join(root, "loop-b"));
+  try {
+    await expect(
+      deleteStorage("thr_loop", path.join(root, "loop-a")),
+    ).rejects.toMatchObject({ code: "ELOOP" });
+    expect((await fs.readdir(root)).sort()).toEqual(
+      ["linked", "loop-a", "loop-b", "outside", "real"].sort(),
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
