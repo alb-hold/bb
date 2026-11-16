@@ -99,6 +99,21 @@ function isUnder(candidate: string, directory: string): boolean {
   );
 }
 
+function commandReferences(value: string, directory: string): boolean {
+  let offset = value.indexOf(directory);
+  while (offset >= 0) {
+    const before = value[offset - 1];
+    const after = value[offset + directory.length];
+    if (
+      (before === undefined || /[\s\0="':]/u.test(before)) &&
+      (after === undefined || /[\s\0/']/u.test(after))
+    )
+      return true;
+    offset = value.indexOf(directory, offset + 1);
+  }
+  return false;
+}
+
 function mappedPath(line: string): string {
   return (line.match(/^(?:\S+[ \t]+){5}(.*)$/u)?.[1] ?? "").replace(
     /\\(040|011|012|134)/gu,
@@ -652,8 +667,7 @@ async function scanMountAliases(
         } else if (found !== null) return found;
       }
     const memory = sharedMaps ? null : await mappings(fileBase, true);
-    if (memory !== null && ("gone" in memory || "pid" in memory))
-      return memory;
+    if (memory !== null && ("gone" in memory || "pid" in memory)) return memory;
     if (memory !== null && "failed" in memory) fileDoubt = memory.failed;
     if (fileBase === base && memory !== null && "shared" in memory)
       sharedMaps = memory.shared;
@@ -883,20 +897,7 @@ async function scanLinuxPaths(
       const command = await readOptional(() =>
         proc.readFile(`${base}/cmdline`),
       );
-      const references = (value: string) => {
-        let offset = value.indexOf(directory);
-        while (offset >= 0) {
-          const before = value[offset - 1];
-          const after = value[offset + directory.length];
-          if (
-            (before === undefined || /[\s\0="':]/u.test(before)) &&
-            (after === undefined || /[\s\0/']/u.test(after))
-          )
-            return true;
-          offset = value.indexOf(directory, offset + 1);
-        }
-        return false;
-      };
+      const references = (value: string) => commandReferences(value, directory);
       if ("value" in command && references(command.value))
         return {
           uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
@@ -1584,7 +1585,7 @@ function runLsof(directory: string): Promise<LsofResult> {
   return new Promise((resolve) => {
     execFile(
       "lsof",
-      ["-n", "-F", "pcn", "+D", directory],
+      ["-n", "-F", "pcfn", "+D", directory],
       { timeout: LSOF_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error === null) {
@@ -1605,6 +1606,123 @@ function runLsof(directory: string): Promise<LsofResult> {
 
 let activeLsof: (directory: string) => Promise<LsofResult> = runLsof;
 
+function runPs(args: readonly string[]): Promise<LsofResult> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      [...args],
+      { timeout: LSOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resolve({ code: 0, stdout, stderr, spawnFailed: false });
+          return;
+        }
+        resolve(
+          mapLsofError(
+            error,
+            typeof stdout === "string" ? stdout : "",
+            typeof stderr === "string" ? stderr : "",
+          ),
+        );
+      },
+    );
+  });
+}
+
+let activePs: (args: readonly string[]) => Promise<LsofResult> = runPs;
+
+export function usePsRunnerForTests(
+  runner: ((args: readonly string[]) => Promise<LsofResult>) | null,
+): void {
+  activePs = runner ?? runPs;
+}
+
+const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,uid=,args="] as const;
+const PRIVATE_ALIASED_ROOTS = ["/var/", "/tmp/", "/etc/"] as const;
+
+function darwinPathAliases(directory: string): string[] {
+  for (const aliased of PRIVATE_ALIASED_ROOTS) {
+    if (directory.startsWith(`/private${aliased}`))
+      return [directory, directory.slice("/private".length)];
+    if (directory.startsWith(aliased))
+      return [directory, `/private${directory}`];
+  }
+  return [directory];
+}
+
+function psFailure(result: LsofResult): string | null {
+  if (result.spawnFailed)
+    return result.failure === "timeout"
+      ? `ps timed out after ${LSOF_TIMEOUT_MS / 1000}s`
+      : result.failure === "maxBuffer"
+        ? "ps exceeded its output limit"
+        : result.failure === "signal"
+          ? "ps terminated by signal"
+          : "ps failed to start";
+  return result.code === 0
+    ? null
+    : `ps exited with ${result.code ?? "a signal"}`;
+}
+
+async function processCommands(pids: number[]): Promise<Map<number, string>> {
+  const commands = new Map<number, string>();
+  const result = await activePs(["-o", "pid=,comm=", "-p", pids.join(",")]);
+  if (psFailure(result) !== null) return commands;
+  for (const line of result.stdout.split("\n")) {
+    const match = /^\s*(\d+)\s+(\S.*)$/u.exec(line);
+    if (match?.[1] !== undefined && match[2] !== undefined)
+      commands.set(Number(match[1]), match[2].trim());
+  }
+  return commands;
+}
+
+async function scanForeignDarwinProcesses(
+  directory: string,
+): Promise<WorktreeHolderScan> {
+  const ownUid = process.getuid?.();
+  if (ownUid === undefined)
+    return { status: "unknown", reason: "the current user id is unavailable" };
+  const listing = await activePs(PROCESS_LIST_ARGS);
+  const failed = psFailure(listing);
+  if (failed !== null)
+    return {
+      status: "unknown",
+      reason: `could not list other users' processes: ${failed}`,
+    };
+  const aliases = darwinPathAliases(directory);
+  const doubts: { pid: number; uid: number }[] = [];
+  let unparsed = 0;
+  for (const line of listing.stdout.split("\n")) {
+    if (line.trim() === "") continue;
+    const match = /^\s*(\d+)\s+(-?\d+)(?:\s|$)/u.exec(line);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      unparsed += 1;
+      continue;
+    }
+    const pid = Number(match[1]);
+    const uid = Number(match[2]);
+    if (uid === ownUid || pid === process.pid) continue;
+    const args = line.slice(match[0].length);
+    if (aliases.some((alias) => commandReferences(args, alias)))
+      doubts.push({ pid, uid });
+  }
+  if (doubts.length > 0) {
+    const commands = await processCommands(doubts.map(({ pid }) => pid));
+    const first = doubts[0];
+    const command = first === undefined ? undefined : commands.get(first.pid);
+    return {
+      status: "uncertain",
+      reason: `${doubts.length} processes of other users could not be inspected, such as process ${first?.pid}${command === undefined ? "" : ` (${command})`} foreign uid ${first?.uid} command references the worktree`,
+    };
+  }
+  if (unparsed > 0)
+    return {
+      status: "unknown",
+      reason: `${unparsed} lines of the process list could not be read`,
+    };
+  return { status: "clear" };
+}
+
 export function useLsofRunnerForTests(
   runner: ((directory: string) => Promise<LsofResult>) | null,
 ): void {
@@ -1614,7 +1732,7 @@ export function useLsofRunnerForTests(
 async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const result = await activeLsof(directory);
   if (result.spawnFailed) {
-    const args = `-n -F pcn +D ${directory}`;
+    const args = `-n -F pcfn +D ${directory}`;
     const detail = result.stderr.split("\n", 1)[0];
     const reason =
       result.failure === "timeout"
@@ -1638,28 +1756,27 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const holders = new Map<number, WorktreeHolder>();
   let pid: number | null = null;
   let command: string | null = null;
+  let descriptor: string | null = null;
   for (const line of result.stdout.split("\n")) {
     if (line.startsWith("p")) {
       pid = Number(line.slice(1));
       command = null;
+      descriptor = null;
     } else if (line.startsWith("c")) {
       command = line.slice(1) || null;
+    } else if (line.startsWith("f")) {
+      descriptor = line.slice(1);
     } else if (line.startsWith("n") && pid !== null && pid !== process.pid) {
-      if (!holders.has(pid)) {
-        holders.set(pid, {
-          pid,
-          command,
-          through: isUnder(line.slice(1), directory)
-            ? "open file"
-            : "working folder",
-        });
-      }
+      const through = descriptor === "cwd" ? "working folder" : "open file";
+      const known = holders.get(pid);
+      if (known === undefined) holders.set(pid, { pid, command, through });
+      else if (through === "working folder") known.through = through;
     }
   }
   if (holders.size > 0)
     return { status: "held", holders: [...holders.values()] };
   if ((result.code === 0 || result.code === 1) && result.stderr.trim() === "")
-    return { status: "clear" };
+    return scanForeignDarwinProcesses(directory);
   return {
     status: "unknown",
     reason: `lsof exited with ${result.code ?? "a signal"}`,

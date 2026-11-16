@@ -382,6 +382,7 @@ afterEach(async () => {
   useProcReaderForTests(null);
   const holders = await import("./holders.js");
   holders.useLsofRunnerForTests?.(null);
+  holders.usePsRunnerForTests?.(null);
 });
 
 describe("real worktree teardown preservation", () => {
@@ -2743,6 +2744,12 @@ describe("real worktree teardown preservation", () => {
       stderr: "",
       spawnFailed: false,
     }));
+    holders.usePsRunnerForTests?.(async () => ({
+      code: 0,
+      stdout: "",
+      stderr: "",
+      spawnFailed: false,
+    }));
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
@@ -2767,6 +2774,12 @@ describe("real worktree teardown preservation", () => {
     const holders = await import("./holders.js");
     holders.useLsofRunnerForTests?.(async () => ({
       code: 1,
+      stdout: "",
+      stderr: "",
+      spawnFailed: false,
+    }));
+    holders.usePsRunnerForTests?.(async () => ({
+      code: 0,
       stdout: "",
       stderr: "",
       spawnFailed: false,

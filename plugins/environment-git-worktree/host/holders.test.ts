@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { linuxPathHasExtendedAcl } from "./linux-path-access.js";
 import {
   describeHolderScan,
@@ -23,6 +23,9 @@ import {
   procReadIsSynchronous,
   scanLinux,
   scanWorktreeHolders,
+  useLsofRunnerForTests,
+  usePsRunnerForTests,
+  type LsofResult,
   type ProcReader,
 } from "./holders.js";
 
@@ -126,11 +129,11 @@ describe("scanWorktreeHolders", () => {
     });
   });
 
-  it("never reports an unused folder as held, and is clear only when every process could be inspected", async () => {
+  it("never reports an unused folder as held, and is clear on macOS only when no other user's process names it", async () => {
     const directory = await makeDirectory();
     const scan = await scanWorktreeHolders(directory);
     expect(["clear", "unknown"]).toContain(scan.status);
-    if (process.platform !== "linux") expect(scan.status).toBe("unknown");
+    if (process.platform === "darwin") expect(scan.status).toBe("clear");
   });
 
   it("reports a program whose working folder is inside, without signalling it", async ({
@@ -239,6 +242,237 @@ describe("scanWorktreeHolders", () => {
       }),
     ).toContain("node (pid 42, open file)");
     expect(describeHolderScan({ status: "clear" })).toBeNull();
+  });
+});
+
+describe("the macOS scan of processes lsof cannot see", () => {
+  const tree = "/work/tree";
+  const ownUid = process.getuid?.() ?? 501;
+  const rootUid = ownUid === 0 ? 1 : 0;
+  const exited = (stdout: string, code = 0): LsofResult => ({
+    code,
+    stdout,
+    stderr: "",
+    spawnFailed: false,
+  });
+  let lsof: LsofResult;
+  let listing: LsofResult;
+  let labels: LsofResult;
+  const psCalls: string[][] = [];
+  const row = (pid: number, uid: number, args: string) =>
+    `${String(pid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    lsof = exited("", 1);
+    listing = exited("");
+    labels = exited("");
+    psCalls.length = 0;
+    useLsofRunnerForTests(async () => lsof);
+    usePsRunnerForTests(async (args) => {
+      psCalls.push([...args]);
+      return args.includes("-p") ? labels : listing;
+    });
+  });
+
+  afterEach(() => {
+    useLsofRunnerForTests(null);
+    usePsRunnerForTests(null);
+  });
+
+  it("lists every process with untruncated args, effective uid and pid", async () => {
+    await scanWorktreeHolders(tree);
+    expect(psCalls[0]).toEqual(["-axww", "-o", "pid=,uid=,args="]);
+  });
+
+  it("keeps the worktree when another user's process names it in its args", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd"),
+        row(4100, rootUid, `/usr/bin/make -C ${tree}`),
+      ].join("\n"),
+    );
+    labels = exited(`4100 /usr/bin/make`);
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes of other users could not be inspected, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
+    });
+    expect(psCalls[1]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
+  });
+
+  it("finds the worktree in args past column 200", async () => {
+    listing = exited(
+      row(4100, rootUid, `/usr/bin/tool ${"x".repeat(240)} ${tree}/build`),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+  });
+
+  it("matches the worktree through the /private alias macOS gives /var, /tmp and /etc", async () => {
+    listing = exited(
+      row(4100, rootUid, "/usr/bin/make -C /var/folders/ab/tree"),
+    );
+    await expect(
+      scanWorktreeHolders("/private/var/folders/ab/tree"),
+    ).resolves.toMatchObject({ status: "uncertain" });
+  });
+
+  it("reads nobody's uid of -2 and a process with no args", async () => {
+    listing = exited(
+      [row(93111, -2, `/usr/libexec/helper ${tree}`), row(90, 0, "")].join(
+        "\n",
+      ),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("process 93111 foreign uid -2"),
+    });
+    listing = exited(
+      [row(93111, -2, "/usr/libexec/helper"), row(90, 0, "")].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("leaves our own processes to lsof, whatever their args say", async () => {
+    listing = exited(row(4100, ownUid, `/bin/zsh ${tree}/build.sh`));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("is clear for Terminal, a root login and a shell outside the worktree", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd"),
+        row(
+          700,
+          ownUid,
+          "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+        row(701, 0, "login -pf someone"),
+        row(702, ownUid, "-zsh"),
+        row(703, 0, `ps -axww -o pid=,uid=,args=`),
+      ].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("names the shell that holds the worktree when it started a root job there", async () => {
+    lsof = exited(["p702", "czsh", "fcwd", `n${tree}`].join("\n"));
+    listing = exited(
+      [
+        row(702, ownUid, "-zsh"),
+        row(703, 0, "sudo make"),
+        row(704, 0, "make"),
+      ].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "held",
+      holders: [{ pid: 702, command: "zsh", through: "working folder" }],
+    });
+  });
+
+  it("labels a working folder by its descriptor, not by its path", async () => {
+    lsof = exited(
+      [
+        "p800",
+        "cnode",
+        "f12",
+        `n${tree}/open.txt`,
+        "p801",
+        "cvim",
+        "f4",
+        `n${tree}`,
+        "fcwd",
+        `n${tree}`,
+      ].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "held",
+      holders: [
+        { pid: 800, command: "node", through: "open file" },
+        { pid: 801, command: "vim", through: "working folder" },
+      ],
+    });
+  });
+
+  it.each([
+    [
+      "fails to start",
+      {
+        code: null,
+        stdout: "",
+        stderr: "",
+        spawnFailed: true,
+        failure: "spawn",
+      },
+      "ps failed to start",
+    ],
+    ["exits nonzero", exited("", 1), "ps exited with 1"],
+  ] as const)(
+    "keeps the worktree when ps %s",
+    async (_label, result, reason) => {
+      listing = result;
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "unknown",
+        reason: `could not list other users' processes: ${reason}`,
+      });
+    },
+  );
+
+  it("keeps the worktree when a process-list line cannot be read", async () => {
+    listing = exited([row(1, 0, "/sbin/launchd"), "garbled"].join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "unknown",
+      reason: "1 lines of the process list could not be read",
+    });
+  });
+
+  it("names a doubt by pid alone when the label lookup fails, and still keeps the worktree", async () => {
+    listing = exited(row(4100, rootUid, `/usr/bin/make -C ${tree}`));
+    labels = exited("", 1);
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes of other users could not be inspected, such as process 4100 foreign uid ${rootUid} command references the worktree`,
+    });
+  });
+
+  it("reads a command name with spaces whole", async () => {
+    listing = exited(
+      row(4100, rootUid, `/Library/Audio/x/Core Audio Driver (x) ${tree}`),
+    );
+    labels = exited(" 4100 Core Audio Driver (x)");
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining(
+        "process 4100 (Core Audio Driver (x)) foreign uid",
+      ),
+    });
+  });
+
+  it("never stores, returns or logs another user's args", async () => {
+    const secret = "hunter2-token-value";
+    const args = `/usr/bin/deploy --token=${secret} ${tree}`;
+    listing = exited(row(4100, rootUid, args));
+    labels = exited("4100 /usr/bin/deploy");
+    const logged = (["log", "info", "warn", "error", "debug"] as const).map(
+      (method) => vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    try {
+      const scan = await scanWorktreeHolders(tree);
+      const shown = `${JSON.stringify(scan)}\n${describeHolderScan(scan)}`;
+      expect(scan.status).toBe("uncertain");
+      expect(shown).not.toContain(secret);
+      expect(shown).not.toContain("--token");
+      for (const spy of logged) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+    }
   });
 });
 
