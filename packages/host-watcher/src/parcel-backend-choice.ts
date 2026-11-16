@@ -65,6 +65,9 @@ function watchmanAnswers(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      child.stdout.removeAllListeners("data");
+      child.stdout.destroy();
+      child.unref();
       resolve(answer);
     };
     let child: ChildProcessByStdio<null, Readable, null>;

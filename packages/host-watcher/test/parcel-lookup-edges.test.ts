@@ -10,6 +10,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   rm,
   symlink,
   writeFile,
@@ -29,9 +30,14 @@ const MARKER = "bb-watchman-ran";
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const children: ChildProcess[] = [];
+const holders: number[] = [];
 
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill("SIGKILL");
+  for (const pid of holders.splice(0))
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
   for (const root of roots.splice(0).reverse()) {
     await chmod(root, 0o755).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -306,23 +312,40 @@ describe.skipIf(process.platform !== "linux")(
       expect(members).toEqual([]);
     }, 20_000);
 
-    it("picks inotify when watchman exits but leaves a process in another session holding its output", async () => {
+    it("picks inotify when watchman exits but leaves a process in another session holding its output, and keeps no descriptor of it", async () => {
       const root = await scratch();
       const holder = join(root, "holder");
+      const group = join(root, "group");
       const PATH = await watchmanAt(
         root,
-        `setsid sleep 30 &\necho $! > '${holder}'\nexit 0`,
+        `cut -d' ' -f5 /proc/$$/stat > '${group}'\nsetsid sleep 30 &\necho $! > '${holder}'\nexit 0`,
       );
       const started = performance.now();
-      try {
-        expect(
-          await choosePlatformParcelBackend({}, "linux", { PATH }, root, 300),
-        ).toEqual({ backend: "inotify" });
-        expect(performance.now() - started).toBeLessThan(5_000);
-      } finally {
-        const pid = Number((await readFile(holder, "utf8")).trim());
-        if (pid > 0) process.kill(pid, "SIGKILL");
+      expect(
+        await choosePlatformParcelBackend({}, "linux", { PATH }, root, 300),
+      ).toEqual({ backend: "inotify" });
+      expect(performance.now() - started).toBeLessThan(5_000);
+      const holderPid = (await readFile(holder, "utf8")).trim();
+      holders.push(Number(holderPid));
+      const pipe = await readlink(`/proc/${holderPid}/fd/1`);
+      expect(pipe).toMatch(/^pipe:\[\d+\]$/u);
+      const ours: string[] = [];
+      for (const fd of await readdir("/proc/self/fd")) {
+        const target = await readlink(`/proc/self/fd/${fd}`).catch(() => "");
+        if (target === pipe) ours.push(fd);
       }
+      expect(ours).toEqual([]);
+      const shell = (await readFile(group, "utf8")).trim();
+      expect(
+        await readFile(`/proc/${shell}/stat`, "utf8").catch(() => "reaped"),
+      ).toBe("reaped");
+      const holderStat = await readFile(`/proc/${holderPid}/stat`, "utf8");
+      expect(
+        holderStat.slice(
+          holderStat.lastIndexOf(")") + 2,
+          holderStat.lastIndexOf(")") + 3,
+        ),
+      ).toBe("S");
     }, 20_000);
 
     it("runs no probe when WATCHMAN_SOCK is set, as parcel then connects without one", async () => {
