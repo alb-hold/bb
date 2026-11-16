@@ -68,6 +68,7 @@ export interface RemoveDirectoryTreeHooks {
   ownWrites?: ReadonlyMap<string, OwnWrite>;
   entryDevice?: (entry: string, device: number) => number;
   readDescriptorInfo?: (entry: string, fd: number) => Promise<string>;
+  beforeMarkerOpen?: (marker: string) => Promise<void>;
 }
 
 export interface RemoveDirectoryTreeResult {
@@ -138,6 +139,8 @@ export class RetainedRecoveryError extends Error {
 function pinsSymbolicLinks(): boolean {
   return process.platform !== "darwin";
 }
+
+const LINUX_O_PATH = 0o10000000;
 
 function mountIdFromDescriptorInfo(info: string): number | null {
   const match = /^mnt_id:\s*(\d+)$/mu.exec(info);
@@ -793,33 +796,69 @@ export async function removeDirectoryTree(
     reportRetainedPath(entry);
     return true;
   };
+  const openMarkerPath = async (marker: string) => {
+    await hooks.beforeMarkerOpen?.(marker);
+    try {
+      return await open(marker, LINUX_O_PATH | (constants.O_NOFOLLOW ?? 0));
+    } catch {
+      return null;
+    }
+  };
   const markerCrossesMount = async (
     marker: string,
     info: { dev: number; ino: number },
   ): Promise<boolean> => {
     if (rootMountId === null) return false;
-    let handle;
-    try {
-      handle = await open(
-        marker,
-        constants.O_RDONLY |
-          (constants.O_NOFOLLOW ?? 0) |
-          (constants.O_NONBLOCK ?? 0),
-      );
-    } catch {
+    const handle = await openMarkerPath(marker);
+    if (handle === null) {
       unanchoredPaths.add(displayPath(marker));
       reportRetainedPath(marker);
       return true;
     }
     try {
       const opened = await handle.stat();
-      if (opened.dev !== info.dev || opened.ino !== info.ino) {
+      if (
+        !opened.isFile() ||
+        opened.dev !== info.dev ||
+        opened.ino !== info.ino
+      ) {
+        unanchoredPaths.add(displayPath(marker));
         reportRetainedPath(marker);
         return true;
       }
       return await crossesMount(marker, handle.fd);
     } finally {
       await handle.close();
+    }
+  };
+  const openHeldMarker = async (marker: string, shown: string) => {
+    if (rootMountId === null) {
+      await hooks.beforeMarkerOpen?.(marker);
+      return await open(
+        marker,
+        constants.O_RDONLY |
+          (constants.O_NOFOLLOW ?? 0) |
+          (constants.O_NONBLOCK ?? 0),
+      );
+    }
+    const located = await openMarkerPath(marker);
+    if (located === null) return null;
+    try {
+      const info = await located.stat();
+      if (!info.isFile() || (await crossesMount(shown, located.fd)))
+        return null;
+      const reopened = await open(
+        `/proc/self/fd/${located.fd}`,
+        constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
+      );
+      const reopenedInfo = await reopened.stat();
+      if (reopenedInfo.dev !== info.dev || reopenedInfo.ino !== info.ino) {
+        await reopened.close();
+        return null;
+      }
+      return reopened;
+    } finally {
+      await located.close();
     }
   };
   const inspectBeforeRemoval = async (
@@ -1912,14 +1951,14 @@ export async function removeDirectoryTree(
         }
         let heldMarkerInfo: Awaited<ReturnType<typeof lstat>> | null = null;
         if (rootGitMarker !== null && heldGitMarker !== null) {
-          heldGitMarkerHandle = await open(
+          heldGitMarkerHandle = await openHeldMarker(
             path.join(directoryPath, ".git"),
-            constants.O_RDONLY |
-              (constants.O_NOFOLLOW ?? 0) |
-              (constants.O_NONBLOCK ?? 0),
+            rootGitMarker,
           );
-          if (await crossesMount(rootGitMarker, heldGitMarkerHandle.fd))
+          if (heldGitMarkerHandle === null) {
+            reportRetainedPath(rootGitMarker);
             return await retain();
+          }
           const originalMarkerInfo = await heldGitMarkerHandle.stat({
             bigint: true,
           });

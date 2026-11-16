@@ -1,4 +1,10 @@
-import { execFile, execFileSync } from "node:child_process";
+import {
+  type ChildProcess,
+  execFile,
+  execFileSync,
+  spawn,
+} from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -228,6 +234,61 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       fs.readFile(path.join(root, "nested", "kept.txt"), "utf8"),
     ).resolves.toBe("kept\n");
   }, 5_000);
+
+  it.each([
+    [
+      "the inspection probe",
+      (candidate: string, marker: string) => path.resolve(candidate) === marker,
+    ],
+    [
+      "the held-marker open",
+      (candidate: string, marker: string) => path.resolve(candidate) !== marker,
+    ],
+  ])(
+    "never opens a .git swapped for a FIFO just before %s, and keeps the tree",
+    async (label, swapsAt) => {
+      const root = await settledTree();
+      const marker = path.join(root, ".git");
+      await fs.writeFile(marker, "gitdir: /nowhere\n");
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      const opened = path.join(path.dirname(root), "opened");
+      let writer: ChildProcess | undefined;
+      let swapped = "";
+      const started = performance.now();
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        beforeMarkerOpen: async (candidate) => {
+          if (writer !== undefined || !swapsAt(candidate, marker)) return;
+          const real = path.join(
+            await fs.realpath(path.dirname(candidate)),
+            ".git",
+          );
+          await fs.rm(real);
+          execFileSync("mkfifo", [real]);
+          swapped = real;
+          writer = spawn(
+            "sh",
+            ["-c", 'exec 3>"$1"; echo opened > "$2"', "sh", real, opened],
+            { stdio: "ignore" },
+          );
+          await delay(100);
+        },
+      }).catch((error: unknown) => ({ thrown: String(error) }));
+      await delay(200);
+      const writerWaiting = writer?.exitCode === null;
+      writer?.kill();
+      expect(swapped).not.toBe("");
+      expect(performance.now() - started).toBeLessThan(2_000);
+      expect(existsSync(opened)).toBe(false);
+      expect(writerWaiting).toBe(true);
+      expect(result).toMatchObject({ status: "retained" });
+      if (label !== "the inspection probe") return;
+      await expect(
+        fs.readFile(path.join(root, "nested", "kept.txt"), "utf8"),
+      ).resolves.toBe("kept\n");
+    },
+    10_000,
+  );
 
   it("keeps a tree whose .git marker is on another mount, before removing any sibling", async () => {
     const root = await settledTree();
