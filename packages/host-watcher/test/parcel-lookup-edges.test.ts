@@ -194,6 +194,15 @@ async function watchmanAt(root: string, script: string): Promise<string> {
   return [join(root, "bin"), "/usr/bin", "/bin"].join(":");
 }
 
+async function streamDescriptors(): Promise<string[]> {
+  const found: string[] = [];
+  for (const fd of await readdir("/proc/self/fd")) {
+    const target = await readlink(`/proc/self/fd/${fd}`).catch(() => "");
+    if (/^(socket|pipe):/u.test(target)) found.push(`${fd} ${target}`);
+  }
+  return found;
+}
+
 async function processGroupMembers(pgid: string): Promise<string[]> {
   const members: string[] = [];
   for (const entry of await readdir("/proc")) {
@@ -316,10 +325,18 @@ describe.skipIf(process.platform !== "linux")(
       const root = await scratch();
       const holder = join(root, "holder");
       const group = join(root, "group");
+      const go = join(root, "go");
+      const result = join(root, "result");
       const PATH = await watchmanAt(
         root,
-        `cut -d' ' -f5 /proc/$$/stat > '${group}'\nsetsid sleep 30 &\necho $! > '${holder}'\nexit 0`,
+        [
+          `cut -d' ' -f5 /proc/$$/stat > '${group}'`,
+          `setsid sh -c 'trap "" PIPE; while [ ! -e "$1" ]; do sleep 0.05; done; if echo x; then r=open; else r=closed; fi; echo $r > "$2"' sh '${go}' '${result}' &`,
+          `echo $! > '${holder}'`,
+          "exit 0",
+        ].join("\n"),
       );
+      const before = await streamDescriptors();
       const started = performance.now();
       expect(
         await choosePlatformParcelBackend({}, "linux", { PATH }, root, 300),
@@ -327,14 +344,9 @@ describe.skipIf(process.platform !== "linux")(
       expect(performance.now() - started).toBeLessThan(5_000);
       const holderPid = (await readFile(holder, "utf8")).trim();
       holders.push(Number(holderPid));
-      const pipe = await readlink(`/proc/${holderPid}/fd/1`);
-      expect(pipe).toMatch(/^pipe:\[\d+\]$/u);
-      const ours: string[] = [];
-      for (const fd of await readdir("/proc/self/fd")) {
-        const target = await readlink(`/proc/self/fd/${fd}`).catch(() => "");
-        if (target === pipe) ours.push(fd);
-      }
-      expect(ours).toEqual([]);
+      expect(
+        (await streamDescriptors()).filter((fd) => !before.includes(fd)),
+      ).toEqual([]);
       const shell = (await readFile(group, "utf8")).trim();
       expect(
         await readFile(`/proc/${shell}/stat`, "utf8").catch(() => "reaped"),
@@ -345,7 +357,14 @@ describe.skipIf(process.platform !== "linux")(
           holderStat.lastIndexOf(")") + 2,
           holderStat.lastIndexOf(")") + 3,
         ),
-      ).toBe("S");
+      ).not.toBe("Z");
+      await writeFile(go, "");
+      let written = "";
+      for (let wait = 0; wait < 100 && written === ""; wait += 1) {
+        await new Promise((done) => setTimeout(done, 50));
+        written = (await readFile(result, "utf8").catch(() => "")).trim();
+      }
+      expect(written).toBe("closed");
     }, 20_000);
 
     it("runs no probe when WATCHMAN_SOCK is set, as parcel then connects without one", async () => {
