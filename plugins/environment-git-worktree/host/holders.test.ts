@@ -26,6 +26,7 @@ import {
   useLsofRunnerForTests,
   usePsRunnerForTests,
   type LsofResult,
+  type PsResult,
   type ProcReader,
 } from "./holders.js";
 
@@ -249,15 +250,20 @@ describe("the macOS scan of processes lsof cannot see", () => {
   const tree = "/work/tree";
   const ownUid = process.getuid?.() ?? 501;
   const rootUid = ownUid === 0 ? 1 : 0;
-  const exited = (stdout: string, code = 0): LsofResult => ({
+  const exited = (
+    stdout: string,
+    code = 0,
+    pid: number | null = null,
+  ): PsResult => ({
     code,
     stdout,
     stderr: "",
     spawnFailed: false,
+    pid,
   });
   let lsof: LsofResult;
-  let listing: LsofResult;
-  let labels: LsofResult;
+  let listing: PsResult;
+  let labels: PsResult;
   const psCalls: string[][] = [];
   const row = (pid: number, uid: number, args: string, ppid = 1) =>
     `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
@@ -358,6 +364,8 @@ describe("the macOS scan of processes lsof cannot see", () => {
         row(703, 0, "ps -axww -o pid=,ppid=,uid=,args=", process.pid),
         row(900, 0, "/usr/libexec/sandboxd"),
       ].join("\n"),
+      0,
+      703,
     );
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "clear",
@@ -422,6 +430,23 @@ describe("the macOS scan of processes lsof cannot see", () => {
     await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
       status: "uncertain",
       reason: expect.stringContaining("was started by a process of this user"),
+    });
+  });
+
+  it("keeps the worktree for a foreign process named ps under this process that is not the scan's own ps", async () => {
+    listing = exited(
+      [
+        row(process.pid, ownUid, "node vitest"),
+        row(703, 0, "ps -axww -o pid=,ppid=,uid=,args=", process.pid),
+        row(5400, rootUid, "ps", process.pid),
+      ].join("\n"),
+      0,
+      703,
+    );
+    labels = exited(" 5400 ps");
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes could not be ruled out, such as process 5400 (ps) foreign uid ${rootUid} was started by a process of this user`,
     });
   });
 
@@ -501,6 +526,7 @@ describe("the macOS scan of processes lsof cannot see", () => {
         stderr: "",
         spawnFailed: true,
         failure: "spawn",
+        pid: null,
       },
       "ps failed to start",
     ],

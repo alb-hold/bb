@@ -2749,6 +2749,7 @@ describe("real worktree teardown preservation", () => {
       stdout: "",
       stderr: "",
       spawnFailed: false,
+      pid: null,
     }));
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
@@ -2783,6 +2784,7 @@ describe("real worktree teardown preservation", () => {
       stdout: "",
       stderr: "",
       spawnFailed: false,
+      pid: null,
     }));
     try {
       await expect(

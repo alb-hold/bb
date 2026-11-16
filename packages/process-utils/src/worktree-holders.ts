@@ -1606,33 +1606,37 @@ function runLsof(directory: string): Promise<LsofResult> {
 
 let activeLsof: (directory: string) => Promise<LsofResult> = runLsof;
 
-function runPs(args: readonly string[]): Promise<LsofResult> {
+export type PsResult = LsofResult & { pid: number | null };
+
+function runPs(args: readonly string[]): Promise<PsResult> {
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       "ps",
       [...args],
       { timeout: LSOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
       (error, stdout, stderr) => {
+        const pid = child.pid ?? null;
         if (error === null) {
-          resolve({ code: 0, stdout, stderr, spawnFailed: false });
+          resolve({ code: 0, stdout, stderr, spawnFailed: false, pid });
           return;
         }
-        resolve(
-          mapLsofError(
+        resolve({
+          ...mapLsofError(
             error,
             typeof stdout === "string" ? stdout : "",
             typeof stderr === "string" ? stderr : "",
           ),
-        );
+          pid,
+        });
       },
     );
   });
 }
 
-let activePs: (args: readonly string[]) => Promise<LsofResult> = runPs;
+let activePs: (args: readonly string[]) => Promise<PsResult> = runPs;
 
 export function usePsRunnerForTests(
-  runner: ((args: readonly string[]) => Promise<LsofResult>) | null,
+  runner: ((args: readonly string[]) => Promise<PsResult>) | null,
 ): void {
   activePs = runner ?? runPs;
 }
@@ -1692,11 +1696,13 @@ function programName(args: string): string {
 }
 
 function startedForThisScanOrTerminal(
+  pid: number,
   listed: ListedProcess,
   processes: ReadonlyMap<number, ListedProcess>,
   ownUid: number,
+  scannerPid: number | null,
 ): boolean {
-  if (listed.ppid === process.pid && listed.program === "ps") return true;
+  if (pid === scannerPid) return true;
   if (listed.program !== "login") return false;
   const parent = processes.get(listed.ppid);
   return (
@@ -1772,7 +1778,7 @@ async function scanForeignDarwinProcesses(
     }
     if (
       listed.uid === ownUid ||
-      startedForThisScanOrTerminal(listed, processes, ownUid)
+      startedForThisScanOrTerminal(pid, listed, processes, ownUid, listing.pid)
     )
       continue;
     if (listed.namesTree)
