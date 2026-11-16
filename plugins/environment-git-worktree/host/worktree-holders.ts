@@ -1637,7 +1637,10 @@ export function usePsRunnerForTests(
   activePs = runner ?? runPs;
 }
 
-const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,uid=,args="] as const;
+const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,ppid=,uid=,args="] as const;
+const ELEVATION_PROGRAMS = new Set(["sudo", "su", "doas"]);
+const TERMINAL_APPS = new Set(["Terminal", "iTerm2"]);
+const MAX_ANCESTRY_STEPS = 64;
 const PRIVATE_ALIASED_ROOTS = ["/var/", "/tmp/", "/etc/"] as const;
 
 function darwinPathAliases(directory: string): string[] {
@@ -1676,6 +1679,51 @@ async function processCommands(pids: number[]): Promise<Map<number, string>> {
   return commands;
 }
 
+interface ListedProcess {
+  ppid: number;
+  uid: number;
+  program: string;
+  namesTree: boolean;
+}
+
+function programName(args: string): string {
+  const first = args.trimStart().split(/\s/u, 1)[0] ?? "";
+  return path.basename(first.replace(/^-/u, ""));
+}
+
+function startedForThisScanOrTerminal(
+  listed: ListedProcess,
+  processes: ReadonlyMap<number, ListedProcess>,
+  ownUid: number,
+): boolean {
+  if (listed.ppid === process.pid && listed.program === "ps") return true;
+  if (listed.program !== "login") return false;
+  const parent = processes.get(listed.ppid);
+  return (
+    parent !== undefined &&
+    parent.uid === ownUid &&
+    TERMINAL_APPS.has(parent.program)
+  );
+}
+
+function descendsFromUser(
+  pid: number,
+  processes: ReadonlyMap<number, ListedProcess>,
+  ownUid: number,
+): boolean {
+  const seen = new Set<number>([pid]);
+  let current = processes.get(pid)?.ppid;
+  for (let steps = 0; current !== undefined && current > 1; steps += 1) {
+    if (steps >= MAX_ANCESTRY_STEPS || seen.has(current)) return true;
+    seen.add(current);
+    const parent = processes.get(current);
+    if (parent === undefined) return false;
+    if (parent.uid === ownUid) return true;
+    current = parent.ppid;
+  }
+  return false;
+}
+
 async function scanForeignDarwinProcesses(
   directory: string,
 ): Promise<WorktreeHolderScan> {
@@ -1690,21 +1738,55 @@ async function scanForeignDarwinProcesses(
       reason: `could not list other users' processes: ${failed}`,
     };
   const aliases = darwinPathAliases(directory);
-  const doubts: { pid: number; uid: number }[] = [];
+  const processes = new Map<number, ListedProcess>();
   let unparsed = 0;
   for (const line of listing.stdout.split("\n")) {
     if (line.trim() === "") continue;
-    const match = /^\s*(\d+)\s+(-?\d+)(?:\s|$)/u.exec(line);
-    if (match?.[1] === undefined || match[2] === undefined) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)(?:\s|$)/u.exec(line);
+    if (
+      match?.[1] === undefined ||
+      match[2] === undefined ||
+      match[3] === undefined
+    ) {
       unparsed += 1;
       continue;
     }
-    const pid = Number(match[1]);
-    const uid = Number(match[2]);
-    if (uid === ownUid || pid === process.pid) continue;
     const args = line.slice(match[0].length);
-    if (aliases.some((alias) => commandReferences(args, alias)))
-      doubts.push({ pid, uid });
+    processes.set(Number(match[1]), {
+      ppid: Number(match[2]),
+      uid: Number(match[3]),
+      program: programName(args),
+      namesTree: aliases.some((alias) => commandReferences(args, alias)),
+    });
+  }
+  const doubts: { pid: number; uid: number; detail: string }[] = [];
+  for (const [pid, listed] of processes) {
+    if (pid === process.pid) continue;
+    if (ELEVATION_PROGRAMS.has(listed.program)) {
+      doubts.push({
+        pid,
+        uid: listed.uid,
+        detail: `uid ${listed.uid} is sudo, su or doas, which may run a program in the worktree`,
+      });
+      continue;
+    }
+    if (
+      listed.uid === ownUid ||
+      startedForThisScanOrTerminal(listed, processes, ownUid)
+    )
+      continue;
+    if (listed.namesTree)
+      doubts.push({
+        pid,
+        uid: listed.uid,
+        detail: `foreign uid ${listed.uid} command references the worktree`,
+      });
+    else if (descendsFromUser(pid, processes, ownUid))
+      doubts.push({
+        pid,
+        uid: listed.uid,
+        detail: `foreign uid ${listed.uid} was started by a process of this user`,
+      });
   }
   if (doubts.length > 0) {
     const commands = await processCommands(doubts.map(({ pid }) => pid));
@@ -1712,7 +1794,7 @@ async function scanForeignDarwinProcesses(
     const command = first === undefined ? undefined : commands.get(first.pid);
     return {
       status: "uncertain",
-      reason: `${doubts.length} processes of other users could not be inspected, such as process ${first?.pid}${command === undefined ? "" : ` (${command})`} foreign uid ${first?.uid} command references the worktree`,
+      reason: `${doubts.length} processes could not be ruled out, such as process ${first?.pid}${command === undefined ? "" : ` (${command})`} ${first?.detail}`,
     };
   }
   if (unparsed > 0)

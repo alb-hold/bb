@@ -259,8 +259,8 @@ describe("the macOS scan of processes lsof cannot see", () => {
   let listing: LsofResult;
   let labels: LsofResult;
   const psCalls: string[][] = [];
-  const row = (pid: number, uid: number, args: string) =>
-    `${String(pid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
+  const row = (pid: number, uid: number, args: string, ppid = 1) =>
+    `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
 
   beforeEach(() => {
     Object.defineProperty(process, "platform", { value: "darwin" });
@@ -282,7 +282,7 @@ describe("the macOS scan of processes lsof cannot see", () => {
 
   it("lists every process with untruncated args, effective uid and pid", async () => {
     await scanWorktreeHolders(tree);
-    expect(psCalls[0]).toEqual(["-axww", "-o", "pid=,uid=,args="]);
+    expect(psCalls[0]).toEqual(["-axww", "-o", "pid=,ppid=,uid=,args="]);
   });
 
   it("keeps the worktree when another user's process names it in its args", async () => {
@@ -295,7 +295,7 @@ describe("the macOS scan of processes lsof cannot see", () => {
     labels = exited(`4100 /usr/bin/make`);
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "uncertain",
-      reason: `1 processes of other users could not be inspected, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
+      reason: `1 processes could not be ruled out, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
     });
     expect(psCalls[1]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
   });
@@ -343,22 +343,113 @@ describe("the macOS scan of processes lsof cannot see", () => {
     });
   });
 
-  it("is clear for Terminal, a root login and a shell outside the worktree", async () => {
+  it("is clear for Terminal's login, our own ps, a shell outside the worktree and a detached root process", async () => {
     listing = exited(
       [
-        row(1, 0, "/sbin/launchd"),
+        row(1, 0, "/sbin/launchd", 0),
         row(
           700,
           ownUid,
           "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
         ),
-        row(701, 0, "login -pf someone"),
-        row(702, ownUid, "-zsh"),
-        row(703, 0, `ps -axww -o pid=,uid=,args=`),
+        row(701, 0, "login -pf someone", 700),
+        row(702, ownUid, "-zsh", 701),
+        row(process.pid, ownUid, "node vitest", 702),
+        row(703, 0, "ps -axww -o pid=,ppid=,uid=,args=", process.pid),
+        row(900, 0, "/usr/libexec/sandboxd"),
       ].join("\n"),
     );
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "clear",
+    });
+  });
+
+  it("keeps the worktree while a root job outlives the sudo that started it, whatever its args", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd", 0),
+        row(5000, 0, "sudo /bin/sleep 300"),
+        row(5001, 0, "/bin/sleep 300", 5000),
+      ].join("\n"),
+    );
+    labels = exited(" 5000 sudo");
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason:
+        "1 processes could not be ruled out, such as process 5000 (sudo) uid 0 is sudo, su or doas, which may run a program in the worktree",
+    });
+  });
+
+  it("keeps the worktree for a root process our shell started, however far down the chain", async () => {
+    listing = exited(
+      [
+        row(702, ownUid, "-zsh"),
+        row(800, rootUid, "/usr/local/bin/privileged-helper", 702),
+        row(801, rootUid, "/bin/sleep 300", 800),
+      ].join("\n"),
+    );
+    labels = exited([" 800 privileged-helper", " 801 sleep"].join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `2 processes could not be ruled out, such as process 800 (privileged-helper) foreign uid ${rootUid} was started by a process of this user`,
+    });
+  });
+
+  it.each([
+    ["sudo", 0],
+    ["su", 0],
+    ["/usr/local/bin/doas", 0],
+    ["doas", "own"],
+  ] as const)(
+    "keeps the worktree while %s runs as uid %s, unrelated to it",
+    async (program, uid) => {
+      listing = exited(
+        row(5100, uid === "own" ? ownUid : uid, `${program} -i`),
+      );
+      await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("is sudo, su or doas"),
+      });
+    },
+  );
+
+  it("keeps the worktree for a root login our shell started, outside the terminal app", async () => {
+    listing = exited(
+      [row(702, ownUid, "-zsh"), row(5200, 0, "login -pf someone", 702)].join(
+        "\n",
+      ),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("was started by a process of this user"),
+    });
+  });
+
+  it("keeps the worktree for a ps our scan did not start", async () => {
+    listing = exited(
+      [row(702, ownUid, "-zsh"), row(5300, 0, "ps -ax", 702)].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+  });
+
+  it.each([
+    [
+      "a parent loop",
+      [row(6000, 0, "/bin/a", 6001), row(6001, 0, "/bin/b", 6000)],
+    ],
+    [
+      "a chain deeper than the walk",
+      Array.from({ length: 80 }, (_, index) =>
+        row(7000 + index, 0, "/bin/link", index === 79 ? 1 : 7001 + index),
+      ),
+    ],
+  ] as const)("finishes and keeps the worktree on %s", async (_label, rows) => {
+    listing = exited(rows.join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("was started by a process of this user"),
     });
   });
 
@@ -438,7 +529,7 @@ describe("the macOS scan of processes lsof cannot see", () => {
     labels = exited("", 1);
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "uncertain",
-      reason: `1 processes of other users could not be inspected, such as process 4100 foreign uid ${rootUid} command references the worktree`,
+      reason: `1 processes could not be ruled out, such as process 4100 foreign uid ${rootUid} command references the worktree`,
     });
   });
 
