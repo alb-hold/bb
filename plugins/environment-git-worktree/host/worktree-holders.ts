@@ -734,9 +734,12 @@ async function scanMountAliases(
     if ("gone" in value) return value;
     if ("value" in value && matches(value.value))
       return holder("working folder");
-    const found = await identity(target, "working folder");
-    if (found !== null) return found;
+    const id = await readOptional(() => proc.statId(target));
+    if ("gone" in id) return id;
+    if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+      return holder("working folder");
     if ("failed" in value) return `${target} could not be read`;
+    if ("failed" in id) return `${target} identity could not be read`;
     return value.value === "/"
       ? null
       : `${rootBase} runs under a different root folder`;
@@ -931,7 +934,11 @@ async function scanMountAliases(
       directory,
       mountNamespace,
     );
-    if (view === "hidden") return { isolated: true };
+    if (view === "hidden") {
+      const root = await rooted(base);
+      if (root !== null && typeof root !== "string") return root;
+      return { isolated: true };
+    }
     if (view === "mirrored") {
       const root = await rooted(base);
       if (typeof root === "string") doubt = root;
@@ -1506,17 +1513,8 @@ async function scanOwnProcess(
         `process ${pid} thread ${task} mount namespace`,
         taskMount.failed,
       );
-    if ("value" in taskMount && taskMount.value !== mountNamespace) {
-      const taskRoot = await readOptional(() =>
-        proc.readlink(`${base}/task/${task}/root`),
-      );
-      if ("failed" in taskRoot)
-        return unreadable(
-          `process ${pid} thread ${task} root folder`,
-          taskRoot.failed,
-        );
+    if ("value" in taskMount && taskMount.value !== mountNamespace)
       return reachesWorktree(proc, pid, base, command, tree);
-    }
     const found = await checkLink(
       proc,
       pid,
