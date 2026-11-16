@@ -1,0 +1,285 @@
+import { fstatSync } from "node:fs";
+import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  keptTreeReasons,
+  removeDirectoryTree,
+} from "../src/remove-directory-tree.js";
+
+const roots: string[] = [];
+const anchoring = process.platform === "linux" || process.platform === "darwin";
+
+afterEach(async () => {
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => fs.rm(root, { recursive: true, force: true })),
+  );
+});
+
+async function settledTree(): Promise<{ parent: string; root: string }> {
+  const parent = await fs.mkdtemp(path.join(tmpdir(), "bb-anchor-"));
+  roots.push(parent);
+  const root = path.join(parent, "tree");
+  await fs.mkdir(path.join(root, "nested", "deeper"), { recursive: true });
+  await fs.writeFile(path.join(root, "top.txt"), "top");
+  await fs.writeFile(path.join(root, "nested", "mid.txt"), "mid");
+  await fs.writeFile(path.join(root, "nested", "deeper", "leaf.txt"), "leaf");
+  await delay(FILE_TIMESTAMP_LAG_MS + 50);
+  return { parent, root };
+}
+
+function descriptorKind(candidate: string): string {
+  return candidate
+    .split("/")
+    .slice(0, 3)
+    .join("/")
+    .replace(/^\/\.vol\/.*$/u, "/.vol");
+}
+
+function descriptorIdentity(candidate: string) {
+  const fd = Number(candidate.slice("/dev/fd/".length));
+  const info = fstatSync(fd);
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    isDirectory: () => info.isDirectory(),
+  };
+}
+
+async function contents(root: string): Promise<string[]> {
+  const names = await fs.readdir(root, { recursive: true });
+  return names.map(String).sort();
+}
+
+describe.runIf(anchoring)("removing a tree anchored by its descriptors", () => {
+  it("uses each anchored path only while the descriptor behind it is open", async () => {
+    const { root } = await settledTree();
+    const anchors = new Map<string, { fd: number; dev: number; ino: number }>();
+    const violations: string[] = [];
+    let probedFd = -1;
+    const result = await removeDirectoryTree(root, {
+      startedAt: Date.now(),
+      statDescriptor: async (candidate) => {
+        const numbered = /^\/(?:proc\/self|dev)\/fd\/(\d+)$/u.exec(candidate);
+        if (numbered !== null) probedFd = Number(numbered[1]);
+        const held = fstatSync(probedFd);
+        anchors.set(candidate, { fd: probedFd, dev: held.dev, ino: held.ino });
+        return fs.stat(candidate);
+      },
+      readDirectoryNames: async (directory) => {
+        const anchor = anchors.get(directory);
+        if (anchor !== undefined) {
+          try {
+            const held = fstatSync(anchor.fd);
+            if (held.dev !== anchor.dev || held.ino !== anchor.ino)
+              violations.push(
+                `${directory}: fd ${anchor.fd} now names another file`,
+              );
+          } catch (error) {
+            violations.push(`${directory}: fd ${anchor.fd} ${String(error)}`);
+          }
+        }
+        return fs.readdir(directory);
+      },
+    });
+    expect(violations).toEqual([]);
+    expect(anchors.size).toBeGreaterThan(0);
+    expect(result.status).toBe("removed");
+  });
+
+  it("removes a settled tree", async () => {
+    const { root } = await settledTree();
+    const result = await removeDirectoryTree(root, { startedAt: Date.now() });
+    expect(result).toEqual({
+      status: "removed",
+      retainedPaths: [],
+      mountedPaths: [],
+      unanchoredPaths: [],
+      removalStarted: true,
+    });
+    await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps a tree that gains an entry during the walk", async () => {
+    const { root } = await settledTree();
+    const late = path.join(root, "nested", "late.txt");
+    const result = await removeDirectoryTree(root, {
+      startedAt: Date.now(),
+      afterDirectoryListed: async (directory) => {
+        if (directory === path.join(root, "nested"))
+          await fs.writeFile(late, "late");
+      },
+    });
+    expect(result.status).toBe("retained");
+    await expect(fs.readFile(late, "utf8")).resolves.toBe("late");
+  });
+
+  it("does not follow a name recreated at the old path after the directory was opened", async () => {
+    const { root } = await settledTree();
+    const moved = `${root}-moved`;
+    const decoy = path.join(root, "decoy.txt");
+    let swapped = false;
+    const result = await removeDirectoryTree(root, {
+      startedAt: Date.now(),
+      afterDirectoryListed: async (directory) => {
+        if (directory !== root || swapped) return;
+        swapped = true;
+        await fs.rename(root, moved);
+        await fs.mkdir(root);
+        await fs.writeFile(decoy, "decoy");
+      },
+    });
+    expect(swapped).toBe(true);
+    expect(result.status).toBe("retained");
+    await expect(fs.readFile(decoy, "utf8")).resolves.toBe("decoy");
+    expect(await contents(moved)).toEqual([
+      "nested",
+      "nested/deeper",
+      "nested/deeper/leaf.txt",
+      "nested/mid.txt",
+      "top.txt",
+    ]);
+  });
+});
+
+describe.runIf(process.platform === "darwin")(
+  "anchoring a directory on macOS",
+  () => {
+    it("falls back from /dev/fd to /.vol when /dev/fd cannot list the directory", async () => {
+      const { root } = await settledTree();
+      const probed: string[] = [];
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          probed.push(descriptorKind(candidate));
+          if (candidate.startsWith("/dev/fd/"))
+            return descriptorIdentity(candidate);
+          return fs.stat(candidate);
+        },
+        readDirectoryNames: async (directory) => {
+          if (directory.startsWith("/dev/fd/"))
+            throw Object.assign(new Error(`ENOTDIR: ${directory}`), {
+              code: "ENOTDIR",
+            });
+          return fs.readdir(directory);
+        },
+      });
+      expect(result.status).toBe("removed");
+      expect(
+        probed.filter((kind) => kind === "/dev/fd").length,
+      ).toBeGreaterThan(0);
+      expect(probed.filter((kind) => kind === "/.vol").length).toBeGreaterThan(
+        0,
+      );
+      await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("anchors through /dev/fd first and never probes /.vol when /dev/fd matches and lists", async () => {
+      const { root } = await settledTree();
+      const probed: string[] = [];
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          probed.push(descriptorKind(candidate));
+          if (candidate.startsWith("/dev/fd/"))
+            return descriptorIdentity(candidate);
+          return fs.stat(candidate);
+        },
+        readDirectoryNames: async (directory) => {
+          if (!directory.startsWith("/dev/fd/")) return fs.readdir(directory);
+          const identity = descriptorIdentity(directory);
+          return fs.readdir(`/.vol/${identity.dev}/${identity.ino}`);
+        },
+      });
+      expect(probed.length).toBeGreaterThan(0);
+      expect(probed.every((kind) => kind === "/dev/fd")).toBe(true);
+      expect(result.unanchoredPaths).toEqual([]);
+    });
+
+    it("keeps a child with a different device as mounted when its parent anchors through /.vol", async () => {
+      const { root } = await settledTree();
+      const nested = path.join(root, "nested");
+      const probed: string[] = [];
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          probed.push(descriptorKind(candidate));
+          return fs.stat(candidate);
+        },
+        entryDevice: (entry, device) =>
+          path.resolve(entry) === nested ? device + 1 : device,
+      });
+      expect(probed).toContain("/.vol");
+      expect(result.status).toBe("retained");
+      expect(result.mountedPaths).toEqual([nested]);
+      expect(result.unanchoredPaths).toEqual([]);
+      expect(result.removalStarted).toBe(false);
+      expect(keptTreeReasons(result, (entry) => entry, "changed")).toEqual([
+        `a different filesystem is mounted here: ${nested}`,
+      ]);
+      expect(await contents(root)).toHaveLength(5);
+    });
+
+    it("keeps the tree when /.vol resolves to a different directory", async () => {
+      const { parent, root } = await settledTree();
+      const elsewhere = path.join(parent, "elsewhere");
+      await fs.mkdir(elsewhere);
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: (candidate) =>
+          fs.stat(candidate.startsWith("/.vol/") ? elsewhere : candidate),
+      });
+      expect(result.status).toBe("retained");
+      expect(result.unanchoredPaths).toEqual([parent]);
+      expect(await contents(root)).toHaveLength(5);
+    });
+
+    it("keeps the tree on a volume without /.vol", async () => {
+      const { parent, root } = await settledTree();
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          if (candidate.startsWith("/.vol/"))
+            throw Object.assign(new Error(`ENOENT: ${candidate}`), {
+              code: "ENOENT",
+            });
+          return fs.stat(candidate);
+        },
+      });
+      expect(result.status).toBe("retained");
+      expect(result.unanchoredPaths).toEqual([parent]);
+      expect(await contents(root)).toHaveLength(5);
+    });
+
+    it("does not anchor through /dev/fd when its device differs from the descriptor's, even when it lists", async () => {
+      const { parent, root } = await settledTree();
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          if (candidate.startsWith("/.vol/"))
+            throw Object.assign(new Error(`ENOENT: ${candidate}`), {
+              code: "ENOENT",
+            });
+          const real = await fs.stat(candidate);
+          return {
+            dev: real.dev + 1,
+            ino: real.ino,
+            isDirectory: () => real.isDirectory(),
+          };
+        },
+        readDirectoryNames: (directory) =>
+          directory.startsWith("/dev/fd/")
+            ? Promise.resolve([])
+            : fs.readdir(directory),
+      });
+      expect(result.status).toBe("retained");
+      expect(result.unanchoredPaths).toEqual([parent]);
+      expect(await contents(root)).toHaveLength(5);
+    });
+  },
+);

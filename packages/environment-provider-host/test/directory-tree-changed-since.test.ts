@@ -155,6 +155,8 @@ it("removes a tree whose own write is untouched", async () => {
   await expect(removeTree(tree)).resolves.toMatchObject({
     status: "removed",
     mountedPaths: [],
+    unanchoredPaths: [],
+    removalStarted: true,
   });
   await expect(fs.access(tree.root)).rejects.toThrow();
 });
