@@ -4,6 +4,7 @@ import {
   link,
   lstat,
   open,
+  readFile,
   readdir,
   readlink,
   rename,
@@ -66,6 +67,7 @@ export interface RemoveDirectoryTreeHooks {
   allowQuarantinedRoot?: true;
   ownWrites?: ReadonlyMap<string, OwnWrite>;
   entryDevice?: (entry: string, device: number) => number;
+  readDescriptorInfo?: (entry: string, fd: number) => Promise<string>;
 }
 
 export interface RemoveDirectoryTreeResult {
@@ -135,6 +137,11 @@ export class RetainedRecoveryError extends Error {
 
 function pinsSymbolicLinks(): boolean {
   return process.platform !== "darwin";
+}
+
+function mountIdFromDescriptorInfo(info: string): number | null {
+  const match = /^mnt_id:\s*(\d+)$/mu.exec(info);
+  return match?.[1] === undefined ? null : Number(match[1]);
 }
 
 function anchorsDirectories(): boolean {
@@ -737,6 +744,39 @@ export async function removeDirectoryTree(
     await parent.close();
     return result("retained");
   }
+  const readMountId = async (
+    entry: string,
+    fd: number,
+  ): Promise<number | null> => {
+    try {
+      const info = await (hooks.readDescriptorInfo?.(entry, fd) ??
+        readFile(`/proc/self/fdinfo/${fd}`, "utf8"));
+      return mountIdFromDescriptorInfo(info);
+    } catch {
+      return null;
+    }
+  };
+  let rootMountId: number | null = null;
+  if (process.platform === "linux") {
+    const rootHandle = await openDirectory(root);
+    rootMountId =
+      rootHandle === null ? null : await readMountId(root, rootHandle.fd);
+    await rootHandle?.close();
+    if (rootMountId === null) {
+      unanchoredPaths.add(displayPath(root));
+      await parent.close();
+      return result("retained");
+    }
+  }
+  const crossesMount = async (entry: string, fd: number): Promise<boolean> => {
+    if (rootMountId === null) return false;
+    const mountId = await readMountId(entry, fd);
+    if (mountId === rootMountId) return false;
+    if (mountId === null) unanchoredPaths.add(displayPath(entry));
+    else mountedPaths.add(displayPath(entry));
+    reportRetainedPath(entry);
+    return true;
+  };
   const crossesDevice = (entry: string, device: number): boolean => {
     if ((hooks.entryDevice?.(entry, device) ?? device) === rootDevice)
       return false;
@@ -786,6 +826,7 @@ export async function removeDirectoryTree(
     try {
       const openedInfo = await handle.stat();
       if (!sameDirectory(info, openedInfo)) return false;
+      if (await crossesMount(directory, handle.fd)) return false;
       const openedPath = await anchorDirectory(handle, directory);
       if (openedPath === null) return false;
       displayPathMappings.set(openedPath, path.resolve(directory));
@@ -1192,6 +1233,11 @@ export async function removeDirectoryTree(
             fileHandle = null;
             return retainedEntry();
           }
+          if (await crossesMount(entry, fileHandle.fd)) {
+            await fileHandle.close();
+            fileHandle = null;
+            return "retained";
+          }
           if (
             ownWrite !== undefined &&
             (await hashFileHandle(fileHandle, openedInfo.size)) !==
@@ -1378,6 +1424,7 @@ export async function removeDirectoryTree(
     try {
       const openedInfo = await directory.stat();
       if (!sameDirectory(info, openedInfo)) return retainedEntry();
+      if (await crossesMount(entry, directory.fd)) return "retained";
       const directoryPath = await anchorDirectory(directory, entry);
       if (directoryPath === null) return retainedEntry();
       displayPathMappings.set(directoryPath, path.resolve(entry));
