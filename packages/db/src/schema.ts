@@ -649,6 +649,7 @@ export const threads = sqliteTable(
     pinSortKey: text("pin_sort_key"),
     deletedAt: integer("deleted_at"),
     storageDeletedAt: integer("storage_deleted_at"),
+    storageDeleteSeq: integer("storage_delete_seq"),
     lastReadAt: integer("last_read_at"),
     latestAttentionAt: integer("latest_attention_at").notNull(),
     createdAt: integer("created_at").notNull(),
@@ -695,6 +696,7 @@ export const threads = sqliteTable(
     index("threads_active_maintenance_idx")
       .on(table.status)
       .where(sql`${table.deletedAt} IS NULL`),
+    index("threads_storage_delete_seq_idx").on(table.storageDeleteSeq),
   ],
 );
 
