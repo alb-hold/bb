@@ -11,15 +11,16 @@ describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
   () => {
     it("reports a real writer pid and command before the bounded deadline", async () => {
-      const child = spawn("sh", ["-c", "while :; do sleep 1; done"], {
-        detached: true,
-        stdio: "ignore",
-      });
+      const child = spawn(process.execPath, ["-e", `
+        const { spawn } = require("node:child_process");
+        const descendant = spawn("sh", ["-c", "while :; do sleep 1; done"], { stdio: ["ignore", 1, "ignore"] });
+        descendant.unref();
+      `], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
       const cleanup = trackTestProcess(child, 500);
       const started = Date.now();
       try {
         await expect(cleanup()).rejects.toThrow(
-          new RegExp(`pid ${child.pid} .*sh -c while`),
+          /pid \d+ \(sh -c while :; do sleep 1; done\)/u,
         );
         expect(Date.now() - started).toBeLessThan(2_000);
       } finally {
@@ -73,7 +74,7 @@ describe.runIf(process.platform !== "win32")(
           { detached: true, stdio: ["ignore", "pipe", "ignore"] },
         );
         const exit = once(child, "exit");
-        const cleanup = trackTestProcess(child);
+        const cleanup = trackTestProcess(child, 5_000);
         onTestFinished(async () => {
           if (existsSync(directory)) writeFileSync(stop, "stop");
           await cleanup();

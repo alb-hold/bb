@@ -46,7 +46,7 @@ function exited(child: ChildProcess): void {
 describe("test process group teardown", () => {
   it("signals a live leader's whole group and awaits the surviving grandchild's termination", async () => {
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     const kill = vi.spyOn(process, "kill").mockImplementation(() => {
       exited(child);
       return true;
@@ -68,7 +68,7 @@ describe("test process group teardown", () => {
 
   it("never signals an already exited leader's group while waiting for remaining members", async () => {
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     exited(child);
     const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     vi.mocked(execFileSync)
