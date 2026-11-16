@@ -48,6 +48,7 @@ import {
   type WorktreeIdentity,
 } from "./worktree-preservation.js";
 import { markCreateFailure } from "./create-failure.js";
+import type { RepositoryScanHooks } from "./repository-detection.js";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   findWorktreeForBranch,
@@ -117,6 +118,7 @@ interface RemoveWorktreeArgs {
         timestampFilesystem?: TimestampFilesystemProbe;
         renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
         entryDevice?: (entry: string, device: number) => number;
+        repositoryScan?: RepositoryScanHooks;
         afterFinalBaseline?: (
           worktreePath: string,
           gitDir: string,
@@ -923,7 +925,12 @@ async function assertWorktreeRemovable(
   const reasons =
     args.createdBy !== undefined
       ? (await inspectCreatedBy(identity, args.createdBy, args.signal)).reasons
-      : await findPreservationReasons(identity, args.signal, options);
+      : await findPreservationReasons(identity, args.signal, {
+          ...options,
+          ...(args.testHooks?.repositoryScan !== undefined
+            ? { repositoryScan: args.testHooks.repositoryScan }
+            : {}),
+        });
   if (reasons.length > 0) {
     throw worktreePreservedError(identity.path, reasons);
   }
@@ -1034,7 +1041,15 @@ async function removeRegisteredWorktree(
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
-        { gitDir: severedGitDir, fetchRemotes: false, final: true, remotes },
+        {
+          gitDir: severedGitDir,
+          fetchRemotes: false,
+          final: true,
+          remotes,
+          ...(args.testHooks?.repositoryScan !== undefined
+            ? { repositoryScan: args.testHooks.repositoryScan }
+            : {}),
+        },
       );
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);

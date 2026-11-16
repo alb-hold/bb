@@ -14,6 +14,10 @@ import {
   type WorktreeHolderScan,
 } from "./holders.js";
 import { parseWorktreeListPorcelain } from "./worktree-list.js";
+import {
+  findRepositoryReasons,
+  type RepositoryScanHooks,
+} from "./repository-detection.js";
 
 export const KEEP_WORKTREE_MARKER = ".keep-worktree";
 export const WORKTREE_PRESERVED_CODE = "worktree_preserved";
@@ -1303,6 +1307,7 @@ export async function findPreservationReasons(
     final?: boolean;
     remotes?: RemoteEvidence;
     untrustedRoots?: readonly string[];
+    repositoryScan?: RepositoryScanHooks;
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
@@ -1313,10 +1318,33 @@ export async function findPreservationReasons(
     ...signalOptions(signal),
   };
 
-  const filters = await neutralisedFilterDrivers(gitOptions, signal);
-  if ("failure" in filters) {
+  const repositoryReasons = await findRepositoryReasons({
+    worktree: identity.path,
+    gitDir: options.gitDir ?? identity.gitDir,
+    index: await runGit(
+      [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "ls-files",
+        "--stage",
+        "-z",
+      ],
+      gitOptions,
+    ),
+    ...(options.repositoryScan !== undefined
+      ? { scan: options.repositoryScan }
+      : {}),
+  });
+  reasons.push(...repositoryReasons);
+
+  const filters =
+    options.final === true && repositoryReasons.length > 0
+      ? null
+      : await neutralisedFilterDrivers(gitOptions, signal);
+  if (filters !== null && "failure" in filters) {
     reasons.push(withDetail("could not read its Git status", filters.failure));
-  } else {
+  } else if (filters !== null) {
     const status = await runGit(
       [
         "--no-optional-locks",
