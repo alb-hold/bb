@@ -150,6 +150,21 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         ],
       ];
 
+    it("never finds watchman through a ~user entry that the shell might expand, and on Linux agrees with the shell", async () => {
+      const root = await scratch();
+      await mkdir(join(root, "work", "~bb-no-such-user", "bin"), {
+        recursive: true,
+      });
+      await fakeWatchman(
+        join(root, "work", "~bb-no-such-user", "bin", "watchman"),
+      );
+      const env = { PATH: "~bb-no-such-user/bin", HOME: join(root, "home") };
+      const cwd = join(root, "work");
+      if (process.platform === "darwin")
+        expect(lookupFinds(env, cwd)).toBe(false);
+      else expect(lookupFinds(env, cwd)).toBe(shellRuns(env, cwd));
+    });
+
     it.each(cases)("agrees with the shell on %s", async (_label, arrange) => {
       const root = await scratch();
       const env = await arrange(root);
@@ -222,7 +237,16 @@ describe.skipIf(process.platform !== "linux")(
       const started = (await childProcessesOf(child.pid ?? 0)).filter(
         (pid) => !before.has(pid),
       );
-      expect(started).toEqual([]);
+      const described = await Promise.all(
+        started.map(async (pid) => {
+          const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(
+            () => "",
+          );
+          const close = stat.lastIndexOf(")");
+          return `${stat.slice(stat.indexOf("(") + 1, close)} ${stat.slice(close + 2, close + 3)}`;
+        }),
+      );
+      expect(described).toEqual([]);
     }, 60_000);
   },
 );
