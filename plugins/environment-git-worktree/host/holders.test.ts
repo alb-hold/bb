@@ -264,6 +264,8 @@ describe("the macOS scan of processes lsof cannot see", () => {
   let lsof: LsofResult;
   let listing: PsResult;
   let labels: PsResult;
+  let relisting: PsResult | null;
+  let listingCalls = 0;
   const psCalls: string[][] = [];
   const row = (pid: number, uid: number, args: string, ppid = 1) =>
     `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
@@ -273,11 +275,15 @@ describe("the macOS scan of processes lsof cannot see", () => {
     lsof = exited("", 1);
     listing = exited("");
     labels = exited("");
+    relisting = null;
+    listingCalls = 0;
     psCalls.length = 0;
     useLsofRunnerForTests(async () => lsof);
     usePsRunnerForTests(async (args) => {
       psCalls.push([...args]);
-      return args.includes("-p") ? labels : listing;
+      if (args.includes("-p")) return labels;
+      listingCalls += 1;
+      return listingCalls > 1 && relisting !== null ? relisting : listing;
     });
   });
 
@@ -303,7 +309,8 @@ describe("the macOS scan of processes lsof cannot see", () => {
       status: "uncertain",
       reason: `1 processes could not be ruled out, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
     });
-    expect(psCalls[1]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
+    expect(psCalls[1]).toEqual(["-axww", "-o", "pid=,ppid=,uid=,args="]);
+    expect(psCalls[2]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
   });
 
   it("finds the worktree in args past column 200", async () => {
@@ -387,6 +394,66 @@ describe("the macOS scan of processes lsof cannot see", () => {
         "1 processes could not be ruled out, such as process 5000 (sudo) uid 0 is sudo, su or doas, which may run a program in the worktree",
     });
   });
+
+  it("lists again only when the first listing has a doubt, and keeps a doubt that is still there", async () => {
+    listing = exited(row(1, 0, "/sbin/launchd", 0));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+    expect(listingCalls).toBe(1);
+    listing = exited(row(5000, 0, "sudo /bin/sleep 300"));
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+    expect(listingCalls).toBe(3);
+  });
+
+  it.each([
+    ["is gone from the second listing", ""],
+    ["came back under another parent", row(5000, 0, "sudo -i", 77)],
+    [
+      "came back as another user",
+      row(5000, ownUid === 0 ? 1 : ownUid, "sudo -i"),
+    ],
+  ])("clears a doubt that %s", async (_label, second) => {
+    listing = exited(row(5000, 0, "sudo -i"));
+    relisting = exited([row(1, 0, "/sbin/launchd", 0), second].join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("ignores a doubt that appears only in the second listing", async () => {
+    listing = exited(row(1, 0, "/sbin/launchd", 0));
+    relisting = exited(row(5000, 0, "sudo -i"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+    expect(listingCalls).toBe(1);
+  });
+
+  it.each([
+    [
+      "exits nonzero",
+      exited("", 1),
+      "could not list other users' processes again: ps exited with 1",
+    ],
+    [
+      "has a line it cannot read",
+      exited("garbled"),
+      "1 lines of the second process list could not be read",
+    ],
+  ] as const)(
+    "keeps the worktree when the second listing %s",
+    async (_label, second, reason) => {
+      listing = exited(row(5000, 0, "sudo -i"));
+      relisting = second;
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "unknown",
+        reason,
+      });
+    },
+  );
 
   it("keeps the worktree for a root process our shell started, however far down the chain", async () => {
     listing = exited(

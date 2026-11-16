@@ -1645,6 +1645,7 @@ const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,ppid=,uid=,args="] as const;
 const ELEVATION_PROGRAMS = new Set(["sudo", "su", "doas"]);
 const TERMINAL_APPS = new Set(["Terminal", "iTerm2"]);
 const MAX_ANCESTRY_STEPS = 64;
+const DOUBT_RECHECK_MS = 100;
 const PRIVATE_ALIASED_ROOTS = ["/var/", "/tmp/", "/etc/"] as const;
 
 function darwinPathAliases(directory: string): string[] {
@@ -1730,23 +1731,13 @@ function descendsFromUser(
   return false;
 }
 
-async function scanForeignDarwinProcesses(
-  directory: string,
-): Promise<WorktreeHolderScan> {
-  const ownUid = process.getuid?.();
-  if (ownUid === undefined)
-    return { status: "unknown", reason: "the current user id is unavailable" };
-  const listing = await activePs(PROCESS_LIST_ARGS);
-  const failed = psFailure(listing);
-  if (failed !== null)
-    return {
-      status: "unknown",
-      reason: `could not list other users' processes: ${failed}`,
-    };
-  const aliases = darwinPathAliases(directory);
+function parseProcessList(
+  stdout: string,
+  aliases: readonly string[],
+): { processes: Map<number, ListedProcess>; unparsed: number } {
   const processes = new Map<number, ListedProcess>();
   let unparsed = 0;
-  for (const line of listing.stdout.split("\n")) {
+  for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue;
     const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)(?:\s|$)/u.exec(line);
     if (
@@ -1765,11 +1756,45 @@ async function scanForeignDarwinProcesses(
       namesTree: aliases.some((alias) => commandReferences(args, alias)),
     });
   }
-  const doubts: { pid: number; uid: number; detail: string }[] = [];
+  return { processes, unparsed };
+}
+
+async function listProcessesAgain(
+  aliases: readonly string[],
+): Promise<{ processes: Map<number, ListedProcess> } | { reason: string }> {
+  await new Promise((resolve) => setTimeout(resolve, DOUBT_RECHECK_MS));
+  const listing = await activePs(PROCESS_LIST_ARGS);
+  const failed = psFailure(listing);
+  if (failed !== null)
+    return { reason: `could not list other users' processes again: ${failed}` };
+  const relisted = parseProcessList(listing.stdout, aliases);
+  if (relisted.unparsed > 0)
+    return {
+      reason: `${relisted.unparsed} lines of the second process list could not be read`,
+    };
+  return { processes: relisted.processes };
+}
+
+async function scanForeignDarwinProcesses(
+  directory: string,
+): Promise<WorktreeHolderScan> {
+  const ownUid = process.getuid?.();
+  if (ownUid === undefined)
+    return { status: "unknown", reason: "the current user id is unavailable" };
+  const listing = await activePs(PROCESS_LIST_ARGS);
+  const failed = psFailure(listing);
+  if (failed !== null)
+    return {
+      status: "unknown",
+      reason: `could not list other users' processes: ${failed}`,
+    };
+  const aliases = darwinPathAliases(directory);
+  const { processes, unparsed } = parseProcessList(listing.stdout, aliases);
+  const found: { pid: number; uid: number; detail: string }[] = [];
   for (const [pid, listed] of processes) {
     if (pid === process.pid) continue;
     if (ELEVATION_PROGRAMS.has(listed.program)) {
-      doubts.push({
+      found.push({
         pid,
         uid: listed.uid,
         detail: `uid ${listed.uid} is sudo, su or doas, which may run a program in the worktree`,
@@ -1782,18 +1807,35 @@ async function scanForeignDarwinProcesses(
     )
       continue;
     if (listed.namesTree)
-      doubts.push({
+      found.push({
         pid,
         uid: listed.uid,
         detail: `foreign uid ${listed.uid} command references the worktree`,
       });
     else if (descendsFromUser(pid, processes, ownUid))
-      doubts.push({
+      found.push({
         pid,
         uid: listed.uid,
         detail: `foreign uid ${listed.uid} was started by a process of this user`,
       });
   }
+  const relisted =
+    found.length === 0 ? null : await listProcessesAgain(aliases);
+  if (relisted !== null && "reason" in relisted)
+    return { status: "unknown", reason: relisted.reason };
+  const doubts =
+    relisted === null
+      ? found
+      : found.filter(({ pid }) => {
+          const before = processes.get(pid);
+          const after = relisted.processes.get(pid);
+          return (
+            before !== undefined &&
+            after !== undefined &&
+            before.ppid === after.ppid &&
+            before.uid === after.uid
+          );
+        });
   if (doubts.length > 0) {
     const commands = await processCommands(doubts.map(({ pid }) => pid));
     const first = doubts[0];
