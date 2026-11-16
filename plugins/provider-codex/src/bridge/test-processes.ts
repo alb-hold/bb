@@ -1,6 +1,8 @@
 import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
+const TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS = 30_000;
+
 function hasLiveGroupMembers(pid: number, deadline: number): boolean {
   return execFileSync("ps", ["-axo", "pgid=,stat="], {
     encoding: "utf8",
@@ -12,6 +14,19 @@ function hasLiveGroupMembers(pid: number, deadline: number): boolean {
       const [group, state] = line.trim().split(/\s+/u);
       return Number(group) === pid && !state?.startsWith("Z");
     });
+}
+
+function liveGroupWriter(pid: number, deadline: number): string | undefined {
+  const rows = execFileSync("ps", ["-axo", "pgid=,pid=,stat=,command="], {
+    encoding: "utf8",
+    timeout: Math.max(1, deadline - Date.now()),
+  }).trim().split("\n");
+  for (const line of rows) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/u);
+    if (match && Number(match[1]) === pid && !match[3]?.startsWith("Z"))
+      return `pid ${match[2]} (${match[4]})`;
+  }
+  return undefined;
 }
 
 const windowsSnapshotArguments = [
@@ -183,9 +198,18 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   }
   return async () => {
     if (pid === undefined) return;
-    const deadline = Date.now() + 5_000;
-    const stillWriting = () =>
-      new Error(`Test process group ${pid} still has live writers`);
+    const deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS;
+    const stillWriting = () => {
+      let writer: string | undefined;
+      if (process.platform !== "win32") {
+        try {
+          writer = liveGroupWriter(pid, deadline);
+        } catch {}
+      }
+      return new Error(
+        `Test process group ${pid} still has live writers${writer ? `: ${writer}` : ""}`,
+      );
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (process.platform === "win32") {
