@@ -3,11 +3,15 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import type { RepositoryScanHooks } from "./repository-detection.js";
+import type {
+  DirectoryEntry,
+  RepositoryScanHooks,
+} from "./repository-detection.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
@@ -140,6 +144,27 @@ async function removal(
     if (match?.[1] === undefined) throw error;
     return match[1].split("; ");
   }
+}
+
+function unknownType(name: string): DirectoryEntry {
+  const no = () => false;
+  return {
+    name,
+    isDirectory: no,
+    isFile: no,
+    isSymbolicLink: no,
+    isFIFO: no,
+    isSocket: no,
+    isCharacterDevice: no,
+    isBlockDevice: no,
+  };
+}
+
+async function* listed(
+  directory: string,
+  map: (entry: DirectoryEntry) => DirectoryEntry = (entry) => entry,
+): AsyncIterable<DirectoryEntry> {
+  for await (const entry of await fs.opendir(directory)) yield map(entry);
 }
 
 function scan(hooks: RepositoryScanHooks): Hooks {
@@ -381,6 +406,20 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     },
   );
 
+  it("walks into entries whose type the file system does not report, and finds a repository below them", async () => {
+    const worktree = await fixture();
+    await repository(path.join(worktree.path, "node_modules", "pkg", "y"));
+    await settle();
+    const reasons = await removal(
+      worktree,
+      scan({
+        openDirectoryEntries: async (directory, entry) =>
+          listed(directory, ({ name }) => unknownType(name)),
+      }),
+    );
+    expect(reasons).toEqual([NESTED("node_modules/pkg/y")]);
+  });
+
   it("names every nested repository it finds, however deep", async () => {
     const worktree = await fixture({ ignore: ".proof/\n" });
     await repository(
@@ -486,54 +525,134 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     },
   );
 
-  it.each([
-    ["no time at all", { budgetMs: 0 }],
-    [
-      "a slow directory listing",
-      {
-        budgetMs: 1,
-        readDirectoryNames: async (directory: string) => {
-          await delay(20);
-          return fs.readdir(directory);
-        },
-      },
-    ],
-    [
-      "a directory with a million entries",
-      {
+  async function manyEntries(count: number): Promise<Fixture> {
+    const worktree = await fixture();
+    const many = path.join(worktree.path, "node_modules", "many");
+    await fs.mkdir(many, { recursive: true });
+    await Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        fs.writeFile(path.join(many, `f${i}`), ""),
+      ),
+    );
+    await settle();
+    return worktree;
+  }
+
+  function stoppedBy(reasons: string[] | "removed", detail: string): number {
+    expect(reasons).not.toBe("removed");
+    return (reasons as string[]).filter((reason) =>
+      reason.startsWith(`${UNFINISHED}${detail})`),
+    ).length;
+  }
+
+  it("keeps the worktree when the repository check has no time at all", async () => {
+    const worktree = await manyEntries(1);
+    const reasons = await removal(worktree, scan({ budgetMs: 0 }));
+    expect(stoppedBy(reasons, "it took longer than 0 ms")).toBe(1);
+  });
+
+  it("stops reading a slow directory listing at its deadline, entry by entry", async () => {
+    const worktree = await manyEntries(200);
+    let reads = 0;
+    const reasons = await removal(
+      worktree,
+      scan({
+        budgetMs: 100,
+        openDirectoryEntries: async (directory, entry) =>
+          (async function* () {
+            for await (const child of listed(directory)) {
+              if (path.basename(entry) === "many") {
+                reads += 1;
+                await delay(5);
+              }
+              yield child;
+            }
+          })(),
+      }),
+    );
+    expect(stoppedBy(reasons, "it took longer than 100 ms")).toBe(1);
+    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeLessThan(100);
+  });
+
+  it("stops reading a directory with a million entries at its deadline, without reading them all", async () => {
+    const worktree = await manyEntries(1);
+    let yielded = 0;
+    const reasons = await removal(
+      worktree,
+      scan({
         budgetMs: 200,
-        readDirectoryNames: async (directory: string) => {
-          const names = await fs.readdir(directory);
-          return names.includes("many-marker")
-            ? [
-                ...names,
-                ...Array.from({ length: 1_000_000 }, (_, i) => `n${i}`),
-              ]
-            : names;
-        },
-      },
-    ],
+        openDirectoryEntries: async (directory, entry) =>
+          path.basename(entry) === "many"
+            ? (async function* () {
+                for (let i = 0; i < 1_000_000; i += 1) {
+                  yielded += 1;
+                  yield unknownType(`n${i}`);
+                }
+              })()
+            : listed(directory),
+      }),
+    );
+    expect(stoppedBy(reasons, "it took longer than 200 ms")).toBe(1);
+    expect(yielded).toBeLessThan(1_000_000);
+  });
+
+  it("stops reading at its entry limit, without reading the rest", async () => {
+    const worktree = await manyEntries(1);
+    let yielded = 0;
+    const reasons = await removal(
+      worktree,
+      scan({
+        entryLimit: 1_000,
+        openDirectoryEntries: async (directory, entry) =>
+          path.basename(entry) === "many"
+            ? (async function* () {
+                for (let i = 0; i < 1_000_000; i += 1) {
+                  yielded += 1;
+                  yield unknownType(`n${i}`);
+                }
+              })()
+            : listed(directory),
+      }),
+    );
+    expect(stoppedBy(reasons, "it has more than 1000 entries")).toBe(1);
+    expect(yielded).toBeLessThanOrEqual(1_001);
+  });
+
+  it.each([
+    ["a million entries", 0],
+    ["slow entries", 20],
   ] as const)(
-    "keeps the worktree when the repository check runs out of time on %s",
-    async (_label, hooks) => {
+    "reads at most six entries of a modules directory with %s",
+    async (_label, pause) => {
       const worktree = await fixture();
-      await fs.mkdir(path.join(worktree.path, "node_modules", "many"), {
-        recursive: true,
-      });
-      await fs.writeFile(
-        path.join(worktree.path, "node_modules", "many", "many-marker"),
-        "",
-      );
+      const modules = path.join(worktree.gitDir, "modules");
+      await fs.mkdir(modules);
       await settle();
-      const reasons = await removal(worktree, scan(hooks));
-      expect(reasons).not.toBe("removed");
-      expect(
-        (reasons as string[]).filter((reason) =>
-          reason.startsWith(
-            `${UNFINISHED}it took longer than ${hooks.budgetMs} ms)`,
-          ),
+      let yielded = 0;
+      const started = performance.now();
+      const reasons = await removal(
+        worktree,
+        scan({
+          openDirectoryEntries: async (directory, entry) =>
+            entry === modules
+              ? (async function* () {
+                  for (let i = 0; i < 1_000_000; i += 1) {
+                    yielded += 1;
+                    if (pause > 0) await delay(pause);
+                    yield unknownType(`n${i}`);
+                  }
+                })()
+              : listed(directory),
+        }),
+      );
+      expect(reasons).toEqual([
+        MODULES(
+          "modules/n0, modules/n1, modules/n2, modules/n3, modules/n4 and more",
         ),
-      ).toHaveLength(1);
+      ]);
+      expect(yielded).toBeLessThanOrEqual(12);
+      expect(performance.now() - started).toBeLessThan(5_000);
     },
   );
 
