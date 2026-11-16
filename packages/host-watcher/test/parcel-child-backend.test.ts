@@ -131,13 +131,53 @@ describe("the platform watcher backend", () => {
   it.each([
     ["an empty", { PATH: "" }],
     ["a missing", {}],
-  ] as const)("picks the native backend with %s PATH", (_label, env) => {
-    expect(withPlatformParcelBackend({}, "linux", env)).toEqual({
+  ] as const)(
+    "picks the native backend with %s PATH and no watchman in the working directory",
+    async (_label, env) => {
+      const cwd = await mkdtemp(join(tmpdir(), "bb-parcel-cwd-"));
+      roots.push(cwd);
+      expect(withPlatformParcelBackend({}, "linux", env, cwd)).toEqual({
+        backend: "inotify",
+      });
+      expect(withPlatformParcelBackend({}, "darwin", env, cwd)).toEqual({
+        backend: "fs-events",
+      });
+    },
+  );
+
+  async function workingDirectoryWith(where: "." | "bin" | "none") {
+    const cwd = await mkdtemp(join(tmpdir(), "bb-parcel-cwd-"));
+    roots.push(cwd);
+    await mkdir(join(cwd, "bin"));
+    await mkdir(join(cwd, "elsewhere"));
+    if (where !== "none") {
+      const target = join(cwd, where, "watchman");
+      await writeFile(target, "#!/bin/sh\nexit 0\n");
+      await chmod(target, 0o755);
+    }
+    return cwd;
+  }
+
+  it("finds watchman in the working directory through an empty PATH entry, as the shell does", async () => {
+    const cwd = await workingDirectoryWith(".");
+    const env = { PATH: `:${join(cwd, "elsewhere")}` };
+    expect(withPlatformParcelBackend({}, "linux", env, cwd)).toEqual({});
+    expect(withPlatformParcelBackend({}, "darwin", env, cwd)).toEqual({});
+  });
+
+  it("picks native through an empty PATH entry when the working directory has no watchman", async () => {
+    const cwd = await workingDirectoryWith("none");
+    const env = { PATH: `:${join(cwd, "elsewhere")}` };
+    expect(withPlatformParcelBackend({}, "linux", env, cwd)).toEqual({
       backend: "inotify",
     });
-    expect(withPlatformParcelBackend({}, "darwin", env)).toEqual({
-      backend: "fs-events",
-    });
+  });
+
+  it("resolves a relative PATH entry against the working directory", async () => {
+    const cwd = await workingDirectoryWith("bin");
+    expect(
+      withPlatformParcelBackend({}, "linux", { PATH: "bin" }, cwd),
+    ).toEqual({});
   });
 
   it("keeps an explicit backend and leaves other platforms on the default", () => {
