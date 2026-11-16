@@ -33,7 +33,10 @@ import {
   listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
+  listPendingThreadStorageDeletions,
   markThreadStorageDeleted,
+  nextThreadStorageDeleteSeq,
+  requeueThreadStorageDeletion,
   threads,
   type DbNotifier,
   type DbQueryConnection,
@@ -124,8 +127,17 @@ import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
 import {
   admitThreadStorageDelete,
+  claimThreadStorageDelete,
   forgetThreadStorageDelete,
+  isFirstThreadStorageDeleteSendFailure,
+  isThreadStorageDeleteInFlight,
+  orderThreadStorageDeletesForDispatch,
+  resolveThreadStorageDeletesHeldAtTail,
   recordThreadStorageDeleteRefused,
+  recordThreadStorageDeleteRequeueFailed,
+  recordThreadStorageDeleteRequeued,
+  releaseThreadStorageDelete,
+  returnThreadStorageDeleteSlot,
   type ThreadStorageDeleteGate,
 } from "./thread-storage-delete-retries.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
@@ -195,7 +207,6 @@ type InFlightThreadRpcKind =
   | "thread.start"
   | "thread.start.title-sync"
   | "thread.stop"
-  | "thread.storage.delete"
   | "thread.stop.release";
 
 class InFlightRpcGuard {
@@ -1144,7 +1155,7 @@ function dispatchThreadStorageDeletion(
     );
     return;
   }
-  if (inFlightThreadRpcGuard.isHeld(thread.id, "thread.storage.delete")) {
+  if (isThreadStorageDeleteInFlight(deps.db, thread.id)) {
     return;
   }
   if (
@@ -1157,15 +1168,32 @@ function dispatchThreadStorageDeletion(
   ) {
     return;
   }
-  inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete");
-  void runLiveHostCommand(deps, {
-    command: buildThreadStorageDeleteCommand({
-      environmentId: environment.id,
-      threadId: thread.id,
-    }),
-    hostId: environment.hostId,
-    timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-  })
+  claimThreadStorageDelete(deps.db, thread.id);
+  let sent: ReturnType<typeof runLiveHostCommand>;
+  try {
+    sent = runLiveHostCommand(deps, {
+      command: buildThreadStorageDeleteCommand({
+        environmentId: environment.id,
+        threadId: thread.id,
+      }),
+      hostId: environment.hostId,
+      timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+    });
+  } catch (error) {
+    releaseThreadStorageDelete(deps.db, thread.id);
+    returnThreadStorageDeleteSlot(deps.db, {
+      gate: args.gate,
+      hostId: environment.hostId,
+      now: args.now,
+    });
+    if (isFirstThreadStorageDeleteSendFailure(deps.db, thread.id))
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Thread storage deletion could not be sent",
+      );
+    return;
+  }
+  void sent
     .then(() => {
       forgetThreadStorageDelete(deps.db, thread.id);
     })
@@ -1174,6 +1202,7 @@ function dispatchThreadStorageDeletion(
         now: Date.now(),
         threadId: thread.id,
       });
+      requeueUnsuccessfulThreadStorageDeletion(deps, thread.id);
       deps.logger.warn(
         {
           err: error,
@@ -1191,8 +1220,51 @@ function dispatchThreadStorageDeletion(
         refreshProviderRetirement(deps, thread.environmentId);
     })
     .finally(() => {
-      inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
+      releaseThreadStorageDelete(deps.db, thread.id);
     });
+}
+
+function requeueUnsuccessfulThreadStorageDeletion(
+  deps: CommandResultSideEffectsDeps,
+  threadId: string,
+): void {
+  try {
+    requeueThreadStorageDeletion(deps.db, { threadId });
+    recordThreadStorageDeleteRequeued(deps.db, threadId);
+  } catch (error) {
+    const queuedAtSeq = nextSeqOrQueueTail(deps);
+    if (
+      recordThreadStorageDeleteRequeueFailed(deps.db, { queuedAtSeq, threadId })
+    )
+      deps.logger.warn(
+        { err: error, queuedAtSeq, threadId },
+        "Thread storage deletion could not be re-queued",
+      );
+  }
+}
+
+export function orderPendingThreadStorageDeletes<
+  T extends { id: string; storageDeleteSeq: number | null },
+>(
+  deps: Pick<CommandResultSideEffectsDeps, "db" | "logger">,
+  pendingInQueueOrder: readonly T[],
+): T[] {
+  for (const threadId of resolveThreadStorageDeletesHeldAtTail(deps.db, () =>
+    nextThreadStorageDeleteSeq(deps.db),
+  ))
+    deps.logger.info(
+      { threadId },
+      "Thread storage deletion queue position recovered",
+    );
+  return orderThreadStorageDeletesForDispatch(deps.db, pendingInQueueOrder);
+}
+
+function nextSeqOrQueueTail(deps: CommandResultSideEffectsDeps): number {
+  try {
+    return nextThreadStorageDeleteSeq(deps.db);
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /**
@@ -2140,7 +2212,6 @@ export async function reconcileDaemonReportedThreads(
 
   const pendingThreads = deps.db
     .select({
-      deletedAt: threads.deletedAt,
       environmentId: environments.id,
       id: threads.id,
       status: threads.status,
@@ -2150,6 +2221,7 @@ export async function reconcileDaemonReportedThreads(
     .where(
       and(
         eq(environments.hostId, args.hostId),
+        isNull(threads.deletedAt),
         inArray(threads.status, [
           "active",
           "idle",
@@ -2158,7 +2230,6 @@ export async function reconcileDaemonReportedThreads(
           "stopping",
         ]),
         or(
-          isNotNull(threads.deletedAt),
           eq(threads.status, "stopping"),
           and(
             isNotNull(threads.archivedAt),
@@ -2175,15 +2246,6 @@ export async function reconcileDaemonReportedThreads(
     .all();
 
   for (const thread of pendingThreads) {
-    if (thread.deletedAt !== null) {
-      dispatchThreadStorageDeletion(
-        deps,
-        thread,
-        { hostId: args.hostId, id: thread.environmentId },
-        { gate: "cap", now: Date.now() },
-      );
-      continue;
-    }
     if (activeThreadIdSet.has(thread.id)) {
       requestThreadStop(deps, {
         environmentId: thread.environmentId,
@@ -2197,6 +2259,18 @@ export async function reconcileDaemonReportedThreads(
     finalizeStoppedThread(deps, {
       threadId: thread.id,
     });
+  }
+  for (const thread of orderPendingThreadStorageDeletes(
+    deps,
+    listPendingThreadStorageDeletions(deps.db, { hostId: args.hostId }),
+  )) {
+    if (thread.environmentId === null) continue;
+    dispatchThreadStorageDeletion(
+      deps,
+      thread,
+      { hostId: args.hostId, id: thread.environmentId },
+      { gate: "cap", now: Date.now() },
+    );
   }
 
   if (args.activeThreadIds.length > 0) {

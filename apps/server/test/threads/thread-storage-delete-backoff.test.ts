@@ -1,14 +1,30 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { getThread, markThreadDeleted, projects } from "@bb/db";
+import {
+  getThread,
+  listPendingThreadStorageDeletions,
+  markThreadDeleted,
+  projects,
+  threads,
+} from "@bb/db";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   runPeriodicSweeps,
   runThreadLifecycleSweep,
 } from "../../src/services/system/periodic-sweeps.js";
-import { requestThreadStorageDeletion } from "../../src/services/threads/thread-lifecycle.js";
+import {
+  reconcileDaemonReportedThreads,
+  requestThreadStorageDeletion,
+} from "../../src/services/threads/thread-lifecycle.js";
+import {
+  admitThreadStorageDelete,
+  clearThreadStorageDeleteRetryMemory,
+  returnThreadStorageDeleteSlot,
+  THREAD_STORAGE_DELETE_RETRY_MAX_MS,
+} from "../../src/services/threads/thread-storage-delete-retries.js";
 import {
   listQueuedCommands,
+  registerTestHostRpcCapture,
   reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
@@ -47,9 +63,10 @@ function seedDeletedThreads(
 ): {
   environment: { hostId: string; id: string };
   projectId: string;
+  sessionId: string;
   threadIds: string[];
 } {
-  const { host } = seedHostSession(harness.deps, { id: hostId });
+  const { host, session } = seedHostSession(harness.deps, { id: hostId });
   const { project } = seedProjectWithSource(harness.deps, {
     hostId: host.id,
     path: `/tmp/refused-storage-delete-${hostId}`,
@@ -72,6 +89,7 @@ function seedDeletedThreads(
   return {
     environment: { hostId: host.id, id: environment.id },
     projectId: project.id,
+    sessionId: session.id,
     threadIds,
   };
 }
@@ -286,6 +304,587 @@ describe("refused thread storage deletes", () => {
         refusedThreadRetryAtMs + 60_000,
       );
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
+
+  it("retries a refused thread within N+1 slots when the clock steps back before every slot", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 1);
+      const refusedThreadId = seeded.threadIds[0] ?? "";
+      await runThreadLifecycleSweep(harness.deps);
+      expect(await refuseQueuedStorageDeletes(harness, 0)).toEqual([
+        { atMs: 0, threadId: refusedThreadId },
+      ]);
+      const refusedThreadRetryAtMs = 60_000;
+      const earlierStampMs = refusedThreadRetryAtMs - 10_000;
+      const threadsDueAheadOfRefusedThread = 1;
+      const released = new Set([refusedThreadId]);
+      const refusedThreadRequests: number[] = [];
+      for (let slot = 1; slot <= 30; slot += 1) {
+        vi.setSystemTime(START_MS + earlierStampMs);
+        seedDeletedThreadIn(harness, {
+          environmentId: seeded.environment.id,
+          projectId: seeded.projectId,
+        });
+        const slotMs = slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        await runThreadLifecycleSweep(harness.deps);
+        const requests = await refuseQueuedStorageDeletes(
+          harness,
+          slotMs,
+          released,
+        );
+        for (const request of requests) {
+          if (request.threadId === refusedThreadId) {
+            refusedThreadRequests.push(request.atMs);
+          }
+        }
+        if (refusedThreadRequests.length > 0) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      expect(refusedThreadRequests).toHaveLength(1);
+      expect(refusedThreadRequests[0]).toBeLessThanOrEqual(
+        refusedThreadRetryAtMs + threadsDueAheadOfRefusedThread * 60_000,
+      );
+      expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
+
+  it.each(["sweep", "reconnect"] as const)(
+    "orders a refused row whose re-queue write fails behind every queued row, so the delete behind it is sent in the next slot (%s)",
+    async (path) => {
+      await withTestHarness(async (harness) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const seeded = seedDeletedThreads(harness, 2, `host-requeue-${path}`);
+        const [failingHead = "", behind = ""] = seeded.threadIds;
+        listPendingThreadStorageDeletions(harness.db);
+        harness.db.$client.exec(`
+          CREATE TEMP TRIGGER fail_head_storage_delete_requeue
+          BEFORE UPDATE OF storage_delete_seq ON threads
+          WHEN OLD.id = '${failingHead}'
+          BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;
+        `);
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        const dispatch = async () => {
+          if (path === "sweep") {
+            await runThreadLifecycleSweep(harness.deps);
+            return;
+          }
+          await reconcileDaemonReportedThreads(harness.deps, {
+            activeThreadIds: [],
+            hostId: seeded.environment.hostId,
+            sameDaemonInstance: false,
+            undeliveredEventThreadIds: [],
+          });
+        };
+        const released = new Set([behind]);
+        const requestsBySlot: string[][] = [];
+        for (let slot = 0; slot < 2; slot += 1) {
+          vi.setSystemTime(START_MS + slot * 60_000);
+          await dispatch();
+          const requests = await refuseQueuedStorageDeletes(
+            harness,
+            slot * 60_000,
+            released,
+          );
+          requestsBySlot.push(requests.map((request) => request.threadId));
+        }
+        harness.db.$client.exec(
+          "DROP TRIGGER fail_head_storage_delete_requeue",
+        );
+        released.add(failingHead);
+        vi.setSystemTime(START_MS + 2 * 60_000);
+        await runThreadLifecycleSweep(harness.deps);
+        requestsBySlot.push(
+          (await refuseQueuedStorageDeletes(harness, 2 * 60_000, released)).map(
+            (request) => request.threadId,
+          ),
+        );
+        await runThreadLifecycleSweep(harness.deps);
+        vi.useRealTimers();
+
+        expect(requestsBySlot).toEqual([
+          [failingHead],
+          [behind],
+          [failingHead],
+        ]);
+        expect(getThread(harness.db, behind)).toBeNull();
+        expect(getThread(harness.db, failingHead)).toBeNull();
+        expect(
+          warn.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion could not be re-queued",
+          ),
+        ).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each([
+    { path: "sweep", withArrival: false },
+    { path: "reconnect", withArrival: false },
+    { path: "sweep", withArrival: true },
+    { path: "reconnect", withArrival: true },
+  ] as const)(
+    "keeps a refused row whose re-queue write fails at the back of the rows pending when it failed, so rows queued after it never pass it ($path, delete arriving after the failure: $withArrival)",
+    async ({ path, withArrival }) => {
+      await withTestHarness(async (harness) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const seeded = seedDeletedThreads(
+          harness,
+          0,
+          `host-requeue-starve-${path}-${withArrival}`,
+        );
+        const byId = Array.from(
+          { length: 5 },
+          () =>
+            seedThread(harness.deps, {
+              environmentId: seeded.environment.id,
+              projectId: seeded.projectId,
+              status: "idle",
+            }).id,
+        ).sort();
+        const failing = byId[4] ?? "";
+        const arrival = byId[0] ?? "";
+        const queueOrder = [failing, byId[1], byId[2], byId[3]].map(
+          (threadId) => threadId ?? "",
+        );
+        for (const threadId of queueOrder) {
+          markThreadDeleted(harness.db, harness.hub, { threadId });
+        }
+        listPendingThreadStorageDeletions(harness.db);
+        queueOrder.forEach((threadId, index) => {
+          harness.db
+            .update(threads)
+            .set({ storageDeleteSeq: index + 1 })
+            .where(eq(threads.id, threadId))
+            .run();
+        });
+        harness.db.$client.exec(`
+          CREATE TEMP TRIGGER fail_storage_delete_requeue
+          BEFORE UPDATE OF storage_delete_seq ON threads
+          WHEN OLD.id = '${failing}'
+          BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;
+        `);
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        const cycles = 3;
+        const cycleLength = queueOrder.length + (withArrival ? 1 : 0);
+        const sentBySlot: string[][] = [];
+        for (
+          let slot = 0;
+          slot < cycles * cycleLength - (withArrival ? 1 : 0);
+          slot += 1
+        ) {
+          const slotMs = slot * THREAD_STORAGE_DELETE_RETRY_MAX_MS;
+          vi.setSystemTime(START_MS + slotMs);
+          if (path === "sweep") {
+            await runThreadLifecycleSweep(harness.deps);
+          } else {
+            await reconcileDaemonReportedThreads(harness.deps, {
+              activeThreadIds: [],
+              hostId: seeded.environment.hostId,
+              sameDaemonInstance: false,
+              undeliveredEventThreadIds: [],
+            });
+          }
+          sentBySlot.push(
+            (await refuseQueuedStorageDeletes(harness, slotMs)).map(
+              (request) => request.threadId,
+            ),
+          );
+          if (slot === 0 && withArrival) {
+            markThreadDeleted(harness.db, harness.hub, { threadId: arrival });
+          }
+        }
+        harness.db.$client.exec("DROP TRIGGER fail_storage_delete_requeue");
+        vi.useRealTimers();
+
+        const pendingAtLastSeq = queueOrder[queueOrder.length - 1];
+        expect(byId.every((threadId) => threadId <= failing)).toBe(true);
+        expect(
+          sentBySlot.findIndex((threadIds) =>
+            threadIds.includes(pendingAtLastSeq ?? ""),
+          ),
+        ).toBeLessThan(
+          sentBySlot.findIndex(
+            (threadIds, slot) => slot > 0 && threadIds.includes(failing),
+          ),
+        );
+        const [, ...pendingBehindFailing] = queueOrder;
+        expect(sentBySlot).toEqual([
+          ...queueOrder.map((threadId) => [threadId]),
+          ...Array.from({ length: cycles - 1 }, () => [
+            [failing],
+            ...(withArrival ? [[arrival]] : []),
+            ...pendingBehindFailing.map((threadId) => [threadId]),
+          ]).flat(),
+        ]);
+        expect(
+          warn.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion could not be re-queued",
+          ),
+        ).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each([
+    { path: "sweep", restartAfterRecovery: false },
+    { path: "reconnect", restartAfterRecovery: false },
+    { path: "sweep", restartAfterRecovery: true },
+  ] as const)(
+    "places a row whose re-queue and max-seq read both failed once behind only the rows pending when the database recovered ($path, restart after recovery: $restartAfterRecovery)",
+    async ({ path, restartAfterRecovery }) => {
+      await withTestHarness(async (harness) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const seeded = seedDeletedThreads(
+          harness,
+          4,
+          `host-requeue-recover-${path}-${restartAfterRecovery}`,
+        );
+        const byId = [...seeded.threadIds].sort();
+        const failing = byId[3] ?? "";
+        const queueOrder = [failing, byId[0], byId[1], byId[2]].map(
+          (threadId) => threadId ?? "",
+        );
+        listPendingThreadStorageDeletions(harness.db);
+        queueOrder.forEach((threadId, index) => {
+          harness.db
+            .update(threads)
+            .set({ storageDeleteSeq: index + 1 })
+            .where(eq(threads.id, threadId))
+            .run();
+        });
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        const info = vi.spyOn(harness.deps.logger, "info");
+        const dispatch = async () => {
+          if (path === "sweep") {
+            await runThreadLifecycleSweep(harness.deps);
+            return;
+          }
+          await reconcileDaemonReportedThreads(harness.deps, {
+            activeThreadIds: [],
+            hostId: seeded.environment.hostId,
+            sameDaemonInstance: false,
+            undeliveredEventThreadIds: [],
+          });
+        };
+
+        await dispatch();
+        const failingAttempt = await findQueued(harness, failing);
+        harness.db.$client.exec(
+          "ALTER TABLE threads RENAME COLUMN storage_delete_seq TO storage_delete_seq_locked",
+        );
+        await reportQueuedCommandError(harness, failingAttempt, {
+          errorCode: "path_busy",
+          errorMessage: "database is locked",
+        });
+        await sleep(5);
+        harness.db.$client.exec(
+          "ALTER TABLE threads RENAME COLUMN storage_delete_seq_locked TO storage_delete_seq",
+        );
+        const sentBySlot: string[][] = [[failing]];
+        const slots = 3 * queueOrder.length;
+        for (let slot = 1; slot <= slots; slot += 1) {
+          const slotMs = slot * THREAD_STORAGE_DELETE_RETRY_MAX_MS;
+          vi.setSystemTime(START_MS + slotMs);
+          if (restartAfterRecovery && slot === 2) {
+            clearThreadStorageDeleteRetryMemory(harness.db);
+          }
+          await dispatch();
+          sentBySlot.push(
+            (await refuseQueuedStorageDeletes(harness, slotMs)).map(
+              (request) => request.threadId,
+            ),
+          );
+        }
+        vi.useRealTimers();
+
+        expect(
+          warn.mock.calls.filter(
+            ([fields, message]) =>
+              message === "Thread storage deletion could not be re-queued" &&
+              typeof fields === "object" &&
+              fields !== null &&
+              "queuedAtSeq" in fields &&
+              fields.queuedAtSeq === Number.POSITIVE_INFINITY,
+          ),
+        ).toHaveLength(1);
+        const nextSendOfFailing = sentBySlot.findIndex(
+          (threadIds, slot) => slot > 0 && threadIds.includes(failing),
+        );
+        expect(nextSendOfFailing).toBeGreaterThan(0);
+        expect(nextSendOfFailing).toBeLessThanOrEqual(queueOrder.length);
+        if (restartAfterRecovery) {
+          expect(sentBySlot.slice(0, 3)).toEqual([
+            [failing],
+            [queueOrder[1]],
+            [failing],
+          ]);
+        } else {
+          expect(sentBySlot).toEqual([
+            [failing],
+            ...Array.from({ length: 3 }, () => [
+              ...queueOrder.slice(1).map((threadId) => [threadId]),
+              [failing],
+            ]).flat(),
+          ]);
+        }
+        expect(
+          info.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion queue position recovered",
+          ),
+        ).toHaveLength(1);
+      });
+    },
+  );
+
+  it("keeps a row's place when the server dies after its dispatch but before the command is handed off, so it is handed off in the next slot", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 2, "host-dies-before-handoff");
+      const [threadX = "", threadY = ""] = seeded.threadIds;
+      listPendingThreadStorageDeletions(harness.db);
+      const seqOf = (threadId: string) =>
+        listPendingThreadStorageDeletions(harness.db).find(
+          (thread) => thread.id === threadId,
+        )?.storageDeleteSeq;
+      const restart = () => {
+        clearThreadStorageDeleteRetryMemory(harness.db);
+        registerTestHostRpcCapture(harness, {
+          hostId: seeded.environment.hostId,
+          sessionId: seeded.sessionId,
+        });
+      };
+      const released = new Set([threadX]);
+      const handedOffBySlot: string[][] = [];
+      let restarts = 0;
+      for (let slot = 0; slot < 6; slot += 1) {
+        const slotMs = slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        if (slot > 0) {
+          restart();
+          restarts += 1;
+        }
+        const seqBeforeDispatch = seqOf(threadX);
+        await runThreadLifecycleSweep(harness.deps);
+        await sleep(5);
+        const dispatched = listQueuedCommands(
+          harness,
+          "thread.storage.delete",
+        ).flatMap((command) =>
+          command.type === "thread.storage.delete" ? [command.threadId] : [],
+        );
+        const diesBeforeHandoff =
+          dispatched.includes(threadX) &&
+          (slot === 0 || seqOf(threadX) !== seqBeforeDispatch);
+        if (diesBeforeHandoff) {
+          handedOffBySlot.push([]);
+          continue;
+        }
+        const handedOff = await refuseQueuedStorageDeletes(
+          harness,
+          slotMs,
+          released,
+        );
+        handedOffBySlot.push(handedOff.map((request) => request.threadId));
+        if (handedOff.some((request) => request.threadId === threadX)) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      expect(handedOffBySlot).toEqual([[], [threadX]]);
+      expect(restarts).toBe(1);
+      expect(getThread(harness.db, threadX)).toBeNull();
+      expect(getThread(harness.db, threadY)).not.toBeNull();
+    });
+  });
+
+  it("re-sends the front row first after each restart between its handoff and its refusal, then serves the row behind it", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 2, "host-dies-after-handoff");
+      const [threadX = "", threadY = ""] = seeded.threadIds;
+      const restartsBeforeOutcome = 3;
+      const handedOffBySlot: string[][] = [];
+      for (let slot = 0; slot <= restartsBeforeOutcome + 1; slot += 1) {
+        const slotMs = slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        await runThreadLifecycleSweep(harness.deps);
+        await sleep(5);
+        if (slot < restartsBeforeOutcome) {
+          handedOffBySlot.push(
+            listQueuedCommands(harness, "thread.storage.delete").flatMap(
+              (command) =>
+                command.type === "thread.storage.delete"
+                  ? [command.threadId]
+                  : [],
+            ),
+          );
+          clearThreadStorageDeleteRetryMemory(harness.db);
+          registerTestHostRpcCapture(harness, {
+            hostId: seeded.environment.hostId,
+            sessionId: seeded.sessionId,
+          });
+          continue;
+        }
+        const handedOff = await refuseQueuedStorageDeletes(harness, slotMs);
+        handedOffBySlot.push(handedOff.map((request) => request.threadId));
+      }
+      vi.useRealTimers();
+
+      expect(handedOffBySlot).toEqual([
+        ...Array.from({ length: restartsBeforeOutcome }, () => [threadX]),
+        [threadX],
+        [threadY],
+      ]);
+      expect(
+        handedOffBySlot.findIndex((threadIds) => threadIds.includes(threadY)),
+      ).toBe(restartsBeforeOutcome + 1);
+    });
+  });
+
+  it("gives a gated slot back only for the dispatch that was not sent", async () => {
+    await withTestHarness(async (harness) => {
+      const args = { hostId: "host-slot", now: START_MS, threadId: "thr_a" };
+      expect(
+        admitThreadStorageDelete(harness.db, { ...args, gate: "cap" }),
+      ).toBe(true);
+      expect(
+        admitThreadStorageDelete(harness.db, {
+          ...args,
+          gate: "cap",
+          threadId: "thr_b",
+        }),
+      ).toBe(false);
+      returnThreadStorageDeleteSlot(harness.db, { ...args, gate: "none" });
+      expect(
+        admitThreadStorageDelete(harness.db, {
+          ...args,
+          gate: "cap",
+          threadId: "thr_b",
+        }),
+      ).toBe(false);
+      returnThreadStorageDeleteSlot(harness.db, { ...args, gate: "cap" });
+      expect(
+        admitThreadStorageDelete(harness.db, {
+          ...args,
+          gate: "backoff-and-cap",
+          threadId: "thr_b",
+        }),
+      ).toBe(true);
+      clearThreadStorageDeleteRetryMemory(harness.db);
+    });
+  });
+
+  it("lists only the deleting project's pending storage deletes, in queue order", async () => {
+    await withTestHarness(async (harness) => {
+      const deleting = seedDeletedThreads(harness, 2, "host-deleting");
+      const other = seedDeletedThreads(harness, 2, "host-other-project");
+
+      const pending = listPendingThreadStorageDeletions(harness.db, {
+        projectId: deleting.projectId,
+      });
+
+      expect(pending.map((thread) => thread.id)).toEqual(deleting.threadIds);
+      expect(
+        listPendingThreadStorageDeletions(harness.db).map(
+          (thread) => thread.id,
+        ),
+      ).toEqual([...deleting.threadIds, ...other.threadIds]);
+    });
+  });
+
+  it("deletes and purges a refused thread within N+1 slots across restarts, clock rollbacks and older-rowid arrivals", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const { host } = seedHostSession(harness.deps, { id: "host-restarting" });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/refused-storage-delete-restarting",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/refused-storage-delete-restarting",
+        status: "ready",
+      });
+      const slotCount = 20;
+      const olderRowidArrivals = Array.from(
+        { length: slotCount },
+        () =>
+          seedThread(harness.deps, {
+            environmentId: environment.id,
+            projectId: project.id,
+            status: "idle",
+          }).id,
+      );
+      const seedDeleted = (minutesBeforeStart: number) => {
+        vi.setSystemTime(START_MS - minutesBeforeStart * 60_000);
+        return seedDeletedThreadIn(harness, {
+          environmentId: environment.id,
+          projectId: project.id,
+        });
+      };
+      const alwaysRefusedThreadId = seedDeleted(4);
+      const dueRowsAheadOfA = [
+        alwaysRefusedThreadId,
+        seedDeleted(3),
+        seedDeleted(2),
+        seedDeleted(1),
+      ];
+      const threadA = seedDeleted(0);
+      const released = new Set([threadA]);
+      const requestsBySlot: string[][] = [];
+      for (let slot = 0; slot < slotCount; slot += 1) {
+        const slotMs = -slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        if (slot > 0) {
+          clearThreadStorageDeleteRetryMemory(harness.db);
+          markThreadDeleted(harness.db, harness.hub, {
+            threadId: olderRowidArrivals[slot - 1] ?? "",
+          });
+          await reconcileDaemonReportedThreads(harness.deps, {
+            activeThreadIds: [],
+            hostId: host.id,
+            sameDaemonInstance: false,
+            undeliveredEventThreadIds: [],
+          });
+        }
+        await runThreadLifecycleSweep(harness.deps);
+        const requests = await refuseQueuedStorageDeletes(
+          harness,
+          slotMs,
+          released,
+        );
+        requestsBySlot.push(requests.map((request) => request.threadId));
+        if (requests.some((request) => request.threadId === threadA)) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      const slotServingA = requestsBySlot.findIndex((threadIds) =>
+        threadIds.includes(threadA),
+      );
+      expect(requestsBySlot.every((threadIds) => threadIds.length === 1)).toBe(
+        true,
+      );
+      expect(slotServingA).toBeGreaterThanOrEqual(0);
+      expect(slotServingA).toBeLessThanOrEqual(dueRowsAheadOfA.length);
+      expect(requestsBySlot.flat()).toContain(alwaysRefusedThreadId);
+      expect(getThread(harness.db, threadA)).toBeNull();
     });
   });
 });
