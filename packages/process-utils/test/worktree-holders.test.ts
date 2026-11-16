@@ -975,6 +975,7 @@ describe("system processes in another mount namespace", () => {
 describe("same-user processes in another mount namespace", () => {
   const mirror =
     "50 1 8:48 / / rw - ext4 /dev/sda rw\n51 50 0:5 / /proc rw - proc proc rw\n";
+  const hidden = "40 1 8:48 /unrelated /app rw - ext4 /dev/sda rw\n";
   const nsfs =
     "52 50 0:4 net:[4026532364] /run/docker/netns/682a4718e917 rw - nsfs nsfs rw\n";
   const cases = [
@@ -1049,6 +1050,42 @@ describe("same-user processes in another mount namespace", () => {
       { thread: true, root: "/work/tree" },
       "held",
     ],
+    [
+      "a hidden view and a detached root folder at the worktree",
+      hidden,
+      { root: "/", rootId: "1:100" },
+      "held",
+    ],
+    [
+      "a hidden view and a root folder elsewhere",
+      hidden,
+      { root: "/srv/jail" },
+      "clear",
+    ],
+    [
+      "a hidden view from a thread whose detached root folder is the worktree",
+      hidden,
+      { thread: true, root: "/", rootId: "1:100" },
+      "held",
+    ],
+    [
+      "a hidden view and a root folder that cannot be read",
+      hidden,
+      { rootDenied: true },
+      "clear",
+    ],
+    [
+      "a hidden view from a thread whose root folder cannot be read",
+      hidden,
+      { thread: true, rootDenied: true },
+      "clear",
+    ],
+    [
+      "mirrors from a thread whose root folder cannot be read",
+      mirror,
+      { thread: true, rootDenied: true },
+      "uncertain",
+    ],
   ] as const;
   it.each(
     ["earlier", "final"].flatMap((scan) =>
@@ -1067,6 +1104,7 @@ describe("same-user processes in another mount namespace", () => {
         thread?: boolean;
         root?: string;
         rootDenied?: boolean;
+        rootId?: string;
       } = links;
       const rootLink =
         extra.thread === true ? "/proc/101/task/102/root" : "/proc/101/root";
@@ -1101,6 +1139,13 @@ describe("same-user processes in another mount namespace", () => {
           if (extra.rootDenied === true && target === rootLink)
             throw Object.assign(new Error("denied"), { code: "EACCES" });
           return proc.readlink(target);
+        },
+        statId: async (target) => {
+          if (extra.rootId !== undefined && target === rootLink)
+            return extra.rootId;
+          if (extra.rootDenied === true && target === rootLink)
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return proc.statId(target);
         },
         readFile: async (target) => {
           if (
