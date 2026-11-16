@@ -173,6 +173,21 @@ describe("the platform watcher backend", () => {
     });
   });
 
+  it("keeps looking past a watchman that is not executable to one that is", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-parcel-path-"));
+    roots.push(root);
+    const PATH = ["plain", "exec"].map((name) => join(root, name)).join(":");
+    for (const [name, mode] of [
+      ["plain", 0o644],
+      ["exec", 0o755],
+    ] as const) {
+      await mkdir(join(root, name));
+      await writeFile(join(root, name, "watchman"), "#!/bin/sh\nexit 0\n");
+      await chmod(join(root, name, "watchman"), mode);
+    }
+    expect(withPlatformParcelBackend({}, "linux", { PATH }, root)).toEqual({});
+  });
+
   it("resolves a relative PATH entry against the working directory", async () => {
     const cwd = await workingDirectoryWith("bin");
     expect(

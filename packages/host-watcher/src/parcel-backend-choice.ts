@@ -15,7 +15,7 @@ function executableOnPath(
       accessSync(candidate, constants.X_OK);
       return true;
     } catch {
-      return false;
+      continue;
     }
   }
   return false;
