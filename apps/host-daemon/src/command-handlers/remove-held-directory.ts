@@ -5,6 +5,7 @@ import type { WorktreeHolderScan } from "@bb/process-utils";
 import {
   FILE_TIMESTAMP_LAG_MS,
   removeDirectoryTree,
+  keptTreeReasons,
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
   directoryIdentity,
@@ -93,12 +94,17 @@ export async function removeDirectoryAfterHolderRecheck(args: {
         },
       });
       if (removal.status !== "removed") {
-        const preservedPaths = removal.retainedPaths.map((retainedPath) =>
-          path.join(args.directory, path.relative(quarantine, retainedPath)),
+        const shown = (entry: string) =>
+          path.join(args.directory, path.relative(quarantine, entry));
+        const reasons = keptTreeReasons(
+          removal,
+          shown,
+          "new or changed data was found during removal",
         );
+        const preservedPaths = removal.retainedPaths.map(shown);
         throw new CommandDispatchError(
           "path_in_use",
-          `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,
+          `Refusing to ${args.action} ${args.directory}: ${reasons.join("; ")}.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,
         );
       }
     } else {
