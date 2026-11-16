@@ -461,13 +461,16 @@ describe("the macOS scan of processes lsof cannot see", () => {
     },
   );
 
-  it("ignores a doubt that appears only in a later listing", async () => {
-    listing = exited(row(1, 0, "/sbin/launchd", 0));
-    relistings = [exited(row(5000, 0, "sudo -i"))];
+  it("keeps only the first listing's doubts when a later listing shows another one", async () => {
+    const first = row(5000, 0, "sudo -i");
+    listing = exited(first);
+    relistings = [exited([first, row(6000, rootUid, "sudo -s")].join("\n"))];
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
-      status: "clear",
+      status: "uncertain",
+      reason:
+        "1 processes could not be ruled out, such as process 5000 uid 0 is sudo, su or doas, which may run a program in the worktree",
     });
-    expect(listingCalls).toBe(1);
+    expect(listingCalls).toBe(4);
   });
 
   it.each([
