@@ -16066,7 +16066,7 @@ else {
     expect(result.stderr).toContain("no fallback to direct auth");
     await expect(fs.stat(marker)).rejects.toThrow();
     await expect(fs.stat(tokenFile)).rejects.toThrow();
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("refuses to reuse a live actor id unless --rotate is given", async () => {
     const { run, readToken, hubSend, threadCli } = await harness();
