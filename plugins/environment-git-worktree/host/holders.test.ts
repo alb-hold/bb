@@ -9,11 +9,12 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { linuxPathHasExtendedAcl } from "./linux-path-access.js";
 import {
   describeHolderScan,
@@ -23,6 +24,11 @@ import {
   procReadIsSynchronous,
   scanLinux,
   scanWorktreeHolders,
+  useLsofRunnerForTests,
+  useDoubtRecheckWaitForTests,
+  usePsRunnerForTests,
+  type LsofResult,
+  type PsResult,
   type ProcReader,
 } from "./holders.js";
 
@@ -126,11 +132,11 @@ describe("scanWorktreeHolders", () => {
     });
   });
 
-  it("never reports an unused folder as held, and is clear only when every process could be inspected", async () => {
+  it("never reports an unused folder as held, and is clear on macOS only when no other user's process names it", async () => {
     const directory = await makeDirectory();
     const scan = await scanWorktreeHolders(directory);
     expect(["clear", "unknown"]).toContain(scan.status);
-    if (process.platform !== "linux") expect(scan.status).toBe("unknown");
+    if (process.platform === "darwin") expect(scan.status).toBe("clear");
   });
 
   it("reports a program whose working folder is inside, without signalling it", async ({
@@ -153,6 +159,67 @@ describe("scanWorktreeHolders", () => {
     });
     expect(() => process.kill(child.pid ?? 0, 0)).not.toThrow();
   });
+
+  it.skipIf(process.platform !== "darwin")(
+    "reports a program whose working folder is reached through a symlink into the folder",
+    async () => {
+      const directory = await makeDirectory();
+      const elsewhere = await makeDirectory();
+      const link = join(elsewhere, "into-worktree");
+      await symlink(directory, link);
+      const child = hold("setTimeout(() => {}, 300_000)", link);
+
+      await expect
+        .poll(async () => (await scanWorktreeHolders(directory)).status, {
+          timeout: 10_000,
+        })
+        .toBe("held");
+      expect(await scanWorktreeHolders(directory)).toMatchObject({
+        status: "held",
+        holders: [{ pid: child.pid, through: "working folder" }],
+      });
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "labels holders by descriptor when the folder is scanned by its /tmp spelling",
+    async () => {
+      const real = await realpath(
+        await mkdtemp(join("/private/tmp", "bb-holders-spelling-")),
+      );
+      roots.push(real);
+      const spelled = real.replace(/^\/private/u, "");
+      expect(spelled.startsWith("/tmp/")).toBe(true);
+      const file = join(real, "open.txt");
+      await writeFile(file, "x");
+      const elsewhere = await makeDirectory();
+      const inside = hold("setTimeout(() => {}, 300_000)", real);
+      const opener = hold(
+        'require("node:fs").openSync(process.argv[1], "r+"); setTimeout(() => {}, 300_000)',
+        elsewhere,
+        [file],
+      );
+
+      await expect
+        .poll(
+          async () => {
+            const scan = await scanWorktreeHolders(spelled);
+            return scan.status === "held" ? scan.holders.length : 0;
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(2);
+      const scan = await scanWorktreeHolders(spelled);
+      expect(scan).toMatchObject({ status: "held" });
+      const through = new Map(
+        scan.status === "held"
+          ? scan.holders.map((holder) => [holder.pid, holder.through])
+          : [],
+      );
+      expect(through.get(inside.pid ?? -1)).toBe("working folder");
+      expect(through.get(opener.pid ?? -1)).toBe("open file");
+    },
+  );
 
   it("reports a program that holds a file open inside the folder", async ({
     skip,
@@ -239,6 +306,472 @@ describe("scanWorktreeHolders", () => {
       }),
     ).toContain("node (pid 42, open file)");
     expect(describeHolderScan({ status: "clear" })).toBeNull();
+  });
+});
+
+describe("the macOS scan of processes lsof cannot see", () => {
+  const tree = "/work/tree";
+  const ownUid = process.getuid?.() ?? 501;
+  const rootUid = ownUid === 0 ? 1 : 0;
+  const exited = (
+    stdout: string,
+    code = 0,
+    pid: number | null = null,
+  ): PsResult => ({
+    code,
+    stdout,
+    stderr: "",
+    spawnFailed: false,
+    pid,
+  });
+  let lsof: LsofResult;
+  let listing: PsResult;
+  let labels: PsResult;
+  let relistings: PsResult[];
+  let listingCalls = 0;
+  const waits: number[] = [];
+  const psCalls: string[][] = [];
+  const row = (pid: number, uid: number, args: string, ppid = 1) =>
+    `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    lsof = exited("", 1);
+    listing = exited("");
+    labels = exited("");
+    relistings = [];
+    listingCalls = 0;
+    waits.length = 0;
+    psCalls.length = 0;
+    useLsofRunnerForTests(async () => lsof);
+    usePsRunnerForTests(async (args) => {
+      psCalls.push([...args]);
+      if (args.includes("-p")) return labels;
+      listingCalls += 1;
+      return listingCalls === 1
+        ? listing
+        : (relistings[listingCalls - 2] ?? relistings.at(-1) ?? listing);
+    });
+    useDoubtRecheckWaitForTests(async (ms) => {
+      waits.push(ms);
+    });
+  });
+
+  afterEach(() => {
+    useLsofRunnerForTests(null);
+    usePsRunnerForTests(null);
+    useDoubtRecheckWaitForTests(null);
+  });
+
+  it("lists every process with untruncated args, effective uid and pid", async () => {
+    await scanWorktreeHolders(tree);
+    expect(psCalls[0]).toEqual(["-axww", "-o", "pid=,ppid=,uid=,args="]);
+  });
+
+  it("keeps the worktree when another user's process names it in its args", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd"),
+        row(4100, rootUid, `/usr/bin/make -C ${tree}`),
+      ].join("\n"),
+    );
+    labels = exited(`4100 /usr/bin/make`);
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes could not be ruled out, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
+    });
+    expect(psCalls.slice(1, 4)).toEqual(
+      Array(3).fill(["-axww", "-o", "pid=,ppid=,uid=,args="]),
+    );
+    expect(psCalls[4]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
+  });
+
+  it("finds the worktree in args past column 200", async () => {
+    listing = exited(
+      row(4100, rootUid, `/usr/bin/tool ${"x".repeat(240)} ${tree}/build`),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+  });
+
+  it("matches the worktree through the /private alias macOS gives /var, /tmp and /etc", async () => {
+    listing = exited(
+      row(4100, rootUid, "/usr/bin/make -C /var/folders/ab/tree"),
+    );
+    await expect(
+      scanWorktreeHolders("/private/var/folders/ab/tree"),
+    ).resolves.toMatchObject({ status: "uncertain" });
+  });
+
+  it("reads nobody's uid of -2 and a process with no args", async () => {
+    listing = exited(
+      [row(93111, -2, `/usr/libexec/helper ${tree}`), row(90, 0, "")].join(
+        "\n",
+      ),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("process 93111 foreign uid -2"),
+    });
+    listing = exited(
+      [row(93111, -2, "/usr/libexec/helper"), row(90, 0, "")].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("leaves our own processes to lsof, whatever their args say", async () => {
+    listing = exited(row(4100, ownUid, `/bin/zsh ${tree}/build.sh`));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("is clear for Terminal's login, our own ps, a shell outside the worktree and a detached root process", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd", 0),
+        row(
+          700,
+          ownUid,
+          "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+        row(701, 0, "login -pf someone", 700),
+        row(702, ownUid, "-zsh", 701),
+        row(process.pid, ownUid, "node vitest", 702),
+        row(703, 0, "ps -axww -o pid=,ppid=,uid=,args=", process.pid),
+        row(900, 0, "/usr/libexec/sandboxd"),
+      ].join("\n"),
+      0,
+      703,
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
+  it("keeps the worktree while a root job outlives the sudo that started it, whatever its args", async () => {
+    listing = exited(
+      [
+        row(1, 0, "/sbin/launchd", 0),
+        row(5000, 0, "sudo /bin/sleep 300"),
+        row(5001, 0, "/bin/sleep 300", 5000),
+      ].join("\n"),
+    );
+    labels = exited(" 5000 sudo");
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason:
+        "1 processes could not be ruled out, such as process 5000 (sudo) uid 0 is sudo, su or doas, which may run a program in the worktree",
+    });
+  });
+
+  it("lists once when the first listing has no doubt", async () => {
+    listing = exited(row(1, 0, "/sbin/launchd", 0));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "clear",
+    });
+    expect(listingCalls).toBe(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("keeps a doubt still there in three later listings, taken 100, 400 and 1000 ms apart", async () => {
+    listing = exited(row(5000, 0, "sudo /bin/sleep 300"));
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+    expect(listingCalls).toBe(4);
+    expect(waits).toEqual([100, 400, 1000]);
+  });
+
+  it.each([
+    ["is reparented to launchd", row(800, rootUid, "/bin/sleep 300", 1)],
+    ["changes uid", row(800, ownUid === 2 ? 3 : 2, "/bin/sleep 300", 702)],
+  ])(
+    "keeps the worktree for a holder that %s between listings",
+    async (_label, later) => {
+      listing = exited(
+        [
+          row(702, ownUid, "-zsh"),
+          row(800, rootUid, "/bin/sleep 300", 702),
+        ].join("\n"),
+      );
+      relistings = [exited(later)];
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "uncertain",
+        reason: `1 processes could not be ruled out, such as process 800 foreign uid ${rootUid} was started by a process of this user`,
+      });
+      expect(listingCalls).toBe(4);
+    },
+  );
+
+  it.each([2, 3, 4])(
+    "clears a doubt that is gone from listing %i, and lists no more",
+    async (gone) => {
+      const doubt = exited(row(5000, 0, "sudo -i"));
+      listing = doubt;
+      relistings = [
+        ...Array.from({ length: gone - 2 }, () => doubt),
+        exited(row(1, 0, "/sbin/launchd", 0)),
+      ];
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "clear",
+      });
+      expect(listingCalls).toBe(gone);
+    },
+  );
+
+  it("keeps only the first listing's doubts when a later listing shows another one", async () => {
+    const first = row(5000, 0, "sudo -i");
+    listing = exited(first);
+    relistings = [exited([first, row(6000, rootUid, "sudo -s")].join("\n"))];
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason:
+        "1 processes could not be ruled out, such as process 5000 uid 0 is sudo, su or doas, which may run a program in the worktree",
+    });
+    expect(listingCalls).toBe(4);
+  });
+
+  it.each([
+    [
+      2,
+      "exits nonzero",
+      exited("", 1),
+      "could not list other users' processes again: ps exited with 1",
+    ],
+    [
+      4,
+      "exits nonzero",
+      exited("", 1),
+      "could not list other users' processes again: ps exited with 1",
+    ],
+    [
+      3,
+      "has a line it cannot read",
+      exited("garbled"),
+      "1 lines of a later process list could not be read",
+    ],
+  ] as const)(
+    "keeps the worktree when listing %i %s",
+    async (failing, _label, failure, reason) => {
+      const doubt = exited(row(5000, 0, "sudo -i"));
+      listing = doubt;
+      relistings = [
+        ...Array.from({ length: failing - 2 }, () => doubt),
+        failure,
+      ];
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "unknown",
+        reason,
+      });
+    },
+  );
+
+  it("keeps the worktree for a root process our shell started, however far down the chain", async () => {
+    listing = exited(
+      [
+        row(702, ownUid, "-zsh"),
+        row(800, rootUid, "/usr/local/bin/privileged-helper", 702),
+        row(801, rootUid, "/bin/sleep 300", 800),
+      ].join("\n"),
+    );
+    labels = exited([" 800 privileged-helper", " 801 sleep"].join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `2 processes could not be ruled out, such as process 800 (privileged-helper) foreign uid ${rootUid} was started by a process of this user`,
+    });
+  });
+
+  it.each([
+    ["sudo", 0],
+    ["su", 0],
+    ["/usr/local/bin/doas", 0],
+    ["doas", "own"],
+  ] as const)(
+    "keeps the worktree while %s runs as uid %s, unrelated to it",
+    async (program, uid) => {
+      listing = exited(
+        row(5100, uid === "own" ? ownUid : uid, `${program} -i`),
+      );
+      await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("is sudo, su or doas"),
+      });
+    },
+  );
+
+  it("keeps the worktree for a root login our shell started, outside the terminal app", async () => {
+    listing = exited(
+      [row(702, ownUid, "-zsh"), row(5200, 0, "login -pf someone", 702)].join(
+        "\n",
+      ),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("was started by a process of this user"),
+    });
+  });
+
+  it("keeps the worktree for a foreign process named ps under this process that is not the scan's own ps", async () => {
+    listing = exited(
+      [
+        row(process.pid, ownUid, "node vitest"),
+        row(703, 0, "ps -axww -o pid=,ppid=,uid=,args=", process.pid),
+        row(5400, rootUid, "ps", process.pid),
+      ].join("\n"),
+      0,
+      703,
+    );
+    labels = exited(" 5400 ps");
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes could not be ruled out, such as process 5400 (ps) foreign uid ${rootUid} was started by a process of this user`,
+    });
+  });
+
+  it("keeps the worktree for a ps our scan did not start", async () => {
+    listing = exited(
+      [row(702, ownUid, "-zsh"), row(5300, 0, "ps -ax", 702)].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+  });
+
+  it.each([
+    [
+      "a parent loop",
+      [row(6000, 0, "/bin/a", 6001), row(6001, 0, "/bin/b", 6000)],
+    ],
+    [
+      "a chain deeper than the walk",
+      Array.from({ length: 80 }, (_, index) =>
+        row(7000 + index, 0, "/bin/link", index === 79 ? 1 : 7001 + index),
+      ),
+    ],
+  ] as const)("finishes and keeps the worktree on %s", async (_label, rows) => {
+    listing = exited(rows.join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("was started by a process of this user"),
+    });
+  });
+
+  it("names the shell that holds the worktree when it started a root job there", async () => {
+    lsof = exited(["p702", "czsh", "fcwd", `n${tree}`].join("\n"));
+    listing = exited(
+      [
+        row(702, ownUid, "-zsh"),
+        row(703, 0, "sudo make"),
+        row(704, 0, "make"),
+      ].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "held",
+      holders: [{ pid: 702, command: "zsh", through: "working folder" }],
+    });
+  });
+
+  it("labels a working folder by its descriptor, not by its path", async () => {
+    lsof = exited(
+      [
+        "p800",
+        "cnode",
+        "f12",
+        `n${tree}/open.txt`,
+        "p801",
+        "cvim",
+        "f4",
+        `n${tree}`,
+        "fcwd",
+        `n${tree}`,
+      ].join("\n"),
+    );
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "held",
+      holders: [
+        { pid: 800, command: "node", through: "open file" },
+        { pid: 801, command: "vim", through: "working folder" },
+      ],
+    });
+  });
+
+  it.each([
+    [
+      "fails to start",
+      {
+        code: null,
+        stdout: "",
+        stderr: "",
+        spawnFailed: true,
+        failure: "spawn",
+        pid: null,
+      },
+      "ps failed to start",
+    ],
+    ["exits nonzero", exited("", 1), "ps exited with 1"],
+  ] as const)(
+    "keeps the worktree when ps %s",
+    async (_label, result, reason) => {
+      listing = result;
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "unknown",
+        reason: `could not list other users' processes: ${reason}`,
+      });
+    },
+  );
+
+  it("keeps the worktree when a process-list line cannot be read", async () => {
+    listing = exited([row(1, 0, "/sbin/launchd"), "garbled"].join("\n"));
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "unknown",
+      reason: "1 lines of the process list could not be read",
+    });
+  });
+
+  it("names a doubt by pid alone when the label lookup fails, and still keeps the worktree", async () => {
+    listing = exited(row(4100, rootUid, `/usr/bin/make -C ${tree}`));
+    labels = exited("", 1);
+    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+      status: "uncertain",
+      reason: `1 processes could not be ruled out, such as process 4100 foreign uid ${rootUid} command references the worktree`,
+    });
+  });
+
+  it("reads a command name with spaces whole", async () => {
+    listing = exited(
+      row(4100, rootUid, `/Library/Audio/x/Core Audio Driver (x) ${tree}`),
+    );
+    labels = exited(" 4100 Core Audio Driver (x)");
+    await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining(
+        "process 4100 (Core Audio Driver (x)) foreign uid",
+      ),
+    });
+  });
+
+  it("never stores, returns or logs another user's args", async () => {
+    const secret = "hunter2-token-value";
+    const args = `/usr/bin/deploy --token=${secret} ${tree}`;
+    listing = exited(row(4100, rootUid, args));
+    labels = exited("4100 /usr/bin/deploy");
+    const logged = (["log", "info", "warn", "error", "debug"] as const).map(
+      (method) => vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    try {
+      const scan = await scanWorktreeHolders(tree);
+      const shown = `${JSON.stringify(scan)}\n${describeHolderScan(scan)}`;
+      expect(scan.status).toBe("uncertain");
+      expect(shown).not.toContain(secret);
+      expect(shown).not.toContain("--token");
+      for (const spy of logged) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+    }
   });
 });
 
@@ -514,6 +1047,21 @@ function fakeProc(options: {
     readdir: async (path) => dirs.get(path) ?? fail(path),
     lstatId: async (path) => ids.get(path) ?? fail(path),
     statId: async (path) => ids.get(path) ?? fail(path),
+    mountId: async (path) => {
+      const table = files.get("/proc/self/mountinfo") ?? fail(path);
+      const mount = table
+        .trim()
+        .split("\n")
+        .map((line) => line.split(" "))
+        .filter(
+          (fields) =>
+            fields[4] !== undefined &&
+            (path === fields[4] ||
+              path.startsWith(fields[4] === "/" ? "/" : `${fields[4]}/`)),
+        )
+        .sort((a, b) => (b[4]?.length ?? 0) - (a[4]?.length ?? 0))[0];
+      return mount?.[0] ?? fail(path);
+    },
     statAccess: async (path) => ({
       uid: path === "/work/tree" ? (options.worktreeUid ?? 0) : 0,
       gid: path === "/work/tree" ? (options.worktreeGid ?? 0) : 0,
@@ -1816,6 +2364,7 @@ function mountAliasProc(
   return {
     ...hostProc,
     realpath: async (value) => value,
+    mountId: async (value) => (value === directory ? "25" : denied()),
     subdirectories: async (value) => {
       if (kind === "tree unreadable") return denied();
       return value === directory ? ["sub"] : [];
@@ -2218,6 +2767,252 @@ describe("system processes in another mount namespace", () => {
       await readsPerScan(["101", "102", "103", "104", "105", "106"]),
     ).toEqual(single);
   });
+  const ownTableReader = (
+    own: string,
+    mountId: () => Promise<string>,
+    foreign: string,
+  ) => {
+    const proc = mountAliasProc("/work/tree", "outside", 0);
+    const local = (target: string) =>
+      target.replace(/^\/proc\/1\d\d(?=\/|$)/u, "/proc/101");
+    const reader: ProcReader = {
+      ...proc,
+      mountId: async (target) =>
+        target === "/work/tree" ? mountId() : proc.mountId(target),
+      readdir: async (target) =>
+        target === "/proc" ? ["101", "102"] : proc.readdir(local(target)),
+      readlink: async (target) => proc.readlink(local(target)),
+      readFile: async (target) => {
+        if (target === "/proc/self/mountinfo") return own;
+        if (/^\/proc\/\d+\/mountinfo$/u.test(target)) return foreign;
+        return proc.readFile(local(target));
+      },
+    };
+    return reader;
+  };
+  const rootLine = "25 1 8:1 / / rw - ext4 /dev/sdb rw\n";
+  const workLine = "60 25 8:48 / /work rw - ext4 /dev/sda rw\n";
+  const ownTableCases = [
+    [
+      "a prefix of our table without the worktree mount, its ancestor on another device",
+      rootLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a mount stacked over an older one at the worktree's mount point, the older on another device",
+      rootLine +
+        "60 25 8:1 /old /work rw - ext4 /dev/sdb rw\n65 25 8:48 / /work rw - ext4 /dev/sda rw\n",
+      async () => "65",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a complete table whose worktree mount ID matches",
+      rootLine + workLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "clear",
+    ],
+    [
+      "a btrfs subvolume root whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      async () => "25",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "a nested btrfs subvolume whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n61 25 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      async () => "61",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n71 70 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "fdinfo without a mount ID",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("no mnt_id"), { code: "ENODATA" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a worktree path that is not a directory",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a worktree directory we cannot open",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      ownTableCases.map(
+        ([kind, own, mountId, foreign, expected]) =>
+          [scan, kind, own, mountId, foreign, expected] as const,
+      ),
+    ),
+  )(
+    "checks our own mount table on the %s scan against the worktree mount ID with %s",
+    async (scan, _kind, own, mountId, foreign, expected) => {
+      const result = await scanLinux(
+        "/work/tree",
+        ownTableReader(own, mountId, foreign),
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      if (expected === "clear") {
+        expect(result).toEqual({ status: "clear" });
+        return;
+      }
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("our own mountinfo is unreadable ("),
+      });
+      expect(describeHolderScan(result)).toContain("so it was kept");
+    },
+  );
+  const absent = async (): Promise<string> => {
+    throw Object.assign(new Error("absent"), { code: "ENOENT" });
+  };
+  const absentCases = [
+    [
+      "only mirrors",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      null,
+    ],
+    [
+      "a bind mount of the worktree",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "sees the worktree at /app",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      absentCases.map(
+        ([kind, foreign, uncertain]) =>
+          [scan, kind, foreign, uncertain] as const,
+      ),
+    ),
+  )(
+    "scans a worktree path that no longer exists on the %s scan as before when a system process sees %s",
+    async (scan, _kind, foreign, uncertain) => {
+      expect(
+        await scanLinux(
+          "/work/tree",
+          ownTableReader(rootLine + workLine, absent, foreign),
+          4242,
+          scan === "final"
+            ? { maxDirectories: 500_000, final: true }
+            : undefined,
+        ),
+      ).toMatchObject(
+        uncertain === null
+          ? { status: "clear" }
+          : { status: "uncertain", reason: expect.stringContaining(uncertain) },
+      );
+    },
+  );
+  const mirrorForeign =
+    "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n";
+  const stackedAtWork = "65 60 8:2 / /work rw - ext4 /dev/sdc rw\n";
+  const raceCases = [
+    [
+      "a mount stacked at the worktree's mount point after the worktree was opened",
+      rootLine + workLine,
+      "60",
+      rootLine + workLine + stackedAtWork,
+      "uncertain",
+    ],
+    [
+      "a mount stacked at the worktree's mount point before the worktree was opened",
+      rootLine + workLine,
+      "65",
+      rootLine + workLine + stackedAtWork,
+      "uncertain",
+    ],
+    [
+      "a mount stacked inside the worktree after the worktree was opened",
+      rootLine + workLine,
+      "60",
+      rootLine +
+        workLine +
+        "66 60 8:2 / /work/tree/sub rw - ext4 /dev/sdc rw\n",
+      "uncertain",
+    ],
+    [
+      "unrelated mounts that change between the reads",
+      rootLine + workLine + "80 25 0:50 / /run/user/1000 rw - tmpfs tmpfs rw\n",
+      "60",
+      rootLine +
+        workLine +
+        "81 25 0:51 / /snap/core/1 ro - squashfs /dev/loop0 ro\n",
+      "clear",
+    ],
+    [
+      "no change between the reads",
+      rootLine + workLine,
+      "60",
+      rootLine + workLine,
+      "clear",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      raceCases.map(
+        ([kind, before, mountId, after, expected]) =>
+          [scan, kind, before, mountId, after, expected] as const,
+      ),
+    ),
+  )(
+    "rereads our own mount table after reading the worktree mount ID on the %s scan, with %s",
+    async (scan, _kind, before, mountId, after, expected) => {
+      let opened = false;
+      const proc = ownTableReader(
+        before,
+        async () => {
+          opened = true;
+          return mountId;
+        },
+        mirrorForeign,
+      );
+      const reader: ProcReader = {
+        ...proc,
+        readFile: async (target) =>
+          target === "/proc/self/mountinfo"
+            ? opened
+              ? after
+              : before
+            : proc.readFile(target),
+      };
+      const result = await scanLinux(
+        "/work/tree",
+        reader,
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      if (expected === "clear") {
+        expect(result).toEqual({ status: "clear" });
+        return;
+      }
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("our own mountinfo is unreadable ("),
+      });
+    },
+  );
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
     const scanWith = async (processes: number) => {
       const proc = mountAliasProc("/work/tree", "outside", 0);

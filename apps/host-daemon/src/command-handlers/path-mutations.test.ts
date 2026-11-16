@@ -527,6 +527,7 @@ describe("confined host path mutations", () => {
       await fs.writeFile(path.join(target, "old.txt"), "old");
       await fs.writeFile(path.join(target, "nested", "deep.txt"), "deep");
       await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      const identity = await fs.lstat(target, { bigint: true });
       let quarantined: string | undefined;
       await expect(
         removeDirectoryAfterHolderRecheck({
@@ -538,7 +539,10 @@ describe("confined host path mutations", () => {
             await fs.writeFile(path.join(quarantine, "late.txt"), "late");
           },
         }),
-      ).rejects.toMatchObject({ code: "path_in_use" });
+      ).rejects.toMatchObject({
+        code: "path_in_use",
+        refusalKey: `${identity.dev}:${identity.ino}|changed-data`,
+      });
       expect(quarantined).toBeDefined();
       await expect(fs.stat(quarantined!)).rejects.toMatchObject({
         code: "ENOENT",

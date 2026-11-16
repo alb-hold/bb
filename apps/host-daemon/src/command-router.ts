@@ -25,7 +25,11 @@ import {
   getErrorCode,
   type CommandDispatchOptions,
 } from "./command-dispatch.js";
-import { isExpectedOnlineRpcFailureError } from "./command-dispatch-support.js";
+import { createRefusalLogOnce } from "@bb/domain";
+import {
+  isExpectedOnlineRpcFailureError,
+  KeyedRefusalError,
+} from "./command-dispatch-support.js";
 import { roundDurationMs } from "@bb/process-utils";
 import type { HostDaemonLogger } from "./logger.js";
 import { RuntimeManager } from "./runtime-manager.js";
@@ -104,6 +108,8 @@ export class CommandRouter {
     AbortController
   >();
 
+  private readonly refusalLog = createRefusalLogOnce();
+
   constructor(private readonly options: CommandRouterOptions) {
     this.logger = options.logger;
   }
@@ -132,11 +138,18 @@ export class CommandRouter {
       });
     } catch (error) {
       const errorCode = getErrorCode(error);
+      const refusalKey =
+        error instanceof KeyedRefusalError ? error.refusalKey : undefined;
       if (!isExpectedOnlineRpcFailureError(error)) {
-        this.logger.warn(
+        const level =
+          refusalKey === undefined || this.refusalLog.isNewRefusal(refusalKey)
+            ? "warn"
+            : "debug";
+        this.logger[level](
           {
             type: message.command.type,
             err: error,
+            ...(refusalKey === undefined ? {} : { refusalKey }),
           },
           "online host RPC failed",
         );
@@ -154,6 +167,7 @@ export class CommandRouter {
         ok: false,
         errorCode,
         errorMessage: error instanceof Error ? error.message : String(error),
+        ...(refusalKey === undefined ? {} : { refusalKey }),
       };
     } finally {
       if (

@@ -269,6 +269,50 @@ describe.skipIf(!runsHere)("a removal blocked by an unreadable process", () => {
     ]);
   });
 
+  it("gives a fresh and a remembered refusal the same key, made of the directory and the blockers' pid and start time only", async ({
+    skip,
+  }) => {
+    const directory = await target();
+    const child = await startProcess({
+      comm: "notagent",
+      dumpable: false,
+      inside: directory,
+    });
+    const pid = child.pid ?? 0;
+    skip(!(await unreadable(pid)), "the kernel lets this user read it");
+    let now = 1_000_000;
+    useHolderRefusalClockForTests(() => now);
+    const { counts, reader } = readerWatching(pid);
+    useProcReaderForTests(reader);
+    const identity = await fs.lstat(directory, { bigint: true });
+    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+    const start = stat
+      .slice(stat.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/u)[19];
+    const refusalKey = async () => {
+      try {
+        await removeDirectoryAfterHolderRecheck({
+          directory,
+          action: "remove",
+          recursive: true,
+        });
+        return "removed";
+      } catch (error) {
+        return (error as { refusalKey?: string }).refusalKey ?? "no key";
+      }
+    };
+    const fresh = await refusalKey();
+    now += 1;
+    const remembered = await refusalKey();
+    expect(counts.scans).toBe(1);
+    expect(fresh).toBe(
+      `${identity.dev}:${identity.ino}|holders:${pid}:${start}`,
+    );
+    expect(remembered).toBe(fresh);
+    expect(fresh).not.toContain("notagent");
+  });
+
   it("scans again at once when a blocking process exits", async ({ skip }) => {
     const directory = await target();
     const child = await startProcess({

@@ -176,7 +176,7 @@ async function descriptorAnchors(
   }
 }
 
-async function descriptorPath(
+export async function descriptorPath(
   directory: { fd: number; stat: () => Promise<DescriptorStat> },
   statDescriptor: (candidate: string) => Promise<DescriptorStat>,
   readDirectoryNames: (directory: string) => Promise<string[]>,
@@ -247,7 +247,7 @@ async function readableDirectory(located: FileHandle): Promise<FileHandle> {
   }
 }
 
-function sameDirectory(
+export function sameDirectory(
   left: { dev: number; ino: number; isDirectory(): boolean },
   right: { dev: number; ino: number; isDirectory(): boolean },
 ): boolean {

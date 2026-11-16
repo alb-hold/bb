@@ -517,7 +517,10 @@ describe("teardown's status and index reads never run a program from the reposit
     const reasons = await reasonsFor(fixture);
 
     expect(await markerText(fixture)).toBe("");
-    expect(reasons).toEqual([]);
+    expect(reasons).toEqual([
+      "has submodule repositories in its Git metadata (modules/sub), and removing the worktree would delete them with any unpushed commits",
+      "has an initialized submodule at sub, whose files would be deleted with the worktree",
+    ]);
   });
 
   it.each([
@@ -581,7 +584,10 @@ describe("teardown's status and index reads never run a program from the reposit
     const reasons = await reasonsFor(fixture);
 
     expect(await markerText(fixture)).toBe("");
-    expect(reasons).toEqual([]);
+    expect(reasons).toEqual([
+      "has submodule repositories in its Git metadata (modules/sub), and removing the worktree would delete them with any unpushed commits",
+      "has an initialized submodule at sub, whose files would be deleted with the worktree",
+    ]);
   });
 
   it("does not run a required driver, and status still succeeds", async () => {

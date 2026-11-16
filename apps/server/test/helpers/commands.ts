@@ -290,11 +290,6 @@ function nextTestRpcCursor(
   return nextCursor;
 }
 
-/**
- * Registers the capturing daemon socket for a host and returns it, so a test
- * that reconnects a host can hand the same socket to the real
- * `onDaemonSocketOpen` instead of replacing the capture with a stub.
- */
 export function registerTestHostRpcCapture(
   deps: Pick<TestAppHarness, "db" | "hub">,
   args: RegisterTestHostRpcCaptureArgs,
@@ -624,7 +619,7 @@ export async function reportNextEnvironmentAttachSuccess(
 export async function reportQueuedCommandError(
   harness: TestAppHarness,
   queued: QueuedCommand,
-  args: { errorCode: string; errorMessage: string },
+  args: { errorCode: string; errorMessage: string; refusalKey?: string },
   auth: { hostId?: string } = {},
 ): Promise<Response> {
   const sessionId = queued.row.sessionId;
@@ -642,6 +637,7 @@ export async function reportQueuedCommandError(
       ok: false,
       errorCode: args.errorCode,
       errorMessage: args.errorMessage,
+      ...(args.refusalKey === undefined ? {} : { refusalKey: args.refusalKey }),
     },
     sessionId,
   });

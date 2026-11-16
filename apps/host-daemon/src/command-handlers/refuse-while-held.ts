@@ -2,7 +2,10 @@ import {
   scanWorktreeHolders,
   type WorktreeHolderScan,
 } from "@bb/process-utils";
-import { CommandDispatchError } from "../command-dispatch-support.js";
+import {
+  CommandDispatchError,
+  KeyedRefusalError,
+} from "../command-dispatch-support.js";
 
 export async function refuseWhileHeld(args: {
   directory: string;
@@ -11,18 +14,18 @@ export async function refuseWhileHeld(args: {
   final?: boolean;
   onDoubt?: (
     scan: Extract<WorktreeHolderScan, { status: "uncertain" | "unknown" }>,
-  ) => Promise<void>;
+  ) => Promise<string | null>;
 }): Promise<void> {
   const scan =
     args.testWorktreeHolderScan ??
     (await scanWorktreeHolders(args.directory, { final: args.final === true }));
   if (scan.status === "clear") return;
   if (scan.status === "unknown" || scan.status === "uncertain") {
-    await args.onDoubt?.(scan);
-    throw new CommandDispatchError(
-      "path_in_use",
-      `Refusing to ${args.action} ${args.directory}: whether a process is still using it could not be established (${scan.reason}). Nothing was stopped and nothing was removed.`,
-    );
+    const refusalKey = (await args.onDoubt?.(scan)) ?? null;
+    const message = `Refusing to ${args.action} ${args.directory}: whether a process is still using it could not be established (${scan.reason}). Nothing was stopped and nothing was removed.`;
+    throw refusalKey === null
+      ? new CommandDispatchError("path_in_use", message)
+      : new KeyedRefusalError("path_in_use", message, refusalKey);
   }
   throw new CommandDispatchError(
     "path_in_use",

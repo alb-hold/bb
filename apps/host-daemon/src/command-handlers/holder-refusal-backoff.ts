@@ -121,18 +121,18 @@ export async function recordHolderRefusal(
   directory: string,
   identity: string,
   scan: DoubtfulScan,
-): Promise<void> {
+): Promise<HolderRefusal | null> {
   const blockers = new Map<number, HolderProcessIdentity>();
   for (const { pid, identity: seen } of scan.blockingProcesses ?? []) {
     if (seen === null) {
       refusals.delete(directory);
-      return;
+      return null;
     }
     blockers.set(pid, seen);
   }
   if (blockers.size === 0) {
     refusals.delete(directory);
-    return;
+    return null;
   }
   const previous = refusals.get(directory);
   const sameSet =
@@ -152,20 +152,32 @@ export async function recordHolderRefusal(
     HOLDER_REFUSAL_MAX_DELAY_MS,
     HOLDER_REFUSAL_FIRST_DELAY_MS * 2 ** Math.min(attempts - 1, 16),
   );
-  refusals.delete(directory);
-  refusals.set(directory, {
+  const refusal: HolderRefusal = {
     identity,
     reason: scan.reason,
     blockers,
     attempts,
     firstRefusedAt: sameSet ? previous.firstRefusedAt : now,
     nextScanAt: now + delay,
-  });
+  };
+  refusals.delete(directory);
+  refusals.set(directory, refusal);
   while (refusals.size > MAX_REMEMBERED_REFUSALS) {
     const oldest = refusals.keys().next().value;
     if (oldest === undefined) break;
     refusals.delete(oldest);
   }
+  return refusal;
+}
+
+export function holderRefusalKey(
+  identity: string,
+  blockers: ReadonlyMap<number, HolderProcessIdentity>,
+): string {
+  const pairs = [...blockers]
+    .sort(([left], [right]) => left - right)
+    .map(([pid, blocker]) => `${pid}:${blocker.start}`);
+  return `${identity}|holders:${pairs.join(",")}`;
 }
 
 export function forgetHolderRefusal(directory: string): void {

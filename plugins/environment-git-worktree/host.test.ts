@@ -1904,7 +1904,7 @@ setTimeout(() => {}, 300_000);`,
       }
     });
 
-    it("retains a worktree whose Git status cannot be read, with its marker intact", async () => {
+    it("retains a worktree with an initialized submodule by its submodule, not by a Git status failure, with its marker intact", async () => {
       const worktree = await createManagedWorktree({
         pathKey: "thr_submodule",
         prepareSource: async (sourcePath) => {
@@ -1943,8 +1943,13 @@ setTimeout(() => {}, 300_000);`,
         expect(result.status).toBe("retained");
         const message = result.status === "retained" ? result.message : "";
         expect(message).toContain(`Kept ${worktree.path}`);
-        expect(message).toContain("could not read its Git status");
-        expect(message).toContain("libs/sub");
+        expect(message).not.toContain("could not read its Git status");
+        expect(message).toContain(
+          "has submodule repositories in its Git metadata (modules/libs), and removing the worktree would delete them with any unpushed commits",
+        );
+        expect(message).toContain(
+          "has an initialized submodule at libs/sub, whose files would be deleted with the worktree",
+        );
         expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
         expect(existsSync(worktree.completionPath)).toBe(true);
         expect(await registeredWorktrees(worktree.sourcePath)).toContain(

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readlinkSync } from "node:fs";
+import { constants, readdirSync, readlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -132,6 +132,21 @@ function isUnder(candidate: string, directory: string): boolean {
   );
 }
 
+function commandReferences(value: string, directory: string): boolean {
+  let offset = value.indexOf(directory);
+  while (offset >= 0) {
+    const before = value[offset - 1];
+    const after = value[offset + directory.length];
+    if (
+      (before === undefined || /[\s\0="':]/u.test(before)) &&
+      (after === undefined || /[\s\0/']/u.test(after))
+    )
+      return true;
+    offset = value.indexOf(directory, offset + 1);
+  }
+  return false;
+}
+
 function mappedPath(line: string): string {
   return (line.match(/^(?:\S+[ \t]+){5}(.*)$/u)?.[1] ?? "").replace(
     /\\(040|011|012|134)/gu,
@@ -253,14 +268,49 @@ async function foreignMountsExcludeWorktree(
 
 type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
 
-async function readOwnMounts(proc: ProcReader): Promise<OwnMounts> {
+async function readOwnMounts(
+  proc: ProcReader,
+  directory: string,
+): Promise<OwnMounts> {
   const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
   if (!("value" in own))
     return { ok: false, error: "failed" in own ? own.failed : "ENOENT" };
   const mounts = parseMountinfo(own.value);
-  return mounts === null
-    ? { ok: false, error: "unparsable" }
-    : { ok: true, mounts };
+  if (mounts === null) return { ok: false, error: "unparsable" };
+  let mountId: string;
+  try {
+    mountId = await proc.mountId(directory);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT") return { ok: true, mounts };
+    return {
+      ok: false,
+      error: `worktree mount ID ${code ?? "unreadable"}`,
+    };
+  }
+  const again = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  if (!("value" in again))
+    return { ok: false, error: "failed" in again ? again.failed : "ENOENT" };
+  const current = parseMountinfo(again.value);
+  if (current === null) return { ok: false, error: "unparsable" };
+  if (relevantMounts(mounts, directory) !== relevantMounts(current, directory))
+    return { ok: false, error: "incomplete" };
+  const mount = current
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  return mount?.id === mountId
+    ? { ok: true, mounts: current }
+    : { ok: false, error: "incomplete" };
+}
+
+function relevantMounts(mounts: Mount[], directory: string): string {
+  return JSON.stringify(
+    mounts.filter(
+      (entry) =>
+        mountContains(directory, entry.point) ||
+        mountContains(entry.point, directory),
+    ),
+  );
 }
 
 async function systemViewExposure(
@@ -333,6 +383,7 @@ export interface ProcReader {
   readdir(path: string): Promise<string[]>;
   lstatId(path: string): Promise<string>;
   statId(path: string): Promise<string>;
+  mountId(directory: string): Promise<string>;
   statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   hasExtendedAcl(path: string): Promise<boolean | null>;
   creationMs(directory: string): Promise<number | null>;
@@ -366,6 +417,29 @@ export const hostProc: ProcReader = {
   statId: async (path) => {
     const info = await fs.stat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
+  },
+  mountId: async (directory) => {
+    const handle = await fs.open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY,
+    );
+    try {
+      const info = await fs
+        .readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8")
+        .catch((error: unknown) => {
+          throw Object.assign(new Error("fdinfo is unreadable"), {
+            code: `fdinfo ${errorCode(error) ?? "unreadable"}`,
+          });
+        });
+      const id = /^mnt_id:\s*(\d+)$/mu.exec(info)?.[1];
+      if (id === undefined)
+        throw Object.assign(new Error("fdinfo has no mnt_id"), {
+          code: "ENODATA",
+        });
+      return id;
+    } finally {
+      await handle.close();
+    }
   },
   statAccess: async (path) => {
     const info = await fs.stat(path);
@@ -923,20 +997,7 @@ async function scanLinuxPaths(
       const command = await readOptional(() =>
         proc.readFile(`${base}/cmdline`),
       );
-      const references = (value: string) => {
-        let offset = value.indexOf(directory);
-        while (offset >= 0) {
-          const before = value[offset - 1];
-          const after = value[offset + directory.length];
-          if (
-            (before === undefined || /[\s\0="':]/u.test(before)) &&
-            (after === undefined || /[\s\0/']/u.test(after))
-          )
-            return true;
-          offset = value.indexOf(directory, offset + 1);
-        }
-        return false;
-      };
+      const references = (value: string) => commandReferences(value, directory);
       if ("value" in command && references(command.value))
         return {
           uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
@@ -1636,7 +1697,7 @@ export async function scanLinux(
       return aliases;
     },
     ownMounts: () => {
-      ownMounts ??= readOwnMounts(proc);
+      ownMounts ??= readOwnMounts(proc, directory);
       return ownMounts;
     },
     acls: new Map(),
@@ -1698,7 +1759,7 @@ function runLsof(directory: string): Promise<LsofResult> {
   return new Promise((resolve) => {
     execFile(
       "lsof",
-      ["-n", "-F", "pcn", "+D", directory],
+      ["-n", "-F", "pcfn", "+D", directory],
       { timeout: LSOF_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error === null) {
@@ -1719,6 +1780,257 @@ function runLsof(directory: string): Promise<LsofResult> {
 
 let activeLsof: (directory: string) => Promise<LsofResult> = runLsof;
 
+export type PsResult = LsofResult & { pid: number | null };
+
+function runPs(args: readonly string[]): Promise<PsResult> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      "ps",
+      [...args],
+      { timeout: LSOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const pid = child.pid ?? null;
+        if (error === null) {
+          resolve({ code: 0, stdout, stderr, spawnFailed: false, pid });
+          return;
+        }
+        resolve({
+          ...mapLsofError(
+            error,
+            typeof stdout === "string" ? stdout : "",
+            typeof stderr === "string" ? stderr : "",
+          ),
+          pid,
+        });
+      },
+    );
+  });
+}
+
+let activePs: (args: readonly string[]) => Promise<PsResult> = runPs;
+
+export function usePsRunnerForTests(
+  runner: ((args: readonly string[]) => Promise<PsResult>) | null,
+): void {
+  activePs = runner ?? runPs;
+}
+
+function waitFor(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let activeWait: (ms: number) => Promise<void> = waitFor;
+
+export function useDoubtRecheckWaitForTests(
+  wait: ((ms: number) => Promise<void>) | null,
+): void {
+  activeWait = wait ?? waitFor;
+}
+
+const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,ppid=,uid=,args="] as const;
+const ELEVATION_PROGRAMS = new Set(["sudo", "su", "doas"]);
+const TERMINAL_APPS = new Set(["Terminal", "iTerm2"]);
+const MAX_ANCESTRY_STEPS = 64;
+const DOUBT_RECHECK_DELAYS_MS = [100, 400, 1000] as const;
+const PRIVATE_ALIASED_ROOTS = ["/var/", "/tmp/", "/etc/"] as const;
+
+function darwinPathAliases(directory: string): string[] {
+  for (const aliased of PRIVATE_ALIASED_ROOTS) {
+    if (directory.startsWith(`/private${aliased}`))
+      return [directory, directory.slice("/private".length)];
+    if (directory.startsWith(aliased))
+      return [directory, `/private${directory}`];
+  }
+  return [directory];
+}
+
+function psFailure(result: LsofResult): string | null {
+  if (result.spawnFailed)
+    return result.failure === "timeout"
+      ? `ps timed out after ${LSOF_TIMEOUT_MS / 1000}s`
+      : result.failure === "maxBuffer"
+        ? "ps exceeded its output limit"
+        : result.failure === "signal"
+          ? "ps terminated by signal"
+          : "ps failed to start";
+  return result.code === 0
+    ? null
+    : `ps exited with ${result.code ?? "a signal"}`;
+}
+
+async function processCommands(pids: number[]): Promise<Map<number, string>> {
+  const commands = new Map<number, string>();
+  const result = await activePs(["-o", "pid=,comm=", "-p", pids.join(",")]);
+  if (psFailure(result) !== null) return commands;
+  for (const line of result.stdout.split("\n")) {
+    const match = /^\s*(\d+)\s+(\S.*)$/u.exec(line);
+    if (match?.[1] !== undefined && match[2] !== undefined)
+      commands.set(Number(match[1]), match[2].trim());
+  }
+  return commands;
+}
+
+interface ListedProcess {
+  ppid: number;
+  uid: number;
+  program: string;
+  namesTree: boolean;
+}
+
+function programName(args: string): string {
+  const first = args.trimStart().split(/\s/u, 1)[0] ?? "";
+  return path.basename(first.replace(/^-/u, ""));
+}
+
+function startedForThisScanOrTerminal(
+  pid: number,
+  listed: ListedProcess,
+  processes: ReadonlyMap<number, ListedProcess>,
+  ownUid: number,
+  scannerPid: number | null,
+): boolean {
+  if (pid === scannerPid) return true;
+  if (listed.program !== "login") return false;
+  const parent = processes.get(listed.ppid);
+  return (
+    parent !== undefined &&
+    parent.uid === ownUid &&
+    TERMINAL_APPS.has(parent.program)
+  );
+}
+
+function descendsFromUser(
+  pid: number,
+  processes: ReadonlyMap<number, ListedProcess>,
+  ownUid: number,
+): boolean {
+  const seen = new Set<number>([pid]);
+  let current = processes.get(pid)?.ppid;
+  for (let steps = 0; current !== undefined && current > 1; steps += 1) {
+    if (steps >= MAX_ANCESTRY_STEPS || seen.has(current)) return true;
+    seen.add(current);
+    const parent = processes.get(current);
+    if (parent === undefined) return false;
+    if (parent.uid === ownUid) return true;
+    current = parent.ppid;
+  }
+  return false;
+}
+
+function parseProcessList(
+  stdout: string,
+  aliases: readonly string[],
+): { processes: Map<number, ListedProcess>; unparsed: number } {
+  const processes = new Map<number, ListedProcess>();
+  let unparsed = 0;
+  for (const line of stdout.split("\n")) {
+    if (line.trim() === "") continue;
+    const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)(?:\s|$)/u.exec(line);
+    if (
+      match?.[1] === undefined ||
+      match[2] === undefined ||
+      match[3] === undefined
+    ) {
+      unparsed += 1;
+      continue;
+    }
+    const args = line.slice(match[0].length);
+    processes.set(Number(match[1]), {
+      ppid: Number(match[2]),
+      uid: Number(match[3]),
+      program: programName(args),
+      namesTree: aliases.some((alias) => commandReferences(args, alias)),
+    });
+  }
+  return { processes, unparsed };
+}
+
+async function listProcessesAgain(
+  aliases: readonly string[],
+  delay: number,
+): Promise<{ processes: Map<number, ListedProcess> } | { reason: string }> {
+  await activeWait(delay);
+  const listing = await activePs(PROCESS_LIST_ARGS);
+  const failed = psFailure(listing);
+  if (failed !== null)
+    return { reason: `could not list other users' processes again: ${failed}` };
+  const relisted = parseProcessList(listing.stdout, aliases);
+  if (relisted.unparsed > 0)
+    return {
+      reason: `${relisted.unparsed} lines of a later process list could not be read`,
+    };
+  return { processes: relisted.processes };
+}
+
+async function scanForeignDarwinProcesses(
+  directory: string,
+): Promise<WorktreeHolderScan> {
+  const ownUid = process.getuid?.();
+  if (ownUid === undefined)
+    return { status: "unknown", reason: "the current user id is unavailable" };
+  const listing = await activePs(PROCESS_LIST_ARGS);
+  const failed = psFailure(listing);
+  if (failed !== null)
+    return {
+      status: "unknown",
+      reason: `could not list other users' processes: ${failed}`,
+    };
+  const aliases = darwinPathAliases(directory);
+  const { processes, unparsed } = parseProcessList(listing.stdout, aliases);
+  const found: { pid: number; uid: number; detail: string }[] = [];
+  for (const [pid, listed] of processes) {
+    if (pid === process.pid) continue;
+    if (ELEVATION_PROGRAMS.has(listed.program)) {
+      found.push({
+        pid,
+        uid: listed.uid,
+        detail: `uid ${listed.uid} is sudo, su or doas, which may run a program in the worktree`,
+      });
+      continue;
+    }
+    if (
+      listed.uid === ownUid ||
+      startedForThisScanOrTerminal(pid, listed, processes, ownUid, listing.pid)
+    )
+      continue;
+    if (listed.namesTree)
+      found.push({
+        pid,
+        uid: listed.uid,
+        detail: `foreign uid ${listed.uid} command references the worktree`,
+      });
+    else if (descendsFromUser(pid, processes, ownUid))
+      found.push({
+        pid,
+        uid: listed.uid,
+        detail: `foreign uid ${listed.uid} was started by a process of this user`,
+      });
+  }
+  let doubts = found;
+  for (const delay of DOUBT_RECHECK_DELAYS_MS) {
+    if (doubts.length === 0) break;
+    const relisted = await listProcessesAgain(aliases, delay);
+    if ("reason" in relisted)
+      return { status: "unknown", reason: relisted.reason };
+    doubts = doubts.filter(({ pid }) => relisted.processes.has(pid));
+  }
+  if (doubts.length > 0) {
+    const commands = await processCommands(doubts.map(({ pid }) => pid));
+    const first = doubts[0];
+    const command = first === undefined ? undefined : commands.get(first.pid);
+    return {
+      status: "uncertain",
+      reason: `${doubts.length} processes could not be ruled out, such as process ${first?.pid}${command === undefined ? "" : ` (${command})`} ${first?.detail}`,
+    };
+  }
+  if (unparsed > 0)
+    return {
+      status: "unknown",
+      reason: `${unparsed} lines of the process list could not be read`,
+    };
+  return { status: "clear" };
+}
+
 export function useLsofRunnerForTests(
   runner: ((directory: string) => Promise<LsofResult>) | null,
 ): void {
@@ -1728,7 +2040,7 @@ export function useLsofRunnerForTests(
 async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const result = await activeLsof(directory);
   if (result.spawnFailed) {
-    const args = `-n -F pcn +D ${directory}`;
+    const args = `-n -F pcfn +D ${directory}`;
     const detail = result.stderr.split("\n", 1)[0];
     const reason =
       result.failure === "timeout"
@@ -1752,28 +2064,27 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const holders = new Map<number, WorktreeHolder>();
   let pid: number | null = null;
   let command: string | null = null;
+  let descriptor: string | null = null;
   for (const line of result.stdout.split("\n")) {
     if (line.startsWith("p")) {
       pid = Number(line.slice(1));
       command = null;
+      descriptor = null;
     } else if (line.startsWith("c")) {
       command = line.slice(1) || null;
+    } else if (line.startsWith("f")) {
+      descriptor = line.slice(1);
     } else if (line.startsWith("n") && pid !== null && pid !== process.pid) {
-      if (!holders.has(pid)) {
-        holders.set(pid, {
-          pid,
-          command,
-          through: isUnder(line.slice(1), directory)
-            ? "open file"
-            : "working folder",
-        });
-      }
+      const through = descriptor === "cwd" ? "working folder" : "open file";
+      const known = holders.get(pid);
+      if (known === undefined) holders.set(pid, { pid, command, through });
+      else if (through === "working folder") known.through = through;
     }
   }
   if (holders.size > 0)
     return { status: "held", holders: [...holders.values()] };
   if ((result.code === 0 || result.code === 1) && result.stderr.trim() === "")
-    return { status: "clear" };
+    return scanForeignDarwinProcesses(directory);
   return {
     status: "unknown",
     reason: `lsof exited with ${result.code ?? "a signal"}`,

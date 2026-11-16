@@ -71,7 +71,9 @@ function failingAnchors(
   };
 }
 
-async function refusal(directory: string): Promise<string> {
+async function refusal(
+  directory: string,
+): Promise<{ message: string; refusalKey: unknown }> {
   const error = await removeDirectoryAfterHolderRecheck({
     directory,
     action: "delete",
@@ -82,7 +84,15 @@ async function refusal(directory: string): Promise<string> {
     (caught: unknown) => caught,
   );
   expect(error).toMatchObject({ code: "path_in_use" });
-  return (error as Error).message;
+  return {
+    message: (error as Error).message,
+    refusalKey: (error as { refusalKey?: unknown }).refusalKey,
+  };
+}
+
+async function identityOf(directory: string): Promise<string> {
+  const stat = await fs.lstat(directory, { bigint: true });
+  return `${stat.dev}:${stat.ino}`;
 }
 
 describe.runIf(process.platform === "linux" || process.platform === "darwin")(
@@ -91,7 +101,9 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
     it("names only the anchor failure when it fails before anything is removed", async () => {
       const directory = await storage();
       injected.hooks = () => failingAnchors(() => true);
-      const message = await refusal(directory);
+      const identity = await identityOf(directory);
+      const { message, refusalKey } = await refusal(directory);
+      expect(refusalKey).toBe(`${identity}|unanchored`);
       expect(message).toContain(
         "could not anchor directory on this filesystem",
       );
@@ -100,6 +112,19 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       await expect(
         fs.readFile(path.join(directory, "a", "out.txt"), "utf8"),
       ).resolves.toBe("a");
+    });
+
+    it("keys a refusal for a mounted directory by its mount, not by changed data", async () => {
+      const directory = await storage();
+      injected.hooks = () => ({
+        entryDevice: (entry, device) =>
+          entry.endsWith(`${path.sep}b`) ? device + 1 : device,
+      });
+      const identity = await identityOf(directory);
+      const { message, refusalKey } = await refusal(directory);
+      expect(refusalKey).toBe(`${identity}|mounted`);
+      expect(message).toContain("a different filesystem is mounted here");
+      expect(message).not.toContain("new or changed");
     });
 
     it("says the directory may be partially removed when the anchor fails after removal began", async () => {
@@ -111,7 +136,9 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
           removing = true;
         },
       });
-      const message = await refusal(directory);
+      const identity = await identityOf(directory);
+      const { message, refusalKey } = await refusal(directory);
+      expect(refusalKey).toBe(`${identity}|unanchored`);
       expect(removing).toBe(true);
       expect(message).toContain(
         "could not anchor directory on this filesystem",

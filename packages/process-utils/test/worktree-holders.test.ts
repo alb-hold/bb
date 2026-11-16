@@ -289,6 +289,7 @@ function mountAliasProc(
   return {
     ...hostProc,
     realpath: async (value) => value,
+    mountId: async (value) => (value === directory ? "25" : denied()),
     subdirectories: async (value) => {
       if (kind === "tree unreadable") return denied();
       return value === directory ? ["sub"] : [];
@@ -691,6 +692,252 @@ describe("system processes in another mount namespace", () => {
       await readsPerScan(["101", "102", "103", "104", "105", "106"]),
     ).toEqual(single);
   });
+  const ownTableReader = (
+    own: string,
+    mountId: () => Promise<string>,
+    foreign: string,
+  ) => {
+    const proc = mountAliasProc("/work/tree", "outside", 0);
+    const local = (target: string) =>
+      target.replace(/^\/proc\/1\d\d(?=\/|$)/u, "/proc/101");
+    const reader: ProcReader = {
+      ...proc,
+      mountId: async (target) =>
+        target === "/work/tree" ? mountId() : proc.mountId(target),
+      readdir: async (target) =>
+        target === "/proc" ? ["101", "102"] : proc.readdir(local(target)),
+      readlink: async (target) => proc.readlink(local(target)),
+      readFile: async (target) => {
+        if (target === "/proc/self/mountinfo") return own;
+        if (/^\/proc\/\d+\/mountinfo$/u.test(target)) return foreign;
+        return proc.readFile(local(target));
+      },
+    };
+    return reader;
+  };
+  const rootLine = "25 1 8:1 / / rw - ext4 /dev/sdb rw\n";
+  const workLine = "60 25 8:48 / /work rw - ext4 /dev/sda rw\n";
+  const ownTableCases = [
+    [
+      "a prefix of our table without the worktree mount, its ancestor on another device",
+      rootLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a mount stacked over an older one at the worktree's mount point, the older on another device",
+      rootLine +
+        "60 25 8:1 /old /work rw - ext4 /dev/sdb rw\n65 25 8:48 / /work rw - ext4 /dev/sda rw\n",
+      async () => "65",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a complete table whose worktree mount ID matches",
+      rootLine + workLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "clear",
+    ],
+    [
+      "a btrfs subvolume root whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      async () => "25",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "a nested btrfs subvolume whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n61 25 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      async () => "61",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n71 70 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "fdinfo without a mount ID",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("no mnt_id"), { code: "ENODATA" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a worktree path that is not a directory",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a worktree directory we cannot open",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      ownTableCases.map(
+        ([kind, own, mountId, foreign, expected]) =>
+          [scan, kind, own, mountId, foreign, expected] as const,
+      ),
+    ),
+  )(
+    "checks our own mount table on the %s scan against the worktree mount ID with %s",
+    async (scan, _kind, own, mountId, foreign, expected) => {
+      const result = await scanLinux(
+        "/work/tree",
+        ownTableReader(own, mountId, foreign),
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      if (expected === "clear") {
+        expect(result).toEqual({ status: "clear" });
+        return;
+      }
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("our own mountinfo is unreadable ("),
+      });
+      expect(describeHolderScan(result)).toContain("so it was kept");
+    },
+  );
+  const absent = async (): Promise<string> => {
+    throw Object.assign(new Error("absent"), { code: "ENOENT" });
+  };
+  const absentCases = [
+    [
+      "only mirrors",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      null,
+    ],
+    [
+      "a bind mount of the worktree",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "sees the worktree at /app",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      absentCases.map(
+        ([kind, foreign, uncertain]) =>
+          [scan, kind, foreign, uncertain] as const,
+      ),
+    ),
+  )(
+    "scans a worktree path that no longer exists on the %s scan as before when a system process sees %s",
+    async (scan, _kind, foreign, uncertain) => {
+      expect(
+        await scanLinux(
+          "/work/tree",
+          ownTableReader(rootLine + workLine, absent, foreign),
+          4242,
+          scan === "final"
+            ? { maxDirectories: 500_000, final: true }
+            : undefined,
+        ),
+      ).toMatchObject(
+        uncertain === null
+          ? { status: "clear" }
+          : { status: "uncertain", reason: expect.stringContaining(uncertain) },
+      );
+    },
+  );
+  const mirrorForeign =
+    "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n";
+  const stackedAtWork = "65 60 8:2 / /work rw - ext4 /dev/sdc rw\n";
+  const raceCases = [
+    [
+      "a mount stacked at the worktree's mount point after the worktree was opened",
+      rootLine + workLine,
+      "60",
+      rootLine + workLine + stackedAtWork,
+      "uncertain",
+    ],
+    [
+      "a mount stacked at the worktree's mount point before the worktree was opened",
+      rootLine + workLine,
+      "65",
+      rootLine + workLine + stackedAtWork,
+      "uncertain",
+    ],
+    [
+      "a mount stacked inside the worktree after the worktree was opened",
+      rootLine + workLine,
+      "60",
+      rootLine +
+        workLine +
+        "66 60 8:2 / /work/tree/sub rw - ext4 /dev/sdc rw\n",
+      "uncertain",
+    ],
+    [
+      "unrelated mounts that change between the reads",
+      rootLine + workLine + "80 25 0:50 / /run/user/1000 rw - tmpfs tmpfs rw\n",
+      "60",
+      rootLine +
+        workLine +
+        "81 25 0:51 / /snap/core/1 ro - squashfs /dev/loop0 ro\n",
+      "clear",
+    ],
+    [
+      "no change between the reads",
+      rootLine + workLine,
+      "60",
+      rootLine + workLine,
+      "clear",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      raceCases.map(
+        ([kind, before, mountId, after, expected]) =>
+          [scan, kind, before, mountId, after, expected] as const,
+      ),
+    ),
+  )(
+    "rereads our own mount table after reading the worktree mount ID on the %s scan, with %s",
+    async (scan, _kind, before, mountId, after, expected) => {
+      let opened = false;
+      const proc = ownTableReader(
+        before,
+        async () => {
+          opened = true;
+          return mountId;
+        },
+        mirrorForeign,
+      );
+      const reader: ProcReader = {
+        ...proc,
+        readFile: async (target) =>
+          target === "/proc/self/mountinfo"
+            ? opened
+              ? after
+              : before
+            : proc.readFile(target),
+      };
+      const result = await scanLinux(
+        "/work/tree",
+        reader,
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      if (expected === "clear") {
+        expect(result).toEqual({ status: "clear" });
+        return;
+      }
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("our own mountinfo is unreadable ("),
+      });
+    },
+  );
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
     const scanWith = async (processes: number) => {
       const proc = mountAliasProc("/work/tree", "outside", 0);

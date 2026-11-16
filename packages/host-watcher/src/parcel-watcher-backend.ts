@@ -1,3 +1,4 @@
+import { withPlatformParcelBackend } from "./parcel-backend-choice.js";
 import { createForkChannel } from "./parcel-subprocess/fork-channel.js";
 import {
   createParcelWatcherProxy,
@@ -38,7 +39,11 @@ function createInProcessBackend(): ParcelWatcherBackend {
       if (signal?.aborted) {
         throw new Error("Parcel watcher subscription was cancelled");
       }
-      const pending = parcelWatcher.subscribe(dir, callback, opts);
+      const pending = parcelWatcher.subscribe(
+        dir,
+        callback,
+        withPlatformParcelBackend(opts),
+      );
       if (!signal) {
         return pending;
       }
