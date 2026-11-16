@@ -624,6 +624,7 @@ export {
   listQueuedThreadMessageCountsByThreadIds,
   listQueuedThreadMessageCountsByScope,
   listQueuedThreadMessagePluginWaitRefs,
+  listThreadQueuedMessagePluginWaitRefs,
   listQueuedThreadMessages,
   listQueuedThreadMessagesForApi,
   listQueuedThreadMessagesByWaitHolder,

@@ -9,6 +9,7 @@ import {
   listDueScheduledQueuedThreadMessages,
   listIdleThreadsWithQueuedMessages,
   listQueuedThreadMessagePluginWaitRefs,
+  listThreadQueuedMessagePluginWaitRefs,
   listQueuedThreadMessagesByWaitHolder,
   listQueuedThreadMessagesWaitingOnKind,
   listRetryableFailedQueuedThreadMessages,
@@ -47,6 +48,7 @@ export type QueuedMessageDispatchWake =
   | { kind: "workspace-ready"; threadId: string }
   | { kind: "provisioning-ended"; threadId: string }
   | { kind: "interaction-settled"; threadId: string }
+  | { kind: "terminal-live"; threadId: string }
   | { kind: "edit-released"; queuedMessageId: string; threadId: string }
   | { kind: "host-connected"; hostId: string }
   | { kind: "time-reached"; now: number }
@@ -122,6 +124,7 @@ function dispatchWakeContext(
     case "thread-ready":
     case "turn-started":
     case "interaction-settled":
+    case "terminal-live":
       return { threadId: wake.threadId, wake: wake.kind };
     case "edit-released":
       return {
@@ -263,6 +266,9 @@ async function executePreparedQueuedMessageDispatch(
       return;
     case "interaction-settled":
       await runInteractionSettledDispatch(deps, wake.threadId);
+      return;
+    case "terminal-live":
+      await runTerminalLiveDispatch(deps, wake.threadId);
       return;
     case "edit-released":
       await runEditReleasedDispatch(deps, {
@@ -477,6 +483,20 @@ async function runPluginRecheckDispatch(
 ): Promise<void> {
   const now = Date.now();
   for (const row of listQueuedThreadMessagePluginWaitRefs(deps.db)) {
+    await attemptAutomaticQueuedMessage(deps, row, {
+      now,
+      respectRequeuePacing: true,
+      retryingFailure: false,
+    });
+  }
+}
+
+async function runTerminalLiveDispatch(
+  deps: QueueDispatchDeps,
+  threadId: string,
+): Promise<void> {
+  const now = Date.now();
+  for (const row of listThreadQueuedMessagePluginWaitRefs(deps.db, threadId)) {
     await attemptAutomaticQueuedMessage(deps, row, {
       now,
       respectRequeuePacing: true,

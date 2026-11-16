@@ -163,8 +163,10 @@ export function redrainNativeTerminalQueueOnLive(
   if (session.threadId === null) return;
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record?.terminalSessionId !== session.id) return;
-  if (listQueuedThreadMessages(deps.db, session.threadId).length === 0) return;
-  requestQueuedMessageDispatch(deps, { kind: "plugin-recheck" });
+  requestQueuedMessageDispatch(deps, {
+    kind: "terminal-live",
+    threadId: session.threadId,
+  });
 }
 
 function holdUntilInteractionSettles(
