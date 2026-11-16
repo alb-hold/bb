@@ -100,6 +100,11 @@ export type {
   TokenUsageObservation,
 } from "./thread-spend.js";
 export {
+  ensureQueuedMessageOriginTable,
+  listComposerQueuedMessageIds,
+  markQueuedMessageFromComposerInTransaction,
+} from "./fork-queued-message-origins.js";
+export {
   clearQueuedMessageDispatchRetry,
   getQueuedMessageDispatchRetry,
   listDeferredQueuedMessageDispatchRetryIds,
@@ -619,6 +624,7 @@ export {
   listQueuedThreadMessageCountsByThreadIds,
   listQueuedThreadMessageCountsByScope,
   listQueuedThreadMessagePluginWaitRefs,
+  listThreadQueuedMessagePluginWaitRefs,
   listQueuedThreadMessages,
   listQueuedThreadMessagesForApi,
   listQueuedThreadMessagesByWaitHolder,

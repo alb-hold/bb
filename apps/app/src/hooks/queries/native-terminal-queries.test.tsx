@@ -6,7 +6,10 @@ import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-so
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useNativeTerminalThread } from "./native-terminal-queries";
+import {
+  useNativeTerminalThread,
+  useSendNativeTerminalMessage,
+} from "./native-terminal-queries";
 
 const { preloadPanel, preloadModules } = vi.hoisted(() => ({
   preloadPanel: vi.fn(() => Promise.resolve()),
@@ -89,5 +92,37 @@ describe("useNativeTerminalThread terminal preload", () => {
         threadId: "thread-1",
       }),
     );
+  });
+});
+
+describe("useSendNativeTerminalMessage", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("marks the native composer's send as coming from the composer", async () => {
+    const { wrapper } = createQueryClientTestHarness();
+    vi.mocked(sdk.threads.send).mockResolvedValueOnce({
+      ok: true,
+      delivery: "sent",
+    });
+    const input = [
+      { type: "text" as const, text: "run the tests", mentions: [] },
+    ];
+
+    const { result } = renderHook(() => useSendNativeTerminalMessage(), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ input, threadId: "thread-1" });
+    });
+
+    expect(sdk.threads.send).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      input,
+      mode: "auto",
+      sendSurface: "composer",
+    });
   });
 });

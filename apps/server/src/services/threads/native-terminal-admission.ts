@@ -5,12 +5,14 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getThread,
+  listComposerQueuedMessageIds,
   listNativeTerminalDeliveryMarks,
   listQueuedThreadMessages,
   markNativeTerminalDeliveriesSubmitting,
   recordNativeParentNoticeDelivery,
   type ClaimedQueuedThreadMessageRow,
   type DbTransaction,
+  type TerminalSessionRow,
 } from "@bb/db";
 import {
   flattenPromptInputGroups,
@@ -33,7 +35,10 @@ import {
   intendedThreadHostId,
   readPendingThreadStartContext,
 } from "./dispatch-attempt.js";
-import { resolveDispatchAuthor } from "./dispatch-author.js";
+import {
+  resolveDispatchAuthor,
+  type DispatchAuthor,
+} from "./dispatch-author.js";
 import {
   dispatchExecutionSources,
   dispatchWaitReasonForPass,
@@ -46,6 +51,7 @@ import {
   beginNativeTerminalThreadProvisioning,
   isNativeTerminalInteractionOpenError,
   nativeTerminalPromptParts,
+  readRecordTerminal,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
@@ -79,6 +85,7 @@ export interface NativeTerminalAdmissionArgs {
   senderThreadId: string | null;
   origin: ThreadCreateOrigin | null;
   originPluginId: string | null;
+  composerSend: boolean;
   startedOnBehalfOf: StartedOnBehalfOf | null;
   systemNotice: QueuedMessageSystemNotice | null;
   admitted: NativeTerminalAdmittedWork;
@@ -111,6 +118,55 @@ function isNativeTerminalStartTicket(input: readonly PromptInput[]): boolean {
 
 function holdsCapacity(thread: Thread): boolean {
   return thread.status === "active" || thread.status === "starting";
+}
+
+function hasRunningNativeTerminal(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): boolean {
+  const record = getNativeTerminalThread(deps.db, thread.id);
+  return (
+    record !== null && readRecordTerminal(deps, record)?.status === "running"
+  );
+}
+
+function isOwnerComposerSend(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: NativeTerminalAdmissionArgs,
+  author: DispatchAuthor,
+): boolean {
+  if (author.initiator !== "user" || args.originPluginId !== null) {
+    return false;
+  }
+  if (args.claimed === null) return args.composerSend;
+  const composerIds = listComposerQueuedMessageIds(
+    deps.db,
+    args.claimed.map((row) => row.id),
+  );
+  return (
+    args.claimed.length > 0 &&
+    args.claimed.every((row) => {
+      const queued = toThreadQueuedMessage(row);
+      return (
+        composerIds.has(row.id) &&
+        queued.initiator === "user" &&
+        queued.originPluginId === null
+      );
+    })
+  );
+}
+
+export function redrainNativeTerminalQueueOnLive(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  session: TerminalSessionRow,
+): void {
+  if (session.threadId === null) return;
+  const record = getNativeTerminalThread(deps.db, session.threadId);
+  if (record?.terminalSessionId !== session.id) return;
+  requestQueuedMessageDispatch(deps, {
+    kind: "terminal-live",
+    threadId: session.threadId,
+  });
 }
 
 function holdUntilInteractionSettles(
@@ -202,6 +258,12 @@ export async function admitNativeTerminalDispatch(
     senderThreadId: args.senderThreadId,
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
+  if (
+    isOwnerComposerSend(deps, args, author) &&
+    hasRunningNativeTerminal(deps, args.thread)
+  ) {
+    return runNativeTerminalAdmittedWork(deps, args);
+  }
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
   const withinDecision: { outcome: NativeTerminalAdmissionOutcome | null } = {
     outcome: null,
@@ -286,6 +348,7 @@ function recordNativeTerminalWait(
     waitingOn: args.waitingOn,
     sendAt: args.sendAt,
     claimed: args.claimed,
+    composerSend: args.composerSend,
   });
   return entry === null ? { kind: "dispatched" } : { kind: "queued", entry };
 }
@@ -415,6 +478,7 @@ export async function dispatchClaimedNativeTerminalMessages(
     senderThreadId: lead.senderThreadId,
     origin: lead.origin,
     originPluginId: lead.originPluginId,
+    composerSend: false,
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
     systemNotice,
   };

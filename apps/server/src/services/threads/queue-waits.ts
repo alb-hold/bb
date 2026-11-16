@@ -3,6 +3,7 @@ import {
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessageInTransaction,
   getThread,
+  markQueuedMessageFromComposerInTransaction,
   requeueClaimedQueuedThreadMessages,
   type ClaimedQueuedThreadMessageRow,
   type DbConnection,
@@ -93,6 +94,7 @@ export interface RecordQueuedMessageWaitArgs {
   waitingOn: QueuedMessageWaitingOn;
   sendAt: number | null;
   claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
+  composerSend: boolean;
 }
 
 export function recordQueuedMessageWait(
@@ -120,7 +122,7 @@ export function recordQueuedMessageWait(
           currentThread,
           args.message.overrideRecovery ?? null,
         );
-        return createQueuedThreadMessageInTransaction(tx, {
+        const created = createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,
           senderThreadId: args.message.senderThreadId,
@@ -137,6 +139,10 @@ export function recordQueuedMessageWait(
           systemNotice: args.message.systemNotice,
           deliveryMode: args.message.deliveryMode,
         });
+        if (args.composerSend) {
+          markQueuedMessageFromComposerInTransaction(tx, created.id);
+        }
+        return created;
       },
       { behavior: "immediate" },
     );

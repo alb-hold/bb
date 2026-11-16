@@ -6,6 +6,7 @@ import {
   recheckEnvironmentProviderCreations,
 } from "./services/threads/thread-environment-providers.js";
 import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
+import { redrainNativeTerminalQueueOnLive } from "./services/threads/native-terminal-admission.js";
 import {
   enrolledInstallerScript,
   enrolledWindowsInstallerScript,
@@ -639,6 +640,9 @@ export function createApp(
     nativeExitHandlingRegistered.add(deps.terminalSessions);
     deps.terminalSessions.onTerminalExited((session) => {
       clearNativeTerminalStateOnExit(deps, session);
+    });
+    deps.terminalSessions.onTerminalRunning((session) => {
+      redrainNativeTerminalQueueOnLive(deps, session);
     });
   }
   app.get("/health", async (context) => {

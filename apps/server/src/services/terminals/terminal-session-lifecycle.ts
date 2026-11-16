@@ -915,6 +915,9 @@ export class TerminalSessionLifecycle {
   private readonly exitListeners = new Set<
     (session: TerminalSessionRow) => void
   >();
+  private readonly runningListeners = new Set<
+    (session: TerminalSessionRow) => void
+  >();
   private readonly outputAckSocketVisibility = new WeakMap<
     TerminalClientSocket,
     boolean
@@ -1682,6 +1685,7 @@ export class TerminalSessionLifecycle {
     );
     args.onTerminalStarted?.(runningSession.id);
     this.notifyTerminalSessionChanged(runningSession);
+    this.notifyTerminalRunning(runningSession);
     return this.toTerminalSession(runningSession);
   }
 
@@ -2942,6 +2946,7 @@ export class TerminalSessionLifecycle {
         "Terminal session reattached to reconnected daemon",
       );
       this.notifyTerminalSessionChanged(reconnected);
+      this.notifyTerminalRunning(reconnected);
       this.options.hub.sendTerminalClientMessage(reconnected.id, {
         type: "session-updated",
         session: this.toTerminalSession(reconnected),
@@ -5214,6 +5219,23 @@ export class TerminalSessionLifecycle {
 
   onTerminalExited(listener: (session: TerminalSessionRow) => void): void {
     this.exitListeners.add(listener);
+  }
+
+  onTerminalRunning(listener: (session: TerminalSessionRow) => void): void {
+    this.runningListeners.add(listener);
+  }
+
+  private notifyTerminalRunning(session: TerminalSessionRow): void {
+    for (const listener of this.runningListeners) {
+      try {
+        listener(session);
+      } catch (error) {
+        this.options.logger.warn(
+          { err: error, terminalId: session.id },
+          "Terminal running listener failed",
+        );
+      }
+    }
   }
 
   private readonly setupCueTimers = new Map<

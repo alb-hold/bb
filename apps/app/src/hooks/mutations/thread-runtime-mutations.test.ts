@@ -365,6 +365,27 @@ describe("thread runtime mutations", () => {
     );
   });
 
+  it("marks the thread composer's send as coming from the composer", async () => {
+    const queryClient = createTestQueryClient();
+    const mutation = new MutationObserver(
+      queryClient,
+      sendThreadMessageMutationOptions(queryClient),
+    );
+
+    await mutation.mutate({
+      id: "thread-1",
+      mode: "auto",
+      input: [{ type: "text", text: "Run this", mentions: [] }],
+    });
+
+    expect(sdk.threads.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sendSurface: "composer",
+        threadId: "thread-1",
+      }),
+    );
+  });
+
   it("forwards compactFirst when sending a thread message", async () => {
     const queryClient = createTestQueryClient();
     const mutation = new MutationObserver(

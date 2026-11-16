@@ -175,7 +175,11 @@ export function sendThreadMessageMutationOptions(queryClient: QueryClient) {
       showErrorToast: false,
     },
     mutationFn: async ({ id, ...request }: SendThreadMessageMutationRequest) =>
-      await sdk.threads.send({ threadId: id, ...request }),
+      await sdk.threads.send({
+        threadId: id,
+        ...request,
+        sendSurface: "composer",
+      }),
     onMutate: async (variables): Promise<SendThreadMessageTransaction> =>
       beginSendThreadMessageTransaction({
         queryClient,

@@ -187,6 +187,7 @@ async function attempt(
         senderThreadId: null,
         origin: null,
         originPluginId: null,
+        composerSend: false,
         startedOnBehalfOf: null,
         systemNotice: NATIVE_TERMINAL_PARENT_NOTICE,
         admitted: {

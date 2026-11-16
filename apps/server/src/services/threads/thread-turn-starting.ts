@@ -61,6 +61,7 @@ export function queueInputForStartingTurn(
           waitingOn: { kind: "turn-starting" },
           sendAt: null,
           claimed: args.claimed,
+          composerSend: false,
         },
       );
       return entry === null

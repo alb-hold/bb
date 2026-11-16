@@ -4,6 +4,7 @@ import {
   deleteThread,
   events,
   getQueuedThreadMessage,
+  getQueuedThreadStartMessage,
   getNativeTerminalThread,
   getThread,
   insertNativeTerminalDeliveryWarning,
@@ -11,6 +12,7 @@ import {
   listNativeTerminalDeliveryMarks,
   listNativeTerminalDeliveryWarnings,
   listQueuedThreadMessages,
+  setQueuedThreadMessageGroupBoundary,
   threads,
   updateTerminalSessions,
 } from "@bb/db";
@@ -46,6 +48,7 @@ import {
 } from "../../src/services/system/periodic-sweeps.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
+import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
 import { readThreadProvisionContext } from "../../src/services/threads/thread-startup-store.js";
 import { registerTestHostRpcCapture } from "../helpers/commands.js";
@@ -283,6 +286,18 @@ async function openRunningNativeThread(
   return { open, thread };
 }
 
+async function openBusySender(fixture: Fixture) {
+  const sender = await openRunningNativeThread(fixture, {
+    providerId: "codex",
+  });
+  recordNativeTerminalActivity(fixture.harness.deps, {
+    confirms: false,
+    state: "working",
+    threadId: sender.thread.id,
+  });
+  return sender;
+}
+
 interface FakeCli {
   inputs(): string[];
   stop(): void;
@@ -396,8 +411,9 @@ async function launchSpec(fixture: Fixture, threadId: string) {
 }
 
 describe("the concurrency cap on native terminal threads", () => {
-  it("holds a bb send to an idle native thread at the limit and delivers it once a slot frees", async () => {
+  it("holds an agent's send to an idle native thread at the limit and delivers it once a slot frees", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -406,7 +422,12 @@ describe("the concurrency cap on native terminal threads", () => {
       let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
       const seen = installDispatchHook(() => decision);
 
-      const held = await sendToThread(fixture, thread.id, "run the tests");
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "run the tests",
+        sender.thread.id,
+      );
 
       expect(held.delivery).toBe("queued");
       expect(cli.inputs()).toEqual([]);
@@ -615,8 +636,9 @@ describe("the concurrency cap on native terminal threads", () => {
     }
   });
 
-  it("lets a native send and a native create through at once below the limit", async () => {
+  it("lets an agent's native send and a native create through at once below the limit", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const seen = installDispatchHook(() => ({ action: "proceed" }));
 
     const { open, thread } = await openRunningNativeThread(fixture, {
@@ -628,7 +650,12 @@ describe("the concurrency cap on native terminal threads", () => {
 
     const cli = startFakeCli(fixture, open.terminalId);
     try {
-      const sent = await sendToThread(fixture, thread.id, "run the tests");
+      const sent = await sendToThread(
+        fixture,
+        thread.id,
+        "run the tests",
+        sender.thread.id,
+      );
       expect(sent.delivery).toBe("sent");
       expect(cli.inputs()).toEqual([
         "\u001b[200~run the tests\u001b[201~",
@@ -692,6 +719,442 @@ describe("the concurrency cap on native terminal threads", () => {
     expect(terminalInputs(fixture.socket)).toEqual(["ls\r"]);
     expect(seen).toEqual([]);
     expect(queuedRows(fixture, thread.id)).toEqual([]);
+  });
+});
+
+describe("an owner's composer send at the limit", () => {
+  const PASTED = ["\u001b[200~run the tests\u001b[201~", "\r"];
+
+  function holdAtLimit(): MessageDispatchHookContext[] {
+    return installDispatchHook(() => ({
+      action: "wait",
+      reason: AT_LIMIT_REASON,
+    }));
+  }
+
+  async function sendWith(
+    fixture: Fixture,
+    threadId: string,
+    text: string,
+    fields: Record<string, unknown>,
+  ) {
+    const response = await postJson(fixture, `/threads/${threadId}/send`, {
+      input: textInput(text),
+      mode: "auto",
+      ...fields,
+    });
+    expect(response.status).toBe(200);
+    return sendMessageResponseSchema.parse(await readJson(response));
+  }
+
+  function sendFromComposer(fixture: Fixture, threadId: string, text: string) {
+    return sendWith(fixture, threadId, text, { sendSurface: "composer" });
+  }
+
+  function composerRecords(fixture: Fixture, threadId: string): string[] {
+    return fixture.harness.db.$client
+      .prepare<[string], { id: string }>(
+        `SELECT origins.queued_message_id AS id
+         FROM fork_queued_message_origin AS origins
+         JOIN queued_thread_messages AS queued ON queued.id = origins.queued_message_id
+         WHERE queued.thread_id = ? AND origins.origin = 'composer'`,
+      )
+      .all(threadId)
+      .map((row) => row.id);
+  }
+
+  function countComposerRecords(fixture: Fixture): number {
+    return (
+      fixture.harness.db.$client
+        .prepare<[], { count: number }>(
+          "SELECT count(*) AS count FROM fork_queued_message_origin",
+        )
+        .get()?.count ?? -1
+    );
+  }
+
+  function disconnectTerminal(fixture: Fixture, terminalId: string): void {
+    updateTerminalSessions(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "disconnect", retainDaemonSession: false },
+    });
+  }
+
+  function reconnectLiveTerminal(fixture: Fixture, terminalId: string): void {
+    updateTerminalSessions(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "reconnect", daemonSessionId: fixture.sessionId },
+    });
+  }
+
+  function expectHeldAtLimit(
+    fixture: Fixture,
+    threadId: string,
+    texts: string[] = ["run the tests"],
+  ): void {
+    const rows = queuedRows(fixture, threadId);
+    expect(rows.map((row) => row.content)).toEqual(
+      texts.map((text) => textInput(text)),
+    );
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        state: "waiting",
+        waitingOn: {
+          kind: "plugin",
+          pluginId: HOOK_PLUGIN_ID,
+          reason: AT_LIMIT_REASON,
+        },
+      });
+    }
+  }
+
+  async function drainLater(fixture: Fixture): Promise<void> {
+    const later = Date.now() + 60 * 60 * 1000;
+    await settle();
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "retry-due",
+      now: later,
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "idle-recovery",
+      now: later,
+    });
+    await settle();
+  }
+
+  it("delivers a composer send to an idle native thread with a live terminal at once, even at the limit", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+
+      const sent = await sendFromComposer(fixture, thread.id, "run the tests");
+
+      expect(sent.delivery).toBe("sent");
+      expect(cli.inputs()).toEqual(PASTED);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+      expect(seen).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it.each([
+    ["an untagged CLI tell", { mode: "steer-if-active" }],
+    [
+      "a script automation's tell, which sends the same request as a CLI tell",
+      { mode: "steer-if-active" },
+    ],
+    ["an SDK send", { mode: "auto" }],
+  ] as const)(
+    "still holds %s with no sender thread at the limit, even with a live terminal",
+    async (_caller, fields) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const cli = startFakeCli(fixture, open.terminalId);
+      try {
+        const seen = holdAtLimit();
+
+        const held = await sendWith(
+          fixture,
+          thread.id,
+          "run the tests",
+          fields,
+        );
+
+        expect(held.delivery).toBe("queued");
+        expect(cli.inputs()).toEqual([]);
+        expectHeldAtLimit(fixture, thread.id);
+        expect(
+          seen.map((context) => [context.initiator, context.origin]),
+        ).toEqual([["user", null]]);
+      } finally {
+        cli.stop();
+      }
+    },
+  );
+
+  it("still holds an agent's send at the limit, even when it claims to come from the composer", async () => {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+
+      const held = await sendWith(fixture, thread.id, "run the tests", {
+        sendSurface: "composer",
+        senderThreadId: sender.thread.id,
+      });
+
+      expect(held.delivery).toBe("queued");
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+      expect(seen.map((context) => context.initiator)).toEqual(["agent"]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("still holds a plugin's send at the limit, even when it claims to come from the composer", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+      const target = getThread(fixture.harness.db, thread.id);
+      expect(target).not.toBeNull();
+
+      const held = await acceptThreadSendRequest(fixture.harness.deps, {
+        payload: {
+          input: textInput("run the tests"),
+          mode: "auto",
+          sendSurface: "composer",
+          originPluginId: "automation-plugin",
+        },
+        thread: target!,
+      });
+
+      expect(held.delivery).toBe("queued");
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+      expect(
+        seen.map((context) => [context.origin, context.originPluginId]),
+      ).toEqual([["plugin", "automation-plugin"]]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("still holds a drained group at the limit when a composer row leads an untagged CLI tell", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    disconnectTerminal(fixture, open.terminalId);
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+      const composer = await sendFromComposer(
+        fixture,
+        thread.id,
+        "run the tests",
+      );
+      const tell = await sendWith(fixture, thread.id, "then run lint", {
+        mode: "steer-if-active",
+      });
+      expect([composer.delivery, tell.delivery]).toEqual(["queued", "queued"]);
+      const [composerRow, tellRow] = queuedRows(fixture, thread.id);
+      expect(composerRecords(fixture, thread.id)).toEqual([composerRow?.id]);
+      expect(
+        setQueuedThreadMessageGroupBoundary({
+          db: fixture.harness.db,
+          notifier: fixture.harness.hub,
+          threadId: thread.id,
+          expectedGroupedPrefixQueuedMessageIds: [composerRow!.id, tellRow!.id],
+          groupBoundaryQueuedMessageId: tellRow!.id,
+        }).kind,
+      ).toBe("updated");
+      reconnectLiveTerminal(fixture, open.terminalId);
+
+      await drainLater(fixture);
+
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id, ["run the tests", "then run lint"]);
+      const drained = seen.at(-1);
+      expect(drained?.queuedMessages).toHaveLength(2);
+      expect(drained?.origin).toBeNull();
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("holds a composer send while the native terminal is not live, then delivers it once at the limit when the terminal is live again", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    updateTerminalSessions(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId: open.terminalId },
+      update: { kind: "disconnect", retainDaemonSession: true },
+    });
+    expect(getThread(fixture.harness.db, thread.id)?.status).toBe("idle");
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+
+      const held = await sendFromComposer(fixture, thread.id, "run the tests");
+
+      expect(held.delivery).toBe("queued");
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+      expect(queuedRows(fixture, thread.id)[0]?.origin).toBeNull();
+      expect(composerRecords(fixture, thread.id)).toHaveLength(1);
+
+      await drainLater(fixture);
+
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+      const [first, ...drained] = seen;
+      expect([first?.initiator, first?.origin]).toEqual(["user", null]);
+      expect(drained.length).toBeGreaterThan(0);
+      expect(
+        drained.map((context) => [
+          context.origin,
+          context.queuedMessages.map((queued) => queued.origin),
+        ]),
+      ).toEqual(drained.map(() => [null, [null]]));
+      expect(composerRecords(fixture, thread.id)).toHaveLength(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals(
+        { daemonSessionId: fixture.sessionId, hostId: fixture.hostId },
+      );
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (cli.inputs().length >= PASTED.length) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await settle();
+
+      expect(cli.inputs()).toEqual(PASTED);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+      expect(countComposerRecords(fixture)).toBe(0);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("still holds a drained composer row at the limit when its composer record is missing", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    disconnectTerminal(fixture, open.terminalId);
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      holdAtLimit();
+      const held = await sendFromComposer(fixture, thread.id, "run the tests");
+      expect(held.delivery).toBe("queued");
+      expect(composerRecords(fixture, thread.id)).toHaveLength(1);
+      fixture.harness.db.$client.exec("DELETE FROM fork_queued_message_origin");
+      reconnectLiveTerminal(fixture, open.terminalId);
+
+      await drainLater(fixture);
+      await drainLater(fixture);
+
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("holds a composer send while a question is open, even with a live terminal, and delivers it once at the limit after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        questions: [{ id: "install-now", prompt: "Install now?" }],
+        state: "waiting",
+        threadId: thread.id,
+      });
+      holdAtLimit();
+
+      const held = await sendFromComposer(fixture, thread.id, "run the tests");
+      await drainLater(fixture);
+
+      expect(held.delivery).toBe("queued");
+      expect(cli.inputs().filter((input) => input !== "\u001b")).toEqual([]);
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.waitingOn).toEqual({ kind: "interaction" });
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await drainLater(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainLater(fixture);
+
+      expect(cli.inputs().filter((input) => input !== "\u001b")).toEqual(
+        PASTED,
+      );
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("still holds a composer send to an idle chat thread at the limit", async () => {
+    const fixture = await createFixture();
+    const chat = seedThread(fixture.harness.deps, {
+      projectId: fixture.projectId,
+      environmentId: fixture.environment.id,
+      providerId: "codex",
+      status: "idle",
+      title: "Chat thread",
+    });
+    seedThreadRuntimeState(fixture.harness.deps, {
+      environmentId: fixture.environment.id,
+      inputText: "Start here",
+      providerThreadId: "chat-thread-session",
+      threadId: chat.id,
+    });
+    const seen = holdAtLimit();
+
+    const held = await sendFromComposer(fixture, chat.id, "run the tests");
+
+    expect(held.delivery).toBe("queued");
+    expectHeldAtLimit(fixture, chat.id);
+    expect(seen.map((context) => [context.initiator, context.origin])).toEqual([
+      ["user", null],
+    ]);
+  });
+
+  it("keeps a held native start as the start row when a composer follow-up queues behind it, and leaves the follow-up's origin empty", async () => {
+    const fixture = await createFixture();
+    holdAtLimit();
+    const created = await createNativeThread(fixture, {
+      providerId: "codex",
+      prompt: "Fix the flaky test",
+      origin: "app",
+    });
+
+    const followUp = await sendFromComposer(
+      fixture,
+      created.id,
+      "then run lint",
+    );
+
+    expect(followUp.delivery).toBe("queued");
+    expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
+    const rows = queuedRows(fixture, created.id);
+    expect(rows.map((row) => [row.content, row.origin])).toEqual([
+      [textInput("Fix the flaky test"), "app"],
+      [textInput("then run lint"), null],
+    ]);
+    expect(
+      getQueuedThreadStartMessage(fixture.harness.db, created.id)?.id,
+    ).toBe(rows[0]?.id);
+    expect(composerRecords(fixture, created.id)).toEqual([rows[1]?.id]);
   });
 });
 
@@ -832,6 +1295,7 @@ describe("native terminal delivery across a crash", () => {
 
   it("never re-sends a message a crashed server left mid-delivery when periodic ticks reach it before recovery, and delivers the newer message behind it once", async () => {
     const before = await createFixture();
+    const sender = await openBusySender(before);
     const { open, thread } = await openRunningNativeThread(before, {
       providerId: "codex",
     });
@@ -839,7 +1303,7 @@ describe("native terminal delivery across a crash", () => {
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {
-      await sendToThread(before, thread.id, "run the tests");
+      await sendToThread(before, thread.id, "run the tests", sender.thread.id);
       const restore = failWritesToClaimedQueueRows(before);
       decision = { action: "proceed" };
       await runQueuedMessageDispatch(before.harness.deps, {
@@ -860,7 +1324,12 @@ describe("native terminal delivery across a crash", () => {
     decision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {
-      const newer = await sendToThread(after, thread.id, "then run lint");
+      const newer = await sendToThread(
+        after,
+        thread.id,
+        "then run lint",
+        sender.thread.id,
+      );
       expect(newer.delivery).toBe("queued");
       decision = { action: "proceed" };
       await runSweeps(after);
@@ -887,6 +1356,7 @@ describe("native terminal delivery across a crash", () => {
 
   it("never re-sends a held send whose row could not be deleted after the paste", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -894,7 +1364,7 @@ describe("native terminal delivery across a crash", () => {
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {
-      await sendToThread(fixture, thread.id, "run the tests");
+      await sendToThread(fixture, thread.id, "run the tests", sender.thread.id);
       const restore = failDeletesOfClaimedQueueRows(fixture);
       decision = { action: "proceed" };
       await runQueuedMessageDispatch(fixture.harness.deps, {
@@ -923,6 +1393,7 @@ describe("native terminal delivery across a crash", () => {
 
   it("puts a held send back when its paste fails and delivers it once on a later drain", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -930,7 +1401,7 @@ describe("native terminal delivery across a crash", () => {
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {
-      await sendToThread(fixture, thread.id, "run the tests");
+      await sendToThread(fixture, thread.id, "run the tests", sender.thread.id);
       decision = { action: "proceed" };
       await runQueuedMessageDispatch(fixture.harness.deps, {
         kind: "plugin-recheck",
@@ -1132,6 +1603,7 @@ describe("native terminal delivery across a crash", () => {
 
   it("retries a held send whose first input frame never left the server, and delivers it once", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -1139,7 +1611,7 @@ describe("native terminal delivery across a crash", () => {
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {
-      await sendToThread(fixture, thread.id, "run the tests");
+      await sendToThread(fixture, thread.id, "run the tests", sender.thread.id);
       dropTerminalInputFrame(fixture, 1);
       decision = { action: "proceed" };
       await runQueuedMessageDispatch(fixture.harness.deps, {
@@ -1165,11 +1637,12 @@ describe("native terminal delivery across a crash", () => {
 
   it("delivers a held send once when the server crashed after claiming it but before marking it", async () => {
     const before = await createFixture();
+    const sender = await openBusySender(before);
     const { open, thread } = await openRunningNativeThread(before, {
       providerId: "codex",
     });
     installDispatchHook(() => ({ action: "wait", reason: AT_LIMIT_REASON }));
-    await sendToThread(before, thread.id, "run the tests");
+    await sendToThread(before, thread.id, "run the tests", sender.thread.id);
     const [row] = listQueuedThreadMessages(before.harness.db, thread.id);
     expect(row).toBeDefined();
     const claimed = claimQueuedThreadMessageGroup(
@@ -1213,18 +1686,6 @@ describe("native terminal delivery across a crash", () => {
       pluginSchedules: fixture.harness.pluginService,
       plugins: fixture.harness.pluginService,
     });
-  }
-
-  async function openBusySender(fixture: Fixture) {
-    const sender = await openRunningNativeThread(fixture, {
-      providerId: "codex",
-    });
-    recordNativeTerminalActivity(fixture.harness.deps, {
-      confirms: false,
-      state: "working",
-      threadId: sender.thread.id,
-    });
-    return sender;
   }
 
   it("tells the sender exactly once when the restart that held the message could not write the warning", async () => {
@@ -2086,6 +2547,7 @@ describe("an open question in a native terminal", () => {
 
   it("holds a drained send when a question opens after admission but before the paste, and delivers it once after the question closes", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -2097,6 +2559,7 @@ describe("an open question in a native terminal", () => {
         fixture,
         thread.id,
         "use the staging host",
+        sender.thread.id,
       );
       expect(held.delivery).toBe("queued");
       openQuestionBeforeTheWrite(fixture, thread.id);
@@ -2404,6 +2867,7 @@ describe("an open question in a native terminal", () => {
 
   it("keeps a held send from pasting when a question opened while it waited, then delivers it once after the question closes", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -2415,6 +2879,7 @@ describe("an open question in a native terminal", () => {
         fixture,
         thread.id,
         "use the staging host",
+        sender.thread.id,
       );
       expect(held.delivery).toBe("queued");
       openQuestion(fixture, thread.id);
@@ -2440,6 +2905,7 @@ describe("an open question in a native terminal", () => {
 
   it("refuses an explicit send-now while a question is open and keeps the message queued", async () => {
     const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
@@ -2451,6 +2917,7 @@ describe("an open question in a native terminal", () => {
         fixture,
         thread.id,
         "use the staging host",
+        sender.thread.id,
       );
       expect(held.delivery).toBe("queued");
       const queuedMessageId =

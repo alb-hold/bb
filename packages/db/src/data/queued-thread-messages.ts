@@ -2186,6 +2186,35 @@ export function listQueuedThreadMessagePluginWaitRefs(
     );
 }
 
+export function listThreadQueuedMessagePluginWaitRefs(
+  db: DbQueryConnection,
+  threadId: string,
+): QueuedThreadMessagePluginWaitRef[] {
+  return db
+    .select({
+      id: queuedThreadMessages.id,
+      threadId: queuedThreadMessages.threadId,
+      waitHolder: queuedThreadMessages.waitHolder,
+    })
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        eq(queuedThreadMessages.threadId, threadId),
+        isNotNull(queuedThreadMessages.waitHolder),
+        automaticallyDrainableQueuedThreadMessage(),
+      ),
+    )
+    .orderBy(
+      asc(queuedThreadMessages.createdAt),
+      asc(queuedThreadMessages.sortKey),
+      asc(queuedThreadMessages.id),
+    )
+    .all()
+    .flatMap((row) =>
+      row.waitHolder === null ? [] : [{ ...row, waitHolder: row.waitHolder }],
+    );
+}
+
 export function listQueuedThreadMessagesWaitingOnKind(
   db: DbQueryConnection,
   args: ListQueuedThreadMessagesWaitingOnKindArgs,

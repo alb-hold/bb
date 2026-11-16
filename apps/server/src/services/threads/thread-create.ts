@@ -536,6 +536,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
         senderThreadId: args.request.senderThreadId ?? null,
         origin: args.request.origin,
         originPluginId: args.request.originPluginId ?? null,
+        composerSend: false,
         startedOnBehalfOf: args.request.startedOnBehalfOf,
         systemNotice: null,
         admitted: { when: "within-decision", run: beginProvisioning },

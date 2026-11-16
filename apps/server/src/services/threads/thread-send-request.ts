@@ -59,6 +59,7 @@ export async function acceptThreadSendRequest(
       }),
       origin: args.payload.originPluginId === undefined ? null : "plugin",
       originPluginId: args.payload.originPluginId ?? null,
+      composerSend: args.payload.sendSurface === "composer",
       startedOnBehalfOf: null,
     } as const;
     if (args.thread.status === "pending") {
