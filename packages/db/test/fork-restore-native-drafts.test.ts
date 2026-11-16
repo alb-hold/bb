@@ -23,6 +23,7 @@ import {
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropQueuedMessageEditHeldUntilColumn,
   dropThreadParentNotificationsColumn,
+  dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   rewindThreadPruningWork,
 } from "./helpers/rewind.js";
@@ -78,6 +79,7 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
     dropQueuedMessageEditHeldUntilColumn(db);
     dropMarketplaceSourceGitSubdirectoryColumn(db);
     dropThreadParentNotificationsColumn(db);
+    dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
     db.$client
       .prepare(
@@ -206,6 +208,7 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     dropQueuedMessageEditHeldUntilColumn(db);
     dropMarketplaceSourceGitSubdirectoryColumn(db);
     dropThreadParentNotificationsColumn(db);
+    dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
     db.$client
       .prepare(
@@ -333,6 +336,7 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     dropQueuedMessageEditHeldUntilColumn(db);
     dropMarketplaceSourceGitSubdirectoryColumn(db);
     dropThreadParentNotificationsColumn(db);
+    dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
     db.$client
       .prepare(
