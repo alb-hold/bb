@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, fstatSync, readdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import type {
   DirectoryEntry,
+  DirectoryListing,
   RepositoryScanHooks,
 } from "./repository-detection.js";
 import { removeWorktree } from "./worktree.js";
@@ -174,11 +175,17 @@ function unknownType(name: string): DirectoryEntry {
   };
 }
 
-async function* listed(
+async function listed(
   directory: string,
   map: (entry: DirectoryEntry) => DirectoryEntry = (entry) => entry,
-): AsyncIterable<DirectoryEntry> {
-  for await (const entry of await fs.opendir(directory)) yield map(entry);
+): Promise<DirectoryListing> {
+  const dir = await fs.opendir(directory);
+  return {
+    async *[Symbol.asyncIterator]() {
+      for await (const entry of dir) yield map(entry);
+    },
+    close: () => dir.close(),
+  };
 }
 
 function scan(hooks: RepositoryScanHooks): Hooks {
@@ -572,16 +579,18 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
       worktree,
       scan({
         budgetMs: 100,
-        openDirectoryEntries: async (directory, entry) =>
-          (async function* () {
-            for await (const child of listed(directory)) {
+        openDirectoryEntries: async (directory, entry) => {
+          const inner = await listed(directory);
+          return (async function* () {
+            for await (const child of inner) {
               if (path.basename(entry) === "many") {
                 reads += 1;
                 await delay(5);
               }
               yield child;
             }
-          })(),
+          })();
+        },
       }),
     );
     expect(stoppedBy(reasons, "it took longer than 100 ms")).toBe(1);
@@ -715,6 +724,88 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     expect(reasons).toEqual([`${UNFINISHED}it took longer than 300 ms)`]);
     expect(performance.now() - started).toBeLessThan(10_000);
   });
+
+  function descriptorsOn(target: { dev: number; ino: number }): number {
+    const table = process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+    let count = 0;
+    for (const name of readdirSync(table)) {
+      const info = (() => {
+        try {
+          return fstatSync(Number(name));
+        } catch {
+          return null;
+        }
+      })();
+      if (info?.dev === target.dev && info.ino === target.ino) count += 1;
+    }
+    return count;
+  }
+
+  it.each([
+    [
+      "a modules listing",
+      (worktree: Fixture) => path.join(worktree.gitDir, "modules"),
+      [
+        "could not check for submodule repositories (it took longer than 300 ms)",
+        `${UNFINISHED}it took longer than 300 ms)`,
+      ],
+    ],
+    [
+      "a directory listing",
+      (worktree: Fixture) => path.join(worktree.path, "node_modules", "stall"),
+      [`${UNFINISHED}it took longer than 300 ms)`],
+    ],
+  ] as const)(
+    "closes the anchor before listing, and the stalled Dir at the deadline, for %s",
+    async (_label, stalledAt, expected) => {
+      const worktree = await fixture();
+      const target = stalledAt(worktree);
+      await fs.mkdir(target, { recursive: true });
+      await settle();
+      const identity = await fs.stat(target);
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let closes = 0;
+      let duringStall = -1;
+      const reasons = await removal(
+        worktree,
+        scan({
+          budgetMs: 300,
+          openDirectoryEntries: async (directory, entry) => {
+            if (path.resolve(entry) !== path.resolve(target))
+              return listed(directory);
+            const dir = await fs.opendir(directory);
+            const listing: DirectoryListing = {
+              [Symbol.asyncIterator]: () => ({
+                next: async (): Promise<IteratorResult<DirectoryEntry>> => {
+                  duringStall = descriptorsOn(identity);
+                  await released;
+                  const child = await dir.read();
+                  return child === null
+                    ? { done: true, value: undefined }
+                    : { done: false, value: child };
+                },
+              }),
+              close: async () => {
+                closes += 1;
+                await dir.close();
+              },
+            };
+            return listing;
+          },
+        }),
+      );
+      const atReturn = descriptorsOn(identity);
+      release();
+      await delay(50);
+      expect(reasons).toEqual(expected);
+      expect(duringStall).toBe(1);
+      expect(closes).toBe(1);
+      expect(atReturn).toBe(0);
+    },
+  );
 
   it("never lists a directory that modules is swapped for between its lstat and its open", async () => {
     const worktree = await fixture();

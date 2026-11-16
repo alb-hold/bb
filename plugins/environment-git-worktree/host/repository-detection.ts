@@ -25,6 +25,10 @@ export type DirectoryEntry = Pick<
   | "isBlockDevice"
 >;
 
+export type DirectoryListing = AsyncIterable<DirectoryEntry> & {
+  close?: () => Promise<void>;
+};
+
 export interface RepositoryScanHooks {
   budgetMs?: number;
   entryLimit?: number;
@@ -32,7 +36,7 @@ export interface RepositoryScanHooks {
   openDirectoryEntries?: (
     directory: string,
     entry: string,
-  ) => Promise<AsyncIterable<DirectoryEntry>>;
+  ) => Promise<DirectoryListing>;
 }
 
 export interface IndexListing {
@@ -102,10 +106,15 @@ async function hasRepositoryShape(
   );
 }
 
-async function openEntries(
-  directory: string,
-): Promise<AsyncIterable<DirectoryEntry>> {
+async function openEntries(directory: string): Promise<DirectoryListing> {
   return fs.opendir(directory, { bufferSize: 1024 });
+}
+
+function closeListings(listings: Set<DirectoryListing>): void {
+  for (const listing of listings) {
+    listings.delete(listing);
+    void listing.close?.().catch(() => undefined);
+  }
 }
 
 async function readFirstName(directory: string): Promise<string[]> {
@@ -140,13 +149,12 @@ async function beforeDeadline<T>(
   }
 }
 
-async function withAnchoredDirectory<T>(
+async function openAnchoredListing(
   entry: string,
   before: Stats,
-  beforeOpen: ((directory: string) => Promise<void>) | undefined,
-  list: (anchored: string) => Promise<T>,
-): Promise<{ value: T } | { failure: string }> {
-  await beforeOpen?.(entry);
+  hooks: RepositoryScanHooks,
+): Promise<{ value: DirectoryListing } | { failure: string }> {
+  await hooks.beforeDirectoryOpen?.(entry);
   const handle = await fs.open(
     entry,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -161,7 +169,9 @@ async function withAnchoredDirectory<T>(
     );
     if (anchored === null)
       return { failure: `could not open ${entry} by its descriptor` };
-    return { value: await list(anchored) };
+    return {
+      value: await (hooks.openDirectoryEntries ?? openEntries)(anchored, entry),
+    };
   } finally {
     await handle.close();
   }
@@ -185,7 +195,7 @@ export async function findNestedRepositories(
   deadline = performance.now() + (hooks.budgetMs ?? REPOSITORY_SCAN_BUDGET_MS),
 ): Promise<{ repositories: string[] } | { failure: string }> {
   const budgetMs = hooks.budgetMs ?? REPOSITORY_SCAN_BUDGET_MS;
-  const openDirectoryEntries = hooks.openDirectoryEntries ?? openEntries;
+  const listings = new Set<DirectoryListing>();
   const entryLimit = hooks.entryLimit ?? REPOSITORY_SCAN_ENTRY_LIMIT;
   let read = 0;
   const repositories: string[] = [];
@@ -207,37 +217,30 @@ export async function findNestedRepositories(
         return;
       }
       if (!before.isDirectory()) return;
-      const listing = await withAnchoredDirectory(
-        entry,
-        before,
-        hooks.beforeDirectoryOpen,
-        async (anchored) => {
-          const listed: DirectoryEntry[] = [];
-          for await (const child of await openDirectoryEntries(
-            anchored,
-            entry,
-          )) {
-            read += 1;
-            if (read > entryLimit) {
-              fail(`it has more than ${entryLimit} entries`);
-              return null;
-            }
-            if (performance.now() > deadline) {
-              fail(`it took longer than ${budgetMs} ms`);
-              return null;
-            }
-            if (failure !== null) return null;
-            listed.push(child);
-          }
-          return listed;
-        },
-      );
-      if ("failure" in listing) {
-        fail(listing.failure);
+      const opened = await openAnchoredListing(entry, before, hooks);
+      if ("failure" in opened) {
+        fail(opened.failure);
         return;
       }
-      const entries = listing.value;
-      if (entries === null) return;
+      const entries: DirectoryEntry[] = [];
+      listings.add(opened.value);
+      try {
+        for await (const child of opened.value) {
+          read += 1;
+          if (read > entryLimit) {
+            fail(`it has more than ${entryLimit} entries`);
+            return;
+          }
+          if (performance.now() > deadline) {
+            fail(`it took longer than ${budgetMs} ms`);
+            return;
+          }
+          if (failure !== null) return;
+          entries.push(child);
+        }
+      } finally {
+        listings.delete(opened.value);
+      }
       const names = entries.map(({ name }) => name);
       if (
         relative !== "" &&
@@ -274,8 +277,10 @@ export async function findNestedRepositories(
     };
     pump();
   });
-  if ((await beforeDeadline(walked, deadline)) === TIMED_OUT)
+  if ((await beforeDeadline(walked, deadline)) === TIMED_OUT) {
     fail(`it took longer than ${budgetMs} ms`);
+    closeListings(listings);
+  }
   if (failure !== null) return { failure };
   return { repositories: repositories.sort() };
 }
@@ -284,9 +289,9 @@ async function moduleRepositoryReasons(
   gitDir: string,
   hooks: RepositoryScanHooks,
   abandoned: () => boolean,
+  listings: Set<DirectoryListing>,
 ): Promise<string[]> {
   const modules = path.join(gitDir, "modules");
-  const openDirectoryEntries = hooks.openDirectoryEntries ?? openEntries;
   try {
     const info = await lstatUnlessGone(modules);
     if (info === null) return [];
@@ -294,28 +299,20 @@ async function moduleRepositoryReasons(
       return [
         `has a modules entry in its Git metadata that is a ${info.isSymbolicLink() ? "symbolic link" : "file"}, not a directory`,
       ];
-    const listing = await withAnchoredDirectory(
-      modules,
-      info,
-      hooks.beforeDirectoryOpen,
-      async (anchored) => {
-        const names: string[] = [];
-        for await (const child of await openDirectoryEntries(
-          anchored,
-          modules,
-        )) {
-          if (abandoned()) break;
-          names.push(`modules/${child.name}`);
-          if (names.length > NAMED_LIMIT) break;
-        }
-        return names;
-      },
-    );
-    if ("failure" in listing)
-      return [
-        `could not check for submodule repositories (${listing.failure})`,
-      ];
-    const entries = listing.value;
+    const opened = await openAnchoredListing(modules, info, hooks);
+    if ("failure" in opened)
+      return [`could not check for submodule repositories (${opened.failure})`];
+    const entries: string[] = [];
+    listings.add(opened.value);
+    try {
+      for await (const child of opened.value) {
+        if (abandoned()) break;
+        entries.push(`modules/${child.name}`);
+        if (entries.length > NAMED_LIMIT) break;
+      }
+    } finally {
+      listings.delete(opened.value);
+    }
     if (entries.length === 0) return [];
     const shown = entries.slice(0, NAMED_LIMIT).sort().join(", ");
     const named = entries.length > NAMED_LIMIT ? `${shown} and more` : shown;
@@ -363,11 +360,13 @@ export async function findRepositoryReasons(args: {
   const budgetMs = scan.budgetMs ?? REPOSITORY_SCAN_BUDGET_MS;
   const deadline = performance.now() + budgetMs;
   let abandoned = false;
+  const listings = new Set<DirectoryListing>();
   const modules = await beforeDeadline(
-    moduleRepositoryReasons(args.gitDir, scan, () => abandoned),
+    moduleRepositoryReasons(args.gitDir, scan, () => abandoned, listings),
     deadline,
   );
   abandoned = true;
+  if (modules === TIMED_OUT) closeListings(listings);
   const reasons =
     modules === TIMED_OUT
       ? [
