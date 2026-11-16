@@ -3086,6 +3086,13 @@ describe("same-user processes in another mount namespace", () => {
       "uncertain",
     ],
     ["an unreadable mount table", "denied", {}, "uncertain"],
+    [
+      "mirrors and an fd whose link cannot be read",
+      mirror,
+      { fdDenied: true },
+      "uncertain",
+    ],
+    ["only mirrors from one of its threads", mirror, { thread: true }, "clear"],
   ] as const;
   it.each(
     ["earlier", "final"].flatMap((scan) =>
@@ -3097,22 +3104,46 @@ describe("same-user processes in another mount namespace", () => {
   )(
     "checks on the %s scan a same-user process that sees %s",
     async (scan, _kind, mountinfo, links, expected) => {
-      const proc = mountAliasProc("/work/tree", "different isolated", 1000);
-      const extra: { cwd?: string; fd?: string } = links;
+      const extra: {
+        cwd?: string;
+        fd?: string;
+        fdDenied?: boolean;
+        thread?: boolean;
+      } = links;
+      const proc = mountAliasProc(
+        "/work/tree",
+        extra.thread === true ? "same" : "different isolated",
+        1000,
+      );
       const reader: ProcReader = {
         ...proc,
-        readdir: async (target) =>
-          extra.fd !== undefined && target === "/proc/101/fd"
-            ? ["3"]
-            : proc.readdir(target),
+        readdir: async (target) => {
+          if (
+            (extra.fd !== undefined || extra.fdDenied === true) &&
+            target === "/proc/101/fd"
+          )
+            return ["3"];
+          if (extra.thread === true && target === "/proc/101/task")
+            return ["101", "102"];
+          return proc.readdir(target);
+        },
         readlink: async (target) => {
           if (extra.cwd !== undefined && target === "/proc/101/cwd")
             return extra.cwd;
           if (extra.fd !== undefined && target === "/proc/101/fd/3")
             return extra.fd;
+          if (extra.fdDenied === true && target === "/proc/101/fd/3")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          if (extra.thread === true && target === "/proc/101/task/102/ns/mnt")
+            return "mnt:[3]";
           return proc.readlink(target);
         },
         readFile: async (target) => {
+          if (
+            extra.thread === true &&
+            target === "/proc/101/task/102/mountinfo"
+          )
+            return mountinfo;
           if (target !== "/proc/101/mountinfo") return proc.readFile(target);
           if (mountinfo === "denied")
             throw Object.assign(new Error("denied"), { code: "EACCES" });
