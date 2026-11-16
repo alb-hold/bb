@@ -12,6 +12,7 @@ import {
   recordNativeParentNoticeDelivery,
   type ClaimedQueuedThreadMessageRow,
   type DbTransaction,
+  type TerminalSessionRow,
 } from "@bb/db";
 import {
   flattenPromptInputGroups,
@@ -153,6 +154,17 @@ function isOwnerComposerSend(
       );
     })
   );
+}
+
+export function redrainNativeTerminalQueueOnLive(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  session: TerminalSessionRow,
+): void {
+  if (session.threadId === null) return;
+  const record = getNativeTerminalThread(deps.db, session.threadId);
+  if (record?.terminalSessionId !== session.id) return;
+  if (listQueuedThreadMessages(deps.db, session.threadId).length === 0) return;
+  requestQueuedMessageDispatch(deps, { kind: "plugin-recheck" });
 }
 
 function holdUntilInteractionSettles(

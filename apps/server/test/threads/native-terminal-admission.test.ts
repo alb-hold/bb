@@ -986,7 +986,10 @@ describe("an owner's composer send at the limit", () => {
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
-    disconnectTerminal(fixture, open.terminalId);
+    updateTerminalSessions(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId: open.terminalId },
+      update: { kind: "disconnect", retainDaemonSession: true },
+    });
     expect(getThread(fixture.harness.db, thread.id)?.status).toBe("idle");
     const cli = startFakeCli(fixture, open.terminalId);
     try {
@@ -1015,10 +1018,15 @@ describe("an owner's composer send at the limit", () => {
       ).toEqual(drained.map(() => [null, [null]]));
       expect(composerRecords(fixture, thread.id)).toHaveLength(1);
 
-      reconnectLiveTerminal(fixture, open.terminalId);
       await new Promise((resolve) => setTimeout(resolve, 1_100));
-      await drainLater(fixture);
-      await drainLater(fixture);
+      await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals(
+        { daemonSessionId: fixture.sessionId, hostId: fixture.hostId },
+      );
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (cli.inputs().length >= PASTED.length) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await settle();
 
       expect(cli.inputs()).toEqual(PASTED);
       expect(queuedRows(fixture, thread.id)).toEqual([]);
