@@ -879,12 +879,19 @@ export async function removeDirectoryTree(
   const openHeldMarker = async (marker: string, shown: string) => {
     if (rootMountId === null) {
       await hooks.beforeMarkerOpen?.(marker);
-      return await open(
+      const held = await open(
         marker,
         constants.O_RDONLY |
           (constants.O_NOFOLLOW ?? 0) |
           (constants.O_NONBLOCK ?? 0),
       );
+      const heldIsFile = await held.stat().then(
+        (info) => info.isFile(),
+        () => false,
+      );
+      if (heldIsFile) return held;
+      await held.close();
+      return null;
     }
     const located = await openMarkerPath(marker);
     if (located === null) return null;

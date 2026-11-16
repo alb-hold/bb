@@ -530,6 +530,30 @@ describe.runIf(process.platform === "darwin")(
       expect(result.status).toBe("removed");
       expect(reads).toBe(0);
     });
+
+    it("never pins a .git swapped for a FIFO just before the held-marker open, and keeps the tree", async () => {
+      const root = await settledTree();
+      const marker = path.join(root, ".git");
+      await fs.writeFile(marker, "gitdir: /nowhere\n");
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      let swapped = "";
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        beforeMarkerOpen: async (candidate) => {
+          if (swapped !== "") return;
+          const anchor = await fs.stat(path.dirname(candidate));
+          for (const name of await fs.readdir(path.dirname(root))) {
+            const info = await fs.lstat(path.join(path.dirname(root), name));
+            if (info.ino === anchor.ino && info.dev === anchor.dev)
+              swapped = path.join(path.dirname(root), name, ".git");
+          }
+          await swapForFifo(swapped);
+        },
+      }).catch((error: unknown) => ({ thrown: String(error) }));
+      expect(swapped).not.toBe("");
+      expect(result).toMatchObject({ status: "retained" });
+      expect((await fs.lstat(marker)).isFIFO()).toBe(true);
+    });
   },
 );
 
