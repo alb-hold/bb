@@ -3,7 +3,7 @@ import {
   spawn,
   spawnSync,
 } from "node:child_process";
-import { existsSync, lstatSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import {
   access,
@@ -47,6 +47,7 @@ for (let i = 0; i < 6; i++)
   });
 setInterval(() => {}, 1000);
 `;
+const temporaryDirectory = realpathSync(os.tmpdir());
 const roots: string[] = [];
 const workers: ReturnType<typeof spawn>[] = [];
 const hasRemoveDirectoryTree = existsSync(
@@ -256,7 +257,7 @@ async function makeWorktree(
 ): Promise<{ path: string; root: string }> {
   const root =
     existingRoot ??
-    (await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-")));
+    (await mkdtemp(path.join(temporaryDirectory, "bb-preserve-worktree-")));
   if (!roots.includes(root)) roots.push(root);
   const source = path.join(root, "source");
   const managed = path.join(root, "managed");
@@ -386,23 +387,26 @@ afterEach(async () => {
 });
 
 describe("real worktree teardown preservation", () => {
-  it("retains for a foreign uid with unreadable fd and exe paths even when comm is allowlisted", async () => {
-    const worktree = await makeWorktree();
-    useProcReaderForTests(rootUnreadableForeignProc(4_000_000_102));
-    const signal = vi.spyOn(process, "kill");
-    const scan = await scanWorktreeHolders(worktree.path);
-    expect(scan.status).toBe("unknown");
-    await expect(remove(worktree)).rejects.toMatchObject({
-      code: "worktree_preserved",
-    });
-    expect(signal).not.toHaveBeenCalled();
-    await expect(access(worktree.path)).resolves.toBeUndefined();
-    await expect(
-      readFile(path.join(worktree.path, "README.md"), "utf8"),
-    ).resolves.toBe("published\n");
-  });
+  it.skipIf(process.platform !== "linux")(
+    "retains for a foreign uid with unreadable fd and exe paths even when comm is allowlisted",
+    async () => {
+      const worktree = await makeWorktree();
+      useProcReaderForTests(rootUnreadableForeignProc(4_000_000_102));
+      const signal = vi.spyOn(process, "kill");
+      const scan = await scanWorktreeHolders(worktree.path);
+      expect(scan.status).toBe("unknown");
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      expect(signal).not.toHaveBeenCalled();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    },
+  );
 
-  it.each(["fd", "exe"] as const)(
+  it.skipIf(process.platform !== "linux").each(["fd", "exe"] as const)(
     "retains a clean worktree for a foreign root-visible process with its %s inside",
     async (holder) => {
       const worktree = await makeWorktree();
@@ -476,81 +480,87 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it("scans a threaded process without rereading its shared state during forced removal", async () => {
-    const worktree = await makeWorktree();
-    await writeFile(path.join(worktree.path, "README.md"), "edited\n");
-    const outside = await mkdtemp(path.join(os.tmpdir(), "bb-holder-cost-"));
-    roots.push(outside);
-    const helper = spawn(process.execPath, ["-e", THREADED_HELPER, outside], {
-      cwd: outside,
-      stdio: ["ignore", "ignore", "ignore", "ipc"],
-    });
-    workers.push(helper);
-    await new Promise<void>((resolve, reject) => {
-      helper.once("message", () => resolve());
-      helper.once("exit", () => reject(new Error("threaded helper exited")));
-    });
-    const pid = String(helper.pid);
-    const tasks = await hostProc.readdir(`/proc/${pid}/task`);
-    expect(tasks.length).toBeGreaterThan(8);
-    const counts = {
-      scans: 0,
-      taskMaps: 0,
-      leaderTaskFds: 0,
-      pseudoFdStats: 0,
-      deniedMapFiles: 0,
-    };
-    const pseudoFds = new Set<string>();
-    const taskMaps = new RegExp(`^/proc/${pid}/task/\\d+/maps$`, "u");
-    useProcReaderForTests({
-      ...hostProc,
-      readdir: async (target) => {
-        if (target === "/proc") counts.scans++;
-        if (target === `/proc/${pid}/task/${pid}/fd`) counts.leaderTaskFds++;
-        return hostProc.readdir(target);
-      },
-      readlink: async (target) => {
-        const value = await hostProc.readlink(target);
-        if (
-          target.startsWith(`/proc/${pid}/`) &&
-          /\/fd\/\d+$/u.test(target) &&
-          /^(?:pipe|socket|anon_inode):/u.test(value)
-        )
-          pseudoFds.add(target);
-        return value;
-      },
-      readFile: async (target) => {
-        if (taskMaps.test(target)) counts.taskMaps++;
-        return hostProc.readFile(target);
-      },
-      statId: async (target) => {
-        if (pseudoFds.has(target)) counts.pseudoFdStats++;
-        try {
-          return await hostProc.statId(target);
-        } catch (error) {
+  it.skipIf(process.platform !== "linux")(
+    "scans a threaded process without rereading its shared state during forced removal",
+    async () => {
+      const worktree = await makeWorktree();
+      await writeFile(path.join(worktree.path, "README.md"), "edited\n");
+      const outside = await mkdtemp(
+        path.join(temporaryDirectory, "bb-holder-cost-"),
+      );
+      roots.push(outside);
+      const helper = spawn(process.execPath, ["-e", THREADED_HELPER, outside], {
+        cwd: outside,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      workers.push(helper);
+      await new Promise<void>((resolve, reject) => {
+        helper.once("message", () => resolve());
+        helper.once("exit", () => reject(new Error("threaded helper exited")));
+      });
+      const pid = String(helper.pid);
+      const tasks = await hostProc.readdir(`/proc/${pid}/task`);
+      expect(tasks.length).toBeGreaterThan(8);
+      const counts = {
+        scans: 0,
+        taskMaps: 0,
+        leaderTaskFds: 0,
+        pseudoFdStats: 0,
+        deniedMapFiles: 0,
+      };
+      const pseudoFds = new Set<string>();
+      const taskMaps = new RegExp(`^/proc/${pid}/task/\\d+/maps$`, "u");
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (target) => {
+          if (target === "/proc") counts.scans++;
+          if (target === `/proc/${pid}/task/${pid}/fd`) counts.leaderTaskFds++;
+          return hostProc.readdir(target);
+        },
+        readlink: async (target) => {
+          const value = await hostProc.readlink(target);
           if (
-            target.startsWith(`/proc/${pid}/map_files/`) &&
-            (error as NodeJS.ErrnoException).code === "EPERM"
+            target.startsWith(`/proc/${pid}/`) &&
+            /\/fd\/\d+$/u.test(target) &&
+            /^(?:pipe|socket|anon_inode):/u.test(value)
           )
-            counts.deniedMapFiles++;
-          throw error;
-        }
-      },
-    });
-    const started = performance.now();
-    await remove(worktree).catch(() => undefined);
-    const elapsed = performance.now() - started;
-    await expect(access(worktree.path)).resolves.toBeUndefined();
-    expect(counts.scans).toBeGreaterThan(0);
-    expect(pseudoFds.size).toBeGreaterThan(0);
-    expect(counts).toMatchObject({
-      taskMaps: 0,
-      leaderTaskFds: 0,
-      pseudoFdStats: 0,
-    });
-    expect(counts.deniedMapFiles).toBeLessThanOrEqual(counts.scans);
-    expect(elapsed).toBeLessThan(30_000);
-  }, 120_000);
+            pseudoFds.add(target);
+          return value;
+        },
+        readFile: async (target) => {
+          if (taskMaps.test(target)) counts.taskMaps++;
+          return hostProc.readFile(target);
+        },
+        statId: async (target) => {
+          if (pseudoFds.has(target)) counts.pseudoFdStats++;
+          try {
+            return await hostProc.statId(target);
+          } catch (error) {
+            if (
+              target.startsWith(`/proc/${pid}/map_files/`) &&
+              (error as NodeJS.ErrnoException).code === "EPERM"
+            )
+              counts.deniedMapFiles++;
+            throw error;
+          }
+        },
+      });
+      const started = performance.now();
+      await remove(worktree).catch(() => undefined);
+      const elapsed = performance.now() - started;
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(counts.scans).toBeGreaterThan(0);
+      expect(pseudoFds.size).toBeGreaterThan(0);
+      expect(counts).toMatchObject({
+        taskMaps: 0,
+        leaderTaskFds: 0,
+        pseudoFdStats: 0,
+      });
+      expect(counts.deniedMapFiles).toBeLessThanOrEqual(counts.scans);
+      expect(elapsed).toBeLessThan(30_000);
+    },
+    120_000,
+  );
 
   it("removes a worktree with only ignored node_modules", async () => {
     const worktree = await makeWorktree(
@@ -589,18 +599,20 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it.each(
-    [1000, 107473].flatMap((uid) =>
-      [
-        "cwd alias",
-        "fd alias",
-        "different exposing",
-        "different isolated",
-        "own mounts unreadable",
-        "cwd identity",
-      ].map((kind) => [uid, kind] as const),
-    ),
-  )("protects alias teardown uid %s with %s", async (uid, kind) => {
+  it
+    .skipIf(process.platform !== "linux")
+    .each(
+      [1000, 107473].flatMap((uid) =>
+        [
+          "cwd alias",
+          "fd alias",
+          "different exposing",
+          "different isolated",
+          "own mounts unreadable",
+          "cwd identity",
+        ].map((kind) => [uid, kind] as const),
+      ),
+    )("protects alias teardown uid %s with %s", async (uid, kind) => {
     const worktree = await makeWorktree();
     useProcReaderForTests(mountAliasProc(worktree.path, kind, uid));
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
@@ -1743,7 +1755,7 @@ describe("real worktree teardown preservation", () => {
 
   it("retains an entry left in quarantine by an interrupted removal", async () => {
     const root = await mkdtemp(
-      path.join(os.tmpdir(), "bb-removal-quarantine-"),
+      path.join(temporaryDirectory, "bb-removal-quarantine-"),
     );
     roots.push(root);
     const quarantined = path.join(root, ".bb-removing-interrupted");
@@ -1840,7 +1852,7 @@ describe("real worktree teardown preservation", () => {
     "retains a symlink racer and the original link when a racer takes its restore name",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-symlink-"),
+        path.join(temporaryDirectory, "bb-preserve-symlink-"),
       );
       roots.push(root);
       const originalLink = path.join(root, "original-link");
@@ -2362,6 +2374,7 @@ describe("real worktree teardown preservation", () => {
       useProcReaderForTests(descendantsOnly(hostProc, -1));
       const lateDirectory = path.join(worktree.path, "late-dir");
       await mkdir(lateDirectory);
+      const lateIdentity = await fs.stat(lateDirectory);
       const children = ["first.txt", "second.txt", "third.txt"];
       for (const [index, name] of children.entries())
         await writeFile(path.join(lateDirectory, name), `original-${index}\n`, {
@@ -2427,7 +2440,12 @@ describe("real worktree teardown preservation", () => {
         startedAt: Number.MAX_SAFE_INTEGER,
         readDirectoryNames: async (directory) => {
           const names = await fs.readdir(directory);
-          if ((await fs.realpath(directory)) !== lateDirectory) return names;
+          const listed = await fs.stat(directory);
+          if (
+            listed.dev !== lateIdentity.dev ||
+            listed.ino !== lateIdentity.ino
+          )
+            return names;
           return names.sort((left, right) =>
             direction === "ascending"
               ? left.localeCompare(right)
@@ -2543,7 +2561,8 @@ describe("real worktree teardown preservation", () => {
           hookCalls.push({ entry, quarantined });
           try {
             quarantinedContents = await readFile(quarantined, "utf8");
-            quarantinedParent = await fs.realpath(path.dirname(quarantined));
+            const parent = await fs.stat(path.dirname(quarantined));
+            quarantinedParent = `${parent.dev}:${parent.ino}`;
             const index = traversalOrder.indexOf(path.basename(entry));
             survivorsAtInjection = await Promise.all(
               traversalOrder.slice(index + 1).map(async (name) => ({
@@ -2575,7 +2594,8 @@ describe("real worktree teardown preservation", () => {
       expect(path.basename(hookCalls[0]!.quarantined)).toMatch(
         /^\.bb-removing-/u,
       );
-      expect(quarantinedParent).toBe(lateDirectory);
+      const lateIdentity = await fs.stat(lateDirectory);
+      expect(quarantinedParent).toBe(`${lateIdentity.dev}:${lateIdentity.ino}`);
       expect(quarantinedContents).toBe("original-1\n");
       expect(visited).toEqual(traversalOrder.slice(0, 2));
       expect(hookCalls[0]?.entry).toBe(path.join(lateDirectory, visited[1]!));
@@ -2836,7 +2856,7 @@ describe("real worktree teardown preservation", () => {
     "does not follow a directory replaced by a symlink during removal",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-remove-tree-race-"),
+        path.join(temporaryDirectory, "bb-remove-tree-race-"),
       );
       roots.push(root);
       const target = path.join(root, "target");
@@ -2870,7 +2890,7 @@ describe("real worktree teardown preservation", () => {
     "retains a root directory changed after recursive removal starts",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-remove-root-race-"),
+        path.join(temporaryDirectory, "bb-remove-root-race-"),
       );
       roots.push(root);
       const target = path.join(root, "target");
@@ -3111,7 +3131,7 @@ describe("real worktree teardown preservation", () => {
     "removes a mismatched quarantine pin and recovers the held original from its file handle",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-race-"),
+        path.join(temporaryDirectory, "bb-preserve-pin-race-"),
       );
       roots.push(root);
       const originalPath = path.join(root, "payload.txt");
@@ -3202,7 +3222,7 @@ describe("real worktree teardown preservation", () => {
     "retains a stale recovery pin and its directory during a fresh teardown",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-stale-pin-"),
+        path.join(temporaryDirectory, "bb-preserve-stale-pin-"),
       );
       roots.push(root);
       const target = path.join(root, "target");
@@ -3226,7 +3246,7 @@ describe("real worktree teardown preservation", () => {
     "retries pin name collisions and leaves no pin after a verified clean removal",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-clean-"),
+        path.join(temporaryDirectory, "bb-preserve-pin-clean-"),
       );
       roots.push(root);
       await writeFile(path.join(root, "payload.txt"), "clean removal\n");
@@ -3253,7 +3273,7 @@ describe("real worktree teardown preservation", () => {
     "removes the verified recovery pin after a successful restore",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-restored-"),
+        path.join(temporaryDirectory, "bb-preserve-pin-restored-"),
       );
       roots.push(root);
       const originalPath = path.join(root, "payload.txt");
@@ -3297,7 +3317,7 @@ describe("real worktree teardown preservation", () => {
     "retains the original pin and worktree when the recovery link syscall fails",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-link-failed-"),
+        path.join(temporaryDirectory, "bb-preserve-pin-link-failed-"),
       );
       roots.push(root);
       const originalPath = path.join(root, "a-payload.txt");
@@ -3369,7 +3389,7 @@ describe("real worktree teardown preservation", () => {
     "cleans a partial recovery copy when a later write syscall fails",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-copy-failed-"),
+        path.join(temporaryDirectory, "bb-preserve-pin-copy-failed-"),
       );
       roots.push(root);
       const originalPath = path.join(root, "a-payload.txt");
@@ -3393,7 +3413,7 @@ describe("real worktree teardown preservation", () => {
             await fs.link(
               pin,
               path.join(
-                "/dev/shm",
+                process.platform === "linux" ? "/dev/shm" : "/dev",
                 `${path.basename(destination)}-${process.pid}`,
               ),
             );
