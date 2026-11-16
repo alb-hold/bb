@@ -154,6 +154,62 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       (_line, id: string) => `mnt_id:\t${Number(id) + 1}`,
     );
 
+  it("keeps a tree whose root is itself a bind mount, before listing anything, and leaves the bind source whole", async (context) => {
+    if (!mountNamespacesAvailable()) context.skip();
+    const { source, root } = await boundTree();
+    const removal = await removeWithBind(source, root, root);
+    expect(removal.thrown).toBeUndefined();
+    expect(removal.value).toMatchObject({
+      status: "retained",
+      mountedPaths: [root],
+      removalStarted: false,
+    });
+    await expect(fs.readFile(path.join(source, "a.txt"), "utf8")).resolves.toBe(
+      "keep\n",
+    );
+    await expect(
+      fs.readFile(path.join(source, "nested", "b.txt"), "utf8"),
+    ).resolves.toBe("keep too\n");
+  });
+
+  it("keeps a tree whose root is on another mount than its parent", async () => {
+    const root = await settledTree();
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readDescriptorInfo: async (entry, fd) => {
+        const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+        return path.resolve(entry) === root ? shifted(info) : info;
+      },
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      mountedPaths: [root],
+      removalStarted: false,
+    });
+    await expect(fs.readFile(path.join(root, "top.txt"), "utf8")).resolves.toBe(
+      "top\n",
+    );
+  });
+
+  it("keeps the whole tree when its parent's mount id cannot be read", async () => {
+    const root = await settledTree();
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readDescriptorInfo: (entry, fd) =>
+        path.resolve(entry) === path.dirname(root)
+          ? Promise.reject(new Error("EACCES"))
+          : fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8"),
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      unanchoredPaths: [root],
+      removalStarted: false,
+    });
+    await expect(fs.readFile(path.join(root, "top.txt"), "utf8")).resolves.toBe(
+      "top\n",
+    );
+  });
+
   it("keeps a directory on another mount before inspection lists it", async () => {
     const root = await settledTree();
     const nested = path.join(root, "nested");

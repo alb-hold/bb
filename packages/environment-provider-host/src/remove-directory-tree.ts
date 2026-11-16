@@ -762,8 +762,17 @@ export async function removeDirectoryTree(
     rootMountId =
       rootHandle === null ? null : await readMountId(root, rootHandle.fd);
     await rootHandle?.close();
-    if (rootMountId === null) {
+    const parentMountId =
+      rootMountId === null
+        ? null
+        : await readMountId(path.dirname(root), parent.fd);
+    if (rootMountId === null || parentMountId === null) {
       unanchoredPaths.add(displayPath(root));
+      await parent.close();
+      return result("retained");
+    }
+    if (parentMountId !== rootMountId) {
+      mountedPaths.add(displayPath(root));
       await parent.close();
       return result("retained");
     }
