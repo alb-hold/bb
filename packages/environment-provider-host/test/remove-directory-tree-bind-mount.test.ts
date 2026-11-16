@@ -5,7 +5,7 @@ import {
   spawn,
 } from "node:child_process";
 import { existsSync } from "node:fs";
-import fs from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -532,3 +532,118 @@ describe.runIf(process.platform === "darwin")(
     });
   },
 );
+
+async function swapForFifo(real: string): Promise<void> {
+  await fs.rm(real);
+  execFileSync("mkfifo", [real]);
+}
+
+async function settleOrRelease(
+  removal: Promise<unknown>,
+  fifo: () => string,
+): Promise<{ hung: boolean; outcome: unknown }> {
+  const outcome = await Promise.race([
+    removal,
+    delay(3_000).then(() => "hung" as const),
+  ]);
+  if (outcome !== "hung") return { hung: false, outcome };
+  const releaser = spawn("sh", ["-c", 'exec 3>"$1"; sleep 1', "sh", fifo()], {
+    stdio: "ignore",
+  });
+  await removal;
+  releaser.kill();
+  return { hung: true, outcome };
+}
+
+function realEntry(root: string, candidate: string): string {
+  const rest = /^\/(?:proc\/self\/fd\/\d+|\.vol\/\d+\/\d+)\/(.+)$/u.exec(
+    candidate,
+  )?.[1];
+  if (rest === undefined) return candidate;
+  return rest.startsWith(".bb-removing-")
+    ? path.join(path.dirname(root), rest)
+    : path.join(root, rest);
+}
+
+describe("opening a file swapped for a FIFO during removal", () => {
+  it("keeps a regular file swapped for a FIFO just before its open, without blocking", async () => {
+    const root = await settledTree();
+    const top = path.join(root, "top.txt");
+    let swapped = "";
+    const started = performance.now();
+    const { hung, outcome } = await settleOrRelease(
+      removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        beforeFileOpen: async (candidate) => {
+          if (swapped !== "" || realEntry(root, candidate) !== top) return;
+          await swapForFifo(top);
+          swapped = top;
+        },
+      }).catch((error: unknown) => ({ thrown: String(error) })),
+      () => top,
+    );
+    expect(swapped).toBe(top);
+    expect(hung).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(outcome).toMatchObject({ status: "retained" });
+    expect((await fs.lstat(top)).isFIFO()).toBe(true);
+  }, 10_000);
+
+  it("never accepts a pinned .git marker swapped for an empty FIFO just before its contents are verified, and never blocks", async () => {
+    const root = await settledTree();
+    await fs.writeFile(path.join(root, ".git"), "");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    let swapped = "";
+    const started = performance.now();
+    const { hung, outcome } = await settleOrRelease(
+      removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        beforeFileOpen: async (candidate) => {
+          if (
+            swapped !== "" ||
+            !path.basename(candidate).startsWith(".bb-pin-")
+          )
+            return;
+          const real = realEntry(root, candidate);
+          await swapForFifo(real);
+          swapped = real;
+        },
+      }).catch((error: unknown) => ({ thrown: String(error) })),
+      () => swapped,
+    );
+    expect(swapped).not.toBe("");
+    expect(hung).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(outcome).not.toMatchObject({ status: "removed" });
+    const fifos = (
+      await fs.readdir(path.dirname(root), {
+        recursive: true,
+        withFileTypes: true,
+      })
+    ).filter((entry) => entry.isFIFO());
+    expect(fifos.length).toBeGreaterThan(0);
+  }, 10_000);
+});
+
+describe.runIf(linux)("reopening the held .git marker", () => {
+  it("closes the reopened marker and keeps the tree when its stat fails", async () => {
+    const root = await settledTree();
+    const marker = path.join(root, ".git");
+    await fs.writeFile(marker, "gitdir: /nowhere\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    let reopened: FileHandle | undefined;
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      afterMarkerReopen: async (handle) => {
+        reopened = handle;
+        throw Object.assign(new Error("stat failed"), { code: "EIO" });
+      },
+    });
+    expect(reopened).toBeDefined();
+    expect(reopened?.fd).toBe(-1);
+    expect(result).toMatchObject({ status: "retained" });
+    await expect(fs.readFile(marker, "utf8")).resolves.toBe(
+      "gitdir: /nowhere\n",
+    );
+  });
+});
