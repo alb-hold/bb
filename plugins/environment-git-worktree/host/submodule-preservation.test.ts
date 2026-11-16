@@ -725,6 +725,32 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     expect(performance.now() - started).toBeLessThan(10_000);
   });
 
+  it("leaves the walk no time once a stalled modules listing has used the whole budget, every time", async () => {
+    const worktree = await fixture();
+    const modules = path.join(worktree.gitDir, "modules");
+    await fs.mkdir(modules);
+    await settle();
+    const walked: string[] = [];
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const reasons = await removal(
+        worktree,
+        scan({
+          budgetMs: 50,
+          openDirectoryEntries: async (directory, entry) => {
+            if (entry === modules) return stalled();
+            walked.push(entry);
+            return listed(directory);
+          },
+        }),
+      );
+      expect(reasons).toEqual([
+        "could not check for submodule repositories (it took longer than 50 ms)",
+        `${UNFINISHED}it took longer than 50 ms)`,
+      ]);
+    }
+    expect(walked).toEqual([]);
+  });
+
   function descriptorsOn(target: { dev: number; ino: number }): number {
     const table = process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
     let count = 0;
@@ -804,6 +830,114 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
       expect(duringStall).toBe(1);
       expect(closes).toBe(1);
       expect(atReturn).toBe(0);
+    },
+  );
+
+  it.each([
+    [
+      "a modules listing",
+      "resolves",
+      (worktree: Fixture) => path.join(worktree.gitDir, "modules"),
+      [
+        "could not check for submodule repositories (it took longer than 300 ms)",
+        `${UNFINISHED}it took longer than 300 ms)`,
+      ],
+    ],
+    [
+      "a directory listing",
+      "resolves",
+      (worktree: Fixture) => path.join(worktree.path, "node_modules", "stall"),
+      [`${UNFINISHED}it took longer than 300 ms)`],
+    ],
+    [
+      "a modules listing",
+      "rejects",
+      (worktree: Fixture) => path.join(worktree.gitDir, "modules"),
+      [
+        "could not check for submodule repositories (it took longer than 300 ms)",
+        `${UNFINISHED}it took longer than 300 ms)`,
+      ],
+    ],
+    [
+      "a directory listing",
+      "rejects",
+      (worktree: Fixture) => path.join(worktree.path, "node_modules", "stall"),
+      [`${UNFINISHED}it took longer than 300 ms)`],
+    ],
+  ] as const)(
+    "keeps the anchor of %s whose open is still in flight at the deadline until that open %s, then closes everything once",
+    async (_label, outcome, stalledAt, expected) => {
+      const worktree = await fixture();
+      const target = stalledAt(worktree);
+      await fs.mkdir(target, { recursive: true });
+      await settle();
+      const identity = await fs.stat(target);
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let closes = 0;
+      let reads = 0;
+      let closesBeforeNextTask = -1;
+      try {
+        const started = performance.now();
+        const reasons = await removal(
+          worktree,
+          scan({
+            budgetMs: 300,
+            openDirectoryEntries: async (directory, entry) => {
+              if (path.resolve(entry) !== path.resolve(target))
+                return listed(directory);
+              await released;
+              if (outcome === "rejects")
+                throw Object.assign(new Error("EIO: i/o error, opendir"), {
+                  code: "EIO",
+                });
+              const dir = await fs.opendir(directory);
+              setImmediate(() => {
+                closesBeforeNextTask = closes;
+              });
+              const listing: DirectoryListing = {
+                [Symbol.asyncIterator]: () => ({
+                  next: async (): Promise<IteratorResult<DirectoryEntry>> => {
+                    reads += 1;
+                    const child = await dir.read();
+                    return child === null
+                      ? { done: true, value: undefined }
+                      : { done: false, value: child };
+                  },
+                }),
+                close: async () => {
+                  closes += 1;
+                  await dir.close();
+                },
+              };
+              return listing;
+            },
+          }),
+        );
+        const elapsed = performance.now() - started;
+        const atReturn = descriptorsOn(identity);
+        await delay(50);
+        const whileInFlight = descriptorsOn(identity);
+        release();
+        await delay(50);
+        expect(reasons).toEqual(expected);
+        expect(elapsed).toBeLessThan(10_000);
+        expect(atReturn).toBe(1);
+        expect(whileInFlight).toBe(1);
+        expect(descriptorsOn(identity)).toBe(0);
+        expect(reads).toBe(0);
+        expect(closes).toBe(outcome === "resolves" ? 1 : 0);
+        if (outcome === "resolves") expect(closesBeforeNextTask).toBe(1);
+        expect(unhandled).toEqual([]);
+      } finally {
+        release();
+        process.off("unhandledRejection", onUnhandled);
+      }
     },
   );
 
