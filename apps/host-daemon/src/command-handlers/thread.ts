@@ -60,11 +60,30 @@ export async function deleteThreadStorage(
   command: CommandOf<"thread.storage.delete">,
   options: CommandDispatchOptions,
 ): Promise<void> {
-  const storagePath = requireContainedPath(
+  const lexicalPath = requireContainedPath(
     options.threadStorageRootPath,
     path.join(options.threadStorageRootPath, command.threadId),
     "Thread storage path escapes the storage root",
   );
+  const storageRoot = await realpathIfPresent(options.threadStorageRootPath);
+  if (storageRoot === null) return;
+  const storagePath = requireContainedPath(
+    storageRoot,
+    path.join(
+      storageRoot,
+      path.relative(path.resolve(options.threadStorageRootPath), lexicalPath),
+    ),
+    "Thread storage path escapes the storage root",
+  );
+  const entry = await fs.lstat(storagePath).catch((error: unknown) => {
+    if (errorCodeOf(error) === "ENOENT") return null;
+    throw error;
+  });
+  if (entry?.isSymbolicLink() === true)
+    throw new CommandDispatchError(
+      "invalid_path",
+      `Thread storage path ${storagePath} is a symbolic link, so it is not removed`,
+    );
   await removeDirectoryAfterHolderRecheck({
     directory: storagePath,
     action: "delete thread storage",
@@ -74,6 +93,23 @@ export async function deleteThreadStorage(
       ? {}
       : { testWorktreeHolderScan: options.testWorktreeHolderScan }),
   });
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  return error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+async function realpathIfPresent(target: string): Promise<string | null> {
+  try {
+    return await fs.realpath(target);
+  } catch (error) {
+    if (errorCodeOf(error) === "ENOENT") return null;
+    throw error;
+  }
 }
 
 type ThreadStartRuntimeCommand =
