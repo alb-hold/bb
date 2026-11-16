@@ -650,6 +650,62 @@ describe("opening a file swapped for a FIFO during removal", () => {
   }, 10_000);
 });
 
+describe.runIf(linux)(
+  "never opening a FIFO swapped in before a checked open",
+  () => {
+    it.each([
+      [
+        "the per-file open",
+        false,
+        (root: string, candidate: string) =>
+          realEntry(root, candidate) === path.join(root, "top.txt"),
+      ],
+      [
+        "the recovery open",
+        true,
+        (_root: string, candidate: string) =>
+          path.basename(candidate).startsWith(".bb-pin-"),
+      ],
+    ])(
+      "never opens a file swapped for a FIFO just before %s, and keeps it",
+      async (_label, withMarker, swapsAt) => {
+        const root = await settledTree();
+        if (withMarker) {
+          await fs.writeFile(path.join(root, ".git"), "");
+          await delay(FILE_TIMESTAMP_LAG_MS + 50);
+        }
+        const opened = path.join(path.dirname(root), "opened");
+        let writer: ChildProcess | undefined;
+        let swapped = "";
+        const started = performance.now();
+        const outcome = await removeDirectoryTree(root, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+          beforeFileOpen: async (candidate) => {
+            if (writer !== undefined || !swapsAt(root, candidate)) return;
+            swapped = realEntry(root, candidate);
+            await swapForFifo(swapped);
+            writer = spawn(
+              "sh",
+              ["-c", 'exec 3>"$1"; echo opened > "$2"', "sh", swapped, opened],
+              { stdio: "ignore" },
+            );
+            await delay(100);
+          },
+        }).catch((error: unknown) => ({ thrown: String(error) }));
+        await delay(200);
+        const writerWaiting = writer?.exitCode === null;
+        writer?.kill();
+        expect(swapped).not.toBe("");
+        expect(performance.now() - started).toBeLessThan(2_000);
+        expect(existsSync(opened)).toBe(false);
+        expect(writerWaiting).toBe(true);
+        expect(outcome).not.toMatchObject({ status: "removed" });
+      },
+      10_000,
+    );
+  },
+);
+
 describe.runIf(linux)("reopening the held .git marker", () => {
   it("closes the reopened marker and keeps the tree when its stat fails", async () => {
     const root = await settledTree();

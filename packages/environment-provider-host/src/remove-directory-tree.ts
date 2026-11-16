@@ -363,6 +363,44 @@ async function verifyFileContents(
 
 type MountCheck = (entry: string, fd: number) => Promise<boolean>;
 
+async function locateFile(candidate: string): Promise<FileHandle> {
+  return await open(
+    candidate,
+    process.platform === "linux"
+      ? LINUX_O_PATH | (constants.O_NOFOLLOW ?? 0)
+      : constants.O_RDONLY |
+          (constants.O_NOFOLLOW ?? 0) |
+          (constants.O_NONBLOCK ?? 0),
+  );
+}
+
+async function readableFile(located: FileHandle): Promise<FileHandle> {
+  if (process.platform !== "linux") return located;
+  try {
+    const reopened = await open(
+      `/proc/self/fd/${located.fd}`,
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const [reopenedInfo, locatedInfo] = await Promise.all([
+        reopened.stat({ bigint: true }),
+        located.stat({ bigint: true }),
+      ]);
+      if (
+        reopenedInfo.dev !== locatedInfo.dev ||
+        reopenedInfo.ino !== locatedInfo.ino
+      )
+        throw new Error("Reopened file is not the checked file");
+      return reopened;
+    } catch (error) {
+      await reopened.close();
+      throw error;
+    }
+  } finally {
+    await located.close();
+  }
+}
+
 async function openSameFile(
   candidate: string,
   original: FileHandle,
@@ -370,12 +408,7 @@ async function openSameFile(
   crossesMount: MountCheck,
 ): Promise<FileHandle> {
   await hooks.beforeFileOpen?.(candidate);
-  const opened = await open(
-    candidate,
-    constants.O_RDONLY |
-      (constants.O_NOFOLLOW ?? 0) |
-      (constants.O_NONBLOCK ?? 0),
-  );
+  const opened = await locateFile(candidate);
   try {
     const [openedInfo, originalInfo] = await Promise.all([
       opened.stat({ bigint: true }),
@@ -389,11 +422,11 @@ async function openSameFile(
       throw new Error(`Recovered path is not the held file: ${candidate}`);
     if (await crossesMount(candidate, opened.fd))
       throw new Error(`Recovered path is on another mount: ${candidate}`);
-    return opened;
   } catch (error) {
     await opened.close();
     throw error;
   }
+  return await readableFile(opened);
 }
 
 async function verifyPathContents(
@@ -1370,12 +1403,7 @@ export async function removeDirectoryTree(
       try {
         if (checkedPreciseInfo.isFile()) {
           await hooks.beforeFileOpen?.(anchoredEntry);
-          fileHandle = await open(
-            anchoredEntry,
-            constants.O_RDONLY |
-              (constants.O_NOFOLLOW ?? 0) |
-              (constants.O_NONBLOCK ?? 0),
-          );
+          fileHandle = await locateFile(anchoredEntry);
           const openedInfo = await fileHandle.stat({ bigint: true });
           if (
             openedInfo.dev !== checkedPreciseInfo.dev ||
@@ -1394,6 +1422,9 @@ export async function removeDirectoryTree(
             fileHandle = null;
             return "retained";
           }
+          const located = fileHandle;
+          fileHandle = null;
+          fileHandle = await readableFile(located);
           if (
             ownWrite !== undefined &&
             (await hashFileHandle(fileHandle, openedInfo.size)) !==
