@@ -9,6 +9,7 @@ import {
   getProject,
   getEnvironment,
   deletionThreadTreeIdsForProject,
+  listPendingThreadStorageDeletions,
   listEnvironments,
   markProjectDeleted,
   markThreadDeleted,
@@ -24,6 +25,7 @@ import type {
 import { deleteProjectAttachments } from "./attachments.js";
 import { deferAfterResponse } from "../lib/response-deferral.js";
 import {
+  orderPendingThreadStorageDeletes,
   requestThreadStorageDeletion,
   retryThreadStorageDeletion,
 } from "../threads/thread-lifecycle.js";
@@ -176,11 +178,6 @@ export async function advanceProjectDeletion(
     projectId: args.projectId,
   });
   for (const thread of projectThreads) {
-    const environment = thread.environmentId
-      ? (environmentsById.get(thread.environmentId) ??
-        getEnvironment(deps.db, thread.environmentId))
-      : null;
-
     if (thread.deletedAt === null) {
       const deletedThread = markThreadDeleted(deps.db, deps.hub, {
         threadId: thread.id,
@@ -189,6 +186,15 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
+  }
+  for (const thread of orderPendingThreadStorageDeletes(
+    deps,
+    listPendingThreadStorageDeletions(deps.db, { projectId: args.projectId }),
+  )) {
+    const environment = thread.environmentId
+      ? (environmentsById.get(thread.environmentId) ??
+        getEnvironment(deps.db, thread.environmentId))
+      : null;
     retryThreadStorageDeletion(deps, thread, environment, Date.now());
   }
 
