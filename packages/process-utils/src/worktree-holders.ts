@@ -1641,11 +1641,23 @@ export function usePsRunnerForTests(
   activePs = runner ?? runPs;
 }
 
+function waitFor(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let activeWait: (ms: number) => Promise<void> = waitFor;
+
+export function useDoubtRecheckWaitForTests(
+  wait: ((ms: number) => Promise<void>) | null,
+): void {
+  activeWait = wait ?? waitFor;
+}
+
 const PROCESS_LIST_ARGS = ["-axww", "-o", "pid=,ppid=,uid=,args="] as const;
 const ELEVATION_PROGRAMS = new Set(["sudo", "su", "doas"]);
 const TERMINAL_APPS = new Set(["Terminal", "iTerm2"]);
 const MAX_ANCESTRY_STEPS = 64;
-const DOUBT_RECHECK_MS = 100;
+const DOUBT_RECHECK_DELAYS_MS = [100, 400, 1000] as const;
 const PRIVATE_ALIASED_ROOTS = ["/var/", "/tmp/", "/etc/"] as const;
 
 function darwinPathAliases(directory: string): string[] {
@@ -1761,8 +1773,9 @@ function parseProcessList(
 
 async function listProcessesAgain(
   aliases: readonly string[],
+  delay: number,
 ): Promise<{ processes: Map<number, ListedProcess> } | { reason: string }> {
-  await new Promise((resolve) => setTimeout(resolve, DOUBT_RECHECK_MS));
+  await activeWait(delay);
   const listing = await activePs(PROCESS_LIST_ARGS);
   const failed = psFailure(listing);
   if (failed !== null)
@@ -1770,7 +1783,7 @@ async function listProcessesAgain(
   const relisted = parseProcessList(listing.stdout, aliases);
   if (relisted.unparsed > 0)
     return {
-      reason: `${relisted.unparsed} lines of the second process list could not be read`,
+      reason: `${relisted.unparsed} lines of a later process list could not be read`,
     };
   return { processes: relisted.processes };
 }
@@ -1819,23 +1832,14 @@ async function scanForeignDarwinProcesses(
         detail: `foreign uid ${listed.uid} was started by a process of this user`,
       });
   }
-  const relisted =
-    found.length === 0 ? null : await listProcessesAgain(aliases);
-  if (relisted !== null && "reason" in relisted)
-    return { status: "unknown", reason: relisted.reason };
-  const doubts =
-    relisted === null
-      ? found
-      : found.filter(({ pid }) => {
-          const before = processes.get(pid);
-          const after = relisted.processes.get(pid);
-          return (
-            before !== undefined &&
-            after !== undefined &&
-            before.ppid === after.ppid &&
-            before.uid === after.uid
-          );
-        });
+  let doubts = found;
+  for (const delay of DOUBT_RECHECK_DELAYS_MS) {
+    if (doubts.length === 0) break;
+    const relisted = await listProcessesAgain(aliases, delay);
+    if ("reason" in relisted)
+      return { status: "unknown", reason: relisted.reason };
+    doubts = doubts.filter(({ pid }) => relisted.processes.has(pid));
+  }
   if (doubts.length > 0) {
     const commands = await processCommands(doubts.map(({ pid }) => pid));
     const first = doubts[0];

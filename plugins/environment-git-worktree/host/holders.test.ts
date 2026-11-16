@@ -24,6 +24,7 @@ import {
   scanLinux,
   scanWorktreeHolders,
   useLsofRunnerForTests,
+  useDoubtRecheckWaitForTests,
   usePsRunnerForTests,
   type LsofResult,
   type PsResult,
@@ -264,8 +265,9 @@ describe("the macOS scan of processes lsof cannot see", () => {
   let lsof: LsofResult;
   let listing: PsResult;
   let labels: PsResult;
-  let relisting: PsResult | null;
+  let relistings: PsResult[];
   let listingCalls = 0;
+  const waits: number[] = [];
   const psCalls: string[][] = [];
   const row = (pid: number, uid: number, args: string, ppid = 1) =>
     `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${args}`;
@@ -275,21 +277,28 @@ describe("the macOS scan of processes lsof cannot see", () => {
     lsof = exited("", 1);
     listing = exited("");
     labels = exited("");
-    relisting = null;
+    relistings = [];
     listingCalls = 0;
+    waits.length = 0;
     psCalls.length = 0;
     useLsofRunnerForTests(async () => lsof);
     usePsRunnerForTests(async (args) => {
       psCalls.push([...args]);
       if (args.includes("-p")) return labels;
       listingCalls += 1;
-      return listingCalls > 1 && relisting !== null ? relisting : listing;
+      return listingCalls === 1
+        ? listing
+        : (relistings[listingCalls - 2] ?? relistings.at(-1) ?? listing);
+    });
+    useDoubtRecheckWaitForTests(async (ms) => {
+      waits.push(ms);
     });
   });
 
   afterEach(() => {
     useLsofRunnerForTests(null);
     usePsRunnerForTests(null);
+    useDoubtRecheckWaitForTests(null);
   });
 
   it("lists every process with untruncated args, effective uid and pid", async () => {
@@ -309,8 +318,10 @@ describe("the macOS scan of processes lsof cannot see", () => {
       status: "uncertain",
       reason: `1 processes could not be ruled out, such as process 4100 (/usr/bin/make) foreign uid ${rootUid} command references the worktree`,
     });
-    expect(psCalls[1]).toEqual(["-axww", "-o", "pid=,ppid=,uid=,args="]);
-    expect(psCalls[2]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
+    expect(psCalls.slice(1, 4)).toEqual(
+      Array(3).fill(["-axww", "-o", "pid=,ppid=,uid=,args="]),
+    );
+    expect(psCalls[4]).toEqual(["-o", "pid=,comm=", "-p", "4100"]);
   });
 
   it("finds the worktree in args past column 200", async () => {
@@ -395,37 +406,64 @@ describe("the macOS scan of processes lsof cannot see", () => {
     });
   });
 
-  it("lists again only when the first listing has a doubt, and keeps a doubt that is still there", async () => {
+  it("lists once when the first listing has no doubt", async () => {
     listing = exited(row(1, 0, "/sbin/launchd", 0));
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "clear",
     });
     expect(listingCalls).toBe(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("keeps a doubt still there in three later listings, taken 100, 400 and 1000 ms apart", async () => {
     listing = exited(row(5000, 0, "sudo /bin/sleep 300"));
     await expect(scanWorktreeHolders(tree)).resolves.toMatchObject({
       status: "uncertain",
     });
-    expect(listingCalls).toBe(3);
+    expect(listingCalls).toBe(4);
+    expect(waits).toEqual([100, 400, 1000]);
   });
 
   it.each([
-    ["is gone from the second listing", ""],
-    ["came back under another parent", row(5000, 0, "sudo -i", 77)],
-    [
-      "came back as another user",
-      row(5000, ownUid === 0 ? 1 : ownUid, "sudo -i"),
-    ],
-  ])("clears a doubt that %s", async (_label, second) => {
-    listing = exited(row(5000, 0, "sudo -i"));
-    relisting = exited([row(1, 0, "/sbin/launchd", 0), second].join("\n"));
-    await expect(scanWorktreeHolders(tree)).resolves.toEqual({
-      status: "clear",
-    });
-  });
+    ["is reparented to launchd", row(800, rootUid, "/bin/sleep 300", 1)],
+    ["changes uid", row(800, ownUid === 2 ? 3 : 2, "/bin/sleep 300", 702)],
+  ])(
+    "keeps the worktree for a holder that %s between listings",
+    async (_label, later) => {
+      listing = exited(
+        [
+          row(702, ownUid, "-zsh"),
+          row(800, rootUid, "/bin/sleep 300", 702),
+        ].join("\n"),
+      );
+      relistings = [exited(later)];
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "uncertain",
+        reason: `1 processes could not be ruled out, such as process 800 foreign uid ${rootUid} was started by a process of this user`,
+      });
+      expect(listingCalls).toBe(4);
+    },
+  );
 
-  it("ignores a doubt that appears only in the second listing", async () => {
+  it.each([2, 3, 4])(
+    "clears a doubt that is gone from listing %i, and lists no more",
+    async (gone) => {
+      const doubt = exited(row(5000, 0, "sudo -i"));
+      listing = doubt;
+      relistings = [
+        ...Array.from({ length: gone - 2 }, () => doubt),
+        exited(row(1, 0, "/sbin/launchd", 0)),
+      ];
+      await expect(scanWorktreeHolders(tree)).resolves.toEqual({
+        status: "clear",
+      });
+      expect(listingCalls).toBe(gone);
+    },
+  );
+
+  it("ignores a doubt that appears only in a later listing", async () => {
     listing = exited(row(1, 0, "/sbin/launchd", 0));
-    relisting = exited(row(5000, 0, "sudo -i"));
+    relistings = [exited(row(5000, 0, "sudo -i"))];
     await expect(scanWorktreeHolders(tree)).resolves.toEqual({
       status: "clear",
     });
@@ -434,20 +472,32 @@ describe("the macOS scan of processes lsof cannot see", () => {
 
   it.each([
     [
+      2,
       "exits nonzero",
       exited("", 1),
       "could not list other users' processes again: ps exited with 1",
     ],
     [
+      4,
+      "exits nonzero",
+      exited("", 1),
+      "could not list other users' processes again: ps exited with 1",
+    ],
+    [
+      3,
       "has a line it cannot read",
       exited("garbled"),
-      "1 lines of the second process list could not be read",
+      "1 lines of a later process list could not be read",
     ],
   ] as const)(
-    "keeps the worktree when the second listing %s",
-    async (_label, second, reason) => {
-      listing = exited(row(5000, 0, "sudo -i"));
-      relisting = second;
+    "keeps the worktree when listing %i %s",
+    async (failing, _label, failure, reason) => {
+      const doubt = exited(row(5000, 0, "sudo -i"));
+      listing = doubt;
+      relistings = [
+        ...Array.from({ length: failing - 2 }, () => doubt),
+        failure,
+      ];
       await expect(scanWorktreeHolders(tree)).resolves.toEqual({
         status: "unknown",
         reason,
