@@ -273,12 +273,29 @@ async function readOwnMounts(
       error: `worktree mount ID ${code ?? "unreadable"}`,
     };
   }
-  const mount = mounts
+  const again = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  if (!("value" in again))
+    return { ok: false, error: "failed" in again ? again.failed : "ENOENT" };
+  const current = parseMountinfo(again.value);
+  if (current === null) return { ok: false, error: "unparsable" };
+  if (relevantMounts(mounts, directory) !== relevantMounts(current, directory))
+    return { ok: false, error: "incomplete" };
+  const mount = current
     .filter((entry) => mountContains(directory, entry.point))
     .sort((a, b) => b.point.length - a.point.length)[0];
   return mount?.id === mountId
-    ? { ok: true, mounts }
+    ? { ok: true, mounts: current }
     : { ok: false, error: "incomplete" };
+}
+
+function relevantMounts(mounts: Mount[], directory: string): string {
+  return JSON.stringify(
+    mounts.filter(
+      (entry) =>
+        mountContains(directory, entry.point) ||
+        mountContains(entry.point, directory),
+    ),
+  );
 }
 
 async function systemViewExposure(
