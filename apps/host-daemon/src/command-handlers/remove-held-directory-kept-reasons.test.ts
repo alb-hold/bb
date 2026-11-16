@@ -114,6 +114,19 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       ).resolves.toBe("a");
     });
 
+    it("keys a refusal for a mounted directory by its mount, not by changed data", async () => {
+      const directory = await storage();
+      injected.hooks = () => ({
+        entryDevice: (entry, device) =>
+          entry.endsWith(`${path.sep}b`) ? device + 1 : device,
+      });
+      const identity = await identityOf(directory);
+      const { message, refusalKey } = await refusal(directory);
+      expect(refusalKey).toBe(`${identity}|mounted`);
+      expect(message).toContain("a different filesystem is mounted here");
+      expect(message).not.toContain("new or changed");
+    });
+
     it("says the directory may be partially removed when the anchor fails after removal began", async () => {
       const directory = await storage();
       let removing = false;
