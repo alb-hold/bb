@@ -1,11 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, it } from "vitest";
 
-const mirroredFiles = [
-  "worktree-holders.ts",
-  "linux-path-access.ts",
-  "session-agent-comms.ts",
-] as const;
+const mirroredFiles = ["worktree-holders.ts", "linux-path-access.ts"] as const;
 
 it.each(mirroredFiles)("keeps %s in sync with process-utils", async (file) => {
   const [shared, plugin] = await Promise.all([

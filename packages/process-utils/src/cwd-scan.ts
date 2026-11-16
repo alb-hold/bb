@@ -51,7 +51,9 @@ export interface CwdScanIo {
   filesystemGid?(pid: number): Promise<number>;
   supplementaryGroups?(pid: number): Promise<number[] | null>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
-  statAccess?(path: string): Promise<{ uid: number; gid: number; mode: number }>;
+  statAccess?(
+    path: string,
+  ): Promise<{ uid: number; gid: number; mode: number }>;
   hasExtendedAcl?(path: string): Promise<boolean | null>;
   readComm(pid: number): Promise<string>;
   runLsof(
@@ -175,7 +177,9 @@ export const hostCwdScanIo: CwdScanIo = {
   filesystemGid: async (pid) =>
     parseFilesystemGid(await readFile(`/proc/${pid}/status`, "utf8")),
   supplementaryGroups: async (pid) =>
-    parseLinuxSupplementaryGroups(await readFile(`/proc/${pid}/status`, "utf8")),
+    parseLinuxSupplementaryGroups(
+      await readFile(`/proc/${pid}/status`, "utf8"),
+    ),
   effectiveCapabilities: async (pid) => {
     const status = await readFile(`/proc/${pid}/status`, "utf8");
     const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status)?.[1];
@@ -490,13 +494,10 @@ export async function scanProcessesWithCwdUnder(
                 reason: `the command name of unreadable same-user process ${pid} could not be read`,
               };
             }
-            if (!UNREADABLE_SESSION_AGENT_COMMS.has(comm)) {
-              return {
-                status: "unknown",
-                reason: `the working directory of process ${pid} (${comm || "unknown"}) could not be read (${code})`,
-              };
-            }
-            continue;
+            return {
+              status: "unknown",
+              reason: `the working directory of process ${pid} (${comm || "unknown"}) could not be read (${code})`,
+            };
           }
         }
         return {

@@ -870,7 +870,8 @@ describe("the Linux process-list visibility rule", () => {
       processes: { 300: { uid: 1000, denied: true, comm: "sshd-session" } },
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
-      status: "uncertain",
+      status: "unknown",
+      reason: expect.stringContaining("sshd-session"),
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },
@@ -1373,6 +1374,109 @@ describe("the Linux process-list visibility rule", () => {
   );
 });
 
+describe("a refusal that names the processes it could not inspect", () => {
+  it("names every such process by its comm and why it could not be read", async () => {
+    const base = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          denied: true,
+          comm: "systemd",
+          argv0: "/usr/lib/systemd/systemd",
+        },
+        301: { uid: 1000, denied: true, comm: "(sd-pam)", argv0: "(sd-pam)" },
+      },
+    });
+    const capabilities: Record<string, string> = {
+      "/proc/self/status": "0000000000000000",
+      "/proc/300/status": "0000000800000000",
+      "/proc/301/status": "0000000000000000",
+    };
+    const proc: ProcReader = {
+      ...base,
+      readFile: async (target) => {
+        const text = await base.readFile(target);
+        const permitted = capabilities[target];
+        return permitted === undefined
+          ? text
+          : `${text}CapPrm:\t${permitted}\n`;
+      },
+      statAccess: async (target) =>
+        target === "/proc/301/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+    };
+    const scan = await scanLinux("/work/tree", proc, 4242);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [
+        {
+          pid: 300,
+          identity: {
+            start: "0",
+            credentials: "1000,1000,1000,1000 0000000800000000",
+          },
+        },
+        {
+          pid: 301,
+          identity: {
+            start: "0",
+            credentials: "1000,1000,1000,1000 0000000000000000",
+          },
+        },
+      ],
+    });
+    const reason = "reason" in scan ? scan.reason : "";
+    expect(reason).toMatch(
+      /^2 processes could not be inspected or proven unrelated: /u,
+    );
+    expect(reason).toContain(
+      "process 300 (systemd) has an unreadable holder path",
+    );
+    expect(reason).toContain("(systemd; its capabilities exceed the daemon's)");
+    expect(reason).toContain(
+      "process 301 ((sd-pam)) has an unreadable holder path",
+    );
+    expect(reason).toContain("((sd-pam); it is non-dumpable)");
+    expect(reason).not.toContain("/usr/lib/systemd/systemd");
+    expect(reason).not.toContain("--x");
+  });
+
+  it("never puts a process's arguments in the reason", async () => {
+    const secretArgv = "worker --token=SECRETVALUE postgres://u:SECRET@h/db";
+    const base = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          denied: true,
+          comm: "worker",
+          argv0: secretArgv,
+        },
+      },
+    });
+    const proc: ProcReader = {
+      ...base,
+      statAccess: async (target) =>
+        target === "/proc/300/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+    };
+    expect(await proc.readFile("/proc/300/cmdline")).toContain("SECRETVALUE");
+    const scan = await scanLinux("/work/tree", proc, 4242);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 300, identity: null }],
+    });
+    const reason = "reason" in scan ? scan.reason : "";
+    expect(reason).toContain(
+      "process 300 (worker) has an unreadable holder path",
+    );
+    expect(reason).toContain("(worker; it is non-dumpable)");
+    expect(JSON.stringify(scan)).not.toContain("SECRET");
+    expect(JSON.stringify(scan)).not.toContain("postgres://");
+  });
+});
+
 describe("a same-user process that cannot be read because it is non-dumpable", () => {
   it.each([
     ["sshd-session", "sshd-session"],
@@ -1397,7 +1501,10 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "uncertain",
+        status: "unknown",
+        reason: expect.stringContaining(
+          `(${name}) has an unreadable holder path`,
+        ),
       });
     },
   );
@@ -1493,7 +1600,12 @@ time.sleep(120)`,
       "the kernel lets this user read it",
     );
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "uncertain" });
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        "(ssh-agent) has an unreadable holder path",
+      ),
+    });
   });
 
   it("does not clear a near-miss unreadable same-user comm", async ({
@@ -2762,5 +2874,83 @@ describe("final scan fd replacement", () => {
       status: "clear",
     });
     expect(links).toBe(1);
+  });
+});
+
+describe("the identity a refusal gives each process it could not inspect", () => {
+  function deniedProcess(options: { statFails?: boolean } = {}) {
+    const base = fakeProc({
+      processes: {
+        300: { uid: 1000, denied: true, comm: "worker", startTicks: 5 },
+      },
+    });
+    let classifying = false;
+    const own = (target: string) => target.startsWith("/proc/300/");
+    const identityLeaf = (target: string) =>
+      target === "/proc/300/stat" || target === "/proc/300/status";
+    const note = (target: string) => {
+      if (own(target) && !identityLeaf(target)) classifying = true;
+    };
+    const proc: ProcReader = {
+      ...base,
+      readlink: async (target) => {
+        note(target);
+        return base.readlink(target);
+      },
+      readdir: async (target) => {
+        note(target);
+        return base.readdir(target);
+      },
+      statAccess: async (target) => {
+        note(target);
+        return target === "/proc/300/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target);
+      },
+      readFile: async (target) => {
+        note(target);
+        if (target === "/proc/300/stat") {
+          if (options.statFails === true)
+            throw Object.assign(new Error(target), { code: "EACCES" });
+          return classifying
+            ? "300 (other) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 999 0 0\n"
+            : base.readFile(target);
+        }
+        if (target === "/proc/300/status")
+          return classifying
+            ? "Name:\tother\nState:\tS (sleeping)\nUid:\t2000\t2000\t2000\t2000\nGid:\t2000\t2000\t2000\t2000\nCapPrm:\t0000000000000000\n"
+            : `${await base.readFile(target)}CapPrm:\t0000000000000000\n`;
+        return base.readFile(target);
+      },
+    };
+    return proc;
+  }
+
+  it("takes it from before the process is classified, so a pid reused during classification keeps the first process's identity", async () => {
+    const scan = await scanLinux("/work/tree", deniedProcess(), 4242);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [
+        {
+          pid: 300,
+          identity: {
+            start: "5",
+            credentials: "1000,1000,1000,1000 0000000000000000",
+          },
+        },
+      ],
+    });
+  });
+
+  it("gives none when it cannot be read before classification, and still counts the process", async () => {
+    const scan = await scanLinux(
+      "/work/tree",
+      deniedProcess({ statFails: true }),
+      4242,
+    );
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 300, identity: null }],
+    });
   });
 });
