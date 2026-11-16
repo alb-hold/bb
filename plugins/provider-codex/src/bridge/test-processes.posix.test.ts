@@ -10,6 +10,25 @@ import { trackTestProcess } from "./test-processes.js";
 describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
   () => {
+    it("reports a real writer pid and command before the bounded deadline", async () => {
+      const child = spawn("sh", ["-c", "while :; do sleep 1; done"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      const cleanup = trackTestProcess(child);
+      const started = Date.now();
+      try {
+        await expect(cleanup()).rejects.toThrow(
+          new RegExp(`pid ${child.pid} .*sh -c while`),
+        );
+        expect(Date.now() - started).toBeLessThan(35_000);
+      } finally {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {}
+      }
+    }, 36_000);
+
     it.each([
       { name: "a descendant that keeps writing", lifetime: null },
       { name: "a descendant that exits before the deadline", lifetime: 500 },
