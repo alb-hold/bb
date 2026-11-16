@@ -45,7 +45,7 @@ type ThreadStartCommand = Extract<HostDaemonCommand, { type: "thread.start" }>;
 type TurnSubmitCommand = Extract<HostDaemonCommand, { type: "turn.submit" }>;
 
 interface RunRouterCommandArgs {
-  command: HostDaemonCommand;
+  command: HostDaemonOnlineRpcRequestMessage["command"];
   requestId: string;
   router: CommandRouter;
 }
@@ -247,8 +247,8 @@ describe("CommandRouter", () => {
   });
 
   it("warns once per refused directory and key, and sends the key to the server", async () => {
-    const parent = await fs.mkdtemp(
-      path.join(os.tmpdir(), "bb-router-refusal-"),
+    const parent = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-router-refusal-")),
     );
     try {
       const target = path.join(parent, "storage");
