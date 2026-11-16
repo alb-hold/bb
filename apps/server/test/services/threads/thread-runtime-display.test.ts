@@ -310,6 +310,7 @@ function createThreadListEntry(
     modelOverride: null,
     reasoningLevelOverride: null,
     storageDeletedAt: null,
+    storageDeleteSeq: null,
     environmentBranchName: null,
     environmentPath: null,
     environmentProviderId: null,
