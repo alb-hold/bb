@@ -265,6 +265,7 @@ describe.skipIf(process.platform !== "linux")(
         `echo '{"sockname": "/run/x/sock"}'; exit 3`,
       ],
       ["prints JSON without a sockname", `echo '{"version": "1"}'`],
+      ["prints an empty sockname", `echo '{"sockname": ""}'`],
       ["prints something that is not JSON", "echo nope"],
     ])("picks inotify when watchman %s", async (_label, script) => {
       const root = await scratch();
