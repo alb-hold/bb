@@ -58,6 +58,7 @@ function watchmanAnswers(
   return new Promise((resolve) => {
     let settled = false;
     let stopped = false;
+    let exited = false;
     let size = 0;
     const chunks: Buffer[] = [];
     const finish = (answer: boolean) => {
@@ -84,6 +85,7 @@ function watchmanAnswers(
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {}
+      if (exited) finish(false);
     };
     const timer = setTimeout(stop, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
@@ -93,6 +95,7 @@ function watchmanAnswers(
     });
     child.on("error", () => finish(false));
     child.on("exit", () => {
+      exited = true;
       if (stopped) finish(false);
     });
     child.on("close", (code) => {

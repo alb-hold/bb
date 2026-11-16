@@ -305,6 +305,25 @@ describe.skipIf(process.platform !== "linux")(
       expect(members).toEqual([]);
     }, 20_000);
 
+    it("picks inotify when watchman exits but leaves a process in another session holding its output", async () => {
+      const root = await scratch();
+      const holder = join(root, "holder");
+      const PATH = await watchmanAt(
+        root,
+        `setsid sleep 30 &\necho $! > '${holder}'\nexit 0`,
+      );
+      const started = performance.now();
+      try {
+        expect(
+          await choosePlatformParcelBackend({}, "linux", { PATH }, root, 300),
+        ).toEqual({ backend: "inotify" });
+        expect(performance.now() - started).toBeLessThan(5_000);
+      } finally {
+        const pid = Number((await readFile(holder, "utf8")).trim());
+        if (pid > 0) process.kill(pid, "SIGKILL");
+      }
+    }, 20_000);
+
     it("runs no probe when WATCHMAN_SOCK is set, as parcel then connects without one", async () => {
       const root = await scratch();
       const ran = join(root, "ran");
