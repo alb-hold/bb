@@ -685,7 +685,7 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     }),
   });
 
-  it("gives the budget reason within its deadline when a modules listing stalls", async () => {
+  it("gives the budget reason after its 300 ms budget, in under 10 s, when a modules listing stalls", async () => {
     const worktree = await fixture();
     const modules = path.join(worktree.gitDir, "modules");
     await fs.mkdir(modules);
@@ -706,7 +706,7 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
     expect(performance.now() - started).toBeLessThan(10_000);
   });
 
-  it("gives the budget reason within its deadline when a directory listing stalls", async () => {
+  it("gives the budget reason after its 300 ms budget, in under 10 s, when a directory listing stalls", async () => {
     const worktree = await fixture();
     await fs.mkdir(path.join(worktree.path, "node_modules", "stall"), {
       recursive: true,
