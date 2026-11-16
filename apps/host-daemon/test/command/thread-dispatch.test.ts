@@ -1479,7 +1479,7 @@ describe("thread command dispatch", () => {
     const threadStorageRootPath = await makeTempDir(
       "bb-thread-storage-delete-",
     );
-    const storagePath = path.join(threadStorageRootPath, "thread-delete");
+    const storagePath = path.join(threadStorageRootPath, "thr_deadbeef22");
     const siblingPath = path.join(threadStorageRootPath, "thread-sibling");
     await fs.mkdir(storagePath);
     await fs.mkdir(siblingPath);
@@ -1492,7 +1492,7 @@ describe("thread command dispatch", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         type: "thread.start",
         environmentId: "env-1",
-        threadId: "thread-delete",
+        threadId: "thr_deadbeef22",
         workspaceContext: { workspacePath: "/tmp/env-1" },
         projectId: "project-1",
         providerId: "fake",
@@ -1523,7 +1523,7 @@ describe("thread command dispatch", () => {
         {
           type: "thread.storage.delete",
           environmentId: "env-1",
-          threadId: "thread-delete",
+          threadId: "thr_deadbeef22",
         },
         harness.dispatchOptions({ threadStorageRootPath }),
       ),
@@ -1534,15 +1534,15 @@ describe("thread command dispatch", () => {
     await expect(
       fs.readFile(path.join(siblingPath, "artifact.txt"), "utf8"),
     ).resolves.toBe("keep me");
-    expect(harness.runtimeState.stoppedThreadId).toBe("thread-delete");
-    expect(harness.runtime.hasThread("thread-delete")).toBe(false);
+    expect(harness.runtimeState.stoppedThreadId).toBe("thr_deadbeef22");
+    expect(harness.runtime.hasThread("thr_deadbeef22")).toBe(false);
 
     await expect(
       dispatchCommand(
         {
           type: "thread.storage.delete",
           environmentId: "env-1",
-          threadId: "thread-delete",
+          threadId: "thr_deadbeef22",
         },
         harness.dispatchOptions({ threadStorageRootPath }),
       ),
