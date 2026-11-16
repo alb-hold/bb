@@ -9,6 +9,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -158,6 +159,67 @@ describe("scanWorktreeHolders", () => {
     });
     expect(() => process.kill(child.pid ?? 0, 0)).not.toThrow();
   });
+
+  it.skipIf(process.platform !== "darwin")(
+    "reports a program whose working folder is reached through a symlink into the folder",
+    async () => {
+      const directory = await makeDirectory();
+      const elsewhere = await makeDirectory();
+      const link = join(elsewhere, "into-worktree");
+      await symlink(directory, link);
+      const child = hold("setTimeout(() => {}, 300_000)", link);
+
+      await expect
+        .poll(async () => (await scanWorktreeHolders(directory)).status, {
+          timeout: 10_000,
+        })
+        .toBe("held");
+      expect(await scanWorktreeHolders(directory)).toMatchObject({
+        status: "held",
+        holders: [{ pid: child.pid, through: "working folder" }],
+      });
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "labels holders by descriptor when the folder is scanned by its /tmp spelling",
+    async () => {
+      const real = await realpath(
+        await mkdtemp(join("/private/tmp", "bb-holders-spelling-")),
+      );
+      roots.push(real);
+      const spelled = real.replace(/^\/private/u, "");
+      expect(spelled.startsWith("/tmp/")).toBe(true);
+      const file = join(real, "open.txt");
+      await writeFile(file, "x");
+      const elsewhere = await makeDirectory();
+      const inside = hold("setTimeout(() => {}, 300_000)", real);
+      const opener = hold(
+        'require("node:fs").openSync(process.argv[1], "r+"); setTimeout(() => {}, 300_000)',
+        elsewhere,
+        [file],
+      );
+
+      await expect
+        .poll(
+          async () => {
+            const scan = await scanWorktreeHolders(spelled);
+            return scan.status === "held" ? scan.holders.length : 0;
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(2);
+      const scan = await scanWorktreeHolders(spelled);
+      expect(scan).toMatchObject({ status: "held" });
+      const through = new Map(
+        scan.status === "held"
+          ? scan.holders.map((holder) => [holder.pid, holder.through])
+          : [],
+      );
+      expect(through.get(inside.pid ?? -1)).toBe("working folder");
+      expect(through.get(opener.pid ?? -1)).toBe("open file");
+    },
+  );
 
   it("reports a program that holds a file open inside the folder", async ({
     skip,
