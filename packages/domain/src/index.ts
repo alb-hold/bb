@@ -5,6 +5,7 @@ export * from "./native-roots.js";
 export * from "./native-terminal.js";
 export * from "./native-terminal-activity.js";
 export * from "./ai-services.js";
+export * from "./refusal-log-once.js";
 export * from "./writing-assistance.js";
 export * from "./dictation-segment.js";
 export * from "./app-settings.js";

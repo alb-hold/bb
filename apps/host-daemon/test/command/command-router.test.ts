@@ -45,7 +45,7 @@ type ThreadStartCommand = Extract<HostDaemonCommand, { type: "thread.start" }>;
 type TurnSubmitCommand = Extract<HostDaemonCommand, { type: "turn.submit" }>;
 
 interface RunRouterCommandArgs {
-  command: HostDaemonCommand;
+  command: HostDaemonOnlineRpcRequestMessage["command"];
   requestId: string;
   router: CommandRouter;
 }
@@ -244,6 +244,66 @@ describe("CommandRouter", () => {
       errorMessage: "Workspace provisioning was cancelled",
     });
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("warns once per refused directory and key, and sends the key to the server", async () => {
+    const parent = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-router-refusal-")),
+    );
+    try {
+      const target = path.join(parent, "storage");
+      const other = path.join(parent, "other");
+      for (const directory of [target, other]) {
+        await fs.mkdir(directory);
+        await fs.mkdir(
+          path.join(parent, `.${path.basename(directory)}.removing-left`),
+        );
+      }
+      const harness = createHarness({ workspacePath: "/tmp/env-router" });
+      const logger = { debug: vi.fn(), warn: vi.fn() };
+      const router = createRouter(harness, { logger });
+      const failures = (spy: ReturnType<typeof vi.fn>) =>
+        spy.mock.calls.filter(
+          ([, message]) => message === "online host RPC failed",
+        );
+      const responses: HostDaemonOnlineRpcResponseMessage[] = [];
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        responses.push(
+          await runRouterCommand({
+            command: {
+              type: "host.remove_path",
+              path: target,
+              recursive: true,
+            },
+            requestId: `refusal-${attempt}`,
+            router,
+          }),
+        );
+      }
+      const keys = responses.map((response) =>
+        response.ok ? null : (response.refusalKey ?? null),
+      );
+      expect(new Set(keys).size).toBe(1);
+      expect(keys[0]).toMatch(/^\d+:\d+\|prior-removal$/u);
+      expect(failures(logger.warn)).toHaveLength(1);
+      expect(failures(logger.debug)).toHaveLength(4);
+      expect(failures(logger.debug)[0]?.[0]).toMatchObject({
+        refusalKey: keys[0],
+      });
+
+      const otherResponse = await runRouterCommand({
+        command: { type: "host.remove_path", path: other, recursive: true },
+        requestId: "refusal-other",
+        router,
+      });
+      expect(otherResponse.ok ? null : otherResponse.refusalKey).not.toBe(
+        keys[0],
+      );
+      expect(failures(logger.warn)).toHaveLength(2);
+      await expect(fs.stat(target)).resolves.toBeDefined();
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
   });
 
   it("cancels an in-flight path search when the server cancels its request", async () => {

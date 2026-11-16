@@ -125,6 +125,17 @@ export class CommandDispatchError extends Error {
   }
 }
 
+export class KeyedRefusalError extends CommandDispatchError {
+  constructor(
+    code: string,
+    message: string,
+    readonly refusalKey: string,
+  ) {
+    super(code, message);
+    this.name = "KeyedRefusalError";
+  }
+}
+
 export class ExpectedCommandDispatchError extends CommandDispatchError {
   constructor(code: string, message: string) {
     super(code, message);

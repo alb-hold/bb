@@ -263,7 +263,8 @@ async function callHostOnlineRpcWithRetry(
   },
 ): Promise<HostDaemonRpcResultForCommand> {
   const retryArgs = (): CallHostOnlineRpcArgs<HostDaemonRpcCommand> =>
-    options.retryCommand !== undefined && args.command.type === "plugin.host.call"
+    options.retryCommand !== undefined &&
+    args.command.type === "plugin.host.call"
       ? { ...args, command: options.retryCommand(args.command) }
       : args;
   const timeoutRetryDeadline =
@@ -310,7 +311,12 @@ async function callHostOnlineRpcWithRetry(
   });
 
   if (!response.ok) {
-    throw new ApiError(502, response.errorCode, response.errorMessage, false);
+    throw new ApiError(502, response.errorCode, response.errorMessage, {
+      retryable: false,
+      ...(response.refusalKey === undefined
+        ? {}
+        : { details: { refusalKey: `${args.hostId}:${response.refusalKey}` } }),
+    });
   }
 
   if (response.commandType !== args.command.type) {

@@ -52,6 +52,7 @@ import {
   type ThreadEventType,
   type ThreadLifecycleEvent,
   type ThreadStatus,
+  createRefusalLogOnce,
   threadCommandFailureCopyForInterruption,
   threadScope,
   turnScope,
@@ -105,7 +106,7 @@ import {
   type ThreadStopCommandArgs,
 } from "./thread-commands.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
-import { ApiError } from "../../errors.js";
+import { ApiError, apiErrorRefusalKey } from "../../errors.js";
 import { isHostUnavailableApiError } from "../hosts/online-rpc.js";
 import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -142,6 +143,8 @@ import {
 } from "./thread-storage-delete-retries.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
 import { abortPluginToolCallsForThreads } from "../plugins/plugin-tool-calls.js";
+
+const threadStorageRefusalLog = createRefusalLogOnce();
 
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
 type ThreadStopCommand = ReturnType<typeof buildThreadStopCommand>;
@@ -1203,12 +1206,19 @@ function dispatchThreadStorageDeletion(
         threadId: thread.id,
       });
       requeueUnsuccessfulThreadStorageDeletion(deps, thread.id);
-      deps.logger.warn(
+      const refusalKey = apiErrorRefusalKey(error);
+      const level =
+        refusalKey === undefined ||
+        threadStorageRefusalLog.isNewRefusal(refusalKey)
+          ? "warn"
+          : "debug";
+      deps.logger[level](
         {
           err: error,
           refusals: refused.refusals,
           retryAt: refused.retryAt,
           threadId: thread.id,
+          ...(refusalKey === undefined ? {} : { refusalKey }),
         },
         "Thread storage deletion command failed",
       );
@@ -1267,16 +1277,6 @@ function nextSeqOrQueueTail(deps: CommandResultSideEffectsDeps): number {
   }
 }
 
-/**
- * The drain a settled stop owes the rows that were waiting on it.
- *
- * A completed turn wakes the queue; a stopped one never did, because the
- * manual-stop pause meant there was nothing for the drain to find. Rows
- * carrying a `stopping` wait are outside that pause — the user asked for them
- * after requesting the stop — so the moment the stop lands is the moment they
- * become dispatchable, and nothing else would tell the queue about it before
- * the next recovery sweep.
- */
 function drainQueuedMessagesAfterStopAction(
   threadId: string,
 ): CommandResultPostCommitAction {
