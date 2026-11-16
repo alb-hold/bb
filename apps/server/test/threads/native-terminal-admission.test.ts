@@ -12,6 +12,7 @@ import {
   listNativeTerminalDeliveryMarks,
   listNativeTerminalDeliveryWarnings,
   listQueuedThreadMessages,
+  setQueuedThreadMessageGroupBoundary,
   threads,
   updateTerminalSessions,
 } from "@bb/db";
@@ -955,9 +956,17 @@ describe("an owner's composer send at the limit", () => {
         mode: "steer-if-active",
       });
       expect([composer.delivery, tell.delivery]).toEqual(["queued", "queued"]);
-      expect(composerRecords(fixture, thread.id)).toEqual([
-        queuedRows(fixture, thread.id)[0]?.id,
-      ]);
+      const [composerRow, tellRow] = queuedRows(fixture, thread.id);
+      expect(composerRecords(fixture, thread.id)).toEqual([composerRow?.id]);
+      expect(
+        setQueuedThreadMessageGroupBoundary({
+          db: fixture.harness.db,
+          notifier: fixture.harness.hub,
+          threadId: thread.id,
+          expectedGroupedPrefixQueuedMessageIds: [composerRow!.id, tellRow!.id],
+          groupBoundaryQueuedMessageId: tellRow!.id,
+        }).kind,
+      ).toBe("updated");
       reconnectLiveTerminal(fixture, open.terminalId);
 
       await drainLater(fixture);
@@ -1004,8 +1013,10 @@ describe("an owner's composer send at the limit", () => {
           context.queuedMessages.map((queued) => queued.origin),
         ]),
       ).toEqual(drained.map(() => [null, [null]]));
+      expect(composerRecords(fixture, thread.id)).toHaveLength(1);
 
       reconnectLiveTerminal(fixture, open.terminalId);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
       await drainLater(fixture);
       await drainLater(fixture);
 
