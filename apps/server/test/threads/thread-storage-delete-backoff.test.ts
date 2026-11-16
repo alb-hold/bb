@@ -111,7 +111,7 @@ async function refuseQueuedStorageDeletes(
   harness: TestAppHarness,
   atMs: number,
   releasedThreadIds: ReadonlySet<string> = new Set(),
-  refusalKey?: string,
+  refusalKey?: string | ((threadId: string) => string),
 ): Promise<StorageDeleteRequest[]> {
   await sleep(5);
   const queued: QueuedCommand[] = [];
@@ -135,7 +135,14 @@ async function refuseQueuedStorageDeletes(
       errorCode: "path_in_use",
       errorMessage:
         "process 4242 runs in another mount namespace without proven mount isolation",
-      ...(refusalKey === undefined ? {} : { refusalKey }),
+      ...(refusalKey === undefined
+        ? {}
+        : {
+            refusalKey:
+              typeof refusalKey === "string"
+                ? refusalKey
+                : refusalKey(entry.command.threadId),
+          }),
     });
   }
   await sleep(1);
@@ -313,10 +320,135 @@ describe("refused thread storage deletes", () => {
           ([fields]) => (fields as { refusalKey?: string }).refusalKey,
         ),
       ).toEqual([
-        `${identity}|holders:4242:5150`,
-        `${identity}|holders:4242:5150,4243:5151`,
+        `host-keyed:${identity}|holders:4242:5150`,
+        `host-keyed:${identity}|holders:4242:5150,4243:5151`,
       ]);
       expect(failed(debug)).toHaveLength(4);
+    });
+  });
+
+  it("warns once on each host when two hosts send the same refusal key", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const hostOf = new Map<string, string>();
+      for (const hostId of ["host-a", "host-b"]) {
+        const seeded = seedDeletedThreads(harness, 1, hostId);
+        for (const threadId of seeded.threadIds) hostOf.set(threadId, hostId);
+        harness.db
+          .update(projects)
+          .set({ deletedAt: START_MS })
+          .where(eq(projects.id, seeded.projectId))
+          .run();
+      }
+      const deps = {
+        ...harness.deps,
+        pluginSchedules: harness.pluginService,
+        plugins: harness.pluginService,
+      };
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const debug = vi.spyOn(harness.deps.logger, "debug");
+      const failedKeys = (spy: typeof warn) =>
+        spy.mock.calls
+          .filter(
+            ([, message]) =>
+              message === "Thread storage deletion command failed",
+          )
+          .map(([fields]) => (fields as { refusalKey?: string }).refusalKey);
+      const refusalKey = "64769:90731|holders:4242:5150";
+      const requests: StorageDeleteRequest[] = [];
+      for (let offset = 0; offset < HOUR_MS; offset += TICK_MS) {
+        vi.setSystemTime(START_MS + offset);
+        await runPeriodicSweeps(deps);
+        requests.push(
+          ...(await refuseQueuedStorageDeletes(
+            harness,
+            offset,
+            new Set(),
+            refusalKey,
+          )),
+        );
+        const perHost = ["host-a", "host-b"].map(
+          (hostId) =>
+            requests.filter(
+              (request) => hostOf.get(request.threadId) === hostId,
+            ).length,
+        );
+        if (perHost.every((count) => count >= 3)) break;
+      }
+      vi.useRealTimers();
+
+      for (const hostId of ["host-a", "host-b"])
+        expect(
+          requests.filter((request) => hostOf.get(request.threadId) === hostId)
+            .length,
+        ).toBeGreaterThanOrEqual(3);
+      expect([...failedKeys(warn)].sort()).toEqual([
+        `host-a:${refusalKey}`,
+        `host-b:${refusalKey}`,
+      ]);
+      expect(new Set(failedKeys(debug))).toEqual(
+        new Set([`host-a:${refusalKey}`, `host-b:${refusalKey}`]),
+      );
+      expect(failedKeys(debug)).toHaveLength(requests.length - 2);
+    });
+  });
+
+  it("warns once for each of two directories one host refuses in turn", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 2, "host-two-dirs");
+      harness.db
+        .update(projects)
+        .set({ deletedAt: START_MS })
+        .where(eq(projects.id, seeded.projectId))
+        .run();
+      const [first = "", second = ""] = seeded.threadIds;
+      const keys = new Map([
+        [first, "64769:1001|holders:4242:5150"],
+        [second, "64769:1002|holders:4242:5150"],
+      ]);
+      const deps = {
+        ...harness.deps,
+        pluginSchedules: harness.pluginService,
+        plugins: harness.pluginService,
+      };
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const debug = vi.spyOn(harness.deps.logger, "debug");
+      const failedKeys = (spy: typeof warn) =>
+        spy.mock.calls
+          .filter(
+            ([, message]) =>
+              message === "Thread storage deletion command failed",
+          )
+          .map(([fields]) => (fields as { refusalKey?: string }).refusalKey);
+      const requests: StorageDeleteRequest[] = [];
+      for (let offset = 0; offset < HOUR_MS; offset += TICK_MS) {
+        vi.setSystemTime(START_MS + offset);
+        await runPeriodicSweeps(deps);
+        requests.push(
+          ...(await refuseQueuedStorageDeletes(
+            harness,
+            offset,
+            new Set(),
+            (threadId) => keys.get(threadId) ?? "",
+          )),
+        );
+        if (requests.length >= 4) break;
+      }
+      vi.useRealTimers();
+
+      const order = requests.map((request) => request.threadId);
+      expect(order.slice(0, 4)).toEqual([first, second, first, second]);
+      expect(failedKeys(warn)).toEqual([
+        `host-two-dirs:${keys.get(first)}`,
+        `host-two-dirs:${keys.get(second)}`,
+      ]);
+      expect(failedKeys(debug).slice(0, 2)).toEqual([
+        `host-two-dirs:${keys.get(first)}`,
+        `host-two-dirs:${keys.get(second)}`,
+      ]);
     });
   });
 

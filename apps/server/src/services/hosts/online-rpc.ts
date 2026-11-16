@@ -315,7 +315,7 @@ async function callHostOnlineRpcWithRetry(
       retryable: false,
       ...(response.refusalKey === undefined
         ? {}
-        : { details: { refusalKey: response.refusalKey } }),
+        : { details: { refusalKey: `${args.hostId}:${response.refusalKey}` } }),
     });
   }
 
