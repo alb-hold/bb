@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
-import { flattenPromptInputGroups } from "@bb/domain";
+import { flattenPromptInputGroups, isRawThreadId } from "@bb/domain";
 import {
   COMPETING_TURN_ERROR_CODE,
   type HostDaemonCommandResult,
@@ -60,10 +60,10 @@ export async function deleteThreadStorage(
   command: CommandOf<"thread.storage.delete">,
   options: CommandDispatchOptions,
 ): Promise<void> {
-  if (!isSinglePathComponent(command.threadId))
+  if (!isRawThreadId(command.threadId))
     throw new CommandDispatchError(
       "invalid_path",
-      `Thread id ${JSON.stringify(command.threadId)} is not a single path component, so no thread storage is removed`,
+      `Thread id ${JSON.stringify(command.threadId)} is not a bb thread id, so no thread storage is removed`,
     );
   const lexicalPath = requireContainedPath(
     options.threadStorageRootPath,
@@ -98,16 +98,6 @@ export async function deleteThreadStorage(
       ? {}
       : { testWorktreeHolderScan: options.testWorktreeHolderScan }),
   });
-}
-
-function isSinglePathComponent(name: string): boolean {
-  return (
-    name !== "." &&
-    name !== ".." &&
-    !name.includes("\0") &&
-    !name.includes("/") &&
-    path.basename(name) === name
-  );
 }
 
 function errorCodeOf(error: unknown): string | undefined {
