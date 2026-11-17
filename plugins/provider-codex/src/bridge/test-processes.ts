@@ -144,13 +144,14 @@ export function killTestProcessGroup(
   try {
     return process.kill(-pid, signal);
   } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "EPERM" &&
-      !hasLiveGroupMembers(pid, Date.now() + 5_000)
-    )
-      return false;
+    if (error instanceof Error && "code" in error && error.code === "EPERM") {
+      const writer = liveGroupWriter(pid, Date.now() + 5_000);
+      if (writer === undefined) return false;
+      throw new Error(
+        `kill EPERM for test process group ${pid} with live writer: ${writer}`,
+        { cause: error },
+      );
+    }
     if (
       !(error instanceof Error) ||
       !("code" in error) ||
@@ -161,10 +162,36 @@ export function killTestProcessGroup(
   }
 }
 
+export type TestProcessCleanup = (sharedDeadline?: number) => Promise<void>;
+
+export async function drainTestProcessCleanups(
+  cleanups: TestProcessCleanup[],
+  timeoutMs = TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const pending = cleanups.splice(0);
+  const results = await Promise.allSettled(
+    pending.map((cleanup) => cleanup(deadline)),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason as unknown] : [],
+  );
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      failures
+        .map((failure) =>
+          failure instanceof Error ? failure.message : String(failure),
+        )
+        .join("; "),
+    );
+}
+
 export function trackTestProcess(
   child: ChildProcess,
   timeoutMs = TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
-): () => Promise<void> {
+): TestProcessCleanup {
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
     child.once("error", () => resolve());
@@ -208,9 +235,9 @@ export function trackTestProcess(
     discoveryTimer.unref();
     void exited.then(() => clearInterval(discoveryTimer));
   }
-  return async () => {
+  return async (sharedDeadline) => {
     if (pid === undefined) return;
-    const deadline = Date.now() + timeoutMs;
+    const deadline = sharedDeadline ?? Date.now() + timeoutMs;
     const stillWriting = () => {
       let writer: string | undefined;
       if (process.platform !== "win32") {

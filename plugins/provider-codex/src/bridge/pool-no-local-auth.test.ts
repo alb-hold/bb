@@ -19,8 +19,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
 import {
+  drainTestProcessCleanups,
   killTestProcessGroup,
   TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS,
+  type TestProcessCleanup,
   trackTestProcess,
 } from "./test-processes.js";
 import { parseModelCatalog } from "../models.js";
@@ -69,7 +71,7 @@ function expiredChatgptAuthFile(): string {
   });
 }
 
-const processCleanups: Array<() => Promise<void>> = [];
+const processCleanups: TestProcessCleanup[] = [];
 
 let codexHome: string;
 let server: Server;
@@ -142,7 +144,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  while (processCleanups.length > 0) await processCleanups.pop()?.();
+  await drainTestProcessCleanups(processCleanups);
   await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(codexHome, { recursive: true, force: true });
 }, TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS);

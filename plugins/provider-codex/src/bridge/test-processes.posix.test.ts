@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
+import {
+  drainTestProcessCleanups,
+  killTestProcessGroup,
+  trackTestProcess,
+} from "./test-processes.js";
 
 describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
@@ -51,6 +55,49 @@ describe.runIf(process.platform !== "win32")(
       );
       expect(Date.now() - started).toBeLessThan(2_000);
     }, 3_000);
+
+    it("bounds the total time of several leaking cleanups to one deadline and names every writer", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "bb-test-two-writers-"));
+      const markers = [join(directory, "a"), join(directory, "b")];
+      const leaders = markers.map((marker) =>
+        spawn(process.execPath, ["-e", `
+          const { spawn } = require("node:child_process");
+          const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: "ignore" });
+          descendant.unref();
+        `], { detached: true, stdio: "ignore" }),
+      );
+      const exits = leaders.map((leader) => once(leader, "exit"));
+      onTestFinished(async () => {
+        for (const leader of leaders)
+          try {
+            process.kill(-leader.pid!, "SIGKILL");
+          } catch {}
+        rmSync(directory, { recursive: true, force: true });
+      });
+      const cleanups = leaders.map((leader) => trackTestProcess(leader, 60_000));
+      const setupDeadline = Date.now() + 5_000;
+      while (!markers.every((marker) => existsSync(marker))) {
+        if (Date.now() >= setupDeadline) throw new Error("writers did not start");
+        await delay(10);
+      }
+      await Promise.all(exits);
+      const writerPids = markers.map((marker) =>
+        readFileSync(marker, "utf8").trim(),
+      );
+      const started = Date.now();
+      const failure = await drainTestProcessCleanups(cleanups, 600).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(cleanups).toHaveLength(0);
+      expect(failure).toBeInstanceOf(AggregateError);
+      const message = (failure as AggregateError).message;
+      for (const writerPid of writerPids)
+        expect(message).toMatch(
+          new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
+        );
+    }, 5_000);
 
     it.runIf(process.platform === "darwin")(
       "treats a group of only unreaped zombies as gone and still kills a group with a live member",
