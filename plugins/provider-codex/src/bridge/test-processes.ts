@@ -131,6 +131,8 @@ function killWindowsProcess(
   }
 }
 
+class LiveWriterEpermError extends Error {}
+
 export function killTestProcessGroup(
   child: ChildProcess,
   signal: NodeJS.Signals | number = "SIGTERM",
@@ -151,7 +153,7 @@ export function killTestProcessGroup(
         );
       const scan = scanGroup(pid, deadline);
       if (!scan.live) return false;
-      throw new Error(
+      throw new LiveWriterEpermError(
         `kill EPERM for test process group ${pid} with live writer${scan.writer ? `: ${scan.writer}` : ""}`,
         { cause: error },
       );
@@ -309,7 +311,18 @@ export function trackTestProcess(
           killWindowsProcess(descendant, deadline, identity);
         }
       } else {
-        killTestProcessGroup(child, "SIGKILL", deadline);
+        let namedEperm: LiveWriterEpermError | undefined;
+        for (;;) {
+          try {
+            killTestProcessGroup(child, "SIGKILL", deadline);
+            break;
+          } catch (error) {
+            if (error instanceof LiveWriterEpermError) namedEperm = error;
+            else if (namedEperm === undefined) throw error;
+            if (Date.now() >= deadline) throw namedEperm ?? error;
+            await delay(50);
+          }
+        }
       }
       if (child.exitCode === null && child.signalCode === null) {
         noteWriter();

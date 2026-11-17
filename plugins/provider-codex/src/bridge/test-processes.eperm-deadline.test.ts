@@ -57,7 +57,7 @@ describe.runIf(process.platform !== "win32")(
     );
 
     it.each([
-      { name: "a fast ps names both writers", psCostMs: 1 },
+      { name: "a ps well inside the deadline names both writers", psCostMs: 100 },
       { name: "a ps slower than the deadline reports expiry", psCostMs: 1_500 },
     ])("two leaking cleanups with $name", async ({ psCostMs }) => {
       const deadlineMs = 1_000;
