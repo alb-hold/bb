@@ -1,7 +1,9 @@
 import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
-const TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS = 30_000;
+export const TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS = 15_000;
+export const TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS =
+  TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS + 10_000;
 
 function hasLiveGroupMembers(pid: number, deadline: number): boolean {
   return execFileSync("ps", ["-axo", "pgid=,stat="], {
@@ -142,6 +144,13 @@ export function killTestProcessGroup(
   try {
     return process.kill(-pid, signal);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EPERM" &&
+      !hasLiveGroupMembers(pid, Date.now() + 5_000)
+    )
+      return false;
     if (
       !(error instanceof Error) ||
       !("code" in error) ||

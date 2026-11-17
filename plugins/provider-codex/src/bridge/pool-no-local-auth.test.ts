@@ -18,7 +18,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
-import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
+import {
+  killTestProcessGroup,
+  TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS,
+  trackTestProcess,
+} from "./test-processes.js";
 import { parseModelCatalog } from "../models.js";
 
 const POOL_TOKEN = "pool-token-for-no-local-auth-test";
@@ -141,7 +145,7 @@ afterEach(async () => {
   while (processCleanups.length > 0) await processCleanups.pop()?.();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(codexHome, { recursive: true, force: true });
-});
+}, TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS);
 
 function runPooledTurn(): Promise<{ status: number | null; output: string }> {
   const env = {

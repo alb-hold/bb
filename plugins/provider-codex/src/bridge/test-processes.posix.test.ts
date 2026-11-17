@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { trackTestProcess } from "./test-processes.js";
+import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
 
 describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
@@ -51,6 +51,36 @@ describe.runIf(process.platform !== "win32")(
       );
       expect(Date.now() - started).toBeLessThan(2_000);
     }, 3_000);
+
+    it.runIf(process.platform === "darwin")(
+      "treats a group of only unreaped zombies as gone and still kills a group with a live member",
+      async () => {
+        const blockLoop = (ms: number) => {
+          const end = Date.now() + ms;
+          while (Date.now() < end);
+        };
+        const empty = spawn("sh", ["-c", "exit 0"], {
+          detached: true,
+          stdio: "ignore",
+        });
+        const live = spawn("sh", ["-c", "sleep 30 & exit 0"], {
+          detached: true,
+          stdio: "ignore",
+        });
+        onTestFinished(() => {
+          for (const child of [empty, live])
+            try {
+              process.kill(-child.pid!, "SIGKILL");
+            } catch {}
+        });
+        blockLoop(800);
+        expect(empty.exitCode).toBeNull();
+        expect(live.exitCode).toBeNull();
+        expect(() => process.kill(-empty.pid!, "SIGKILL")).toThrow(/EPERM/u);
+        expect(killTestProcessGroup(empty, "SIGKILL")).toBe(false);
+        expect(killTestProcessGroup(live, "SIGKILL")).toBe(true);
+      },
+    );
 
     it.each([
       { name: "a descendant that keeps writing", lifetime: null },
