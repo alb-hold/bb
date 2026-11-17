@@ -20,6 +20,7 @@ import {
   stockTimeWaitIsDue,
 } from "../helpers/stock-queued-message-wait.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
+import { queueChildThreadTurnNotificationBestEffort } from "../../src/services/threads/child-thread-notifications.js";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
@@ -459,6 +460,106 @@ describe("parent notice under parentNotifications inbox", () => {
       });
 
       expect(turnRequests(harness, thread.id)).toHaveLength(1);
+      expect(queuedRows(harness, thread.id)).toHaveLength(0);
+    });
+  });
+
+  it("sends a mixed completed and failed batch at once with both notices and holds nothing", async () => {
+    await withTestHarness(async (harness) => {
+      const { project, thread } = seedReceiver(harness, {
+        hostId: "host-inbox-batch-mixed",
+        status: "idle",
+      });
+      const completed = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: thread.id,
+        parentNotifications: "inbox",
+        title: "Completed child",
+      });
+      const failed = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: thread.id,
+        parentNotifications: "inbox",
+        title: "Failed child",
+      });
+
+      vi.useFakeTimers();
+      try {
+        await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+          childThread: completed,
+          parentThreadId: thread.id,
+          turnId: null,
+          turnStatus: "completed",
+        });
+        await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+          childThread: failed,
+          parentThreadId: thread.id,
+          turnId: null,
+          turnStatus: "failed",
+        });
+        await vi.advanceTimersByTimeAsync(2_100);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(turnRequests(harness, thread.id)).toHaveLength(1);
+      const delivered = JSON.stringify(turnRequests(harness, thread.id)[0]?.input);
+      expect(delivered).toContain(completed.id);
+      expect(delivered).toContain(failed.id);
+      expect(queuedRows(harness, thread.id)).toHaveLength(0);
+    });
+  });
+
+  it("holds a completed-only batch and delivers both notices at the next turn start", async () => {
+    await withTestHarness(async (harness) => {
+      const { project, sessionId, thread } = seedReceiver(harness, {
+        hostId: "host-inbox-batch-completed",
+        status: "idle",
+      });
+      const first = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: thread.id,
+        parentNotifications: "inbox",
+        title: "First completed child",
+      });
+      const second = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: thread.id,
+        parentNotifications: "inbox",
+        title: "Second completed child",
+      });
+
+      vi.useFakeTimers();
+      try {
+        for (const child of [first, second]) {
+          await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+            childThread: child,
+            parentThreadId: thread.id,
+            turnId: null,
+            turnStatus: "completed",
+          });
+        }
+        await vi.advanceTimersByTimeAsync(2_100);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(turnRequests(harness, thread.id)).toHaveLength(0);
+      expect(queuedRows(harness, thread.id)).toHaveLength(1);
+
+      await postTurnStarted(harness, {
+        providerThreadId: "provider-host-inbox-batch-completed",
+        sessionId,
+        threadId: thread.id,
+        turnId: "turn-batch-completed",
+      });
+      await vi.waitFor(() => {
+        const submitted = JSON.stringify(
+          listQueuedThreadCommands(harness, "turn.submit", thread.id),
+        );
+        expect(submitted).toContain(first.id);
+        expect(submitted).toContain(second.id);
+      });
       expect(queuedRows(harness, thread.id)).toHaveLength(0);
     });
   });
