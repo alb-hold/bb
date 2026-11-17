@@ -4,75 +4,50 @@ import path from "node:path";
 import { z } from "zod";
 
 export interface ImportedGeminiCredentials {
-  accessToken: string;
   refreshToken: string;
-  idToken: string | null;
-  email: string | null;
-  expiresAt: number | null;
+  client: { clientId: string; clientSecret: string };
+  projectId: string | null;
 }
 
-const oauthCredsSchema = z
+// google-auth "authorized_user" JSON, as the antigravity-acp runtime writes it
+// with AGY_ACP_FORCE_FILE_STORAGE=1. It holds no access token; the runtime
+// refreshes on every start.
+const acpTokenSchema = z
   .object({
-    access_token: z.string().min(1),
+    client_id: z.string().min(1),
+    client_secret: z.string().min(1),
     refresh_token: z.string().min(1),
-    expiry_date: z.number().positive().nullish(),
-    id_token: z.string().min(1).nullish(),
+    project_id: z.string().nullish(),
   })
   .passthrough();
 
-const googleAccountsSchema = z
-  .object({ active: z.string().email().nullish() })
-  .passthrough();
-
-function emailFromIdToken(idToken: string | null): string | null {
-  const payload = idToken?.split(".")[1];
-  if (payload === undefined) return null;
-  try {
-    const parsed: unknown = JSON.parse(
-      Buffer.from(payload, "base64url").toString("utf8"),
-    );
-    const email =
-      typeof parsed === "object" && parsed !== null && "email" in parsed
-        ? parsed.email
-        : null;
-    return typeof email === "string" && email.includes("@") ? email : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * gemini-cli keeps one login per `GEMINI_CLI_HOME`. An account is added by
- * pointing at the directory a `gemini` login wrote into, so each of several
- * Google accounts stays in its own isolated home.
+ * The antigravity-acp runtime keeps one login per `GEMINI_HOME`, at
+ * `<home>/antigravity-acp/acp_token.json` (`~/.gemini` when GEMINI_HOME is
+ * unset). An account is added by pointing at the home its sign-in wrote into,
+ * so each Google account stays in its own directory.
  */
 export function geminiCredentialsPath(home: string): string {
-  return path.join(home, ".gemini", "oauth_creds.json");
+  return path.join(home, "antigravity-acp", "acp_token.json");
 }
 
 export function resolveGeminiHome(home: string | undefined): string {
-  return home ?? process.env.GEMINI_CLI_HOME ?? os.homedir();
+  const fromEnv = process.env.GEMINI_HOME;
+  return (
+    home ??
+    (fromEnv === undefined || fromEnv === ""
+      ? path.join(os.homedir(), ".gemini")
+      : fromEnv)
+  );
 }
 
-export function parseGeminiCredentials(
-  rawCreds: string,
-  rawAccounts: string | null,
-): ImportedGeminiCredentials {
-  const creds = oauthCredsSchema.parse(JSON.parse(rawCreds));
-  const idToken = creds.id_token ?? null;
-  let active: string | null = null;
-  if (rawAccounts !== null) {
-    try {
-      active =
-        googleAccountsSchema.parse(JSON.parse(rawAccounts)).active ?? null;
-    } catch {}
-  }
+export function parseGeminiCredentials(raw: string): ImportedGeminiCredentials {
+  const parsed = acpTokenSchema.parse(JSON.parse(raw));
+  const projectId = parsed.project_id ?? null;
   return {
-    accessToken: creds.access_token,
-    refreshToken: creds.refresh_token,
-    idToken,
-    email: active ?? emailFromIdToken(idToken),
-    expiresAt: creds.expiry_date ?? null,
+    refreshToken: parsed.refresh_token,
+    client: { clientId: parsed.client_id, clientSecret: parsed.client_secret },
+    projectId: projectId === "" ? null : projectId,
   };
 }
 
@@ -81,14 +56,12 @@ export async function importGeminiCredentials(
 ): Promise<ImportedGeminiCredentials> {
   const root = resolveGeminiHome(home);
   try {
-    const rawCreds = await fs.readFile(geminiCredentialsPath(root), "utf8");
-    const rawAccounts = await fs
-      .readFile(path.join(root, ".gemini", "google_accounts.json"), "utf8")
-      .catch(() => null);
-    return parseGeminiCredentials(rawCreds, rawAccounts);
+    return parseGeminiCredentials(
+      await fs.readFile(geminiCredentialsPath(root), "utf8"),
+    );
   } catch {
     throw new Error(
-      "Gemini OAuth credentials were not found or usable. Sign in with `GEMINI_CLI_HOME=<dir> gemini` (choose Sign in with Google) and retry with --home <dir>.",
+      "Antigravity sign-in was not found or usable. Sign in through bb's Antigravity (antigravity-acp) agent with GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1, then retry with --home <dir>.",
     );
   }
 }

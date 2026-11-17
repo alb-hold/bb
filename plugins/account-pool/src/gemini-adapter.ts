@@ -19,10 +19,11 @@ import {
 } from "./provider-adapter.js";
 import { retryAfterMilliseconds } from "./quota.js";
 
-// Refreshing a gemini-cli token needs the OAuth client gemini-cli itself signs
-// in with. It is not stored here; the owner supplies it (BB_GEMINI_OAUTH_CLIENT_ID
-// and BB_GEMINI_OAUTH_CLIENT_SECRET, or the plugin option) so no client secret
-// lives in source.
+// A refresh token is bound to the OAuth client it was issued to. Imported
+// accounts carry their own client (from the runtime's token file) in the
+// secret; this env fallback (BB_GEMINI_OAUTH_CLIENT_ID and
+// BB_GEMINI_OAUTH_CLIENT_SECRET) only serves a secret without one. No client
+// secret lives in source.
 export interface GeminiOAuthClient {
   clientId: string;
   clientSecret: string;
@@ -39,8 +40,9 @@ export function geminiOAuthClientFromEnv(
 export const DEFAULT_GEMINI_REFRESH_URL = "https://oauth2.googleapis.com/token";
 export const DEFAULT_GEMINI_UPSTREAM_BASE_URL =
   "https://cloudcode-pa.googleapis.com";
+export const DEFAULT_GEMINI_USERINFO_URL =
+  "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
-const REFRESH_WINDOW_MS = 60_000;
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
 
 const ALLOWED_REQUEST_HEADERS = new Set([
@@ -74,17 +76,36 @@ const loadCodeAssistSchema = z
   })
   .passthrough();
 
+// google.internal.cloud.code.v1internal.QuotaSummaryBucket, as embedded in the
+// antigravity-acp 1.5.0 runtime: bucket_id, display_name, description, window,
+// remaining_fraction, remaining_amount, disabled, reset_time. It has no model id.
 const quotaBucketSchema = z
   .object({
-    modelId: z.string().nullish(),
+    bucketId: z.string().nullish(),
+    displayName: z.string().nullish(),
     remainingFraction: z.number().nullish(),
+    disabled: z.boolean().nullish(),
     resetTime: z.string().nullish(),
   })
   .passthrough();
 
-const retrieveUserQuotaSchema = z
-  .object({ buckets: z.array(quotaBucketSchema).nullish() })
+const retrieveUserQuotaSummarySchema = z
+  .object({
+    buckets: z.array(quotaBucketSchema).nullish(),
+    groups: z
+      .array(
+        z
+          .object({ buckets: z.array(quotaBucketSchema).nullish() })
+          .passthrough(),
+      )
+      .nullish(),
+  })
   .passthrough();
+
+// The summary also carries buckets for the third-party and image models the
+// subscription offers. They never hold the Gemini account.
+const NON_GEMINI_BUCKET = /claude|gpt-oss|image/iu;
+const PRIMARY_BUCKET = /pro|carbon|argon|hydrogen|orchestrator/iu;
 
 export interface GeminiProjectInfo {
   project: string | null;
@@ -143,6 +164,7 @@ export function geminiQuotaRejection(
   let status: unknown;
   let reason: string | null = null;
   let delayMs: number | null = null;
+  let model: string | null = null;
   try {
     const parsed: unknown = JSON.parse(detail);
     const error =
@@ -168,6 +190,14 @@ export function geminiQuotaRejection(
           "quotaResetDelay" in entry.metadata
         )
           delayMs = parseGoogleDuration(entry.metadata.quotaResetDelay) ?? delayMs;
+        if (
+          "metadata" in entry &&
+          typeof entry.metadata === "object" &&
+          entry.metadata !== null &&
+          "model" in entry.metadata &&
+          typeof entry.metadata.model === "string"
+        )
+          model = entry.metadata.model;
       }
     }
   } catch {
@@ -180,6 +210,8 @@ export function geminiQuotaRejection(
   }
   if (status !== "RESOURCE_EXHAUSTED") return null;
   if (reason === null || !ACCOUNT_QUOTA_REASONS.has(reason)) return null;
+  // A third-party model's quota says nothing about the Gemini models.
+  if (model !== null && NON_GEMINI_BUCKET.test(model)) return null;
   return {
     reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
@@ -191,12 +223,20 @@ export function geminiWindowsFromQuota(
   payload: unknown,
   now: number,
 ): LimitWindow[] | null {
-  const parsed = retrieveUserQuotaSchema.safeParse(payload);
+  const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
   if (!parsed.success) return null;
   const slots = new Map<LimitWindowSlot, LimitWindow>();
-  for (const bucket of parsed.data.buckets ?? []) {
-    if (bucket.remainingFraction == null) continue;
-    const slot: LimitWindowSlot = /pro/iu.test(bucket.modelId ?? "")
+  // A bucket listed both at the top level and in a group is harmless: each slot
+  // keeps the worst bucket, so a repeat changes nothing.
+  const buckets = [
+    ...(parsed.data.buckets ?? []),
+    ...(parsed.data.groups ?? []).flatMap((group) => group.buckets ?? []),
+  ];
+  for (const bucket of buckets) {
+    const name = bucket.bucketId ?? bucket.displayName ?? "";
+    if (NON_GEMINI_BUCKET.test(name)) continue;
+    if (bucket.disabled === true || bucket.remainingFraction == null) continue;
+    const slot: LimitWindowSlot = PRIMARY_BUCKET.test(name)
       ? "primary"
       : "secondary";
     const utilization = Math.max(0, Math.min(1, 1 - bucket.remainingFraction));
@@ -256,7 +296,7 @@ async function refreshGoogleToken(
   parentSignal?.throwIfAborted();
   if (client === undefined)
     throw new OAuthRefreshError(
-      "Gemini token refresh needs BB_GEMINI_OAUTH_CLIENT_ID and BB_GEMINI_OAUTH_CLIENT_SECRET.",
+      "This Gemini account has no OAuth client. Remove it and add it again from its Antigravity sign-in.",
     );
   const signal = AbortSignal.any([
     AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -337,6 +377,33 @@ async function codeAssistCall(
   return response.json().catch(() => null);
 }
 
+async function googleEmail(
+  doFetch: typeof fetch,
+  userinfoUrl: string,
+  accessToken: string,
+): Promise<string | null> {
+  try {
+    const response = await doFetch(userinfoUrl, {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const parsed = z
+      .object({ email: z.string().email() })
+      .passthrough()
+      .safeParse(await response.json());
+    return parsed.success ? parsed.data.email : null;
+  } catch {
+    return null;
+  }
+}
+
 const LOAD_CODE_ASSIST_BODY = {
   metadata: {
     ideType: "IDE_UNSPECIFIED",
@@ -389,6 +456,7 @@ function sessionId(body: Uint8Array): string | null {
 export function createGeminiAdapter(options: {
   refreshUrl: string;
   upstreamBaseUrl: string;
+  userinfoUrl?: string;
   oauthClient?: GeminiOAuthClient;
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
@@ -404,32 +472,31 @@ export function createGeminiAdapter(options: {
     upstreamName: "Google Gemini",
     async localLogin() {
       const imported = await readCredentials().catch(() => null);
-      return imported === null
-        ? null
-        : { email: imported.email, planLabel: null };
+      return imported === null ? null : { email: null, planLabel: null };
     },
     async importAccount(importOptions) {
       const imported = await readCredentials(importOptions?.home);
-      let accessToken = imported.accessToken;
-      let refreshToken = imported.refreshToken;
-      let expiresAt = imported.expiresAt;
-      let idToken = imported.idToken;
-      if (expiresAt !== null && expiresAt <= clock() + REFRESH_WINDOW_MS) {
-        const refreshed = await refreshGoogleToken(
-          doFetch,
-          clock,
-          options.refreshUrl,
-          imported.refreshToken,
-          options.oauthClient,
-        );
-        accessToken = refreshed.access_token;
-        refreshToken = refreshed.refresh_token ?? refreshToken;
-        idToken = refreshed.id_token ?? idToken;
-        expiresAt =
-          refreshed.expires_in === undefined
-            ? null
-            : clock() + Math.round(refreshed.expires_in * 1_000);
-      }
+      // The runtime's token file holds no access token, so import always
+      // refreshes once, with the client the token was issued to.
+      const refreshed = await refreshGoogleToken(
+        doFetch,
+        clock,
+        options.refreshUrl,
+        imported.refreshToken,
+        imported.client,
+      );
+      const accessToken = refreshed.access_token;
+      const refreshToken = refreshed.refresh_token ?? imported.refreshToken;
+      const idToken = refreshed.id_token ?? null;
+      const expiresAt =
+        refreshed.expires_in === undefined
+          ? null
+          : clock() + Math.round(refreshed.expires_in * 1_000);
+      const email = await googleEmail(
+        doFetch,
+        options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
+        accessToken,
+      );
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           doFetch,
@@ -439,15 +506,16 @@ export function createGeminiAdapter(options: {
           LOAD_CODE_ASSIST_BODY,
         ),
       );
-      if (info === null || info.project === null || info.tier === null) {
+      const project = info?.project ?? imported.projectId;
+      if (info === null || project === null || info.tier === null) {
         throw new Error(
-          "This Google account is not onboarded to Gemini Code Assist (no project or tier). Run `gemini` once with this home to finish onboarding, then retry.",
+          "This Google account is not onboarded to Gemini Code Assist (no project or tier). Start one chat with bb's Antigravity agent under this GEMINI_HOME to finish onboarding, then retry.",
         );
       }
       return {
-        label: imported.email ?? "Gemini account",
-        email: imported.email,
-        geminiProject: info.project,
+        label: email ?? "Gemini account",
+        email,
+        geminiProject: project,
         subscriptionType: info.tier,
         rateLimitTier: null,
         secret: {
@@ -456,6 +524,7 @@ export function createGeminiAdapter(options: {
           refreshToken,
           expiresAt,
           ...(idToken === null ? {} : { idToken }),
+          client: imported.client,
         },
       };
     },
@@ -506,7 +575,7 @@ export function createGeminiAdapter(options: {
         context.now,
         options.refreshUrl,
         secret.refreshToken,
-        options.oauthClient,
+        secret.client ?? options.oauthClient,
         context.signal,
       );
       const refreshed: AccountSecret = {
@@ -520,6 +589,7 @@ export function createGeminiAdapter(options: {
           parsed.expires_in === undefined
             ? null
             : context.now() + Math.round(parsed.expires_in * 1_000),
+        ...(secret.client === undefined ? {} : { client: secret.client }),
       };
       context.signal?.throwIfAborted();
       await context.accounts.writeSecret(
@@ -565,7 +635,7 @@ export function createGeminiAdapter(options: {
         await codeAssistCall(
           context.fetch,
           baseUrl,
-          "retrieveUserQuota",
+          "retrieveUserQuotaSummary",
           secret.accessToken,
           { project },
           context.signal,

@@ -1,7 +1,12 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
-import { accountPoolHostContract } from "./host-contract.js";
+import { pruneGeminiHomes, writeGeminiHome } from "./gemini-home.js";
+import {
+  GEMINI_TOKEN_ROUTE,
+  accountPoolHostContract,
+} from "./host-contract.js";
 import { createHostProxy } from "./host-proxy.js";
 
+const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
 const LOOPBACK_NO_PROXY = ["localhost", "127.0.0.1", "::1"];
 
 function mergedNoProxy(
@@ -42,6 +47,26 @@ export default experimental_defineHostEntry({
           process.env.NO_PROXY ?? process.env.no_proxy,
           serverUrl,
         ),
+      };
+    },
+    async writeGeminiHome(input, context) {
+      const serverUrl = process.env.BB_SERVER_URL;
+      if (serverUrl === undefined || serverUrl === "")
+        throw new Error("The host daemon did not provide BB_SERVER_URL.");
+      const home = await writeGeminiHome({
+        dataDir: context.experimental_paths.dataDir,
+        key: input.key,
+        refreshToken: input.refreshToken,
+        tokenUri: `${serverUrl.replace(/\/+$/u, "")}${HUB_BASE_PATH}${GEMINI_TOKEN_ROUTE}`,
+      });
+      return { home };
+    },
+    async pruneGeminiHomes(input, context) {
+      return {
+        removed: await pruneGeminiHomes({
+          dataDir: context.experimental_paths.dataDir,
+          keep: input.keep,
+        }),
       };
     },
   },
