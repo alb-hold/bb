@@ -102,13 +102,13 @@ describe("describeQueuedMessageWait", () => {
     expect(describeWait({ kind: "time" })).toBe("Scheduled");
   });
 
-  it("labels an inbox hold as waiting for the next turn, with its deadline", () => {
+  it("labels an inbox hold as waiting for the next turn", () => {
     expect(describeWait({ kind: "time", inbox: true })).toBe(
       "Held until the next turn",
     );
     expect(
       describeWait({ kind: "time", inbox: true }, { sendAt: NOW + 3 * HOUR }),
-    ).toBe(`Held until the next turn, or ${clockAt(NOW + 3 * HOUR)}`);
+    ).toBe("Held until the next turn");
   });
 
   it("counts only inbox holds for the held banner", () => {
