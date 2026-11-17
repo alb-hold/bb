@@ -656,6 +656,23 @@ describe("Gemini account pool", () => {
     ).toBe("tok-a");
   });
 
+  it("does not hold any account after a reasonless or capacity 429, even with Retry-After", async () => {
+    let degraded = true;
+    const { post } = await twoAccounts(() =>
+      degraded
+        ? {
+            status: 429,
+            body: CAPACITY_BODY,
+            headers: { "retry-after": "3600" },
+          }
+        : { status: 200, body: OK_BODY },
+    );
+    expect((await post("s-capacity-1")).status).toBe(429);
+    degraded = false;
+    // Held accounts would still be skipped here; none may be.
+    expect((await post("s-capacity-2")).status).toBe(200);
+  });
+
   it("returns the last Google error when every account is out", async () => {
     const { post } = await twoAccounts(() => ({ status: 429, body: QUOTA_BODY }));
     const response = await post();

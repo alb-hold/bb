@@ -1361,21 +1361,9 @@ export class AccountPoolHub {
                   headers: {},
                 };
               } else {
-                const waitMs = retryAfterMilliseconds(
-                  response.headers.get("retry-after"),
-                  this.options.now(),
-                );
-                this.options.quotas.put({
-                  ...observed,
-                  heldUntil: this.options.now() + waitMs,
-                });
-                failure = {
-                  status: 429,
-                  message: detail,
-                  headers: {
-                    "retry-after": String(Math.ceil(waitMs / 1_000)),
-                  },
-                };
+                // Not this account's own limit (shared capacity, unknown
+                // reason): hand the 429 on without holding the account.
+                failure = { status: 429, message: detail, headers: {} };
               }
               break;
             }
