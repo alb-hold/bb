@@ -24,15 +24,15 @@ describe("readUserAutoCompactWindow", () => {
     });
   });
 
-  it("reports absent when the file is missing, the key is missing, or the value is invalid", () => {
-    expect(readUserAutoCompactWindow(env())).toEqual({ status: "absent" });
+  it("reports absent when the file is read and the key is missing or the value is invalid", () => {
     writeFileSync(join(dir, "settings.json"), "{}");
     expect(readUserAutoCompactWindow(env())).toEqual({ status: "absent" });
     writeFileSync(join(dir, "settings.json"), '{"autoCompactWindow":-1}');
     expect(readUserAutoCompactWindow(env())).toEqual({ status: "absent" });
   });
 
-  it("reports unreadable for partial JSON, an empty file, or a non-ENOENT read error", () => {
+  it("reports unreadable for a missing file, partial JSON, an empty file, or a read error", () => {
+    expect(readUserAutoCompactWindow(env())).toEqual({ status: "unreadable" });
     writeFileSync(join(dir, "settings.json"), '{"autoCompactWindow": 2000');
     expect(readUserAutoCompactWindow(env())).toEqual({ status: "unreadable" });
     writeFileSync(join(dir, "settings.json"), "");

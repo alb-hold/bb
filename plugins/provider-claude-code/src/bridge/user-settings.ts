@@ -15,10 +15,8 @@ export function readUserAutoCompactWindow(
   let raw: string;
   try {
     raw = readFileSync(join(configDir, "settings.json"), "utf8");
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { status: "absent" }
-      : { status: "unreadable" };
+  } catch {
+    return { status: "unreadable" };
   }
   let parsed: unknown;
   try {

@@ -8413,6 +8413,18 @@ describe("bridge", () => {
       await bridge.waitForResponse(7);
       expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
 
+      rmSync(settingsPath);
+      bridge.sendRequest(8, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file missing" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(8);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
       writeFileSync(settingsPath, JSON.stringify({}));
       bridge.sendRequest(4, "turn/start", {
         threadId,
