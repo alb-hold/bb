@@ -19,7 +19,7 @@ function hasLiveGroupMembers(pid: number, deadline: number): boolean {
 function liveGroupWriter(pid: number, deadline: number): string | undefined {
   const rows = execFileSync("ps", ["-axo", "pgid=,pid=,stat=,command="], {
     encoding: "utf8",
-    timeout: Math.max(1, deadline - Date.now()),
+    timeout: Math.max(250, Math.min(1_000, deadline - Date.now())),
   }).trim().split("\n");
   for (const line of rows) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/u);
