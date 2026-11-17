@@ -18,8 +18,6 @@ import {
   createStandaloneBuiltinCompactCommandInput,
   isStandaloneBuiltinClearCommand,
   promptInputSchema,
-  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
-  QUEUED_MESSAGE_INBOX_WAITING_ON,
   type PromptInput,
   type QueuedMessagePayload,
   type QueuedMessageDeliveryMode,
@@ -31,6 +29,10 @@ import {
   type ThreadCreateOrigin,
   type ThreadQueuedMessage,
 } from "@bb/domain";
+import {
+  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+  QUEUED_MESSAGE_INBOX_WAITING_ON,
+} from "@bb/domain/queued-message-inbox";
 import type { SendMessageRequest } from "@bb/server-contract";
 import type { PluginDispatchEnvironmentIntent } from "@get-bb/plugin-sdk";
 import { z } from "zod";

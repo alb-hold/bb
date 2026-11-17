@@ -7,10 +7,6 @@ import {
   type DbTransaction,
 } from "@bb/db";
 import { isNativeTerminalThread } from "@bb/db";
-import {
-  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
-  QUEUED_MESSAGE_INBOX_WAITING_ON,
-} from "@bb/domain";
 import type {
   PromptInput,
   PromptMentionResource,
@@ -20,6 +16,10 @@ import type {
   SystemMessageSubject,
   Thread,
 } from "@bb/domain";
+import {
+  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+  QUEUED_MESSAGE_INBOX_WAITING_ON,
+} from "@bb/domain/queued-message-inbox";
 import type { HostDaemonCommand } from "@bb/host-daemon-contract";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { requireThreadEnvironment } from "../lib/entity-lookup.js";

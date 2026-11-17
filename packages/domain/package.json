@@ -34,6 +34,11 @@
       "types": "./src/queued-message-lifecycle.ts",
       "default": "./src/queued-message-lifecycle.ts"
     },
+    "./queued-message-inbox": {
+      "source": "./src/queued-message-inbox.ts",
+      "types": "./src/queued-message-inbox.ts",
+      "default": "./src/queued-message-inbox.ts"
+    },
     "./thread-parent-notifications": {
       "source": "./src/thread-parent-notifications.ts",
       "types": "./src/thread-parent-notifications.ts",
