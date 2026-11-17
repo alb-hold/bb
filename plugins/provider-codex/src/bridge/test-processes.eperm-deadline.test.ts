@@ -1,5 +1,5 @@
 import { ChildProcess, execFileSync } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   drainTestProcessCleanups,
   trackTestProcess,
@@ -8,6 +8,10 @@ import {
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFileSync: vi.fn() };
+});
+
+beforeEach(() => {
+  vi.mocked(execFileSync).mockReset();
 });
 
 afterEach(() => {
@@ -23,6 +27,35 @@ function leader(pid: number): ChildProcess {
 describe.runIf(process.platform !== "win32")(
   "EPERM diagnostics under a shared deadline",
   () => {
+    it.each([10, 100, 1_000])(
+      "drains %i expired EPERM cleanups with no ps, no wait, and wall time under the cap",
+      async (count) => {
+        const wallCapMs = 250;
+        let clock = 1_000_000;
+        vi.spyOn(Date, "now").mockImplementation(() => clock);
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+          clock += 1;
+          throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+        });
+        const cleanups = Array.from({ length: count }, (_, index) =>
+          trackTestProcess(leader(8000 + index), 60_000),
+        );
+        const wallStart = performance.now();
+        const failure = await drainTestProcessCleanups(cleanups, -1).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        const wallMs = performance.now() - wallStart;
+        console.log(`EXPIRED DRAIN N=${count} wallMs=${wallMs.toFixed(2)}`);
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toHaveLength(count);
+        expect(kill).toHaveBeenCalledTimes(count);
+        expect(vi.mocked(execFileSync)).not.toHaveBeenCalled();
+        expect(cleanups).toHaveLength(0);
+        expect(wallMs).toBeLessThan(wallCapMs);
+      },
+    );
+
     it("runs no ps once the shared deadline has passed and bounds the drain by the deadline plus one ps call", async () => {
       const deadlineMs = 1_000;
       const psCostMs = 400;
