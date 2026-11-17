@@ -100,6 +100,33 @@ describe.runIf(process.platform !== "win32")(
     }, 5_000);
 
     it.runIf(process.platform === "darwin")(
+      "finishes several cleanups that each hit EPERM on a zombie leader within one shared deadline",
+      async () => {
+        const leaders = [0, 1, 2, 3].map(() =>
+          spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" }),
+        );
+        onTestFinished(() => {
+          for (const leader of leaders)
+            try {
+              process.kill(-leader.pid!, "SIGKILL");
+            } catch {}
+        });
+        const cleanups = leaders.map((leader) => trackTestProcess(leader, 60_000));
+        const end = Date.now() + 800;
+        while (Date.now() < end);
+        for (const leader of leaders) {
+          expect(leader.exitCode).toBeNull();
+          expect(() => process.kill(-leader.pid!, "SIGKILL")).toThrow(/EPERM/u);
+        }
+        const started = Date.now();
+        await drainTestProcessCleanups(cleanups, 3_000);
+        expect(Date.now() - started).toBeLessThan(3_000);
+        expect(cleanups).toHaveLength(0);
+      },
+      8_000,
+    );
+
+    it.runIf(process.platform === "darwin")(
       "treats a group of only unreaped zombies as gone and still kills a group with a live member",
       async () => {
         const blockLoop = (ms: number) => {

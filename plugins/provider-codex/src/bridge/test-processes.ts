@@ -136,6 +136,7 @@ function killWindowsProcess(
 export function killTestProcessGroup(
   child: ChildProcess,
   signal: NodeJS.Signals | number = "SIGTERM",
+  deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
 ): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
@@ -145,7 +146,7 @@ export function killTestProcessGroup(
     return process.kill(-pid, signal);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "EPERM") {
-      const writer = liveGroupWriter(pid, Date.now() + 5_000);
+      const writer = liveGroupWriter(pid, deadline);
       if (writer === undefined) return false;
       throw new Error(
         `kill EPERM for test process group ${pid} with live writer: ${writer}`,
@@ -286,7 +287,7 @@ export function trackTestProcess(
           killWindowsProcess(descendant, deadline, identity);
         }
       } else {
-        killTestProcessGroup(child, "SIGKILL");
+        killTestProcessGroup(child, "SIGKILL", deadline);
       }
       if (child.exitCode === null && child.signalCode === null) {
         await Promise.race([
