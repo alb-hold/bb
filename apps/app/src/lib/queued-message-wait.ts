@@ -1,4 +1,8 @@
-import type { QueuedMessagePayload, QueuedMessageWaitingOn } from "@bb/domain";
+import {
+  isInboxQueuedMessageWait,
+  type QueuedMessagePayload,
+  type QueuedMessageWaitingOn,
+} from "@bb/domain";
 import type { IconName } from "@bb/shared-ui/icon";
 import { formatScheduledTime } from "@/lib/relative-time";
 
@@ -138,11 +142,13 @@ export function describeQueuedMessageWait(
       return "Waiting for turn to start";
     case "stopping":
       return "Sending when the thread stops";
-    case "time":
-      if (args.waitingOn.inbox === true) return "Held until the next turn";
+    case "time": {
+      const held = args.waitingOn.inbox === true;
+      const base = held ? "Held until the next turn" : "Scheduled";
       return args.sendAt === null
-        ? "Scheduled"
-        : `Scheduled for ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`;
+        ? base
+        : `${base}${held ? ", or" : " for"} ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`;
+    }
     case "provisioning":
       return "Waiting for workspace";
     case "host-offline":
@@ -169,8 +175,8 @@ export function queuedMessageCountdownInstant(args: {
 export function describeHeldInboxCount(
   messages: ReadonlyArray<{ waitingOn: QueuedMessageWaitingOn | null }>,
 ): string | null {
-  const held = messages.filter(
-    (message) => message.waitingOn?.kind === "time" && message.waitingOn.inbox,
+  const held = messages.filter((message) =>
+    isInboxQueuedMessageWait(message.waitingOn),
   ).length;
   return held === 0 ? null : `${held} held for your next turn`;
 }
