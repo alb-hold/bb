@@ -1,4 +1,5 @@
 import { ChildProcess, execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   drainTestProcessCleanups,
@@ -10,7 +11,13 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn() };
 });
 
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
+
 beforeEach(() => {
+  vi.mocked(delay).mockClear();
   vi.mocked(execFileSync).mockReset();
 });
 
@@ -51,6 +58,7 @@ describe.runIf(process.platform !== "win32")(
         expect((failure as AggregateError).errors).toHaveLength(count);
         expect(kill).toHaveBeenCalledTimes(count);
         expect(vi.mocked(execFileSync)).not.toHaveBeenCalled();
+        expect(vi.mocked(delay)).toHaveBeenCalledTimes(0);
         expect(cleanups).toHaveLength(0);
         expect(wallMs).toBeLessThan(wallCapMs);
       },
