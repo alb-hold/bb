@@ -531,6 +531,7 @@ describe.skipIf(process.platform !== "linux")(
       expect(row.rejectMs).toBeLessThan(1_000);
       expect(row.membersAfter).toEqual([]);
       expect(row.late).toEqual([{ backend: "inotify", unsubscribed: true }]);
+      expect(row.inFlightWhenDone).toBe(0);
     }, 60_000);
 
     it("answers an unsubscribe in the watcher child's handler within 1 s while the probe runs, then reaps the probe and unsubscribes the late subscription", async () => {
@@ -542,6 +543,7 @@ describe.skipIf(process.platform !== "linux")(
       expect(row.answerMs).toBeLessThan(1_000);
       expect(row.membersAfter).toEqual([]);
       expect(row.late).toEqual([{ backend: "inotify", unsubscribed: true }]);
+      expect(row.inFlightWhenDone).toBe(0);
     }, 60_000);
   },
 );

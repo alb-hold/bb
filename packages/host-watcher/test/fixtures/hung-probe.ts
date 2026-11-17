@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 
-function pause(ms: number): Promise<void> {
+export const TEARDOWN_MS = 500;
+
+export function pause(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
 }
 
