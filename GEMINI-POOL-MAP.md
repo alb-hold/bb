@@ -21,7 +21,7 @@ Written before code; the build follows this map.
 - **Way through:** `initOauthClient` (`:280052`) first checks `GOOGLE_GENAI_USE_GCA` and `GOOGLE_CLOUD_ACCESS_TOKEN` (`:280072`). That branch calls `setCredentials({access_token})` and returns without `getTokenInfo`. Its only direct Google call is `fetchAndCacheUserInfo` (`:280588`), which wraps everything in try/catch (`:280612`) and so tolerates a 401. Residual: the thread-scoped hub token is sent once to `www.googleapis.com/oauth2/v2/userinfo`. The token is a thread-scoped hub credential, not a Google credential; the hub routes are `auth: "none"` and reachable by remote hosts over the network, so a leaked token is usable against the hub until it expires with the thread, never against Google. Rated low residual (thread-scoped, short-lived; Google returns 401 and gemini-cli ignores it). Recorded in the security notes.
 - No real Google token is ever placed in the agent's environment or home: the agent holds only a hub token; the real access/refresh token stays in the pool's secret store, as for Claude and Codex.
 - `GOOGLE_GENAI_USE_GCA=true` also makes `getAuthTypeFromEnv` return `oauth-personal` (`:315358`), so no settings file is needed.
-- The public OAuth client id/secret gemini-cli ships (`:280031-280032`) are reused for refresh, not reinvented.
+- Token refresh needs the OAuth client gemini-cli signs in with (`:280031-280032` in the bundle). GitHub push protection rejects it in source, so it is supplied at runtime: `BB_GEMINI_OAUTH_CLIENT_ID` / `BB_GEMINI_OAUTH_CLIENT_SECRET` or the `geminiOAuthClient` plugin option. Without it an account works until its access token expires (about an hour) and refresh fails with a named error.
 
 ## 3. Rollback safety: what an older build reads
 
