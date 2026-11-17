@@ -100,6 +100,7 @@ export const sendMessageModeSchema = z.enum([
   "auto",
   "start",
   "steer",
+  "inbox",
 ]);
 
 export const executionInputFieldSourceSchema = callerExecutionInputSourceSchema;
@@ -313,7 +314,7 @@ export const forkThreadRequestSchema = z
   });
 export type ForkThreadRequest = z.infer<typeof forkThreadRequestSchema>;
 
-const sendMessageRequestFieldsSchema = z.object({
+const sendMessageRequestObjectSchema = z.object({
   input: z.array(promptInputSchema).min(1),
   model: z.string().optional(),
   serviceTier: serviceTierSchema.optional(),
@@ -323,6 +324,7 @@ const sendMessageRequestFieldsSchema = z.object({
   mode: sendMessageModeSchema,
   senderThreadId: z.string().min(1).optional(),
   sendAt: z.number().int().nonnegative().optional(),
+  deliverBy: z.number().int().nonnegative().optional(),
   originPluginId: pluginIdSchema.optional(),
   pluginSubmission: z
     .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
@@ -330,7 +332,33 @@ const sendMessageRequestFieldsSchema = z.object({
   compactFirst: z.literal(true).optional(),
 });
 
-export const sendMessageRequestSchema = sendMessageRequestFieldsSchema;
+const sendMessageRequestFieldsSchema = sendMessageRequestObjectSchema;
+
+export const sendMessageRequestSchema =
+  sendMessageRequestObjectSchema.superRefine((value, ctx) => {
+    if (value.deliverBy !== undefined && value.mode !== "inbox") {
+      ctx.addIssue({
+        code: "custom",
+        message: "deliverBy requires mode inbox",
+        path: ["deliverBy"],
+      });
+    }
+    if (value.mode !== "inbox") return;
+    if (value.sendAt !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "mode inbox cannot be combined with sendAt",
+        path: ["sendAt"],
+      });
+    }
+    if (value.compactFirst !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "mode inbox cannot be combined with compactFirst",
+        path: ["compactFirst"],
+      });
+    }
+  });
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
 
 export const threadExecutionProfileResponseSchema = z.object({

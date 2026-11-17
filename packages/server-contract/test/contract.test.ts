@@ -605,6 +605,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "createThreadRequestSchema.sendAt",
       "sendMessageRequestSchema.sendAt",
       "sendMessageRequestSchema.compactFirst",
+      "sendMessageRequestSchema.deliverBy",
     ],
   },
   {

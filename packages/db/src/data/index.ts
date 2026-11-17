@@ -632,6 +632,7 @@ export {
   failQueuedThreadMessagesWithoutRetry,
   setQueuedThreadMessageWaitingOn,
   releaseStaleQueuedMessageClaims,
+  releaseInboxQueuedThreadMessages,
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
