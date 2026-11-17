@@ -483,26 +483,24 @@ describe("parent notice under parentNotifications inbox", () => {
         title: "Failed child",
       });
 
-      vi.useFakeTimers();
-      try {
-        await queueChildThreadTurnNotificationBestEffort(harness.deps, {
-          childThread: completed,
-          parentThreadId: thread.id,
-          turnId: null,
-          turnStatus: "completed",
-        });
-        await queueChildThreadTurnNotificationBestEffort(harness.deps, {
-          childThread: failed,
-          parentThreadId: thread.id,
-          turnId: null,
-          turnStatus: "failed",
-        });
-        await vi.advanceTimersByTimeAsync(2_100);
-      } finally {
-        vi.useRealTimers();
-      }
-
-      expect(turnRequests(harness, thread.id)).toHaveLength(1);
+      await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+        childThread: completed,
+        parentThreadId: thread.id,
+        turnId: null,
+        turnStatus: "completed",
+      });
+      await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+        childThread: failed,
+        parentThreadId: thread.id,
+        turnId: null,
+        turnStatus: "failed",
+      });
+      await vi.waitFor(
+        () => {
+          expect(turnRequests(harness, thread.id)).toHaveLength(1);
+        },
+        { timeout: 10_000 },
+      );
       const delivered = JSON.stringify(turnRequests(harness, thread.id)[0]?.input);
       expect(delivered).toContain(completed.id);
       expect(delivered).toContain(failed.id);
