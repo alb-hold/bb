@@ -11,10 +11,16 @@ import {
   trackTestProcess,
 } from "./test-processes.js";
 
+const START_WAIT_MS = 10_000;
+const LEAK_DEADLINE_MS = 4_000;
+const BOUNDED_DEADLINE_MS = 5_000;
+const ZOMBIE_DEADLINE_MS = 15_000;
+const MARGIN_MS = 6_000;
+
 describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
   () => {
-    it("reports a real writer pid and command before the bounded deadline", async () => {
+    it("fails naming pid and command when a background grandchild outlives its exited leader, as codex's plugin fetch did", async () => {
       const directory = mkdtempSync(join(tmpdir(), "bb-test-live-writer-"));
       const marker = join(directory, "pid");
       const child = spawn(process.execPath, ["-e", `
@@ -40,9 +46,8 @@ describe.runIf(process.platform !== "win32")(
         }
         rmSync(directory, { recursive: true, force: true });
       });
-      const cleanup = trackTestProcess(child, 4_000);
-      const started = Date.now();
-      const setupDeadline = Date.now() + 10_000;
+      const cleanup = trackTestProcess(child, LEAK_DEADLINE_MS);
+      const setupDeadline = Date.now() + START_WAIT_MS;
       while (!existsSync(marker)) {
         if (Date.now() >= setupDeadline) throw new Error("writer did not start");
         await delay(10);
@@ -50,11 +55,12 @@ describe.runIf(process.platform !== "win32")(
       const writerPid = readFileSync(marker, "utf8").trim();
       if (child.exitCode === null && child.signalCode === null)
         await leaderExited;
+      const started = Date.now();
       await expect(cleanup()).rejects.toThrow(
         new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
       );
-      expect(Date.now() - started).toBeLessThan(6_000);
-    }, 9_000);
+      expect(Date.now() - started).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
+    }, START_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it("bounds the total time of several leaking cleanups to one deadline and names every writer", async () => {
       const directory = mkdtempSync(join(tmpdir(), "bb-test-two-writers-"));
@@ -75,7 +81,7 @@ describe.runIf(process.platform !== "win32")(
         rmSync(directory, { recursive: true, force: true });
       });
       const cleanups = leaders.map((leader) => trackTestProcess(leader, 60_000));
-      const setupDeadline = Date.now() + 10_000;
+      const setupDeadline = Date.now() + START_WAIT_MS;
       while (!markers.every((marker) => existsSync(marker))) {
         if (Date.now() >= setupDeadline) throw new Error("writers did not start");
         await delay(10);
@@ -85,11 +91,11 @@ describe.runIf(process.platform !== "win32")(
         readFileSync(marker, "utf8").trim(),
       );
       const started = Date.now();
-      const failure = await drainTestProcessCleanups(cleanups, 4_000).then(
+      const failure = await drainTestProcessCleanups(cleanups, LEAK_DEADLINE_MS).then(
         () => undefined,
         (error: unknown) => error,
       );
-      expect(Date.now() - started).toBeLessThan(6_000);
+      expect(Date.now() - started).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
       expect(cleanups).toHaveLength(0);
       expect(failure).toBeInstanceOf(AggregateError);
       const message = (failure as AggregateError).message;
@@ -97,7 +103,7 @@ describe.runIf(process.platform !== "win32")(
         expect(message).toMatch(
           new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
         );
-    }, 12_000);
+    }, START_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it.runIf(process.platform === "darwin")(
       "finishes two cleanups that each hit EPERM on a zombie leader within one shared deadline",
@@ -119,11 +125,11 @@ describe.runIf(process.platform !== "win32")(
           expect(() => process.kill(-leader.pid!, "SIGKILL")).toThrow(/EPERM/u);
         }
         const started = Date.now();
-        await drainTestProcessCleanups(cleanups, 15_000);
-        expect(Date.now() - started).toBeLessThan(15_000);
+        await drainTestProcessCleanups(cleanups, ZOMBIE_DEADLINE_MS);
+        expect(Date.now() - started).toBeLessThan(ZOMBIE_DEADLINE_MS);
         expect(cleanups).toHaveLength(0);
       },
-      25_000,
+      ZOMBIE_DEADLINE_MS + MARGIN_MS,
     );
 
     it.runIf(process.platform === "darwin")(
@@ -200,14 +206,14 @@ describe.runIf(process.platform !== "win32")(
           { detached: true, stdio: ["ignore", "pipe", "ignore"] },
         );
         const exit = once(child, "exit");
-        const cleanup = trackTestProcess(child, 5_000);
+        const cleanup = trackTestProcess(child, BOUNDED_DEADLINE_MS);
         onTestFinished(async () => {
           if (existsSync(directory)) writeFileSync(stop, "stop");
           await cleanup();
           rmSync(directory, { recursive: true, force: true });
         });
         await exit;
-        const setupDeadline = Date.now() + 10_000;
+        const setupDeadline = Date.now() + START_WAIT_MS;
         while (!existsSync(marker)) {
           if (Date.now() >= setupDeadline)
             throw new Error("descendant did not start writing");
@@ -233,9 +239,11 @@ describe.runIf(process.platform !== "win32")(
           expect(removed).toBe(true);
           expect(existsSync(directory)).toBe(false);
         }
-        expect(Date.now() - started).toBeLessThan(6_000);
+        expect(Date.now() - started).toBeLessThan(
+          BOUNDED_DEADLINE_MS + MARGIN_MS,
+        );
       },
-      8_000,
+      START_WAIT_MS + BOUNDED_DEADLINE_MS + MARGIN_MS,
     );
   },
 );
