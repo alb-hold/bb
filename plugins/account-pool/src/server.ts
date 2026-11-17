@@ -46,6 +46,8 @@ import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
 } from "./credentials.js";
+import type { GeminiOAuthClient } from "./gemini-adapter.js";
+import type { ImportedGeminiCredentials } from "./gemini-credentials.js";
 import { createHub, waitForDelay } from "./hub.js";
 import { accountPoolHostContract } from "./host-contract.js";
 import { OAUTH_PROXY_ROUTE } from "./oauth-proxy-policy.js";
@@ -84,6 +86,9 @@ export interface AccountPoolPluginOptions {
   refreshUrl?: string;
   codexRefreshUrl?: string;
   codexUsageUrl?: string;
+  geminiRefreshUrl?: string;
+  geminiOAuthClient?: GeminiOAuthClient;
+  geminiUpstreamBaseUrl?: string;
   usageUrl?: string;
   drainTimeoutMs?: number;
   mutationDrainTimeoutMs?: number;
@@ -95,6 +100,9 @@ export interface AccountPoolPluginOptions {
   disposeTimeoutMs?: number;
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
   importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
+  importGeminiCredentials?: (
+    home?: string,
+  ) => Promise<ImportedGeminiCredentials>;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -132,6 +140,22 @@ const OUTRANKING_CLAUDE_CREDENTIALS = [
   "ANTHROPIC_API_KEY",
 ] as const;
 
+// Code Assist methods gemini-cli calls. Routes match by exact path, so each is
+// listed; getOperation polling (a dynamic path) is not routed, which is why
+// accounts must already be onboarded when they are added.
+const GEMINI_POST_METHODS = [
+  "streamGenerateContent",
+  "generateContent",
+  "countTokens",
+  "loadCodeAssist",
+  "onboardUser",
+  "retrieveUserQuota",
+  "fetchAdminControls",
+  "setCodeAssistGlobalUserSetting",
+  "listExperiments",
+  "recordCodeAssistMetrics",
+] as const;
+
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
   claude: [
     "ANTHROPIC_BASE_URL",
@@ -143,6 +167,11 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "NODE_EXTRA_CA_CERTS",
   ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
+  gemini: [
+    "CODE_ASSIST_ENDPOINT",
+    "GOOGLE_GENAI_USE_GCA",
+    "GOOGLE_CLOUD_ACCESS_TOKEN",
+  ],
 };
 
 interface PoolEnvEntry {
@@ -397,10 +426,14 @@ export function createAccountPoolPlugin(
       refreshUrl: options.refreshUrl,
       codexRefreshUrl: options.codexRefreshUrl,
       codexUsageUrl: options.codexUsageUrl,
+      geminiRefreshUrl: options.geminiRefreshUrl,
+      geminiOAuthClient: options.geminiOAuthClient,
+      geminiUpstreamBaseUrl: options.geminiUpstreamBaseUrl,
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
       importClaudeCredentials: options.importCredentials,
       importCodexCredentials: options.importCodexCredentials,
+      importGeminiCredentials: options.importGeminiCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
       mutationDrainTimeoutMs: options.mutationDrainTimeoutMs,
       onPlanBackfillError: () =>
@@ -503,7 +536,11 @@ export function createAccountPoolPlugin(
         const selection = draftSelectionSchema.parse(data);
         if (
           thread.providerId !==
-          (selection.provider === "claude" ? "claude-code" : "codex")
+          (selection.provider === "claude"
+            ? "claude-code"
+            : selection.provider === "gemini"
+              ? "acp-gemini"
+              : "codex")
         ) {
           throw new Error(
             "The selected subscription belongs to another provider.",
@@ -611,7 +648,11 @@ export function createAccountPoolPlugin(
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
-        return (await availability.get())[provider];
+        // Parent availability only knows claude and codex; Gemini accounts are
+        // served by the pool that owns them, never relayed through a parent.
+        return provider === "gemini"
+          ? false
+          : (await availability.get())[provider];
       }
       return operations.hasUsableEnabledAccount(provider);
     };
@@ -1013,6 +1054,30 @@ export function createAccountPoolPlugin(
     bb.providers.experimental_contributeEnvHealth("codex", () =>
       proxiedHealth("codex"),
     );
+    bb.providers.experimental_contributeEnv(
+      "acp-gemini",
+      contributeFor("gemini", async (token, scope) => [
+        {
+          name: "CODE_ASSIST_ENDPOINT",
+          value: { serverPath: `${HUB_BASE_PATH}/gemini` },
+          reason: "Routed through the Account Pooler hub",
+        },
+        {
+          name: "GOOGLE_GENAI_USE_GCA",
+          value: "true",
+          reason:
+            "Makes gemini-cli authenticate with the Account Pooler token instead of a local Google login",
+        },
+        {
+          name: "GOOGLE_CLOUD_ACCESS_TOKEN",
+          value: token,
+          reason: `Account Pooler token scoped to this ${scope ?? "thread"}; the hub swaps it for the selected Google account's credential`,
+        },
+      ]),
+    );
+    bb.providers.experimental_contributeEnvHealth("acp-gemini", () =>
+      proxiedHealth("gemini"),
+    );
     bb.onDispose(async () => {
       codexLogin.dispose();
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1068,6 +1133,30 @@ export function createAccountPoolPlugin(
         { auth: "none" },
       );
     }
+    for (const method of GEMINI_POST_METHODS) {
+      bb.http.route(
+        "POST",
+        `/gemini/v1internal:${method}`,
+        (context) =>
+          hub.handle(
+            context.req.raw,
+            "gemini",
+            `/gemini/v1internal:${method}`,
+          ),
+        { auth: "none" },
+      );
+    }
+    bb.http.route(
+      "GET",
+      "/gemini/v1internal:getCodeAssistGlobalUserSetting",
+      (context) =>
+        hub.handle(
+          context.req.raw,
+          "gemini",
+          "/gemini/v1internal:getCodeAssistGlobalUserSetting",
+        ),
+      { auth: "none" },
+    );
     bb.http.route(
       "GET",
       "/v1/models",

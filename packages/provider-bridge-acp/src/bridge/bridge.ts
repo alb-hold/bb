@@ -83,6 +83,7 @@ import {
   resolveAcpDialect,
   type AcpDialect,
 } from "../dialect.js";
+import { resolveAcpAuthMethodId } from "./auth-method.js";
 import type { AcpMaintenanceDialect } from "./provider-maintenance.js";
 import { describeAcpSignIn } from "../auth-guidance.js";
 import { planAcpElicitation } from "../elicitation.js";
@@ -803,23 +804,6 @@ let cachedSessionDiscoveredModels: {
   models: AvailableModel[];
   fetchedAt: number;
 } | null = null;
-
-function resolveAcpAuthMethodId(
-  authMethods: readonly { id: string }[],
-  env: Record<string, string | undefined>,
-): string | undefined {
-  const methodIds = new Set(authMethods.map((method) => method.id));
-  if (methodIds.size === 0) {
-    return undefined;
-  }
-  if (env.XAI_API_KEY && methodIds.has("xai.api_key")) {
-    return "xai.api_key";
-  }
-  if (methodIds.has("cached_token")) {
-    return "cached_token";
-  }
-  return undefined;
-}
 
 async function authenticateAcpAgent(args: {
   connection: AcpAgentConnection;

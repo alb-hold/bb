@@ -27,6 +27,8 @@ function loginKey(
   emailByAccountUuid: ReadonlyMap<string, string>,
 ): string | null {
   const email = normalizedEmail(account);
+  if (account.provider === "gemini")
+    return email === "" ? null : `gemini:${email}`;
   if (account.provider === "codex")
     return email === ""
       ? null

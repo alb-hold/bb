@@ -74,7 +74,7 @@ export interface AccountPoolConfigController {
   set: (input: AccountPoolConfigSetInput) => Promise<AccountPoolConfig>;
 }
 
-export const providerSchema = z.enum(["claude", "codex"]);
+export const providerSchema = z.enum(["claude", "codex", "gemini"]);
 export type PoolProvider = z.infer<typeof providerSchema>;
 export const accountKindSchema = z.enum(["oauth", "api-key"]);
 export const modelFamilySchema = z.enum([
@@ -166,6 +166,7 @@ export const accountSchema = z
     email: z.string().email().nullable(),
     accountUuid: z.string().uuid().nullable().default(null),
     codexAccountId: z.string().min(1).optional(),
+    geminiProject: z.string().min(1).optional(),
     subscriptionType: z.string().nullable(),
     rateLimitTier: z.string().nullable(),
     enabled: z.boolean(),
@@ -380,7 +381,9 @@ export const accountAddInputSchema = z
   .object({
     provider: providerSchema,
     source: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("import") }).strict(),
+      z
+        .object({ kind: z.literal("import"), home: z.string().min(1).optional() })
+        .strict(),
       z
         .object({ kind: z.literal("api-key"), apiKey: z.string().min(1) })
         .strict(),

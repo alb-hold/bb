@@ -26,6 +26,14 @@ import {
   DEFAULT_CODEX_REFRESH_URL,
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
+import {
+  createGeminiAdapter,
+  DEFAULT_GEMINI_REFRESH_URL,
+  DEFAULT_GEMINI_UPSTREAM_BASE_URL,
+  geminiOAuthClientFromEnv,
+  type GeminiOAuthClient,
+} from "./gemini-adapter.js";
+import type { ImportedGeminiCredentials } from "./gemini-credentials.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
   isSignInRejection,
@@ -72,6 +80,8 @@ const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
 const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
+// Google's RESOURCE_EXHAUSTED body carries ErrorInfo after a long message.
+const MAX_BODY_REJECTION_BYTES = 16_384;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
 const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
 const MAX_AFFINITY_BINDINGS = 4_096;
@@ -338,8 +348,9 @@ export class AccountPoolHub {
 
   async importAccount(
     provider: PoolProvider,
+    options?: { home?: string },
   ): Promise<ImportedProviderAccount> {
-    return this.adapter(provider).importAccount();
+    return this.adapter(provider).importAccount(options);
   }
 
   async replaceSecret(
@@ -1325,6 +1336,49 @@ export class AccountPoolHub {
               await this.discardUpstream(upstream, false);
               break;
             }
+            if (adapter.quotaRejectionFromBody !== undefined) {
+              const detail = await this.discardUpstream(
+                upstream,
+                true,
+                MAX_BODY_REJECTION_BYTES,
+              );
+              signal.throwIfAborted();
+              const rejection = adapter.quotaRejectionFromBody(
+                detail,
+                this.options.now(),
+              );
+              if (rejection !== null) {
+                this.options.quotas.put({
+                  ...observed,
+                  usageRestriction: {
+                    reason: rejection.reason,
+                    resetAt: rejection.resetAt,
+                  },
+                });
+                failure = {
+                  status: 429,
+                  message: rejection.message,
+                  headers: {},
+                };
+              } else {
+                const waitMs = retryAfterMilliseconds(
+                  response.headers.get("retry-after"),
+                  this.options.now(),
+                );
+                this.options.quotas.put({
+                  ...observed,
+                  heldUntil: this.options.now() + waitMs,
+                });
+                failure = {
+                  status: 429,
+                  message: detail,
+                  headers: {
+                    "retry-after": String(Math.ceil(waitMs / 1_000)),
+                  },
+                };
+              }
+              break;
+            }
             const waitMs = retryAfterMilliseconds(
               response.headers.get("retry-after"),
               this.options.now(),
@@ -1468,6 +1522,7 @@ export class AccountPoolHub {
   private async discardUpstream(
     upstream: UpstreamResult,
     readDetail: boolean,
+    maxBytes: number = MAX_FAILURE_DETAIL_BYTES,
   ): Promise<string> {
     const reader = upstream.response.body?.getReader();
     if (reader === undefined) {
@@ -1486,12 +1541,12 @@ export class AccountPoolHub {
         (async () => {
           const decoder = new TextDecoder();
           let bytes = 0;
-          while (bytes < MAX_FAILURE_DETAIL_BYTES) {
+          while (bytes < maxBytes) {
             const chunk = await reader.read();
             if (chunk.done) break;
             const part = chunk.value.subarray(
               0,
-              MAX_FAILURE_DETAIL_BYTES - bytes,
+              maxBytes - bytes,
             );
             bytes += part.byteLength;
             detail += decoder.decode(part, { stream: true });
@@ -1774,7 +1829,13 @@ export class AccountPoolHub {
           this.affinityBindings.set(affinityKey, accepted);
         }
         if (advance && this.activeAccounts.get(provider) === active) {
-          this.options.affinity.putActiveAccount(provider, selected.account.id);
+          // Gemini's active account stays in memory: a persisted row with an
+          // unknown provider would make an older build's parser throw.
+          if (provider !== "gemini")
+            this.options.affinity.putActiveAccount(
+              provider,
+              selected.account.id,
+            );
           this.activeAccounts.set(provider, { accountId: selected.account.id });
         }
       },
@@ -2217,6 +2278,12 @@ export function createHub(options: {
   refreshUrl?: string;
   codexRefreshUrl?: string;
   codexUsageUrl?: string;
+  geminiRefreshUrl?: string;
+  geminiOAuthClient?: GeminiOAuthClient;
+  geminiUpstreamBaseUrl?: string;
+  importGeminiCredentials?: (
+    home?: string,
+  ) => Promise<ImportedGeminiCredentials>;
   importClaudeCredentials?: () => Promise<ImportedClaudeCredentials>;
   importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
   usageUrl?: string;
@@ -2249,6 +2316,19 @@ export function createHub(options: {
         refreshUrl: options.codexRefreshUrl ?? DEFAULT_CODEX_REFRESH_URL,
         importCredentials: options.importCodexCredentials,
         usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
+      }),
+    ],
+    [
+      "gemini",
+      createGeminiAdapter({
+        refreshUrl: options.geminiRefreshUrl ?? DEFAULT_GEMINI_REFRESH_URL,
+        oauthClient:
+          options.geminiOAuthClient ?? geminiOAuthClientFromEnv(process.env),
+        upstreamBaseUrl:
+          options.geminiUpstreamBaseUrl ?? DEFAULT_GEMINI_UPSTREAM_BASE_URL,
+        importCredentials: options.importGeminiCredentials,
+        fetch: options.fetch,
+        now: options.now,
       }),
     ],
   ]);

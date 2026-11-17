@@ -28,6 +28,9 @@ import {
 import { modelWeeklySchema, type ModelWeekly } from "./display.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
+// Gemini rows live under their own key so a build that only knows claude and
+// codex never parses them (its accountsSchema would throw on the provider).
+const GEMINI_ACCOUNTS_KEY = "accounts:gemini:v1";
 const ORGANIZATIONS_KEY = "organizations:v1";
 const PLAN_NAMES_KEY = "plan-display-names:v1";
 const PLAN_CHECKS_PREFIX = "plan-display-names:v2:";
@@ -109,9 +112,24 @@ export class AccountStore {
   async list(signal?: AbortSignal): Promise<Account[]> {
     signal?.throwIfAborted();
     const value = await this.kv.get(ACCOUNTS_KEY);
+    const geminiValue = await this.kv.get(GEMINI_ACCOUNTS_KEY);
     signal?.throwIfAborted();
-    if (value === undefined) return [];
-    return accountsSchema.parse(value);
+    const base = value === undefined ? [] : accountsSchema.parse(value);
+    if (geminiValue === undefined) return base;
+    return [...base, ...accountsSchema.parse(geminiValue)];
+  }
+
+  private async writeAccounts(accounts: readonly Account[]): Promise<void> {
+    const gemini = accounts.filter((account) => account.provider === "gemini");
+    await this.kv.set(
+      ACCOUNTS_KEY,
+      accounts.filter((account) => account.provider !== "gemini"),
+    );
+    if (
+      gemini.length > 0 ||
+      (await this.kv.get(GEMINI_ACCOUNTS_KEY)) !== undefined
+    )
+      await this.kv.set(GEMINI_ACCOUNTS_KEY, gemini);
   }
 
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {
@@ -136,7 +154,7 @@ export class AccountStore {
       try {
         const accounts = await this.list();
         accounts.push(account);
-        await this.kv.set(ACCOUNTS_KEY, accounts);
+        await this.writeAccounts(accounts);
       } catch (error) {
         await fs.rm(this.accountSecretPath(account.id), { force: true });
         throw error;
@@ -150,7 +168,7 @@ export class AccountStore {
       const accounts = await this.list();
       const next = accounts.filter((account) => account.id !== id);
       if (next.length === accounts.length) return false;
-      await this.kv.set(ACCOUNTS_KEY, next);
+      await this.writeAccounts(next);
       this.removedAccounts.add(id);
       this.fetchedPlanNames.delete(id);
       await fs.rm(this.accountSecretPath(id), { force: true });
@@ -219,7 +237,7 @@ export class AccountStore {
         disabled.push(updated);
         return updated;
       });
-      if (disabled.length > 0) await this.kv.set(ACCOUNTS_KEY, accounts);
+      if (disabled.length > 0) await this.writeAccounts(accounts);
       return disabled;
     });
   }
@@ -437,8 +455,7 @@ export class AccountStore {
           "Include every account for this provider exactly once. Refresh the account list and try again.",
         );
       }
-      await this.kv.set(
-        ACCOUNTS_KEY,
+      await this.writeAccounts(
         accounts.map((account) => {
           const position = positions.get(account.id);
           return position === undefined
@@ -471,7 +488,7 @@ export class AccountStore {
         lastUsedAt,
         lastUsedHostId,
       });
-      await this.kv.set(ACCOUNTS_KEY, accounts);
+      await this.writeAccounts(accounts);
       return true;
     });
   }
@@ -500,6 +517,21 @@ export class AccountStore {
     return this.update(id, (account) => ({ ...account, accountUuid }), signal);
   }
 
+  async setGeminiProject(
+    id: string,
+    geminiProject: string,
+    signal?: AbortSignal,
+  ): Promise<Account | null> {
+    return this.update(
+      id,
+      (account) =>
+        account.geminiProject === geminiProject
+          ? account
+          : { ...account, geminiProject },
+      signal,
+    );
+  }
+
   async replaceCredentials(
     id: string,
     identity: Partial<
@@ -523,7 +555,7 @@ export class AccountStore {
       const updated = accountSchema.parse({ ...current, ...identity });
       await this.writeSecret(id, secret);
       accounts[index] = updated;
-      await this.kv.set(ACCOUNTS_KEY, accounts);
+      await this.writeAccounts(accounts);
       return updated;
     });
   }
@@ -541,7 +573,7 @@ export class AccountStore {
       if (signal?.aborted) return null;
       const updated = accountSchema.parse(change(current));
       accounts[index] = updated;
-      await this.kv.set(ACCOUNTS_KEY, accounts);
+      await this.writeAccounts(accounts);
       return updated;
     });
   }
