@@ -15,7 +15,7 @@ describe.runIf(process.platform !== "win32")(
       const marker = join(directory, "pid");
       const child = spawn(process.execPath, ["-e", `
         const { spawn } = require("node:child_process");
-        const descendant = spawn("sh", ["-c", ${JSON.stringify(`trap '' TERM; echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: ["ignore", 1, "ignore"] });
+        const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: ["ignore", 1, "ignore"] });
         descendant.unref();
       `], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
       const cleanup = trackTestProcess(child, 500);
@@ -27,6 +27,7 @@ describe.runIf(process.platform !== "win32")(
           await delay(10);
         }
         const writerPid = readFileSync(marker, "utf8").trim();
+        await once(child, "exit");
         await expect(cleanup()).rejects.toThrow(
           new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
         );
