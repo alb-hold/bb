@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,22 +11,31 @@ describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
   () => {
     it("reports a real writer pid and command before the bounded deadline", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "bb-test-live-writer-"));
+      const marker = join(directory, "pid");
       const child = spawn(process.execPath, ["-e", `
         const { spawn } = require("node:child_process");
-        const descendant = spawn("sh", ["-c", "while :; do sleep 1; done"], { stdio: ["ignore", 1, "ignore"] });
+        const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: ["ignore", 1, "ignore"] });
         descendant.unref();
       `], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
       const cleanup = trackTestProcess(child, 500);
       const started = Date.now();
       try {
+        const setupDeadline = Date.now() + 2_000;
+        while (!existsSync(marker)) {
+          if (Date.now() >= setupDeadline) throw new Error("writer did not start");
+          await delay(10);
+        }
+        const writerPid = readFileSync(marker, "utf8").trim();
         await expect(cleanup()).rejects.toThrow(
-          /pid \d+ \(sh -c while :; do sleep 1; done\)/u,
+          new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
         );
         expect(Date.now() - started).toBeLessThan(2_000);
       } finally {
         try {
           process.kill(-child.pid!, "SIGKILL");
         } catch {}
+        rmSync(directory, { recursive: true, force: true });
       }
     }, 3_000);
 
