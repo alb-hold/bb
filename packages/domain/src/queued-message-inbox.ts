@@ -6,3 +6,9 @@ export const QUEUED_MESSAGE_INBOX_WAITING_ON = {
   kind: "time",
   inbox: true,
 } as const satisfies QueuedMessageWaitingOn;
+
+export function isInboxQueuedMessageWait(
+  waitingOn: QueuedMessageWaitingOn | null,
+): boolean {
+  return waitingOn?.kind === "time" && waitingOn.inbox === true;
+}

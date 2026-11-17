@@ -100,9 +100,3 @@ export const queuedMessageSystemNoticeSchema = z.object({
 export type QueuedMessageSystemNotice = z.infer<
   typeof queuedMessageSystemNoticeSchema
 >;
-
-export function isInboxQueuedMessageWait(
-  waitingOn: QueuedMessageWaitingOn | null,
-): boolean {
-  return waitingOn?.kind === "time" && waitingOn.inbox === true;
-}

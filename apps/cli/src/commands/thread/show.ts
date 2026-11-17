@@ -1,6 +1,5 @@
 import {
   GIT_PLUGIN_ID,
-  isInboxQueuedMessageWait,
   type WorkspaceDiffTarget,
   resolveEnvironmentMergeBaseBranch,
   tokenBreakdownLabels,
@@ -10,6 +9,7 @@ import {
   type ThreadEventRow,
   type ThreadTimelinePendingTodos,
 } from "@bb/domain";
+import { isInboxQueuedMessageWait } from "@bb/domain/queued-message-inbox";
 import {
   type ThreadGitDiffResponse,
   type WorkspaceStatus,

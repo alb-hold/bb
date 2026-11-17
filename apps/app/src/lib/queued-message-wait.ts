@@ -1,8 +1,5 @@
-import {
-  isInboxQueuedMessageWait,
-  type QueuedMessagePayload,
-  type QueuedMessageWaitingOn,
-} from "@bb/domain";
+import type { QueuedMessagePayload, QueuedMessageWaitingOn } from "@bb/domain";
+import { isInboxQueuedMessageWait } from "@bb/domain/queued-message-inbox";
 import type { IconName } from "@bb/shared-ui/icon";
 import { formatScheduledTime } from "@/lib/relative-time";
 

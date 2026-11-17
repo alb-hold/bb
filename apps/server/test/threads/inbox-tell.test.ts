@@ -5,12 +5,14 @@ import {
   listQueuedThreadMessages,
 } from "@bb/db";
 import {
-  isInboxQueuedMessageWait,
   turnRequestEventDataSchema,
   turnScope,
   type TurnRequestEventData,
 } from "@bb/domain";
-import { QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS } from "@bb/domain/queued-message-inbox";
+import {
+  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+  isInboxQueuedMessageWait,
+} from "@bb/domain/queued-message-inbox";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it, vi } from "vitest";
 import {
