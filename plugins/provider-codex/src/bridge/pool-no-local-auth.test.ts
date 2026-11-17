@@ -27,6 +27,11 @@ import {
 } from "./test-processes.js";
 import { parseModelCatalog } from "../models.js";
 
+const OFFLINE_GIT_ENV = {
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "http.proxy",
+  GIT_CONFIG_VALUE_0: "http://127.0.0.1:9",
+};
 const POOL_TOKEN = "pool-token-for-no-local-auth-test";
 const modelCatalogBody = readFileSync(
   new URL("./pool-model-catalog.fixture.json", import.meta.url),
@@ -154,6 +159,7 @@ function runPooledTurn(): Promise<{ status: number | null; output: string }> {
     ...process.env,
     CODEX_HOME: codexHome,
     CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
+    ...OFFLINE_GIT_ENV,
     CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
     CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${baseUrl}/oauth/token`,
   };
@@ -236,6 +242,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
       ...process.env,
       CODEX_HOME: codexHome,
       CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
+      ...OFFLINE_GIT_ENV,
       CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
     };
     const launch = resolveAppServerLaunch(env);
