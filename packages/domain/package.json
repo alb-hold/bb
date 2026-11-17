@@ -39,6 +39,11 @@
       "types": "./src/thread-parent-notifications.ts",
       "default": "./src/thread-parent-notifications.ts"
     },
+    "./thread-parent-notifications-storage": {
+      "source": "./src/thread-parent-notifications-storage.ts",
+      "types": "./src/thread-parent-notifications-storage.ts",
+      "default": "./src/thread-parent-notifications-storage.ts"
+    },
     "./thread-visibility": {
       "source": "./src/thread-visibility.ts",
       "types": "./src/thread-visibility.ts",

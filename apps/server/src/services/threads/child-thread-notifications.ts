@@ -4,7 +4,9 @@ import type {
   ThreadEventTurnStatus,
   ChildThreadOutcome,
 } from "@bb/domain";
-import { resolveParentNotificationsChoice } from "@bb/domain";
+import {
+  resolveParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
 import {
   isNativeTerminalThread,
   getNativeTerminalThread,

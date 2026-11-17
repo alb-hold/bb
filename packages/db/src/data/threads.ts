@@ -34,10 +34,12 @@ import type {
   ThreadVisibility,
 } from "@bb/domain";
 import {
-  evaluateThreadLifecycleEvent,
-  effectiveDisplayStatus,
   resolveParentNotificationsChoice,
   splitParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
+import {
+  evaluateThreadLifecycleEvent,
+  effectiveDisplayStatus,
   threadSearchSourceKindSchema,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -57,7 +59,9 @@ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
 import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
-import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
+import type {
+  ThreadListEnrichmentScope,
+} from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 

@@ -42,10 +42,12 @@ import { createMigratedConnection } from "@bb/db/testing";
 import {
   LOCAL_AGENT_TASK_TYPE,
   formatClientTurnRequestIdSuffix,
-  splitParentNotificationsChoice,
   threadScope,
   turnScope,
 } from "@bb/domain";
+import {
+  splitParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
 import type {
   ClientTurnRequestId,
   PromptInput,
@@ -61,7 +63,9 @@ import {
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
-import { toThreadListEntryResponsesForTest } from "../../helpers/thread-list-enrichment.js";
+import {
+  toThreadListEntryResponsesForTest,
+} from "../../helpers/thread-list-enrichment.js";
 
 const providerRegistry = await createTestProviderRegistry();
 

@@ -26,8 +26,10 @@ import {
   withEffectiveDisplayStatus,
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
-  resolveParentNotificationsChoice,
 } from "@bb/domain";
+import {
+  resolveParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
 import type {
   Thread,
   ThreadActivityState,
@@ -51,8 +53,12 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import type { NotificationHub } from "../../ws/hub.js";
 import { isHostDisconnectHidden } from "../hosts/host-disconnect-display.js";
-import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
-import type { ProviderRegistryService } from "../providers/provider-registry.js";
+import {
+  resolveProviderPlanCommand,
+} from "../providers/provider-plan-command.js";
+import type {
+  ProviderRegistryService,
+} from "../providers/provider-registry.js";
 import {
   countUnmanagedWorkspaceThreads,
   listQueuedThreadMessageCountsByThreadIds,

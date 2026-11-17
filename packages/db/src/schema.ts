@@ -15,10 +15,14 @@ import {
   queuedMessageStateValues,
 } from "@bb/domain/queued-message-lifecycle";
 import { threadStatusValues } from "@bb/domain/thread-status";
-import { startedOnBehalfOfInitiatorValues } from "@bb/domain/started-on-behalf-of";
+import {
+  startedOnBehalfOfInitiatorValues,
+} from "@bb/domain/started-on-behalf-of";
 import { threadCreateOriginValues } from "@bb/domain/thread-create-origin";
 import { threadOriginKindValues } from "@bb/domain/thread-origin-kind";
-import { storedThreadParentNotificationsValues } from "@bb/domain/thread-parent-notifications";
+import {
+  storedThreadParentNotificationsValues,
+} from "@bb/domain/thread-parent-notifications-storage";
 import { threadVisibilityValues } from "@bb/domain/thread-visibility";
 import type {
   EnvironmentProviderSelection,

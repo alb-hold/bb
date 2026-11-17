@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   PERSONAL_PROJECT_ID,
-  resolveParentNotificationsChoice,
   type ThreadParentNotifications,
 } from "@bb/domain";
+import {
+  resolveParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
 import {
   createConnection,
   createThread,

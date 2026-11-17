@@ -7,11 +7,15 @@ import {
   updateThread,
 } from "@bb/db";
 import type { PromptInput, SystemMessageSubject, Thread } from "@bb/domain";
-import { resolveParentNotificationsChoice } from "@bb/domain";
+import {
+  resolveParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
 import { renderTemplate } from "@bb/templates";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
-import { emitPluginThreadParentChanged } from "../plugins/plugin-thread-events.js";
+import {
+  emitPluginThreadParentChanged,
+} from "../plugins/plugin-thread-events.js";
 import {
   buildParentSystemInputFromTemplateSlot,
   buildParentSystemThreadMention,
