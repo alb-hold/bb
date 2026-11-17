@@ -1222,40 +1222,26 @@ function WritableContextBanner({
                 </span>
               </div>
             ) : null}
-            {queuedInboxHeld ? (
-              <div
-                className={cn(
-                  "flex min-w-0 items-center gap-1.5 text-xs",
-                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
-                )}
-                role="status"
-                aria-label={queuedInboxHeld}
-              >
-                <Icon
-                  name="TimeSchedule"
-                  className="size-3.5 shrink-0"
-                  aria-hidden="true"
-                />
-                <span className="truncate">{queuedInboxHeld}</span>
-              </div>
-            ) : null}
-            {queuedWorkspaceWait ? (
-              <div
-                className={cn(
-                  "flex min-w-0 items-center gap-1.5 text-xs",
-                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
-                )}
-                role="status"
-                aria-label={queuedWorkspaceWait}
-              >
-                <Icon
-                  name="TimeSchedule"
-                  className="size-3.5 shrink-0"
-                  aria-hidden="true"
-                />
-                <span className="truncate">{queuedWorkspaceWait}</span>
-              </div>
-            ) : null}
+            {[queuedInboxHeld, queuedWorkspaceWait].map((text) =>
+              text ? (
+                <div
+                  key={text}
+                  className={cn(
+                    "flex min-w-0 items-center gap-1.5 text-xs",
+                    PROMPT_STACK_INLAY_SEGMENT_CLASS,
+                  )}
+                  role="status"
+                  aria-label={text}
+                >
+                  <Icon
+                    name="TimeSchedule"
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{text}</span>
+                </div>
+              ) : null,
+            )}
             {entries.map((entry) => mount(entry, "action"))}
           </div>
           {entries.map((entry) => mount(entry, "details"))}

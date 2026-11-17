@@ -20,10 +20,7 @@ import {
   getFollowUpPromptPlaceholder,
   getCompactFollowUpPromptPlaceholder,
 } from "@/components/promptbox/follow-up-placeholder";
-import {
-  DEFAULT_SERVICE_TIER,
-  PERSONAL_PROJECT_ID,
-} from "@bb/domain";
+import { DEFAULT_SERVICE_TIER, PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
   PermissionMode,
   ReasoningLevel,
