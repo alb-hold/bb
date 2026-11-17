@@ -56,6 +56,41 @@ describe.runIf(process.platform !== "win32")(
       },
     );
 
+    it.each([
+      { name: "a fast ps names both writers", psCostMs: 1 },
+      { name: "a ps slower than the deadline reports expiry", psCostMs: 1_500 },
+    ])("two leaking cleanups with $name", async ({ psCostMs }) => {
+      const deadlineMs = 1_000;
+      let clock = 1_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => clock);
+      vi.mocked(execFileSync).mockImplementation((() => {
+        clock += psCostMs;
+        return "7000 S 7001 sh -c writer-a\n7100 S 7101 sh -c writer-b\n";
+      }) as unknown as typeof execFileSync);
+      vi.spyOn(process, "kill").mockImplementation(() => {
+        throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+      });
+      const cleanups = [7000, 7100].map((pid) =>
+        trackTestProcess(leader(pid), 60_000),
+      );
+      const failure = await drainTestProcessCleanups(
+        cleanups,
+        deadlineMs,
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(AggregateError);
+      const message = (failure as AggregateError).message;
+      if (psCostMs < deadlineMs) {
+        expect(message).toContain("pid 7001 (sh -c writer-a)");
+        expect(message).toContain("pid 7101 (sh -c writer-b)");
+        expect(message).not.toContain("deadline expired before diagnosis");
+      } else {
+        expect(message).toContain("deadline expired before diagnosis");
+      }
+    });
+
     it("runs no ps once the shared deadline has passed and bounds the drain by the deadline plus one ps call", async () => {
       const deadlineMs = 1_000;
       const psCostMs = 400;

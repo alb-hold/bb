@@ -144,14 +144,20 @@ describe.runIf(process.platform !== "win32")(
         () => undefined,
         (error: unknown) => error,
       );
-      expect(Date.now() - started).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
       expect(cleanups).toHaveLength(0);
       expect(failure).toBeInstanceOf(AggregateError);
       const message = (failure as AggregateError).message;
-      for (const writerPid of writerPids)
-        expect(message).toMatch(
-          new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
-        );
+      const namesEveryWriter = writerPids.every((writerPid) =>
+        new RegExp(
+          `pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`,
+        ).test(message),
+      );
+      const expiredBeforeDiagnosis =
+        message.includes("deadline expired before diagnosis") &&
+        elapsed >= LEAK_DEADLINE_MS;
+      expect(namesEveryWriter || expiredBeforeDiagnosis).toBe(true);
     }, START_WAIT_MS + LEADER_EXIT_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it.runIf(process.platform === "darwin")(
