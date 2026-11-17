@@ -5,30 +5,28 @@ export const TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS = 15_000;
 export const TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS =
   TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS + 10_000;
 
-function hasLiveGroupMembers(pid: number, deadline: number): boolean {
-  return execFileSync("ps", ["-axo", "pgid=,stat="], {
+interface GroupScan {
+  live: boolean;
+  writer: string | undefined;
+}
+
+function scanGroup(pid: number, deadline: number): GroupScan {
+  const rows = execFileSync("ps", ["-axo", "pgid=,stat=,pid=,command="], {
     encoding: "utf8",
     timeout: Math.max(1, deadline - Date.now()),
   })
     .trim()
-    .split("\n")
-    .some((line) => {
-      const [group, state] = line.trim().split(/\s+/u);
-      return Number(group) === pid && !state?.startsWith("Z");
-    });
-}
-
-function liveGroupWriter(pid: number, deadline: number): string | undefined {
-  const rows = execFileSync("ps", ["-axo", "pgid=,pid=,stat=,command="], {
-    encoding: "utf8",
-    timeout: Math.max(250, Math.min(1_000, deadline - Date.now())),
-  }).trim().split("\n");
+    .split("\n");
   for (const line of rows) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/u);
-    if (match && Number(match[1]) === pid && !match[3]?.startsWith("Z"))
-      return `pid ${match[2]} (${match[4]})`;
+    const match = line.trim().match(/^(\d+)\s+(\S+)(?:\s+(\d+)\s+(.+))?$/u);
+    if (match && Number(match[1]) === pid && !match[2]?.startsWith("Z"))
+      return {
+        live: true,
+        writer:
+          match[3] === undefined ? undefined : `pid ${match[3]} (${match[4]})`,
+      };
   }
-  return undefined;
+  return { live: false, writer: undefined };
 }
 
 const windowsSnapshotArguments = [
@@ -146,10 +144,15 @@ export function killTestProcessGroup(
     return process.kill(-pid, signal);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "EPERM") {
-      const writer = liveGroupWriter(pid, deadline);
-      if (writer === undefined) return false;
+      if (Date.now() >= deadline)
+        throw new Error(
+          `kill EPERM for test process group ${pid} (deadline expired before diagnosis)`,
+          { cause: error },
+        );
+      const scan = scanGroup(pid, deadline);
+      if (!scan.live) return false;
       throw new Error(
-        `kill EPERM for test process group ${pid} with live writer: ${writer}`,
+        `kill EPERM for test process group ${pid} with live writer${scan.writer ? `: ${scan.writer}` : ""}`,
         { cause: error },
       );
     }
@@ -239,15 +242,18 @@ export function trackTestProcess(
   return async (sharedDeadline) => {
     if (pid === undefined) return;
     const deadline = sharedDeadline ?? Date.now() + timeoutMs;
+    let lastWriter: string | undefined;
+    const noteWriter = () => {
+      if (process.platform === "win32" || Date.now() >= deadline) return;
+      try {
+        lastWriter = scanGroup(pid, deadline).writer ?? lastWriter;
+      } catch {}
+    };
     const stillWriting = () => {
-      let writer: string | undefined;
-      if (process.platform !== "win32") {
-        try {
-          writer = liveGroupWriter(pid, deadline);
-        } catch {}
-      }
+      const expired = Date.now() >= deadline;
+      if (!expired && lastWriter === undefined) noteWriter();
       return new Error(
-        `Test process group ${pid} still has live writers${writer ? `: ${writer}` : ""}`,
+        `Test process group ${pid} still has live writers${lastWriter ? `: ${lastWriter}` : expired ? " (deadline expired before diagnosis)" : ""}`,
       );
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -290,6 +296,7 @@ export function trackTestProcess(
         killTestProcessGroup(child, "SIGKILL", deadline);
       }
       if (child.exitCode === null && child.signalCode === null) {
+        noteWriter();
         await Promise.race([
           exited,
           new Promise<never>((_, reject) => {
@@ -318,14 +325,23 @@ export function trackTestProcess(
       }
       for (;;) {
         if (Date.now() >= deadline) throw stillWriting();
-        let live: boolean;
+        let scan: GroupScan;
         try {
-          live = hasLiveGroupMembers(pid, deadline);
+          scan = scanGroup(pid, deadline);
         } catch (error) {
           if (Date.now() >= deadline) throw stillWriting();
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ETIMEDOUT"
+          ) {
+            await delay(10);
+            continue;
+          }
           throw error;
         }
-        if (!live) return;
+        if (!scan.live) return;
+        lastWriter = scan.writer ?? lastWriter;
         await delay(10);
       }
     } finally {
