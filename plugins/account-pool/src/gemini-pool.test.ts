@@ -310,6 +310,7 @@ async function createGeminiFixture(
   google: { url: string },
   homes: Record<string, ImportedGeminiCredentials>,
   withCodex = false,
+  withOAuthClient = true,
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
   const requestedHomes: Array<string | undefined> = [];
@@ -351,7 +352,14 @@ async function createGeminiFixture(
         }
       : {}),
     geminiRefreshUrl: `${google.url}/token`,
-    geminiOAuthClient: { clientId: "test-client", clientSecret: "test-secret" },
+    ...(withOAuthClient
+      ? {
+          geminiOAuthClient: {
+            clientId: "test-client",
+            clientSecret: "test-secret",
+          },
+        }
+      : {}),
     geminiUpstreamBaseUrl: google.url,
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
@@ -461,6 +469,36 @@ describe("Gemini account pool", () => {
         priority: 5,
       }),
     ).rejects.toThrow();
+  });
+
+  it("names the missing OAuth client when an expired login needs a refresh", async () => {
+    vi.stubEnv("BB_GEMINI_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("BB_GEMINI_OAUTH_CLIENT_SECRET", "");
+    cleanups.push(async () => {
+      vi.unstubAllEnvs();
+    });
+    const google = await startGoogle({
+      projects: { "tok-old": "proj-old" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    cleanups.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      {
+        "/homes/old": { ...creds("tok-old", "old@example.com"), expiresAt: Date.now() - 1_000 },
+      },
+      false,
+      false,
+    );
+    await expect(
+      fixture.host.harness.behavior.callRpc("account.add", {
+        provider: "gemini",
+        source: { kind: "import", home: "/homes/old" },
+        label: null,
+        priority: 5,
+      }),
+    ).rejects.toThrow(/BB_GEMINI_OAUTH_CLIENT_ID/u);
   });
 
   it("adds an account from the CLI with --home", async () => {
