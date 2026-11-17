@@ -15,7 +15,30 @@ const START_WAIT_MS = 10_000;
 const LEAK_DEADLINE_MS = 4_000;
 const BOUNDED_DEADLINE_MS = 5_000;
 const ZOMBIE_DEADLINE_MS = 15_000;
+const LEADER_EXIT_WAIT_MS = 5_000;
+const ZOMBIE_SETTLE_MS = 800;
 const MARGIN_MS = 6_000;
+
+async function leaderExitWithin(
+  exits: Promise<unknown>[],
+  what: string,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(`${what} did not exit within ${LEADER_EXIT_WAIT_MS} ms`),
+        ),
+      LEADER_EXIT_WAIT_MS,
+    );
+  });
+  try {
+    await Promise.race([Promise.all(exits), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 describe.runIf(process.platform !== "win32")(
   "inherited stdout teardown",
@@ -54,13 +77,13 @@ describe.runIf(process.platform !== "win32")(
       }
       const writerPid = readFileSync(marker, "utf8").trim();
       if (child.exitCode === null && child.signalCode === null)
-        await leaderExited;
+        await leaderExitWithin([leaderExited], "leader");
       const started = Date.now();
       await expect(cleanup()).rejects.toThrow(
         new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
       );
       expect(Date.now() - started).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
-    }, START_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
+    }, START_WAIT_MS + LEADER_EXIT_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it("bounds the total time of several leaking cleanups to one deadline and names every writer", async () => {
       const directory = mkdtempSync(join(tmpdir(), "bb-test-two-writers-"));
@@ -86,7 +109,7 @@ describe.runIf(process.platform !== "win32")(
         if (Date.now() >= setupDeadline) throw new Error("writers did not start");
         await delay(10);
       }
-      await Promise.all(exits);
+      await leaderExitWithin(exits, "leaders");
       const writerPids = markers.map((marker) =>
         readFileSync(marker, "utf8").trim(),
       );
@@ -103,7 +126,7 @@ describe.runIf(process.platform !== "win32")(
         expect(message).toMatch(
           new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
         );
-    }, START_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
+    }, START_WAIT_MS + LEADER_EXIT_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it.runIf(process.platform === "darwin")(
       "finishes two cleanups that each hit EPERM on a zombie leader within one shared deadline",
@@ -118,7 +141,7 @@ describe.runIf(process.platform !== "win32")(
             } catch {}
         });
         const cleanups = leaders.map((leader) => trackTestProcess(leader, 60_000));
-        const end = Date.now() + 800;
+        const end = Date.now() + ZOMBIE_SETTLE_MS;
         while (Date.now() < end);
         for (const leader of leaders) {
           expect(leader.exitCode).toBeNull();
@@ -129,7 +152,7 @@ describe.runIf(process.platform !== "win32")(
         expect(Date.now() - started).toBeLessThan(ZOMBIE_DEADLINE_MS);
         expect(cleanups).toHaveLength(0);
       },
-      ZOMBIE_DEADLINE_MS + MARGIN_MS,
+      ZOMBIE_SETTLE_MS + ZOMBIE_DEADLINE_MS + MARGIN_MS,
     );
 
     it.runIf(process.platform === "darwin")(
@@ -153,7 +176,7 @@ describe.runIf(process.platform !== "win32")(
               process.kill(-child.pid!, "SIGKILL");
             } catch {}
         });
-        blockLoop(800);
+        blockLoop(ZOMBIE_SETTLE_MS);
         expect(empty.exitCode).toBeNull();
         expect(live.exitCode).toBeNull();
         expect(() => process.kill(-empty.pid!, "SIGKILL")).toThrow(/EPERM/u);
@@ -212,7 +235,7 @@ describe.runIf(process.platform !== "win32")(
           await cleanup();
           rmSync(directory, { recursive: true, force: true });
         });
-        await exit;
+        await leaderExitWithin([exit], "leader");
         const setupDeadline = Date.now() + START_WAIT_MS;
         while (!existsSync(marker)) {
           if (Date.now() >= setupDeadline)
@@ -243,7 +266,7 @@ describe.runIf(process.platform !== "win32")(
           BOUNDED_DEADLINE_MS + MARGIN_MS,
         );
       },
-      START_WAIT_MS + BOUNDED_DEADLINE_MS + MARGIN_MS,
+      START_WAIT_MS + LEADER_EXIT_WAIT_MS + BOUNDED_DEADLINE_MS + MARGIN_MS,
     );
   },
 );
