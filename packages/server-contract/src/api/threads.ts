@@ -336,27 +336,20 @@ const sendMessageRequestFieldsSchema = sendMessageRequestObjectSchema;
 
 export const sendMessageRequestSchema =
   sendMessageRequestObjectSchema.superRefine((value, ctx) => {
-    if (value.deliverBy !== undefined && value.mode !== "inbox") {
-      ctx.addIssue({
-        code: "custom",
-        message: "deliverBy requires mode inbox",
-        path: ["deliverBy"],
-      });
-    }
-    if (value.mode !== "inbox") return;
-    if (value.sendAt !== undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: "mode inbox cannot be combined with sendAt",
-        path: ["sendAt"],
-      });
-    }
-    if (value.compactFirst !== undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: "mode inbox cannot be combined with compactFirst",
-        path: ["compactFirst"],
-      });
+    const inbox = value.mode === "inbox";
+    const rules = [
+      ["deliverBy", !inbox, "deliverBy requires mode inbox"],
+      ["sendAt", inbox, "mode inbox cannot be combined with sendAt"],
+      [
+        "compactFirst",
+        inbox,
+        "mode inbox cannot be combined with compactFirst",
+      ],
+    ] as const;
+    for (const [path, forbidden, message] of rules) {
+      if (forbidden && value[path] !== undefined) {
+        ctx.addIssue({ code: "custom", message, path: [path] });
+      }
     }
   });
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
