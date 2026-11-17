@@ -354,12 +354,6 @@ export class SdkSession {
 
   async applyAutoCompactWindow(window: number | undefined): Promise<void> {
     await this.query?.applyFlagSettings({ autoCompactWindow: window ?? null });
-    const { autoCompactWindow: _previous, ...rest } =
-      typeof this.options.settings === "object" ? this.options.settings : {};
-    this.options.settings = {
-      ...rest,
-      ...(window !== undefined ? { autoCompactWindow: window } : {}),
-    };
   }
 
   async applyMutableSettings(args: {

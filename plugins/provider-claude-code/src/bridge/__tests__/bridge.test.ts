@@ -8301,7 +8301,7 @@ describe("bridge", () => {
     }
   });
 
-  it("seeds autoCompactWindow at spawn and re-applies it live when the user setting changes", async () => {
+  it("records autoCompactWindow at spawn without pinning it and re-applies it live when the user setting changes", async () => {
     const configDir = process.env.CLAUDE_CONFIG_DIR;
     if (!configDir) throw new Error("Expected hermetic Claude config dir");
     const settingsPath = join(configDir, "settings.json");
@@ -8340,7 +8340,10 @@ describe("bridge", () => {
       const query = queries[0];
       const call = getLatestQueryCall();
       if (!query) throw new Error("Expected live Claude query");
-      expect(call.options.settings).toMatchObject({ autoCompactWindow: 400000 });
+      expect(call.options.settings).not.toHaveProperty("autoCompactWindow");
+      expect(query.applyFlagSettings).not.toHaveBeenCalledWith(
+        expect.objectContaining({ autoCompactWindow: expect.anything() }),
+      );
 
       writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
       bridge.sendRequest(2, "turn/start", {
