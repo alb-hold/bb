@@ -26,6 +26,7 @@ import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-
 import {
   internalAuthHeaders,
   listQueuedThreadCommands,
+  registerTestHostRpcCapture,
 } from "../helpers/commands.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -236,11 +237,7 @@ describe("inbox tell to an idle thread", () => {
         threadId: thread.id,
         turnId: "turn-real",
       });
-      await vi.waitFor(async () => {
-        await runQueuedMessageDispatch(harness.deps, {
-          kind: "thread-ready",
-          threadId: thread.id,
-        });
+      await vi.waitFor(() => {
         expect(
           JSON.stringify(
             listQueuedThreadCommands(harness, "turn.submit", thread.id),
@@ -578,6 +575,11 @@ describe("inbox tell stored shape and restart", () => {
 
       const restarted = await createTestAppHarness({ db: first.db });
       try {
+        restarted.hub.recordDaemonSessionPlatform(sessionId, "darwin");
+        registerTestHostRpcCapture(restarted, {
+          hostId: "host-inbox-restart",
+          sessionId,
+        });
         expect(storedWaitingOn(restarted, thread.id)).toEqual(heldBefore);
         expect(queuedRows(restarted, thread.id)).toHaveLength(1);
 
