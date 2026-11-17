@@ -1,4 +1,8 @@
-import type { QueuedMessagePayload, QueuedMessageWaitingOn } from "@bb/domain";
+import {
+  isInboxQueuedMessageWait,
+  type QueuedMessagePayload,
+  type QueuedMessageWaitingOn,
+} from "@bb/domain";
 import type { IconName } from "@bb/shared-ui/icon";
 import { formatScheduledTime } from "@/lib/relative-time";
 
@@ -41,7 +45,6 @@ export function isQueuedMessageSendNowAllowed(
     case "workspace-busy":
       return false;
     case "time":
-    case "inbox":
     case "plugin":
     case "thread-busy":
       return true;
@@ -74,7 +77,6 @@ export function queuedMessageWaitIcon(args: {
     case "turn-starting":
       return "TimeSchedule";
     case "time":
-    case "inbox":
       return "TimeSchedule";
     case "provisioning":
       return "Folder";
@@ -141,13 +143,14 @@ export function describeQueuedMessageWait(
     case "stopping":
       return "Sending when the thread stops";
     case "time":
+      if (args.waitingOn.inbox === true) {
+        return args.sendAt === null
+          ? "Held until the next turn"
+          : `Held until the next turn, or ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`;
+      }
       return args.sendAt === null
         ? "Scheduled"
         : `Scheduled for ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`;
-    case "inbox":
-      return args.sendAt === null
-        ? "Held until the next turn"
-        : `Held until the next turn, or ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`;
     case "provisioning":
       return "Waiting for workspace";
     case "host-offline":
@@ -169,4 +172,13 @@ export function queuedMessageCountdownInstant(args: {
   if (args.payload.kind === "retry") return null;
   if (args.waitingOn === null || args.waitingOn.kind !== "time") return null;
   return args.sendAt;
+}
+
+export function describeHeldInboxCount(
+  messages: ReadonlyArray<{ waitingOn: QueuedMessageWaitingOn | null }>,
+): string | null {
+  const held = messages.filter((message) =>
+    isInboxQueuedMessageWait(message.waitingOn),
+  ).length;
+  return held === 0 ? null : `${held} held for your next turn`;
 }

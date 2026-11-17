@@ -17,7 +17,6 @@ export const queuedMessageWaitingOnKindValues = [
   "interaction",
   "plugin",
   "workspace-busy",
-  "inbox",
 ] as const;
 export const queuedMessageWaitingOnKindSchema = z.enum(
   queuedMessageWaitingOnKindValues,
@@ -35,7 +34,7 @@ export const queuedMessageWaitReasonSchema = z
   .max(QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH);
 
 export const queuedMessageWaitingOnSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("time") }),
+  z.object({ kind: z.literal("time"), inbox: z.literal(true).optional() }),
   z.object({ kind: z.literal("thread-busy") }),
   z.object({ kind: z.literal("stopping") }),
   z.object({ kind: z.literal("turn-starting") }),
@@ -45,7 +44,6 @@ export const queuedMessageWaitingOnSchema = z.discriminatedUnion("kind", [
     hostName: queuedMessageWaitHostNameSchema,
   }),
   z.object({ kind: z.literal("interaction") }),
-  z.object({ kind: z.literal("inbox") }),
   z.object({
     kind: z.literal("workspace-busy"),
     holderThreadId: z.string().min(1),
@@ -104,3 +102,14 @@ export type QueuedMessageSystemNotice = z.infer<
 >;
 
 export const QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS = 6 * 60 * 60 * 1000;
+
+export const QUEUED_MESSAGE_INBOX_WAITING_ON = {
+  kind: "time",
+  inbox: true,
+} as const satisfies QueuedMessageWaitingOn;
+
+export function isInboxQueuedMessageWait(
+  waitingOn: QueuedMessageWaitingOn | null,
+): boolean {
+  return waitingOn?.kind === "time" && waitingOn.inbox === true;
+}

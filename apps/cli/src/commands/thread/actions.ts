@@ -855,11 +855,12 @@ export function describeQueueWait(row: {
   const waitingOn = row.waitingOn ?? { kind: "thread-busy" as const };
   switch (waitingOn.kind) {
     case "time":
+      if (waitingOn.inbox === true) {
+        return "held until the thread's next turn";
+      }
       return row.sendAt === null
         ? "scheduled"
         : `scheduled for ${new Date(row.sendAt).toLocaleString()}`;
-    case "inbox":
-      return "held until the thread's next turn";
     case "thread-busy":
       return "waiting for the current turn to finish";
     case "stopping":

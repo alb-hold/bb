@@ -7,7 +7,10 @@ import {
   type DbTransaction,
 } from "@bb/db";
 import { isNativeTerminalThread } from "@bb/db";
-import { QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS } from "@bb/domain";
+import {
+  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+  QUEUED_MESSAGE_INBOX_WAITING_ON,
+} from "@bb/domain";
 import type {
   PromptInput,
   PromptMentionResource,
@@ -569,7 +572,7 @@ async function holdParentSystemMessageInInbox(
     reasoningLevel: execution.reasoningLevel,
     permissionMode: execution.permissionMode,
     serviceTier: execution.serviceTier,
-    waitingOn: { kind: "inbox" },
+    waitingOn: QUEUED_MESSAGE_INBOX_WAITING_ON,
     sendAt: Date.now() + QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
     payload: { kind: "inline" },
     systemNotice: {

@@ -19,6 +19,7 @@ import {
   isStandaloneBuiltinClearCommand,
   promptInputSchema,
   QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+  QUEUED_MESSAGE_INBOX_WAITING_ON,
   type PromptInput,
   type QueuedMessagePayload,
   type QueuedMessageDeliveryMode,
@@ -543,7 +544,7 @@ async function runDispatchAttempt(
       thread.status === "idle"
     ) {
       continued.outcome = await waitOn(
-        { kind: "inbox" },
+        QUEUED_MESSAGE_INBOX_WAITING_ON,
         inboxHoldUntil,
         "idle",
       );

@@ -1,5 +1,6 @@
 import {
   GIT_PLUGIN_ID,
+  isInboxQueuedMessageWait,
   type WorkspaceDiffTarget,
   resolveEnvironmentMergeBaseBranch,
   tokenBreakdownLabels,
@@ -104,7 +105,7 @@ async function fetchHeldInboxMessages(
 ): Promise<HeldInboxMessage[]> {
   const rows = await sdk.threads.queuedMessages.list({ threadId });
   return rows
-    .filter((row) => row.waitingOn?.kind === "inbox")
+    .filter((row) => isInboxQueuedMessageWait(row.waitingOn))
     .map((row) => {
       const text = row.content
         .filter((block) => block.type === "text")

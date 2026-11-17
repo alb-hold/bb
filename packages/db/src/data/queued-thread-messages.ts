@@ -2111,10 +2111,7 @@ export function releaseInboxQueuedThreadMessages(
   const released = db.transaction(
     (tx) => {
       const now = Date.now();
-      const rows = listQueuedThreadMessagesWaitingOnKind(tx, {
-        kind: "inbox",
-        threadId: args.threadId,
-      });
+      const rows = listInboxQueuedThreadMessages(tx, args.threadId);
       const updated: QueuedThreadMessageRow[] = [];
       for (const row of rows) {
         if (isQueuedThreadMessageClaimed(row)) continue;
@@ -2237,6 +2234,25 @@ export function listQueuedThreadMessagesWaitingOnKind(
       and(
         eq(queuedThreadMessages.threadId, args.threadId),
         sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = ${args.kind}`,
+        automaticallyDrainableQueuedThreadMessage(),
+      ),
+    )
+    .orderBy(asc(queuedThreadMessages.sortKey), asc(queuedThreadMessages.id))
+    .all();
+}
+
+export function listInboxQueuedThreadMessages(
+  db: DbQueryConnection,
+  threadId: string,
+): QueuedThreadMessageRow[] {
+  return db
+    .select()
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        eq(queuedThreadMessages.threadId, threadId),
+        sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = 'time'`,
+        sql`json_extract(${queuedThreadMessages.waitingOn}, '$.inbox') = 1`,
         automaticallyDrainableQueuedThreadMessage(),
       ),
     )

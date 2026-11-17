@@ -145,7 +145,6 @@ export function createAutomaticQueuedMessageGroupEligibility(
         case "plugin":
           return true;
         case "time":
-        case "inbox":
           return member.sendAt !== null && member.sendAt <= args.now;
         case "thread-busy":
           return (
@@ -700,9 +699,10 @@ function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {
       return `it is waiting on the "${waitingOn.pluginId}" plugin`;
     case "workspace-busy":
       return `thread ${waitingOn.holderThreadId} is using the shared workspace`;
-    case "inbox":
-      return "it is held for the thread's next turn";
     case "time":
+      return waitingOn.inbox === true
+        ? "it is held for the thread's next turn"
+        : "the thread is already running a turn";
     case "thread-busy":
     case undefined:
       return "the thread is already running a turn";

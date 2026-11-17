@@ -5,6 +5,7 @@ import {
   listQueuedThreadMessages,
 } from "@bb/db";
 import {
+  isInboxQueuedMessageWait,
   QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
   turnRequestEventDataSchema,
   turnScope,
@@ -12,6 +13,11 @@ import {
 } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it, vi } from "vitest";
+import {
+  parseStockStoredWaitingOn,
+  stockQueuedMessageWaitingOnSchema,
+  stockTimeWaitIsDue,
+} from "../helpers/stock-queued-message-wait.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
@@ -29,7 +35,11 @@ import {
   seedThreadRuntimeState,
   seedTurnStarted,
 } from "../helpers/seed.js";
-import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import {
+  createTestAppHarness,
+  withTestHarness,
+  type TestAppHarness,
+} from "../helpers/test-app.js";
 
 const WORKSPACE_PATH = "/tmp/inbox-tell-project";
 const CLOCK_SLACK_MS = 10_000;
@@ -88,6 +98,42 @@ function queuedRows(harness: TestAppHarness, threadId: string) {
   );
 }
 
+async function postTurnStarted(
+  harness: TestAppHarness,
+  args: {
+    providerThreadId: string;
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+  },
+) {
+  const response = await harness.app.request("/internal/session/events", {
+    method: "POST",
+    headers: internalAuthHeaders(harness),
+    body: JSON.stringify({
+      sessionId: args.sessionId,
+      eventGroups: groupHostDaemonEvents([
+        {
+          threadId: args.threadId,
+          event: {
+            type: "turn/started",
+            threadId: args.threadId,
+            providerThreadId: args.providerThreadId,
+            scope: turnScope(args.turnId),
+          },
+        },
+      ]),
+    }),
+  });
+  expect(response.status).toBe(200);
+}
+
+function storedWaitingOn(harness: TestAppHarness, threadId: string): string[] {
+  return listQueuedThreadMessages(harness.db, threadId).flatMap((row) =>
+    row.waitingOn === null ? [] : [row.waitingOn],
+  );
+}
+
 function tell(
   harness: TestAppHarness,
   args: {
@@ -126,7 +172,7 @@ describe("inbox tell to an idle thread", () => {
 
       expect(response).toMatchObject({
         delivery: "queued",
-        queuedMessage: { waitingOn: { kind: "inbox" } },
+        queuedMessage: { waitingOn: { kind: "time", inbox: true } },
       });
       const [row] = queuedRows(harness, thread.id);
       expect(row?.sendAt).toBeGreaterThanOrEqual(
@@ -153,7 +199,8 @@ describe("inbox tell to an idle thread", () => {
       expect(turnRequests(harness, thread.id)).toHaveLength(0);
       expect(queuedRows(harness, thread.id)).toHaveLength(1);
       expect(queuedRows(harness, thread.id)[0]?.waitingOn).toEqual({
-        kind: "inbox",
+        kind: "time",
+        inbox: true,
       });
     });
   });
@@ -176,25 +223,12 @@ describe("inbox tell to an idle thread", () => {
       });
       expect(queuedRows(harness, thread.id)).toHaveLength(2);
 
-      const response = await harness.app.request("/internal/session/events", {
-        method: "POST",
-        headers: internalAuthHeaders(harness),
-        body: JSON.stringify({
-          sessionId,
-          eventGroups: groupHostDaemonEvents([
-            {
-              threadId: thread.id,
-              event: {
-                type: "turn/started",
-                threadId: thread.id,
-                providerThreadId: "provider-host-inbox-release",
-                scope: turnScope("turn-real"),
-              },
-            },
-          ]),
-        }),
+      await postTurnStarted(harness, {
+        providerThreadId: "provider-host-inbox-release",
+        sessionId,
+        threadId: thread.id,
+        turnId: "turn-real",
       });
-      expect(response.status).toBe(200);
       await vi.waitFor(() => {
         expect(
           listQueuedThreadCommands(harness, "turn.submit", thread.id).length,
@@ -333,7 +367,7 @@ describe("inbox tell to a live turn", () => {
 
       const [viaQueue, viaInbox] = queuedRows(harness, thread.id);
       expect(viaInbox?.waitingOn).toEqual(viaQueue?.waitingOn);
-      expect(viaInbox?.waitingOn?.kind).not.toBe("inbox");
+      expect(isInboxQueuedMessageWait(viaInbox?.waitingOn ?? null)).toBe(false);
       expect(viaInbox?.sendAt).toBeNull();
     });
   });
@@ -366,7 +400,8 @@ describe("parent notice under parentNotifications inbox", () => {
       expect(turnRequests(harness, thread.id)).toHaveLength(0);
       expect(queuedRows(harness, thread.id)).toHaveLength(1);
       expect(queuedRows(harness, thread.id)[0]?.waitingOn).toEqual({
-        kind: "inbox",
+        kind: "time",
+        inbox: true,
       });
     });
   });
@@ -387,6 +422,151 @@ describe("parent notice under parentNotifications inbox", () => {
 
       expect(turnRequests(harness, thread.id)).toHaveLength(1);
       expect(queuedRows(harness, thread.id)).toHaveLength(0);
+    });
+  });
+});
+
+describe("inbox tell stored shape and restart", () => {
+  it("stores a held row that a stock build parses as a plain time wait and releases at its column time", async () => {
+    await withTestHarness(async (harness) => {
+      const { sender, thread } = seedReceiver(harness, {
+        hostId: "host-inbox-stock",
+        status: "idle",
+      });
+      await tell(harness, {
+        thread,
+        senderThreadId: sender.id,
+        text: "held for stock",
+      });
+
+      const [stored] = listQueuedThreadMessages(harness.db, thread.id);
+      expect(stored?.waitingOn).not.toBeNull();
+      expect(JSON.parse(stored?.waitingOn ?? "null")).toEqual({
+        kind: "time",
+        inbox: true,
+      });
+      const stockParsed = parseStockStoredWaitingOn(stored?.waitingOn ?? "");
+      expect(stockParsed).toEqual({ kind: "time" });
+      expect(stored?.sendAt).not.toBeNull();
+      const sendAt = stored?.sendAt ?? 0;
+      expect(
+        stockTimeWaitIsDue({
+          waitingOn: stockParsed,
+          sendAt: stored?.sendAt ?? null,
+          now: sendAt - 1,
+        }),
+      ).toBe(false);
+      expect(
+        stockTimeWaitIsDue({
+          waitingOn: stockParsed,
+          sendAt: stored?.sendAt ?? null,
+          now: sendAt,
+        }),
+      ).toBe(true);
+
+      await runQueuedMessageDispatch(harness.deps, {
+        kind: "time-reached",
+        now: sendAt,
+      });
+      expect(turnRequests(harness, thread.id)).toHaveLength(1);
+      expect(queuedRows(harness, thread.id)).toHaveLength(0);
+    });
+  });
+
+  it("is refused by a stock parse when a wait is stored with the retired inbox kind", () => {
+    expect(
+      stockQueuedMessageWaitingOnSchema.safeParse({ kind: "inbox" }).success,
+    ).toBe(false);
+    expect(() =>
+      parseStockStoredWaitingOn(JSON.stringify({ kind: "inbox" })),
+    ).toThrow();
+  });
+
+  it("leaves a plain scheduled message alone when the next turn starts", async () => {
+    await withTestHarness(async (harness) => {
+      const { sender, sessionId, thread } = seedReceiver(harness, {
+        hostId: "host-inbox-scheduled",
+        status: "idle",
+      });
+      await acceptThreadSendRequest(harness.deps, {
+        payload: {
+          input: textInput("scheduled note"),
+          mode: "queue-if-active",
+          senderThreadId: sender.id,
+          sendAt: Date.now() + 60 * 60 * 1000,
+        },
+        thread,
+      });
+      expect(storedWaitingOn(harness, thread.id)).toEqual([
+        JSON.stringify({ kind: "time" }),
+      ]);
+
+      await postTurnStarted(harness, {
+        providerThreadId: "provider-host-inbox-scheduled",
+        sessionId,
+        threadId: thread.id,
+        turnId: "turn-scheduled",
+      });
+      await runQueuedMessageDispatch(harness.deps, {
+        kind: "thread-ready",
+        threadId: thread.id,
+      });
+
+      expect(queuedRows(harness, thread.id)).toHaveLength(1);
+      expect(
+        JSON.stringify(
+          listQueuedThreadCommands(harness, "turn.submit", thread.id),
+        ),
+      ).not.toContain("scheduled note");
+    });
+  });
+
+  it("keeps a held message across a server restart and releases it at the next turn start", async () => {
+    await withTestHarness(async (first) => {
+      const { sender, sessionId, thread } = seedReceiver(first, {
+        hostId: "host-inbox-restart",
+        status: "idle",
+      });
+      await tell(first, {
+        thread,
+        senderThreadId: sender.id,
+        text: "survives restart",
+      });
+      const heldBefore = storedWaitingOn(first, thread.id);
+      expect(heldBefore).toHaveLength(1);
+
+      const restarted = await createTestAppHarness({ db: first.db });
+      try {
+        expect(storedWaitingOn(restarted, thread.id)).toEqual(heldBefore);
+        expect(queuedRows(restarted, thread.id)).toHaveLength(1);
+
+        await runQueuedMessageDispatch(restarted.deps, {
+          kind: "thread-ready",
+          threadId: thread.id,
+        });
+        await runQueuedMessageDispatch(restarted.deps, {
+          kind: "plugin-recheck",
+        });
+        expect(turnRequests(restarted, thread.id)).toHaveLength(0);
+        expect(queuedRows(restarted, thread.id)).toHaveLength(1);
+
+        await postTurnStarted(restarted, {
+          providerThreadId: "provider-host-inbox-restart",
+          sessionId,
+          threadId: thread.id,
+          turnId: "turn-after-restart",
+        });
+        await vi.waitFor(() => {
+          expect(
+            JSON.stringify(
+              listQueuedThreadCommands(restarted, "turn.submit", thread.id),
+            ),
+          ).toContain("survives restart");
+        });
+        expect(queuedRows(restarted, thread.id)).toHaveLength(0);
+      } finally {
+        await restarted.cleanup();
+      }
     });
   });
 });

@@ -633,6 +633,7 @@ export {
   setQueuedThreadMessageWaitingOn,
   releaseStaleQueuedMessageClaims,
   releaseInboxQueuedThreadMessages,
+  listInboxQueuedThreadMessages,
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,

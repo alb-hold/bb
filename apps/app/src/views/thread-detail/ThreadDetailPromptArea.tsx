@@ -15,11 +15,15 @@ import { createPortal } from "react-dom";
 import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
 import type { IconName } from "@bb/shared-ui/icon";
 import type { PromptMentionLinkResolver } from "@bb/client-core";
+import { describeHeldInboxCount } from "@/lib/queued-message-wait";
 import {
   getFollowUpPromptPlaceholder,
   getCompactFollowUpPromptPlaceholder,
 } from "@/components/promptbox/follow-up-placeholder";
-import { DEFAULT_SERVICE_TIER, PERSONAL_PROJECT_ID } from "@bb/domain";
+import {
+  DEFAULT_SERVICE_TIER,
+  PERSONAL_PROJECT_ID,
+} from "@bb/domain";
 import type {
   PermissionMode,
   ReasoningLevel,
@@ -2278,14 +2282,7 @@ export function ThreadDetailPromptArea({
           }}
           core={{
             parentThread: parentThreadSection,
-            queuedInboxHeld: (() => {
-              const held = queuedMessages.filter(
-                (message) => message.waitingOn?.kind === "inbox",
-              ).length;
-              return held === 0
-                ? null
-                : `${held} held for your next turn`;
-            })(),
+            queuedInboxHeld: describeHeldInboxCount(queuedMessages),
             queuedWorkspaceWait: (() => {
               const waiting = queuedMessages.find(
                 (message) => message.waitingOn?.kind === "workspace-busy",

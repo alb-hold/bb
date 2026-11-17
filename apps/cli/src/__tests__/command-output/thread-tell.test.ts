@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import {
@@ -89,6 +90,94 @@ describe("bb thread tell command output", () => {
       "Pass <message>, or --message-file <path> (use - to read stdin).",
     ]);
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("bb thread tell --mode inbox sends inbox mode and describes the hold", async () => {
+    const post = vi.fn(async () => ({
+      ok: true,
+      delivery: "queued",
+      queuedMessage: {
+        id: "qm_inbox",
+        waitingOn: { kind: "time", inbox: true },
+        sendAt: Date.now() + 60_000,
+      },
+    }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+
+    await runCommand(
+      ["thread", "tell", "thread-inbox", "fyi", "--mode", "inbox"],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      param: { id: "thread-inbox" },
+      json: {
+        input: [{ type: "text", text: "fyi", mentions: [] }],
+        mode: "inbox",
+      },
+    });
+    expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
+      "Thread thread-inbox message queued (held until the thread's next turn); it dispatches when that clears",
+    );
+  });
+
+  it("bb thread tell --deliver-by forwards a deadline with --mode inbox", async () => {
+    const post = vi.fn(async () => ({ ok: true }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+    const before = Date.now();
+
+    await runCommand(
+      [
+        "thread",
+        "tell",
+        "thread-inbox-deadline",
+        "fyi",
+        "--mode",
+        "inbox",
+        "--deliver-by",
+        "2h",
+      ],
+      register,
+    );
+
+    const call = post.mock.calls[0] as unknown as [
+      { json: { mode: string; deliverBy: number } },
+    ];
+    expect(call[0].json.mode).toBe("inbox");
+    expect(call[0].json.deliverBy).toBeGreaterThanOrEqual(
+      before + 2 * 60 * 60 * 1000,
+    );
+    expect(call[0].json.deliverBy).toBeLessThanOrEqual(
+      Date.now() + 2 * 60 * 60 * 1000,
+    );
+  });
+
+  it("bb thread tell --deliver-by without --mode inbox is refused", async () => {
+    const post = vi.fn(async () => ({ ok: true }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+
+    await expect(
+      runCommand(
+        ["thread", "tell", "thread-x", "hello", "--deliver-by", "2h"],
+        register,
+      ),
+    ).rejects.toThrow("process.exit:1");
+
+    expect(post).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(console.error).mock.calls.map((call) => String(call[0])),
+    ).toContain("Error: --deliver-by requires --mode inbox.");
+  });
+
+  it("bb thread tell documents inbox mode and --deliver-by in its help", () => {
+    const program = new Command();
+    register(program);
+    const tell = program.commands
+      .find((command) => command.name() === "thread")
+      ?.commands.find((command) => command.name() === "tell");
+    const help = tell?.helpInformation() ?? "";
+    expect(help).toContain("inbox");
+    expect(help).toContain("--deliver-by <when>");
   });
 
   it("bb thread tell names the typed reason a message queued for", async () => {

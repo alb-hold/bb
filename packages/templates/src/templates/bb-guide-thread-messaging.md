@@ -220,7 +220,7 @@ Queued messages:
   milliseconds on `threads.spawn` and `threads.send`.
 
   --mode inbox is for messages that must not wake an idle thread. To an idle
-  thread it stores the message (`waitingOn: inbox`) and starts no turn; the
+  thread it stores the message (`waitingOn: {kind: "time", inbox: true}`, deadline in `sendAt`) and starts no turn; the
   message is delivered, in send order and inside the usual
   `[bb message from thread:...]` envelope, at the start of the thread's next
   real turn, whatever starts that turn. To a thread with a live turn it behaves

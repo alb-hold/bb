@@ -181,6 +181,16 @@ afterEach(() => {
 });
 
 describe("thread context segments", () => {
+  it("shows the held-for-next-turn banner row when inbox messages are held", () => {
+    renderBanner({
+      core: { ...EMPTY_CORE, queuedInboxHeld: "2 held for your next turn" },
+    });
+
+    expect(
+      screen.getByRole("status", { name: "2 held for your next turn" }),
+    ).toBeTruthy();
+  });
+
   it("leaves the parent thread to the thread context card when the view shows one", () => {
     registerPluginSegment();
     renderBanner({
