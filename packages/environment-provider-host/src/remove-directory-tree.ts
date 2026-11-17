@@ -163,10 +163,20 @@ function mountsAtOrUnder(table: string, directory: string): boolean | null {
   let mounts = 0;
   for (const line of table.split("\n")) {
     if (line === "") continue;
-    const field = line.split(" ")[4];
-    if (field === undefined || field === "") return null;
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-", 6);
+    if (
+      fields.includes("") ||
+      separator === -1 ||
+      fields.length < separator + 4 ||
+      !/^\d+$/u.test(fields[0] ?? "") ||
+      !/^\d+$/u.test(fields[1] ?? "") ||
+      !/^\d+:\d+$/u.test(fields[2] ?? "") ||
+      !(fields[4] ?? "").startsWith("/")
+    )
+      return null;
     mounts += 1;
-    const mountPoint = decodeMountPoint(field);
+    const mountPoint = decodeMountPoint(fields[4] ?? "");
     if (mountPoint === directory || mountPoint.startsWith(inside)) return true;
   }
   return mounts === 0 ? null : false;

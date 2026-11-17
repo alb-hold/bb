@@ -562,6 +562,20 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       "has a line without a mount point",
       () => Promise.resolve("36 1 0:51 /\n"),
     ],
+    [
+      "has a row whose fields are shifted by an extra space",
+      async () =>
+        `${mountLine("/")}36 1 0:51  / /unrelated rw - tmpfs none rw\n`,
+    ],
+    [
+      "has a row without its separator",
+      async () => `${mountLine("/")}36 1 0:51 / /unrelated rw tmpfs none rw\n`,
+    ],
+    [
+      "has a row with a non-numeric mount id",
+      async () =>
+        `${mountLine("/")}x6 1 0:51 / /unrelated rw - tmpfs none rw\n`,
+    ],
   ])(
     "checks each entry's mount id when the mount table %s",
     async (_label, table) => {
@@ -584,6 +598,41 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       ).resolves.toBe("kept\n");
     },
   );
+
+  it("reads no entry's mount id when only an nsfs bind outside the tree is listed", async () => {
+    const root = await settledTree();
+    const read: string[] = [];
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: async () =>
+        `${mountLine("/")}612 30 0:4 net:[4026531840] /run/netns/x rw shared:5 - nsfs nsfs rw\n`,
+      readDescriptorInfo: (entry, fd) => {
+        read.push(path.relative(root, path.resolve(entry)));
+        return fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+      },
+    });
+    expect(result.status).toBe("removed");
+    expect(read.sort()).toEqual(["", ".."]);
+  });
+
+  it("checks each entry's mount id when an nsfs bind is listed under the tree", async () => {
+    const root = await settledTree();
+    const nested = path.join(root, "nested");
+    const real = await fs.realpath(root);
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: async () =>
+        `${mountLine("/")}612 30 0:4 net:[4026531840] ${real}/nested rw shared:5 - nsfs nsfs rw\n`,
+      readDescriptorInfo: async (entry, fd) => {
+        const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+        return path.resolve(entry) === nested ? shifted(info) : info;
+      },
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      mountedPaths: [nested],
+    });
+  });
 
   it.each([
     [
