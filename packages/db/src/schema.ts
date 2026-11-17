@@ -18,7 +18,7 @@ import { threadStatusValues } from "@bb/domain/thread-status";
 import { startedOnBehalfOfInitiatorValues } from "@bb/domain/started-on-behalf-of";
 import { threadCreateOriginValues } from "@bb/domain/thread-create-origin";
 import { threadOriginKindValues } from "@bb/domain/thread-origin-kind";
-import { threadParentNotificationsValues } from "@bb/domain/thread-parent-notifications";
+import { storedThreadParentNotificationsValues } from "@bb/domain/thread-parent-notifications";
 import { threadVisibilityValues } from "@bb/domain/thread-visibility";
 import type {
   EnvironmentProviderSelection,
@@ -640,10 +640,14 @@ export const threads = sqliteTable(
       .notNull()
       .default("visible"),
     parentNotifications: text("parent_notifications", {
-      enum: threadParentNotificationsValues,
+      enum: storedThreadParentNotificationsValues,
     })
       .notNull()
       .default("auto"),
+    parentNotificationsHoldWhileIdle: integer(
+      "parent_notifications_hold_while_idle",
+      { mode: "boolean" },
+    ),
     archivedAt: integer("archived_at"),
     pinnedAt: integer("pinned_at"),
     pinSortKey: text("pin_sort_key"),

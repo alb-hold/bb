@@ -187,6 +187,7 @@ export const threadSchema = z.object({
   originPluginId: z.string().nullable(),
   visibility: threadVisibilitySchema,
   parentNotifications: threadParentNotificationsSchema,
+  parentNotificationsHoldWhileIdle: z.boolean().nullable().optional(),
   archivedAt: z.number().nullable(),
   pinnedAt: z.number().nullable(),
   deletedAt: z.number().nullable(),

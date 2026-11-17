@@ -4,6 +4,7 @@ import type {
   ThreadEventTurnStatus,
   ChildThreadOutcome,
 } from "@bb/domain";
+import { resolveParentNotificationsChoice } from "@bb/domain";
 import {
   isNativeTerminalThread,
   getNativeTerminalThread,
@@ -582,7 +583,11 @@ async function queueChildThreadTurnNotificationBatchItem(
     childThread: args.childThread,
     holdWhileParentIdle:
       args.turnStatus === "completed" &&
-      getThread(deps.db, args.childThread.id)?.parentNotifications === "inbox",
+      resolveParentNotificationsChoice(
+        getThread(deps.db, args.childThread.id) ?? {
+          parentNotifications: "auto",
+        },
+      ) === "inbox",
     terminalOutput: await getChildThreadCompletionOutput(deps, args),
     turnStatus: args.turnStatus,
     ...(args.failureContext ? { failureContext: args.failureContext } : {}),

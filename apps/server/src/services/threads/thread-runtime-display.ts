@@ -26,6 +26,7 @@ import {
   withEffectiveDisplayStatus,
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+  resolveParentNotificationsChoice,
 } from "@bb/domain";
 import type {
   Thread,
@@ -213,7 +214,7 @@ function toPublicThread(thread: Thread): Thread {
     originKind: thread.originKind,
     originPluginId: thread.originPluginId,
     visibility: thread.visibility,
-    parentNotifications: thread.parentNotifications,
+    parentNotifications: resolveParentNotificationsChoice(thread),
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     deletedAt: thread.deletedAt,

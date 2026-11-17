@@ -47,3 +47,9 @@ export function stockTimeWaitIsDue(args: {
     args.sendAt <= args.now
   );
 }
+
+export const stockThreadParentNotificationsSchema = z.enum([
+  "auto",
+  "stuck",
+  "off",
+]);

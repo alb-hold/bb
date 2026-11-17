@@ -1072,6 +1072,13 @@
       "when": 1794762191729,
       "tag": "0152_thread_storage_delete_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "6",
+      "when": 1794850000000,
+      "tag": "0153_thread_parent_notifications_hold_while_idle",
+      "breakpoints": true
     }
   ]
 }

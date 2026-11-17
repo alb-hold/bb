@@ -1,0 +1,2 @@
+ALTER TABLE `threads` ADD `parent_notifications_hold_while_idle` integer;--> statement-breakpoint
+UPDATE `threads` SET `parent_notifications_hold_while_idle` = 1, `parent_notifications` = 'auto' WHERE `parent_notifications` = 'inbox';

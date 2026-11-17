@@ -57,6 +57,7 @@ export function dropMarketplaceSourceGitSubdirectoryColumn(
 }
 
 export function dropThreadStorageDeleteSeqColumn(db: DbConnection): void {
+  dropThreadParentNotificationsHoldColumn(db);
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(threads)")
     .all();
@@ -68,7 +69,25 @@ export function dropThreadStorageDeleteSeqColumn(db: DbConnection): void {
   }
 }
 
+export function dropThreadParentNotificationsHoldColumn(
+  db: DbConnection,
+): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(threads)")
+    .all();
+  if (
+    columns.some(
+      (column) => column.name === "parent_notifications_hold_while_idle",
+    )
+  ) {
+    db.$client.exec(
+      "ALTER TABLE threads DROP COLUMN parent_notifications_hold_while_idle",
+    );
+  }
+}
+
 export function dropThreadParentNotificationsColumn(db: DbConnection): void {
+  dropThreadParentNotificationsHoldColumn(db);
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(threads)")
     .all();

@@ -36,6 +36,8 @@ import type {
 import {
   evaluateThreadLifecycleEvent,
   effectiveDisplayStatus,
+  resolveParentNotificationsChoice,
+  splitParentNotificationsChoice,
   threadSearchSourceKindSchema,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -352,7 +354,9 @@ export function createThread(
           originKind,
           originPluginId: input.originPluginId ?? null,
           visibility,
-          parentNotifications: input.parentNotifications ?? "auto",
+          ...splitParentNotificationsChoice(
+            input.parentNotifications ?? "auto",
+          ),
           lastReadAt: now,
           latestAttentionAt: now,
           createdAt: now,
@@ -1953,7 +1957,7 @@ export function updateThread(
   }
   if (
     "parentNotifications" in input &&
-    input.parentNotifications !== existing.parentNotifications
+    input.parentNotifications !== resolveParentNotificationsChoice(existing)
   ) {
     changes.push("title-changed");
   }
@@ -1988,8 +1992,8 @@ export function updateThread(
   }
   if ("parentThreadId" in input) set.parentThreadId = input.parentThreadId;
   if ("visibility" in input) set.visibility = input.visibility;
-  if ("parentNotifications" in input) {
-    set.parentNotifications = input.parentNotifications;
+  if (input.parentNotifications !== undefined) {
+    Object.assign(set, splitParentNotificationsChoice(input.parentNotifications));
   }
 
   const updated = db

@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   parseStockStoredWaitingOn,
   stockQueuedMessageWaitingOnSchema,
+  stockThreadParentNotificationsSchema,
   stockTimeWaitIsDue,
 } from "../helpers/stock-queued-message-wait.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
@@ -374,6 +375,34 @@ describe("inbox tell to a live turn", () => {
 });
 
 describe("parent notice under parentNotifications inbox", () => {
+  it("stores the inbox choice where a stock parse of parent_notifications still succeeds", async () => {
+    await withTestHarness(async (harness) => {
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: seedHostSession(harness.deps, { id: "host-inbox-stock-column" })
+          .host.id,
+        path: WORKSPACE_PATH,
+      });
+      const child = seedThread(harness.deps, {
+        projectId: project.id,
+        parentNotifications: "inbox",
+      });
+
+      const row = harness.db.$client
+        .prepare<
+          [string],
+          { stored: string; hold: number | null }
+        >("SELECT parent_notifications AS stored, parent_notifications_hold_while_idle AS hold FROM threads WHERE id = ?")
+        .get(child.id);
+      expect(stockThreadParentNotificationsSchema.parse(row?.stored)).toBe(
+        "auto",
+      );
+      expect(row?.hold).toBe(1);
+      expect(stockThreadParentNotificationsSchema.safeParse("inbox").success).toBe(
+        false,
+      );
+    });
+  });
+
   const subject = {
     kind: "thread",
     threadId: "child-held",
