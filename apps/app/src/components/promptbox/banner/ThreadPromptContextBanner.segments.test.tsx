@@ -183,7 +183,7 @@ afterEach(() => {
 describe("thread context segments", () => {
   it("shows the held-for-next-turn banner row when inbox messages are held", () => {
     renderBanner({
-      core: { ...EMPTY_CORE, queuedInboxHeld: "2 held for your next turn" },
+      core: { ...EMPTY_CORE, queuedWait: "2 held for your next turn" },
     });
 
     expect(
@@ -262,21 +262,21 @@ describe("thread context segments", () => {
     {
       label: "PR, changed files, and a workspace wait",
       gitSection: true,
-      queuedWorkspaceWait: "Waiting for another thread",
+      queuedWait: "Waiting for another thread",
       expectPullRequestLabel: false,
       expectGitCompactHide: true,
     },
     {
       label: "PR and changed files without a wait",
       gitSection: true,
-      queuedWorkspaceWait: null,
+      queuedWait: null,
       expectPullRequestLabel: true,
       expectGitCompactHide: false,
     },
     {
       label: "changed files and a workspace wait",
       gitSection: true,
-      queuedWorkspaceWait: "Waiting for another thread",
+      queuedWait: "Waiting for another thread",
       expectPullRequestLabel: false,
       expectGitCompactHide: false,
       includePullRequest: false,
@@ -302,7 +302,7 @@ describe("thread context segments", () => {
       renderBanner({
         core: {
           ...EMPTY_CORE,
-          queuedWorkspaceWait: scenario.queuedWorkspaceWait,
+          queuedWait: scenario.queuedWait,
         },
         git: scenario.gitSection ? git : null,
       });

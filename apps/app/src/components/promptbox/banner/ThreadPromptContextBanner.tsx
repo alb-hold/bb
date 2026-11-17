@@ -117,8 +117,7 @@ export { isThreadDisplayStatusBannerActive } from "./thread-banner-active-status
 
 export interface CoreThreadContext {
   parentThread: ThreadPromptParentThreadSection | null;
-  queuedInboxHeld?: string | null;
-  queuedWorkspaceWait?: string | null;
+  queuedWait?: string | null;
   workspaceSharingThreadCount?: number | null;
 }
 
@@ -1121,14 +1120,12 @@ function WritableContextBanner({
   input,
   expandedSegment,
   onToggleSegment,
-  queuedInboxHeld,
-  queuedWorkspaceWait,
+  queuedWait,
 }: {
   input: ExperimentalThreadContextSegmentInput;
   expandedSegment: string | null;
   onToggleSegment: (key: string) => void;
-  queuedInboxHeld?: string | null;
-  queuedWorkspaceWait?: string | null;
+  queuedWait?: string | null;
 }) {
   const { workspaceSharingThreadCount: sharingThreadCount } =
     useCoreThreadContext();
@@ -1142,15 +1139,7 @@ function WritableContextBanner({
       key: threadContextSegmentKey(slot),
       pluginId: slot.pluginId,
     })),
-    ...(queuedInboxHeld
-      ? [
-          {
-            key: `${CORE_THREAD_CONTEXT_OWNER}/inbox-held`,
-            pluginId: CORE_THREAD_CONTEXT_OWNER,
-          },
-        ]
-      : []),
-    ...(queuedWorkspaceWait
+    ...(queuedWait
       ? [
           {
             key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`,
@@ -1188,8 +1177,7 @@ function WritableContextBanner({
     <>
       {observers}
       {entries.length > 0 ||
-      queuedWorkspaceWait ||
-      queuedInboxHeld ||
+      queuedWait ||
       workspaceSharingThreadCount > 1 ? (
         <PromptStackCard
           ariaLabel="Thread context before sending"
@@ -1222,26 +1210,23 @@ function WritableContextBanner({
                 </span>
               </div>
             ) : null}
-            {[queuedInboxHeld, queuedWorkspaceWait].map((text) =>
-              text ? (
-                <div
-                  key={text}
-                  className={cn(
-                    "flex min-w-0 items-center gap-1.5 text-xs",
-                    PROMPT_STACK_INLAY_SEGMENT_CLASS,
-                  )}
-                  role="status"
-                  aria-label={text}
-                >
-                  <Icon
-                    name="TimeSchedule"
-                    className="size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span className="truncate">{text}</span>
-                </div>
-              ) : null,
-            )}
+            {queuedWait ? (
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-1.5 text-xs",
+                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
+                )}
+                role="status"
+                aria-label={queuedWait}
+              >
+                <Icon
+                  name="TimeSchedule"
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{queuedWait}</span>
+              </div>
+            ) : null}
             {entries.map((entry) => mount(entry, "action"))}
           </div>
           {entries.map((entry) => mount(entry, "details"))}
@@ -1309,8 +1294,7 @@ export function ThreadPromptContextBanner({
         input={input}
         expandedSegment={expandedSegment}
         onToggleSegment={onToggleSegment}
-        queuedInboxHeld={core.queuedInboxHeld}
-        queuedWorkspaceWait={core.queuedWorkspaceWait}
+        queuedWait={core.queuedWait}
       />
     </CoreThreadContextContext.Provider>
   );

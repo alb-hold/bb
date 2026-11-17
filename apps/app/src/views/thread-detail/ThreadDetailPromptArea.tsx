@@ -2279,14 +2279,13 @@ export function ThreadDetailPromptArea({
           }}
           core={{
             parentThread: parentThreadSection,
-            queuedInboxHeld: describeHeldInboxCount(queuedMessages),
-            queuedWorkspaceWait: (() => {
+            queuedWait: (() => {
               const waiting = queuedMessages.find(
                 (message) => message.waitingOn?.kind === "workspace-busy",
               )?.waitingOn;
               return waiting?.kind === "workspace-busy"
                 ? `Waiting for thread ${waiting.holderThreadId} to finish using the shared workspace`
-                : null;
+                : describeHeldInboxCount(queuedMessages);
             })(),
             workspaceSharingThreadCount,
           }}
