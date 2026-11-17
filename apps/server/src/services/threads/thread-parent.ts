@@ -27,6 +27,7 @@ export function isParentNotifiableChildThread<
   }
   switch (thread.parentNotifications) {
     case "auto":
+    case "inbox":
       return true;
     case "stuck":
       return outcome !== "completed";

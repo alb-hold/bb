@@ -93,6 +93,7 @@ export interface RecordQueuedMessageWaitArgs {
   waitingOn: QueuedMessageWaitingOn;
   sendAt: number | null;
   claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
+  requireThreadStatus?: Thread["status"];
 }
 
 export function recordQueuedMessageWait(
@@ -111,6 +112,12 @@ export function recordQueuedMessageWait(
         if (
           !currentThread ||
           currentThread.parentThreadId !== args.thread.parentThreadId
+        ) {
+          throw new ThreadQueueScopeChangedError();
+        }
+        if (
+          args.requireThreadStatus !== undefined &&
+          currentThread.status !== args.requireThreadStatus
         ) {
           throw new ThreadQueueScopeChangedError();
         }

@@ -145,6 +145,7 @@ export function createAutomaticQueuedMessageGroupEligibility(
         case "plugin":
           return true;
         case "time":
+        case "inbox":
           return member.sendAt !== null && member.sendAt <= args.now;
         case "thread-busy":
           return (

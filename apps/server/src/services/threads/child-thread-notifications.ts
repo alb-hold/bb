@@ -7,6 +7,7 @@ import type {
 import {
   isNativeTerminalThread,
   getNativeTerminalThread,
+  getThread,
   listActiveBackgroundTaskCountsByThreadIds,
 } from "@bb/db";
 import { renderTemplate } from "@bb/templates";
@@ -36,6 +37,7 @@ export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
 export interface ChildThreadTurnNotificationBatchItem {
   activeWorkflowCount: number;
   childThread: ChildThreadNotificationSource;
+  holdWhileParentIdle?: boolean;
   terminalOutput: string | null;
   turnStatus: ThreadEventTurnStatus;
   failureContext?: string;
@@ -542,6 +544,7 @@ async function flushChildThreadTurnNotificationBatch(
     await queueParentSystemMessage(deps, {
       input,
       parentThreadId,
+      holdWhileIdle: batch.items.every((item) => item.holdWhileParentIdle === true),
       ...childThreadTurnStatusBatchTaxonomy(batch.items),
     });
   } catch (error) {
@@ -575,6 +578,9 @@ async function queueChildThreadTurnNotificationBatchItem(
   const item: ChildThreadTurnNotificationBatchItem = {
     activeWorkflowCount: getChildThreadActiveWorkflowCount(deps, args),
     childThread: args.childThread,
+    holdWhileParentIdle:
+      args.turnStatus === "completed" &&
+      getThread(deps.db, args.childThread.id)?.parentNotifications === "inbox",
     terminalOutput: await getChildThreadCompletionOutput(deps, args),
     turnStatus: args.turnStatus,
     ...(args.failureContext ? { failureContext: args.failureContext } : {}),

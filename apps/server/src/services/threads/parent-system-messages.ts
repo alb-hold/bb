@@ -7,6 +7,7 @@ import {
   type DbTransaction,
 } from "@bb/db";
 import { isNativeTerminalThread } from "@bb/db";
+import { QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS } from "@bb/domain";
 import type {
   PromptInput,
   PromptMentionResource,
@@ -70,6 +71,7 @@ export interface ParentSystemMessageTaxonomy {
 }
 
 interface QueueParentSystemMessageArgs extends ParentSystemMessageTaxonomy {
+  holdWhileIdle?: boolean;
   input: PromptInput[];
   parentThreadId: string;
 }
@@ -470,6 +472,18 @@ export async function queueParentSystemMessage(
     deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
       parentThread.id,
     );
+  if (
+    args.holdWhileIdle === true &&
+    !hasPendingInteraction &&
+    parentThread.status === "idle"
+  ) {
+    return holdParentSystemMessageInInbox(deps, {
+      input: args.input,
+      parentThreadId: parentThread.id,
+      systemMessageKind: args.systemMessageKind,
+      systemMessageSubject: args.systemMessageSubject,
+    });
+  }
   let hostUnavailable = false;
   if (!hasPendingInteraction) {
     try {
@@ -531,6 +545,42 @@ export async function queueParentSystemMessage(
     requestQueuedMessageDispatch(deps, {
       kind: "thread-ready",
       threadId: parentThread.id,
+    });
+  }
+  return true;
+}
+
+async function holdParentSystemMessageInInbox(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: QueueParentSystemMessageArgs,
+): Promise<boolean> {
+  const execution = await buildExecutionOptions(
+    deps,
+    {},
+    { threadId: args.parentThreadId },
+  );
+  createQueuedThreadMessage(deps.db, deps.hub, {
+    threadId: args.parentThreadId,
+    content: args.input,
+    senderThreadId: null,
+    origin: null,
+    originPluginId: null,
+    model: execution.model,
+    reasoningLevel: execution.reasoningLevel,
+    permissionMode: execution.permissionMode,
+    serviceTier: execution.serviceTier,
+    waitingOn: { kind: "inbox" },
+    sendAt: Date.now() + QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+    payload: { kind: "inline" },
+    systemNotice: {
+      kind: args.systemMessageKind,
+      subject: args.systemMessageSubject,
+    },
+  });
+  if (getThread(deps.db, args.parentThreadId)?.status !== "idle") {
+    requestQueuedMessageDispatch(deps, {
+      kind: "turn-started",
+      threadId: args.parentThreadId,
     });
   }
   return true;

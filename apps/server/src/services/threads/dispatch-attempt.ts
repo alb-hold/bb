@@ -18,6 +18,7 @@ import {
   createStandaloneBuiltinCompactCommandInput,
   isStandaloneBuiltinClearCommand,
   promptInputSchema,
+  QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
   type PromptInput,
   type QueuedMessagePayload,
   type QueuedMessageDeliveryMode,
@@ -277,7 +278,9 @@ export function attemptDispatch(
 function deliveryModeForSendMode(
   mode: SendMessageRequest["mode"],
 ): QueuedMessageDeliveryMode {
-  return mode === "queue-if-active" || mode === "start" ? "queue" : "steer";
+  return mode === "queue-if-active" || mode === "start" || mode === "inbox"
+    ? "queue"
+    : "steer";
 }
 
 async function runOperationDispatch(
@@ -360,6 +363,17 @@ async function runDispatchAttempt(
       providerId: thread.providerId,
       sources: payload.executionInputSources,
     });
+  }
+  let inboxHoldUntil: number | null = null;
+  if (payload.mode === "inbox") {
+    const { deliverBy, ...rest } = payload;
+    const holdUntil = Math.min(
+      Date.now() + QUEUED_MESSAGE_INBOX_HOLD_LIMIT_MS,
+      deliverBy ?? Number.POSITIVE_INFINITY,
+    );
+    inboxHoldUntil = holdUntil > Date.now() ? holdUntil : null;
+    payload = { ...rest, mode: "queue-if-active" };
+    args = { ...args, payload };
   }
   if (
     payload.mode === "queue-if-active" &&
@@ -485,6 +499,7 @@ async function runDispatchAttempt(
   const waitOn = async (
     waitingOn: QueuedMessageWaitingOn,
     sendAt: number | null,
+    requireThreadStatus?: Thread["status"],
   ): Promise<DispatchAttemptOutcome> => {
     await prepareQueueOverrideRecovery();
     const entry = recordQueuedMessageWait(deps, {
@@ -493,6 +508,7 @@ async function runDispatchAttempt(
       waitingOn,
       sendAt,
       claimed,
+      ...(requireThreadStatus !== undefined ? { requireThreadStatus } : {}),
     });
     if (entry === null) {
       return { kind: "dispatched" };
@@ -517,6 +533,20 @@ async function runDispatchAttempt(
     const sendAt = payload.sendAt ?? null;
     if (!sendNow && sendAt !== null && sendAt > Date.now()) {
       continued.outcome = await waitOn({ kind: "time" }, sendAt);
+      return;
+    }
+
+    if (
+      inboxHoldUntil !== null &&
+      !sendNow &&
+      !firstDispatch &&
+      thread.status === "idle"
+    ) {
+      continued.outcome = await waitOn(
+        { kind: "inbox" },
+        inboxHoldUntil,
+        "idle",
+      );
       return;
     }
 
