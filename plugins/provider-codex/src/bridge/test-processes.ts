@@ -166,6 +166,22 @@ export function killTestProcessGroup(
   }
 }
 
+export function killSurvivingTestProcessGroupMembers(
+  child: ChildProcess,
+  deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): boolean {
+  const pid = child.pid;
+  if (pid === undefined || process.platform === "win32") return false;
+  if (!scanGroup(pid, deadline).live) return false;
+  try {
+    return process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH")
+      return false;
+    throw error;
+  }
+}
+
 export type TestProcessCleanup = (sharedDeadline?: number) => Promise<void>;
 
 export async function drainTestProcessCleanups(

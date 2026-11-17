@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, onTestFinished } from "vitest";
 import {
   drainTestProcessCleanups,
+  killSurvivingTestProcessGroupMembers,
   killTestProcessGroup,
   trackTestProcess,
 } from "./test-processes.js";
@@ -83,6 +84,31 @@ describe.runIf(process.platform !== "win32")(
         new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
       );
       expect(Date.now() - started).toBeLessThan(LEAK_DEADLINE_MS + MARGIN_MS);
+    }, START_WAIT_MS + LEADER_EXIT_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
+
+    it("reaps a background grandchild that outlives its exited leader so cleanup then succeeds", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "bb-test-reap-writer-"));
+      const marker = join(directory, "pid");
+      const child = spawn(process.execPath, ["-e", `
+        const { spawn } = require("node:child_process");
+        const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: "ignore" });
+        descendant.unref();
+      `], { detached: true, stdio: "ignore" });
+      const leaderExited = once(child, "exit");
+      onTestFinished(() => {
+        try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+        rmSync(directory, { recursive: true, force: true });
+      });
+      const cleanup = trackTestProcess(child, LEAK_DEADLINE_MS);
+      const setupDeadline = Date.now() + START_WAIT_MS;
+      while (!existsSync(marker)) {
+        if (Date.now() >= setupDeadline) throw new Error("writer did not start");
+        await delay(10);
+      }
+      await leaderExitWithin([leaderExited], "leader");
+      expect(killSurvivingTestProcessGroupMembers(child)).toBe(true);
+      await cleanup();
+      expect(killSurvivingTestProcessGroupMembers(child)).toBe(false);
     }, START_WAIT_MS + LEADER_EXIT_WAIT_MS + LEAK_DEADLINE_MS + MARGIN_MS);
 
     it("bounds the total time of several leaking cleanups to one deadline and names every writer", async () => {

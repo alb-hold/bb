@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
 import {
   drainTestProcessCleanups,
+  killSurvivingTestProcessGroupMembers,
   killTestProcessGroup,
   TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS,
   type TestProcessCleanup,
@@ -188,6 +189,7 @@ function runPooledTurn(): Promise<{ status: number | null; output: string }> {
       },
     );
     processCleanups.push(trackTestProcess(child));
+    child.on("exit", () => killSurvivingTestProcessGroupMembers(child));
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
@@ -253,6 +255,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
         stdio: ["pipe", "pipe", "ignore"],
       });
       processCleanups.push(trackTestProcess(child));
+      child.on("exit", () => killSurvivingTestProcessGroupMembers(child));
       const timer = setTimeout(() => {
         killTestProcessGroup(child, "SIGKILL");
         reject(new Error("model/list timed out"));
