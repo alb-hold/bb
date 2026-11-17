@@ -815,6 +815,9 @@ describe("bridge", () => {
   beforeEach(() => {
     previousHome = process.env.HOME;
     previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const hermeticConfigDir = mkdtempSync(join(tmpdir(), "bb-claude-cfg-"));
+    tempDirs.push(hermeticConfigDir);
+    process.env.CLAUDE_CONFIG_DIR = hermeticConfigDir;
     vi.clearAllMocks();
     if (nativeOpenRef.current) {
       openMock.mockImplementation(nativeOpenRef.current);
@@ -8294,6 +8297,100 @@ describe("bridge", () => {
       queries.at(-1)?.finish();
       await bridge.waitForResponse(4);
       queries.forEach((query) => query.finish());
+      bridge.restore();
+    }
+  });
+
+  it("seeds autoCompactWindow at spawn and re-applies it live when the user setting changes", async () => {
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    if (!configDir) throw new Error("Expected hermetic Claude config dir");
+    const settingsPath = join(configDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 400000 }));
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+    const turnOptions = {
+      permissionMode: "accept-edits",
+      permissionScope: "workspace",
+      approvalReviewer: "user",
+      permissionEscalation: "ask",
+      model: "claude-haiku-4-5",
+      reasoningLevel: "low",
+      providerOptions: {
+        workflowsEnabled: false,
+        memoryEnabled: true,
+        providerSubagentsEnabled: true,
+      },
+    };
+
+    try {
+      const threadId = "thread-auto-compact-window";
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: { ...turnOptions, instructions: "test" },
+      });
+      await bridge.waitForResponse(1);
+
+      const query = queries[0];
+      const call = getLatestQueryCall();
+      if (!query) throw new Error("Expected live Claude query");
+      expect(call.options.settings).toMatchObject({ autoCompactWindow: 400000 });
+
+      writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
+      bridge.sendRequest(2, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "after the setting moved" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(2);
+
+      expect(queries).toHaveLength(1);
+      expect(query.close).not.toHaveBeenCalled();
+      expect(query.applyFlagSettings).toHaveBeenCalledWith({
+        autoCompactWindow: 200000,
+      });
+      const callsAfterChange = query.applyFlagSettings.mock.calls.length;
+
+      bridge.sendRequest(3, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "unchanged setting" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(3);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      writeFileSync(settingsPath, JSON.stringify({}));
+      bridge.sendRequest(4, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "setting removed" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(4);
+      expect(query.applyFlagSettings).toHaveBeenLastCalledWith({
+        autoCompactWindow: null,
+      });
+    } finally {
+      for (const query of queries) query.finish();
+      await stopBridgeThread({
+        bridge,
+        queries,
+        threadId: "thread-auto-compact-window",
+      });
       bridge.restore();
     }
   });

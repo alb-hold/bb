@@ -16,6 +16,7 @@ import type {
 } from "./sdk-session.js";
 
 export interface BuildSessionOptionsArgs {
+  autoCompactWindow?: number;
   additionalWorkspaceWriteRoots?: readonly string[];
   baseInstructions?: string;
   cwd: string;
@@ -81,6 +82,9 @@ export function toSdkEffort(
 
 function buildFlagSettings(params: BuildSessionOptionsArgs): Settings {
   return {
+    ...(params.autoCompactWindow !== undefined
+      ? { autoCompactWindow: params.autoCompactWindow }
+      : {}),
     autoMemoryEnabled: params.memoryEnabled ?? true,
     enableWorkflows: params.workflowsEnabled,
     ultracode: params.reasoningLevel === "ultracode",

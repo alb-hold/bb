@@ -110,6 +110,7 @@ import {
   type BuildSessionOptionsArgs,
   type PermissionEscalationWorkContext,
 } from "./session-options.js";
+import { readUserAutoCompactWindow } from "./user-settings.js";
 import {
   createClaudeSkillPluginsRoot,
   ensureClaudeSkillPlugin,
@@ -332,6 +333,7 @@ interface SessionConstructionConfig {
 }
 
 interface ClaudeLiveSessionSettings {
+  autoCompactWindow?: number;
   fullAccessApprovalsEnabled: boolean;
   memoryEnabled: boolean;
   model?: string;
@@ -971,6 +973,10 @@ async function applyLiveSessionSettings(
     seedModelContextWindowHint(threadSession, threadId, next.model);
   }
 
+  if (current.autoCompactWindow !== next.autoCompactWindow) {
+    await threadSession.session.applyAutoCompactWindow(next.autoCompactWindow);
+  }
+
   if (
     current.memoryEnabled !== next.memoryEnabled ||
     current.reasoningLevel !== next.reasoningLevel ||
@@ -1226,7 +1232,9 @@ function toSessionConstructionConfig(
 function toInitialLiveSessionSettings(
   params: SessionConstructionParams,
 ): ClaudeLiveSessionSettings {
+  const autoCompactWindow = readUserAutoCompactWindow();
   return {
+    ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
     fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
@@ -1245,7 +1253,9 @@ function withTurnLiveSessionSettings(
 ): ClaudeLiveSessionSettings {
   const model = params.model ?? current.model;
   const reasoningLevel = params.reasoningLevel ?? current.reasoningLevel;
+  const autoCompactWindow = readUserAutoCompactWindow();
   return {
+    ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
     fullAccessApprovalsEnabled:
       params.fullAccessApprovalsEnabled ?? current.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? current.memoryEnabled,
