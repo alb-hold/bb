@@ -40,7 +40,7 @@ const ROUTED_WINDOW_MS = 24 * 60 * 60 * 1_000;
 function poolProviderFor(providerId: string): PoolProvider | null {
   if (providerId === "claude-code") return "claude";
   if (providerId === "codex") return "codex";
-  if (providerId === "acp-gemini") return "gemini";
+  if (providerId === "acp-antigravity-acp") return "gemini";
   return null;
 }
 
@@ -180,6 +180,9 @@ export class PoolOperations {
         ...(imported.geminiProject === undefined
           ? {}
           : { geminiProject: imported.geminiProject }),
+        ...(imported.geminiEndpoint === undefined
+          ? {}
+          : { geminiEndpoint: imported.geminiEndpoint }),
         subscriptionType: imported.subscriptionType,
         rateLimitTier: imported.rateLimitTier,
         enabled: true,

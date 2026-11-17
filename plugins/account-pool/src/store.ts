@@ -532,6 +532,21 @@ export class AccountStore {
     );
   }
 
+  async setGeminiEndpoint(
+    id: string,
+    geminiEndpoint: "prod" | "daily",
+    signal?: AbortSignal,
+  ): Promise<Account | null> {
+    return this.update(
+      id,
+      (account) =>
+        account.geminiEndpoint === geminiEndpoint
+          ? account
+          : { ...account, geminiEndpoint },
+      signal,
+    );
+  }
+
   async replaceCredentials(
     id: string,
     identity: Partial<

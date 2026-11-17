@@ -86,6 +86,7 @@ export interface ImportedProviderAccount {
   organizationUuid?: string;
   codexAccountId?: string;
   geminiProject?: string;
+  geminiEndpoint?: "prod" | "daily";
   subscriptionType: string | null;
   rateLimitTier: string | null;
   secret: Extract<AccountSecret, { kind: "oauth" }>;
@@ -108,7 +109,11 @@ export interface ProviderAdapter {
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
   };
-  upstreamUrl(request: Request, settings: AccountPoolConfig): URL;
+  upstreamUrl(
+    request: Request,
+    settings: AccountPoolConfig,
+    account: Account,
+  ): URL;
   requestHeaders(
     inbound: Headers,
     account: Account,

@@ -12927,7 +12927,7 @@ describe("Account Pool subscription sign-in repair", () => {
             planLabel: null,
           },
           {
-            providerId: "acp-gemini",
+            providerId: "acp-antigravity-acp",
             displayName: "Gemini",
             status: "unauthenticated",
             accountEmail: "gemini@example.com",

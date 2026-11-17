@@ -38,8 +38,18 @@ export function geminiOAuthClientFromEnv(
 }
 
 export const DEFAULT_GEMINI_REFRESH_URL = "https://oauth2.googleapis.com/token";
-export const DEFAULT_GEMINI_UPSTREAM_BASE_URL =
-  "https://cloudcode-pa.googleapis.com";
+// antigravity-acp 1.5.0 (onboarding module): the first loadCodeAssist goes to
+// Prod, then `_determine_endpoint` sends an account whose paidTier has
+// usesGcpTos (Enterprise/Workspace) to Prod and every consumer tier (Free,
+// Google AI Pro/Ultra) to Prod Daily.
+export interface GeminiUpstreamBaseUrls {
+  prod: string;
+  daily: string;
+}
+export const DEFAULT_GEMINI_UPSTREAM_BASE_URLS: GeminiUpstreamBaseUrls = {
+  prod: "https://cloudcode-pa.googleapis.com",
+  daily: "https://daily-cloudcode-pa.googleapis.com",
+};
 export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -62,7 +72,11 @@ const refreshResponseSchema = z
   .passthrough();
 
 const tierSchema = z
-  .object({ id: z.string().nullish(), name: z.string().nullish() })
+  .object({
+    id: z.string().nullish(),
+    name: z.string().nullish(),
+    usesGcpTos: z.boolean().nullish(),
+  })
   .passthrough()
   .nullish();
 
@@ -110,6 +124,7 @@ const PRIMARY_BUCKET = /pro|carbon|argon|hydrogen|orchestrator/iu;
 export interface GeminiProjectInfo {
   project: string | null;
   tier: string | null;
+  endpoint: "prod" | "daily";
 }
 
 export function parseLoadCodeAssist(payload: unknown): GeminiProjectInfo | null {
@@ -121,6 +136,7 @@ export function parseLoadCodeAssist(payload: unknown): GeminiProjectInfo | null 
     project: project === null || project === "" ? null : project,
     tier:
       parsed.data.paidTier?.name ?? parsed.data.currentTier?.name ?? null,
+    endpoint: parsed.data.paidTier?.usesGcpTos === true ? "prod" : "daily",
   };
 }
 
@@ -404,13 +420,9 @@ async function googleEmail(
   }
 }
 
-const LOAD_CODE_ASSIST_BODY = {
-  metadata: {
-    ideType: "IDE_UNSPECIFIED",
-    platform: "PLATFORM_UNSPECIFIED",
-    pluginType: "GEMINI",
-  },
-};
+// Exactly what antigravity-acp 1.5.0 sends (`_IDE_TYPE = "ANTIGRAVITY"`), so
+// Code Assist attributes the call to the Antigravity client.
+const LOAD_CODE_ASSIST_BODY = { metadata: { ideType: "ANTIGRAVITY" } };
 
 function bodyWithProject(body: Uint8Array, project: string): Uint8Array {
   let parsed: unknown;
@@ -455,14 +467,20 @@ function sessionId(body: Uint8Array): string | null {
 
 export function createGeminiAdapter(options: {
   refreshUrl: string;
-  upstreamBaseUrl: string;
+  upstreamBaseUrls: GeminiUpstreamBaseUrls;
   userinfoUrl?: string;
   oauthClient?: GeminiOAuthClient;
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
   now?: () => number;
 }): ProviderAdapter {
-  const baseUrl = options.upstreamBaseUrl.replace(/\/+$/u, "");
+  const bases = {
+    prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
+    daily: options.upstreamBaseUrls.daily.replace(/\/+$/u, ""),
+  };
+  // A row without an endpoint yet is sent where the runtime starts: Prod.
+  const baseFor = (account: { geminiEndpoint?: "prod" | "daily" }) =>
+    bases[account.geminiEndpoint ?? "prod"];
   const doFetch: typeof fetch = (input, init) =>
     (options.fetch ?? fetch)(input, init);
   const clock = () => (options.now ?? Date.now)();
@@ -500,7 +518,7 @@ export function createGeminiAdapter(options: {
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           doFetch,
-          baseUrl,
+          bases.prod,
           "loadCodeAssist",
           accessToken,
           LOAD_CODE_ASSIST_BODY,
@@ -516,6 +534,7 @@ export function createGeminiAdapter(options: {
         label: email ?? "Gemini account",
         email,
         geminiProject: project,
+        geminiEndpoint: info.endpoint,
         subscriptionType: info.tier,
         rateLimitTier: null,
         secret: {
@@ -540,13 +559,13 @@ export function createGeminiAdapter(options: {
             : body,
       };
     },
-    upstreamUrl(request) {
+    upstreamUrl(request, _settings, account) {
       const url = new URL(request.url);
       // Every Code Assist call is `<mount>/v1internal:<method>`; anchor on the
       // API segment so the mount prefix never leaks upstream.
       const api = url.pathname.indexOf("/v1internal");
       const rest = api < 0 ? url.pathname : url.pathname.slice(api);
-      return new URL(`${baseUrl}${rest}${url.search}`);
+      return new URL(`${baseFor(account)}${rest}${url.search}`);
     },
     requestHeaders(inbound, _account, secret) {
       if (secret.kind !== "oauth")
@@ -607,7 +626,7 @@ export function createGeminiAdapter(options: {
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           context.fetch,
-          baseUrl,
+          bases.prod,
           "loadCodeAssist",
           secret.accessToken,
           LOAD_CODE_ASSIST_BODY,
@@ -624,6 +643,12 @@ export function createGeminiAdapter(options: {
           project,
           context.signal,
         );
+      if (info.endpoint !== context.account.geminiEndpoint)
+        await context.accounts.setGeminiEndpoint(
+          context.account.id,
+          info.endpoint,
+          context.signal,
+        );
       if (info.tier !== null && info.tier !== context.account.subscriptionType)
         await context.accounts.setSubscriptionType(
           context.account.id,
@@ -634,7 +659,7 @@ export function createGeminiAdapter(options: {
       const windows = geminiWindowsFromQuota(
         await codeAssistCall(
           context.fetch,
-          baseUrl,
+          bases[info.endpoint],
           "retrieveUserQuotaSummary",
           secret.accessToken,
           { project },

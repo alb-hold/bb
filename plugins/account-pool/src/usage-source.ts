@@ -29,7 +29,7 @@ function usageProviderId(provider: AccountSummary["provider"]): string {
   return provider === "claude"
     ? "claude-code"
     : provider === "gemini"
-      ? "acp-gemini"
+      ? "acp-antigravity-acp"
       : "codex";
 }
 

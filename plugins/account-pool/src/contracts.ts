@@ -167,6 +167,7 @@ export const accountSchema = z
     accountUuid: z.string().uuid().nullable().default(null),
     codexAccountId: z.string().min(1).optional(),
     geminiProject: z.string().min(1).optional(),
+    geminiEndpoint: z.enum(["prod", "daily"]).optional(),
     subscriptionType: z.string().nullable(),
     rateLimitTier: z.string().nullable(),
     enabled: z.boolean(),

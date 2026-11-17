@@ -357,7 +357,7 @@ export function registerPoolCli(
               type: "string",
               placeholder: "dir",
               description:
-                "Gemini only: the GEMINI_CLI_HOME directory a `gemini` sign-in wrote into. One directory per Google account",
+                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account",
             },
             "api-key": {
               type: "string",
@@ -395,7 +395,7 @@ export function registerPoolCli(
               if (input.options.login) {
                 if (provider === "gemini") {
                   throw new PluginCliError(
-                    "Gemini sign-in is not run by bb. Sign in with `GEMINI_CLI_HOME=<dir> gemini`, then add it with --provider gemini --import --home <dir>.",
+                    "Gemini sign-in is not run by this command. Sign in through bb's Antigravity (antigravity-acp) agent with GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1, then add it with --provider gemini --import --home <dir>.",
                     { code: "invalid_value" },
                   );
                 }

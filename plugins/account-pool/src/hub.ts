@@ -29,7 +29,8 @@ import {
 import {
   createGeminiAdapter,
   DEFAULT_GEMINI_REFRESH_URL,
-  DEFAULT_GEMINI_UPSTREAM_BASE_URL,
+  DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
+  type GeminiUpstreamBaseUrls,
   geminiOAuthClientFromEnv,
   type GeminiOAuthClient,
 } from "./gemini-adapter.js";
@@ -78,6 +79,8 @@ const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
 const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
+// Short, so a revoked thread token stops working at the runtime's next refresh.
+const GEMINI_HUB_TOKEN_TTL_SECONDS = 300;
 const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
 // Google's RESOURCE_EXHAUSTED body carries ErrorInfo after a long message.
@@ -451,6 +454,48 @@ export class AccountPoolHub {
       hostId,
       threadRoute,
     );
+  }
+
+  /**
+   * antigravity-acp refreshes the token in its GEMINI_HOME against this route.
+   * That token is the thread's hub token, so the access token handed back is
+   * the same hub token while it still authenticates; the hub swaps it for the
+   * selected Google account's credential on each Code Assist call. The form
+   * body carries the token and is never logged.
+   */
+  async handleGeminiTokenRefresh(request: Request): Promise<Response> {
+    const json = (status: number, body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      });
+    let refreshToken: string | null = null;
+    try {
+      const form = new URLSearchParams(await request.text());
+      if (form.get("grant_type") === "refresh_token")
+        refreshToken = form.get("refresh_token");
+    } catch {
+      refreshToken = null;
+    }
+    if (refreshToken === null || refreshToken === "")
+      return json(400, { error: "invalid_request" });
+    const { hostId } = await this.authenticateRoute(
+      new Request(request.url, {
+        method: "POST",
+        headers: { "x-bb-account-pool-token": refreshToken },
+      }),
+      "gemini",
+    );
+    if (hostId === null) return json(400, { error: "invalid_grant" });
+    if (!this.accepting) return json(503, { error: "temporarily_unavailable" });
+    return json(200, {
+      access_token: refreshToken,
+      expires_in: GEMINI_HUB_TOKEN_TTL_SECONDS,
+      token_type: "Bearer",
+    });
   }
 
   async handleOAuthProxy(request: Request): Promise<Response> {
@@ -2015,7 +2060,11 @@ export class AccountPoolHub {
     try {
       const upstreamBody = new ArrayBuffer(body.byteLength);
       new Uint8Array(upstreamBody).set(body);
-      const url = adapter.upstreamUrl(request, this.options.getSettings());
+      const url = adapter.upstreamUrl(
+        request,
+        this.options.getSettings(),
+        account,
+      );
       const headers = adapter.requestHeaders(request.headers, account, secret);
       const response = await this.options
         .fetch(url, {
@@ -2267,8 +2316,9 @@ export function createHub(options: {
   codexRefreshUrl?: string;
   codexUsageUrl?: string;
   geminiRefreshUrl?: string;
+  geminiUserinfoUrl?: string;
   geminiOAuthClient?: GeminiOAuthClient;
-  geminiUpstreamBaseUrl?: string;
+  geminiUpstreamBaseUrls?: GeminiUpstreamBaseUrls;
   importGeminiCredentials?: (
     home?: string,
   ) => Promise<ImportedGeminiCredentials>;
@@ -2310,10 +2360,11 @@ export function createHub(options: {
       "gemini",
       createGeminiAdapter({
         refreshUrl: options.geminiRefreshUrl ?? DEFAULT_GEMINI_REFRESH_URL,
+        userinfoUrl: options.geminiUserinfoUrl,
         oauthClient:
           options.geminiOAuthClient ?? geminiOAuthClientFromEnv(process.env),
-        upstreamBaseUrl:
-          options.geminiUpstreamBaseUrl ?? DEFAULT_GEMINI_UPSTREAM_BASE_URL,
+        upstreamBaseUrls:
+          options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
         importCredentials: options.importGeminiCredentials,
         fetch: options.fetch,
         now: options.now,

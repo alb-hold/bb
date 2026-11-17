@@ -18,11 +18,17 @@ import {
   parseGeminiCredentials,
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
+import { pruneGeminiHomes, writeGeminiHome } from "./gemini-home.js";
+import { GEMINI_TOKEN_ROUTE } from "./host-contract.js";
 import { PARENT_TOKEN_ENV, PARENT_URL_ENV } from "./parent-pool.js";
 import { createAccountPoolPlugin } from "./server.js";
 import { createAccountPoolTestHost } from "./test-host.js";
 
 // Every credential below is a fake string. Nothing here reaches Google.
+
+const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
+const THREAD = "thr_gemini2345";
+const CLIENT = { clientId: "agy-client", clientSecret: "agy-secret" };
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -36,69 +42,134 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
-function fakeJwt(payload: object): string {
-  return [
-    Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
-    Buffer.from(JSON.stringify(payload)).toString("base64url"),
-    "sig",
-  ].join(".");
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir;
 }
 
-async function writeGeminiHome(args: {
-  access: string;
-  email?: string;
-  idEmail?: string;
+/** A fake antigravity-acp sign-in, laid out the way the runtime writes it. */
+async function writeSignIn(args: {
+  refresh: string;
+  projectId?: string;
 }): Promise<string> {
-  const home = await mkdtemp(path.join(tmpdir(), "bb-gemini-home-"));
-  cleanups.push(() => fs.rm(home, { recursive: true, force: true }));
-  await fs.mkdir(path.join(home, ".gemini"), { recursive: true });
+  const home = await tempDir("bb-agy-home-");
+  await fs.mkdir(path.join(home, "antigravity-acp"), { recursive: true });
   await fs.writeFile(
-    path.join(home, ".gemini", "oauth_creds.json"),
+    path.join(home, "antigravity-acp", "acp_token.json"),
     JSON.stringify({
-      access_token: args.access,
-      refresh_token: `refresh-${args.access}`,
-      expiry_date: Date.now() + 3_600_000,
-      ...(args.idEmail === undefined
-        ? {}
-        : { id_token: fakeJwt({ email: args.idEmail }) }),
+      type: "authorized_user",
+      client_id: CLIENT.clientId,
+      client_secret: CLIENT.clientSecret,
+      refresh_token: args.refresh,
+      ...(args.projectId === undefined ? {} : { project_id: args.projectId }),
     }),
   );
-  if (args.email !== undefined)
-    await fs.writeFile(
-      path.join(home, ".gemini", "google_accounts.json"),
-      JSON.stringify({ active: args.email, old: [] }),
-    );
   return home;
 }
 
-describe("Gemini credentials from an isolated GEMINI_CLI_HOME", () => {
-  it("reads one login per home directory and keeps the homes apart", async () => {
-    const homeA = await writeGeminiHome({ access: "tok-a", email: "a@example.com" });
-    const homeB = await writeGeminiHome({ access: "tok-b", idEmail: "b@example.com" });
-    const a = await importGeminiCredentials(homeA);
-    const b = await importGeminiCredentials(homeB);
-    expect(a).toMatchObject({ accessToken: "tok-a", email: "a@example.com" });
-    expect(b).toMatchObject({ accessToken: "tok-b", email: "b@example.com" });
-    expect(a.refreshToken).not.toBe(b.refreshToken);
+describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
+  it("reads one sign-in per home, with the client its token belongs to", async () => {
+    const homeA = await writeSignIn({ refresh: "refresh-a", projectId: "proj-a" });
+    const homeB = await writeSignIn({ refresh: "refresh-b" });
+    await expect(importGeminiCredentials(homeA)).resolves.toEqual({
+      refreshToken: "refresh-a",
+      client: CLIENT,
+      projectId: "proj-a",
+    });
+    await expect(importGeminiCredentials(homeB)).resolves.toEqual({
+      refreshToken: "refresh-b",
+      client: CLIENT,
+      projectId: null,
+    });
   });
 
-  it("falls back to GEMINI_CLI_HOME, and says how to sign in when there is no login", async () => {
-    const home = await writeGeminiHome({ access: "tok-env", email: "env@example.com" });
-    vi.stubEnv("GEMINI_CLI_HOME", home);
+  it("falls back to GEMINI_HOME, and says how to sign in when there is none", async () => {
+    const home = await writeSignIn({ refresh: "refresh-env" });
+    vi.stubEnv("GEMINI_HOME", home);
     await expect(importGeminiCredentials()).resolves.toMatchObject({
-      accessToken: "tok-env",
+      refreshToken: "refresh-env",
     });
-    const empty = await mkdtemp(path.join(tmpdir(), "bb-gemini-empty-"));
-    cleanups.push(() => fs.rm(empty, { recursive: true, force: true }));
+    const empty = await tempDir("bb-agy-empty-");
     await expect(importGeminiCredentials(empty)).rejects.toThrow(
-      /GEMINI_CLI_HOME=<dir> gemini/u,
+      /GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1/u,
     );
   });
 
-  it("rejects a credentials file without a refresh token", () => {
+  it("rejects a token file without a refresh token or without a client", () => {
     expect(() =>
-      parseGeminiCredentials(JSON.stringify({ access_token: "x" }), null),
+      parseGeminiCredentials(
+        JSON.stringify({ client_id: "c", client_secret: "s" }),
+      ),
     ).toThrow();
+    expect(() =>
+      parseGeminiCredentials(JSON.stringify({ refresh_token: "r" })),
+    ).toThrow();
+  });
+});
+
+describe("Gemini homes the host worker writes", () => {
+  const tokenUri = `http://bb.test/api/v1/plugins/account-pool/http${GEMINI_TOKEN_ROUTE}`;
+
+  it("holds only the hub token and the hub's token endpoint, privately", async () => {
+    const dataDir = await tempDir("bb-host-data-");
+    const home = await writeGeminiHome({
+      dataDir,
+      key: THREAD,
+      refreshToken: "hub-thread-token",
+      tokenUri,
+    });
+    expect(home).toBe(path.join(dataDir, "gemini-homes", THREAD));
+    const tokenFile = path.join(home, "antigravity-acp", "acp_token.json");
+    expect(JSON.parse(await fs.readFile(tokenFile, "utf8"))).toEqual({
+      type: "authorized_user",
+      client_id: "bb-account-pool",
+      client_secret: "bb-account-pool",
+      refresh_token: "hub-thread-token",
+      token_uri: tokenUri,
+    });
+    expect((await fs.stat(tokenFile)).mode & 0o777).toBe(0o600);
+    for (const dir of [
+      path.join(dataDir, "gemini-homes"),
+      home,
+      path.join(home, "antigravity-acp"),
+    ])
+      expect((await fs.stat(dir)).mode & 0o777).toBe(0o700);
+    const settings = path.join(home, "antigravity-acp", "settings.json");
+    expect(JSON.parse(await fs.readFile(settings, "utf8"))).toEqual({
+      auth: { type: "oauth-personal" },
+    });
+    // A later write replaces the token but keeps settings the runtime changed.
+    await fs.writeFile(settings, '{"auth":{"type":"oauth-personal"},"x":1}');
+    await writeGeminiHome({ dataDir, key: THREAD, refreshToken: "next", tokenUri });
+    expect(JSON.parse(await fs.readFile(tokenFile, "utf8")).refresh_token).toBe("next");
+    expect(JSON.parse(await fs.readFile(settings, "utf8")).x).toBe(1);
+  });
+
+  it("refuses a key that is not a thread id, and a home that is a symlink", async () => {
+    const dataDir = await tempDir("bb-host-data-");
+    for (const key of ["../escape", "thr_short", "thr_gemini2345/x", ""])
+      await expect(
+        writeGeminiHome({ dataDir, key, refreshToken: "t", tokenUri }),
+      ).rejects.toThrow(/invalid thread id/u);
+    const elsewhere = await tempDir("bb-elsewhere-");
+    await fs.mkdir(path.join(dataDir, "gemini-homes"), { recursive: true });
+    await fs.symlink(elsewhere, path.join(dataDir, "gemini-homes", THREAD));
+    await expect(
+      writeGeminiHome({ dataDir, key: THREAD, refreshToken: "t", tokenUri }),
+    ).rejects.toThrow(/not a directory/u);
+    expect(await fs.readdir(elsewhere)).toEqual([]);
+  });
+
+  it("prunes homes of threads that lost their route, never the catalog's", async () => {
+    const dataDir = await tempDir("bb-host-data-");
+    for (const key of [THREAD, "thr_revoked234", "catalog"])
+      await writeGeminiHome({ dataDir, key, refreshToken: "t", tokenUri });
+    await expect(pruneGeminiHomes({ dataDir, keep: [THREAD] })).resolves.toBe(1);
+    expect((await fs.readdir(path.join(dataDir, "gemini-homes"))).sort()).toEqual([
+      "catalog",
+      THREAD,
+    ]);
   });
 });
 
@@ -133,6 +204,21 @@ describe("Gemini quota parsing", () => {
     });
   });
 
+  it("does not blame the account for a third-party model's quota", () => {
+    const body = JSON.stringify({
+      error: {
+        status: "RESOURCE_EXHAUSTED",
+        details: [
+          {
+            reason: "QUOTA_EXHAUSTED",
+            metadata: { quotaResetDelay: "90s", model: "claude-sonnet-4-5" },
+          },
+        ],
+      },
+    });
+    expect(geminiQuotaRejection(body, 0)).toBeNull();
+  });
+
   it("does not blame the account for Google-side model capacity", () => {
     const body = JSON.stringify({
       error: {
@@ -157,16 +243,16 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection("upstream connect error", 0)).toBeNull();
   });
 
-  it("maps retrieveUserQuota buckets to per-account windows", () => {
+  it("maps retrieveUserQuotaSummary buckets to per-account windows", () => {
     const windows = geminiWindowsFromQuota(
       {
         buckets: [
           {
-            modelId: "gemini-2.5-pro",
+            bucketId: "gemini-3-pro",
             remainingFraction: 0.25,
             resetTime: "2100-01-01T00:00:00Z",
           },
-          { modelId: "gemini-2.5-flash", remainingFraction: 1 },
+          { bucketId: "gemini-3-flash", remainingFraction: 1 },
         ],
       },
       5,
@@ -182,10 +268,44 @@ describe("Gemini quota parsing", () => {
     ]);
     expect(
       geminiWindowsFromQuota(
-        { buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0 }] },
+        { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0 }] },
         5,
       )?.[0],
     ).toMatchObject({ status: "rejected", utilization: 1 });
+  });
+
+  it("reads grouped buckets, and skips disabled and third-party ones", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        buckets: [
+          { bucketId: "claude-opus", remainingFraction: 0 },
+          { displayName: "GPT-OSS 120B", remainingFraction: 0 },
+          { bucketId: "gemini-image", remainingFraction: 0 },
+        ],
+        groups: [
+          {
+            displayName: "Gemini",
+            buckets: [
+              { bucketId: "carbon", remainingFraction: 0.6 },
+              { bucketId: "argon", remainingFraction: 0, disabled: true },
+              { bucketId: "gemini-3-flash", remainingFraction: 0.5 },
+            ],
+          },
+        ],
+      },
+      5,
+    );
+    expect(windows).toEqual([
+      expect.objectContaining({ slot: "primary", utilization: 0.4, status: "allowed" }),
+      expect.objectContaining({ slot: "secondary", utilization: 0.5, status: "allowed" }),
+    ]);
+    // Only third-party buckets: no Gemini window at all, so nothing holds the account.
+    expect(
+      geminiWindowsFromQuota(
+        { buckets: [{ bucketId: "claude-sonnet", remainingFraction: 0 }] },
+        5,
+      ),
+    ).toEqual([]);
   });
 
   it("reads the onboarded project and tier", () => {
@@ -195,10 +315,16 @@ describe("Gemini quota parsing", () => {
         currentTier: { name: "Standard" },
         paidTier: { name: "Ultra" },
       }),
-    ).toEqual({ project: "proj-1", tier: "Ultra" });
+    ).toEqual({ project: "proj-1", tier: "Ultra", endpoint: "daily" });
     expect(
       parseLoadCodeAssist({ cloudaicompanionProject: { id: "proj-2" } }),
-    ).toEqual({ project: "proj-2", tier: null });
+    ).toEqual({ project: "proj-2", tier: null, endpoint: "daily" });
+    expect(
+      parseLoadCodeAssist({
+        cloudaicompanionProject: "proj-3",
+        paidTier: { name: "Enterprise", usesGcpTos: true },
+      }),
+    ).toEqual({ project: "proj-3", tier: "Enterprise", endpoint: "prod" });
   });
 });
 
@@ -207,6 +333,8 @@ interface UpstreamCall {
   bearer: string;
   project: unknown;
   sessionId: unknown;
+  endpoint?: "prod" | "daily";
+  body?: unknown;
 }
 
 type StreamBehavior = (bearer: string) => {
@@ -215,9 +343,17 @@ type StreamBehavior = (bearer: string) => {
   headers?: Record<string, string>;
 };
 
+/**
+ * Fake Google: the token endpoint trades `refresh-<tok>` (with the
+ * antigravity client) for `<tok>`, userinfo names `<x>@example.com` for
+ * `tok-<x>`, and Code Assist answers per bearer.
+ */
 async function startGoogle(args: {
   projects: Record<string, string>;
+  /** Bearers whose paid tier is Enterprise/Workspace (usesGcpTos). */
+  gcpTos?: string[];
   quotaFraction: Record<string, number>;
+  extraBuckets?: unknown[];
   stream: StreamBehavior;
 }): Promise<{ url: string; calls: UpstreamCall[]; close: () => Promise<void> }> {
   const calls: UpstreamCall[] = [];
@@ -230,17 +366,7 @@ async function startGoogle(args: {
           /^Bearer /u,
           "",
         );
-        const method = String(request.url).replace(/^\/v1internal:/u, "");
         const raw = Buffer.concat(chunks).toString("utf8");
-        const body: Record<string, unknown> =
-          raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
-        const inner = (body.request ?? {}) as Record<string, unknown>;
-        calls.push({
-          method,
-          bearer,
-          project: body.project,
-          sessionId: inner.session_id,
-        });
         const send = (
           status: number,
           payload: unknown,
@@ -252,20 +378,66 @@ async function startGoogle(args: {
             response.setHeader(key, value);
           response.end(JSON.stringify(payload));
         };
-        if (!String(request.url).startsWith("/v1internal:")) {
+        if (request.url === "/token") {
+          const form = new URLSearchParams(raw);
+          const refresh = form.get("refresh_token") ?? "";
+          calls.push({ method: "token", bearer: refresh, project: null, sessionId: null });
+          if (
+            form.get("client_id") !== CLIENT.clientId ||
+            form.get("client_secret") !== CLIENT.clientSecret ||
+            !refresh.startsWith("refresh-")
+          )
+            send(400, { error: "invalid_grant" });
+          else
+            send(200, {
+              access_token: refresh.slice("refresh-".length),
+              expires_in: 3600,
+              token_type: "Bearer",
+            });
+          return;
+        }
+        if (request.url === "/userinfo") {
+          send(200, { email: `${bearer.replace(/^tok-/u, "")}@example.com` });
+          return;
+        }
+        const mount = /^\/(prod|daily)(\/.*)$/u.exec(String(request.url));
+        if (mount === null) {
+          // Claude and Codex upstream calls in the same fixture.
+          calls.push({ method: String(request.url), bearer, project: null, sessionId: null });
+          send(200, { ok: true });
+          return;
+        }
+        const endpoint = mount[1] as "prod" | "daily";
+        const apiPath = mount[2] ?? "";
+        const method = apiPath.replace(/^\/v1internal:/u, "");
+        const body: Record<string, unknown> =
+          raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
+        const inner = (body.request ?? {}) as Record<string, unknown>;
+        calls.push({
+          method,
+          bearer,
+          project: body.project,
+          sessionId: inner.session_id,
+          endpoint,
+          body,
+        });
+        if (!apiPath.startsWith("/v1internal:")) {
           send(200, { ok: true });
           return;
         }
         if (method === "loadCodeAssist")
           send(200, {
             cloudaicompanionProject: args.projects[bearer],
-            paidTier: { name: "Google AI Ultra" },
+            paidTier: (args.gcpTos ?? []).includes(bearer)
+              ? { name: "Gemini Code Assist Enterprise", usesGcpTos: true }
+              : { name: "Google AI Ultra" },
           });
-        else if (method === "retrieveUserQuota")
+        else if (method === "retrieveUserQuotaSummary")
           send(200, {
             buckets: [
+              ...(args.extraBuckets ?? []),
               {
-                modelId: "gemini-2.5-pro",
+                bucketId: "gemini-3-pro",
                 remainingFraction: args.quotaFraction[bearer] ?? 1,
                 resetTime: "2100-01-01T00:00:00Z",
               },
@@ -321,10 +493,10 @@ const OK_BODY = { response: { candidates: [] } };
 async function createGeminiFixture(
   google: { url: string },
   homes: Record<string, ImportedGeminiCredentials>,
-  withCodex = false,
-  withOAuthClient = true,
+  options: { withCodex?: boolean; hostWorker?: "current" | "old" } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
+  const hostDataDir = await tempDir("bb-host-worker-");
   const requestedHomes: Array<string | undefined> = [];
   const host = createAccountPoolTestHost({
     pluginId: "account-pool",
@@ -341,6 +513,32 @@ async function createGeminiFixture(
         list: async () => ({ plugins: [{ id: "account-pool", enabled: true }] }),
       },
     },
+    // The real host-worker file code, run against a temp data dir. An "old"
+    // worker is a bb build whose host entry predates these methods.
+    experimental_callHostRpc: async (call) => {
+      if (call.method === "writeGeminiHome" || call.method === "pruneGeminiHomes") {
+        if (options.hostWorker === "old")
+          throw new Error(`unknown host rpc method "${call.method}"`);
+      }
+      if (call.method === "writeGeminiHome") {
+        const input = call.input as { key: string; refreshToken: string };
+        return {
+          home: await writeGeminiHome({
+            dataDir: hostDataDir,
+            key: input.key,
+            refreshToken: input.refreshToken,
+            tokenUri: `http://bb.test/api/v1/plugins/account-pool/http${GEMINI_TOKEN_ROUTE}`,
+          }),
+        };
+      }
+      if (call.method === "pruneGeminiHomes") {
+        const input = call.input as { keep: string[] };
+        return {
+          removed: await pruneGeminiHomes({ dataDir: hostDataDir, keep: input.keep }),
+        };
+      }
+      throw new Error("This fixture has no Artifact proxy.");
+    },
   });
   await host.bb.storage.kv.set("config", {
     anthropicUpstreamBaseUrl: google.url,
@@ -350,7 +548,7 @@ async function createGeminiFixture(
     usageUrl: "data:application/json,{}",
     codexRefreshUrl: `${google.url}/oauth`,
     codexUsageUrl: `${google.url}/usage`,
-    ...(withCodex
+    ...(options.withCodex === true
       ? {
           importCodexCredentials: async () => ({
             accessToken: "codex-fake-access",
@@ -364,15 +562,11 @@ async function createGeminiFixture(
         }
       : {}),
     geminiRefreshUrl: `${google.url}/token`,
-    ...(withOAuthClient
-      ? {
-          geminiOAuthClient: {
-            clientId: "test-client",
-            clientSecret: "test-secret",
-          },
-        }
-      : {}),
-    geminiUpstreamBaseUrl: google.url,
+    geminiUserinfoUrl: `${google.url}/userinfo`,
+    geminiUpstreamBaseUrls: {
+      prod: `${google.url}/prod`,
+      daily: `${google.url}/daily`,
+    },
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
       const found = home === undefined ? undefined : homes[home];
@@ -393,75 +587,107 @@ async function createGeminiFixture(
         .accepting,
     ).toBe(true);
   });
-  return { host, requestedHomes };
+  return { host, requestedHomes, dataDir, hostDataDir };
 }
 
-function creds(access: string, email: string): ImportedGeminiCredentials {
-  return {
-    accessToken: access,
-    refreshToken: `refresh-${access}`,
-    idToken: null,
-    email,
-    expiresAt: Date.now() + 3_600_000,
-  };
+function creds(access: string): ImportedGeminiCredentials {
+  return { refreshToken: `refresh-${access}`, client: CLIENT, projectId: null };
 }
 
-async function geminiEnv(host: Awaited<ReturnType<typeof createGeminiFixture>>["host"]) {
-  const entries = await host.harness.behavior.resolveProviderEnv("acp-gemini", {
-    threadId: "thread-gemini",
-    projectId: "project-one",
+type GeminiHost = Awaited<ReturnType<typeof createGeminiFixture>>["host"];
+
+function resolveGeminiEnv(host: GeminiHost, threadId: string | null = THREAD) {
+  return host.harness.behavior.resolveProviderEnv(GEMINI_PROVIDER_ID, {
+    threadId,
+    projectId: threadId === null ? null : "project-one",
     hostId: "host-one",
   });
+}
+
+function refreshAtHub(host: GeminiHost, form: Record<string, string>) {
+  return host.harness.behavior.fetchHttp("POST", GEMINI_TOKEN_ROUTE, {
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form).toString(),
+  });
+}
+
+/**
+ * Resolves a thread's env the way bb launches antigravity-acp, then does what
+ * the runtime does: read the token file in GEMINI_HOME and refresh it at its
+ * token_uri (the hub) for the bearer it sends to Code Assist.
+ */
+async function geminiEnv(host: GeminiHost, threadId = THREAD) {
+  const entries = await resolveGeminiEnv(host, threadId);
   const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
-  const token = byName.get("GOOGLE_CLOUD_ACCESS_TOKEN");
-  const endpoint = byName.get("CODE_ASSIST_ENDPOINT");
-  if (typeof token !== "string") throw new Error("Gemini hub token missing.");
-  return { token, endpoint, flag: byName.get("GOOGLE_GENAI_USE_GCA") };
+  const home = byName.get("GEMINI_HOME");
+  if (typeof home !== "string") throw new Error("Gemini home missing.");
+  const tokenFile = path.join(home, "antigravity-acp", "acp_token.json");
+  const file = z
+    .object({ refresh_token: z.string(), token_uri: z.string() })
+    .passthrough()
+    .parse(JSON.parse(await fs.readFile(tokenFile, "utf8")));
+  const refreshed = await refreshAtHub(host, {
+    grant_type: "refresh_token",
+    refresh_token: file.refresh_token,
+    client_id: "bb-account-pool",
+    client_secret: "bb-account-pool",
+  });
+  expect(refreshed.status).toBe(200);
+  const { access_token: token } = z
+    .object({ access_token: z.string() })
+    .parse(await refreshed.json());
+  return { token, home, tokenFile, file, byName, entries };
+}
+
+async function addGemini(host: GeminiHost, home: string, priority: number) {
+  return (await host.harness.behavior.callRpc("account.add", {
+    provider: "gemini",
+    source: { kind: "import", home },
+    label: null,
+    priority,
+  })) as { id: string };
 }
 
 describe("Gemini account pool", () => {
-  async function twoAccounts(stream: StreamBehavior, fractions: Record<string, number> = {}) {
+  async function twoAccounts(
+    stream: StreamBehavior,
+    fractions: Record<string, number> = {},
+    extraBuckets?: unknown[],
+  ) {
     const google = await startGoogle({
       projects: { "tok-a": "proj-a", "tok-b": "proj-b" },
       quotaFraction: fractions,
+      ...(extraBuckets === undefined ? {} : { extraBuckets }),
       stream,
     });
     cleanups.push(google.close);
     const fixture = await createGeminiFixture(google, {
-      "/homes/a": creds("tok-a", "a@example.com"),
-      "/homes/b": creds("tok-b", "b@example.com"),
+      "/homes/a": creds("tok-a"),
+      "/homes/b": creds("tok-b"),
     });
-    for (const [home, priority] of [
-      ["/homes/a", 0],
-      ["/homes/b", 100],
-    ] as const)
-      await fixture.host.harness.behavior.callRpc("account.add", {
-        provider: "gemini",
-        source: { kind: "import", home },
-        label: null,
-        priority,
-      });
+    const a = await addGemini(fixture.host, "/homes/a", 0);
+    const b = await addGemini(fixture.host, "/homes/b", 100);
     const env = await geminiEnv(fixture.host);
-    const post = (sessionId = "session-1") =>
+    const post = (sessionId = "session-1", token = env.token) =>
       fixture.host.harness.behavior.fetchHttp(
         "POST",
         "/gemini/v1internal:streamGenerateContent?alt=sse",
         {
           headers: {
-            authorization: `Bearer ${env.token}`,
+            authorization: `Bearer ${token}`,
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            model: "gemini-2.5-pro",
+            model: "gemini-3-pro",
             project: "client-side-project",
             request: { contents: [], session_id: sessionId },
           }),
         },
       );
-    return { google, fixture, env, post };
+    return { google, fixture, env, post, ids: { a: a.id, b: b.id } };
   }
 
-  it("adds accounts from separate homes and records each one's project", async () => {
+  it("adds accounts from separate homes and records each one's email and project", async () => {
     const { google, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
     expect(fixture.requestedHomes).toEqual(["/homes/a", "/homes/b"]);
     const status = statusSchema.parse(
@@ -472,45 +698,12 @@ describe("Gemini account pool", () => {
       "a@example.com",
       "b@example.com",
     ]);
+    // Import refreshed each sign-in with its own antigravity client.
+    expect(
+      google.calls.filter((call) => call.method === "token").map((call) => call.bearer).sort(),
+    ).toEqual(["refresh-tok-a", "refresh-tok-b"]);
     expect(google.calls.filter((call) => call.method === "loadCodeAssist").map((call) => call.bearer).sort()).toEqual(["tok-a", "tok-b"]);
-    await expect(
-      fixture.host.harness.behavior.callRpc("account.add", {
-        provider: "gemini",
-        source: { kind: "import", home: "/homes/a" },
-        label: null,
-        priority: 5,
-      }),
-    ).rejects.toThrow();
-  });
-
-  it("names the missing OAuth client when an expired login needs a refresh", async () => {
-    vi.stubEnv("BB_GEMINI_OAUTH_CLIENT_ID", "");
-    vi.stubEnv("BB_GEMINI_OAUTH_CLIENT_SECRET", "");
-    cleanups.push(async () => {
-      vi.unstubAllEnvs();
-    });
-    const google = await startGoogle({
-      projects: { "tok-old": "proj-old" },
-      quotaFraction: {},
-      stream: () => ({ status: 200, body: OK_BODY }),
-    });
-    cleanups.push(google.close);
-    const fixture = await createGeminiFixture(
-      google,
-      {
-        "/homes/old": { ...creds("tok-old", "old@example.com"), expiresAt: Date.now() - 1_000 },
-      },
-      false,
-      false,
-    );
-    await expect(
-      fixture.host.harness.behavior.callRpc("account.add", {
-        provider: "gemini",
-        source: { kind: "import", home: "/homes/old" },
-        label: null,
-        priority: 5,
-      }),
-    ).rejects.toThrow(/BB_GEMINI_OAUTH_CLIENT_ID/u);
+    await expect(addGemini(fixture.host, "/homes/a", 5)).rejects.toThrow();
   });
 
   it("fails over across three accounts and lands on the third one's project", async () => {
@@ -524,24 +717,18 @@ describe("Gemini account pool", () => {
     });
     cleanups.push(google.close);
     const fixture = await createGeminiFixture(google, {
-      "/homes/a": creds("tok-a", "a@example.com"),
-      "/homes/b": creds("tok-b", "b@example.com"),
-      "/homes/c": creds("tok-c", "c@example.com"),
+      "/homes/a": creds("tok-a"),
+      "/homes/b": creds("tok-b"),
+      "/homes/c": creds("tok-c"),
     });
-    const rpc = fixture.host.harness.behavior;
     for (const [home, priority] of [
       ["/homes/a", 100],
       ["/homes/b", 200],
       ["/homes/c", 300],
     ] as const)
-      await rpc.callRpc("account.add", {
-        provider: "gemini",
-        source: { kind: "import", home },
-        label: null,
-        priority,
-      });
+      await addGemini(fixture.host, home, priority);
     const env = await geminiEnv(fixture.host);
-    const response = await rpc.fetchHttp(
+    const response = await fixture.host.harness.behavior.fetchHttp(
       "POST",
       "/gemini/v1internal:streamGenerateContent?alt=sse",
       {
@@ -550,7 +737,7 @@ describe("Gemini account pool", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "gemini-2.5-pro",
+          model: "gemini-3-pro",
           project: "client-side-project",
           request: { contents: [], session_id: "s3" },
         }),
@@ -570,7 +757,7 @@ describe("Gemini account pool", () => {
     });
     cleanups.push(google.close);
     const fixture = await createGeminiFixture(google, {
-      "/homes/c": creds("tok-c", "c@example.com"),
+      "/homes/c": creds("tok-c"),
     });
     const added = await fixture.host.harness.behavior.runCli([
       "account",
@@ -595,18 +782,51 @@ describe("Gemini account pool", () => {
     expect(login.exitCode).not.toBe(0);
   });
 
-  it("points gemini-cli at the hub with a thread token and no Google credential", async () => {
+  it("points antigravity-acp at the hub through a home that holds no Google credential", async () => {
     const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
-    expect(env.flag).toBe("true");
-    expect(env.endpoint).toEqual({
+    expect(env.byName.get("AGY_ACP_FORCE_FILE_STORAGE")).toBe("1");
+    expect(env.byName.get("AGY_ACP_CCPA_BASE_URL")).toEqual({
       serverPath: "/api/v1/plugins/account-pool/http/gemini",
     });
-    expect(env.token).not.toMatch(/^tok-/u);
+    expect(env.home).toBe(path.join(fixture.hostDataDir, "gemini-homes", THREAD));
+    expect(env.file.token_uri).toMatch(/\/api\/v1\/plugins\/account-pool\/http\/gemini\/oauth2\/token$/u);
+    const written = await fs.readFile(env.tokenFile, "utf8");
+    for (const secret of ["tok-a", "tok-b", "refresh-tok", CLIENT.clientSecret])
+      expect(written).not.toContain(secret);
+    expect(JSON.stringify(env.entries)).not.toContain(env.file.refresh_token);
+    // The hub hands the hub token back as the access token: no Google token leaves it.
+    expect(env.token).toBe(env.file.refresh_token);
     await expect(
-      fixture.host.harness.behavior.resolveProviderEnvHealth("acp-gemini", {
+      fixture.host.harness.behavior.resolveProviderEnvHealth(GEMINI_PROVIDER_ID, {
         hostId: "host-one",
       }),
     ).resolves.toMatchObject({ label: "Proxied" });
+  });
+
+  it("refreshes only a live hub token at the hub's token endpoint", async () => {
+    const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    const good = await refreshAtHub(fixture.host, {
+      grant_type: "refresh_token",
+      refresh_token: env.file.refresh_token,
+    });
+    expect(good.status).toBe(200);
+    expect(good.headers.get("cache-control")).toBe("no-store");
+    expect(await good.json()).toMatchObject({
+      access_token: env.file.refresh_token,
+      token_type: "Bearer",
+      expires_in: 300,
+    });
+    const bogus = await refreshAtHub(fixture.host, {
+      grant_type: "refresh_token",
+      refresh_token: "refresh-tok-a",
+    });
+    expect(bogus.status).toBe(400);
+    expect(await bogus.json()).toEqual({ error: "invalid_grant" });
+    const wrongGrant = await refreshAtHub(fixture.host, {
+      grant_type: "authorization_code",
+      refresh_token: env.file.refresh_token,
+    });
+    expect(wrongGrant.status).toBe(400);
   });
 
   it("serves from the first account with that account's project", async () => {
@@ -616,6 +836,66 @@ describe("Gemini account pool", () => {
     const stream = google.calls.filter((call) => call.method === "streamGenerateContent");
     expect(stream).toEqual([
       expect.objectContaining({ bearer: "tok-a", project: "proj-a" }),
+    ]);
+  });
+
+  it("identifies as Antigravity and sends each account to the endpoint its tier is served on", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a", "tok-e": "proj-e" },
+      gcpTos: ["tok-e"],
+      quotaFraction: {},
+      stream: (bearer) =>
+        bearer === "tok-a"
+          ? { status: 429, body: QUOTA_BODY }
+          : { status: 200, body: OK_BODY },
+    });
+    cleanups.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/a": creds("tok-a"),
+      "/homes/e": creds("tok-e"),
+    });
+    await addGemini(fixture.host, "/homes/a", 0);
+    await addGemini(fixture.host, "/homes/e", 100);
+    // Import asks Prod first, with the runtime's exact client metadata.
+    const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
+    expect(loads.map((call) => call.endpoint)).toEqual(["prod", "prod"]);
+    for (const call of loads)
+      expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
+    const env = await geminiEnv(fixture.host);
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/gemini/v1internal:streamGenerateContent?alt=sse",
+      {
+        headers: { authorization: `Bearer ${env.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ project: "x", request: { contents: [], session_id: "ep" } }),
+      },
+    );
+    expect(response.status).toBe(200);
+    // The consumer (Ultra) account goes to Prod Daily; the Enterprise one to Prod.
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => [call.bearer, call.endpoint]),
+    ).toEqual([
+      ["tok-a", "daily"],
+      ["tok-e", "prod"],
+    ]);
+    // Usage reads go to the account's own endpoint too.
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    for (const account of status.accounts)
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: account.id,
+      });
+    expect(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .map((call) => [call.bearer, call.endpoint])
+        .sort(),
+    ).toEqual([
+      ["tok-a", "daily"],
+      ["tok-e", "prod"],
     ]);
   });
 
@@ -637,6 +917,31 @@ describe("Gemini account pool", () => {
     await (await post("session-2")).text();
     const after = google.calls.filter((call) => call.method === "streamGenerateContent");
     expect(after.slice(2).map((call) => call.bearer)).toEqual(["tok-b"]);
+  });
+
+  it("keeps an explicitly chosen account even when it is out of quota", async () => {
+    const { google, fixture, ids } = await twoAccounts(() => ({ status: 429, body: QUOTA_BODY }));
+    const configure =
+      fixture.host.harness.registrations.hooks["experimental_thread.configure"];
+    if (configure === null) throw new Error("configure hook missing");
+    const pinned = "thr_pinned2345";
+    await configure({
+      thread: { id: pinned, providerId: GEMINI_PROVIDER_ID },
+      data: { provider: "gemini", accountId: ids.b },
+    });
+    const env = await geminiEnv(fixture.host, pinned);
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/gemini/v1internal:streamGenerateContent?alt=sse",
+      {
+        headers: { authorization: `Bearer ${env.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ project: "x", request: { contents: [], session_id: "p1" } }),
+      },
+    );
+    expect(response.status).toBe(429);
+    expect(
+      google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
+    ).toEqual(["tok-b"]);
   });
 
   it("does not mark an account out of quota for Google-side model capacity", async () => {
@@ -680,7 +985,7 @@ describe("Gemini account pool", () => {
     expect(JSON.stringify(await response.json())).toContain("RESOURCE_EXHAUSTED");
   });
 
-  it("reads usage per account from retrieveUserQuota", async () => {
+  it("reads usage per account from retrieveUserQuotaSummary", async () => {
     const { fixture, google } = await twoAccounts(
       () => ({ status: 200, body: OK_BODY }),
       { "tok-a": 0.25, "tok-b": 0.9 },
@@ -701,8 +1006,142 @@ describe("Gemini account pool", () => {
     expect(used("a@example.com")).toBeCloseTo(0.75);
     expect(used("b@example.com")).toBeCloseTo(0.1);
     expect(
-      google.calls.filter((call) => call.method === "retrieveUserQuota").map((call) => call.project).sort(),
+      google.calls.filter((call) => call.method === "retrieveUserQuotaSummary").map((call) => call.project).sort(),
     ).toEqual(expect.arrayContaining(["proj-a", "proj-b"]));
+  });
+
+  it("keeps serving from an account whose only exhausted bucket is a third-party model", async () => {
+    const { fixture, google, post } = await twoAccounts(
+      () => ({ status: 200, body: OK_BODY }),
+      { "tok-a": 0.5 },
+      [{ bucketId: "claude-opus-4-5", remainingFraction: 0, resetTime: "2100-01-01T00:00:00Z" }],
+    );
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    for (const account of status.accounts)
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: account.id,
+      });
+    expect((await post("s-third-party")).status).toBe(200);
+    expect(
+      google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
+    ).toEqual(["tok-a"]);
+  });
+
+  it("removes a thread's home once its route is gone", async () => {
+    const { fixture, env } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    await fixture.host.harness.behavior.resolveProviderEnv(GEMINI_PROVIDER_ID, {
+      threadId: null,
+      projectId: null,
+      hostId: "host-one",
+    });
+    await fs.rm(path.join(fixture.hostDataDir, "gemini-homes", "thr_stale23456"), {
+      recursive: true,
+      force: true,
+    });
+    await writeGeminiHome({
+      dataDir: fixture.hostDataDir,
+      key: "thr_stale23456",
+      refreshToken: "revoked",
+      tokenUri: "http://bb.test/x",
+    });
+    // The reconcile pass a credential change schedules prunes the stale home.
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "sk-fake-claude" },
+      label: "Claude fake",
+      priority: 50,
+    });
+    await fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
+      threadId: "thr_claude2345",
+      projectId: "project-one",
+      hostId: "host-one",
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await fs.readdir(path.join(fixture.hostDataDir, "gemini-homes"))).sort(),
+      ).toEqual(["catalog", THREAD].sort());
+    });
+    await expect(fs.stat(env.home)).resolves.toBeTruthy();
+  });
+});
+
+describe("Gemini on a host whose bb predates Gemini homes", () => {
+  async function oldHost() {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    cleanups.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { withCodex: true, hostWorker: "old" },
+    );
+    const gemini = await addGemini(fixture.host, "/homes/a", 0);
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "codex",
+      source: { kind: "import" },
+      label: null,
+      priority: 60,
+    });
+    return { fixture, gemini };
+  }
+
+  it("starts an automatic thread on the local login and says why in health", async () => {
+    const { fixture } = await oldHost();
+    const entries = await resolveGeminiEnv(fixture.host);
+    expect(entries.map((entry) => entry.name)).not.toContain("GEMINI_HOME");
+    expect(entries.map((entry) => entry.name)).not.toContain("AGY_ACP_CCPA_BASE_URL");
+    await expect(
+      fixture.host.harness.behavior.resolveProviderEnvHealth(GEMINI_PROVIDER_ID, {
+        hostId: "host-one",
+      }),
+    ).resolves.toMatchObject({
+      label: "Not available",
+      statusMessage: expect.stringContaining("not available on this machine"),
+    });
+    // Codex on the same host is untouched.
+    const codex = await fixture.host.harness.behavior.resolveProviderEnv("codex", {
+      threadId: "thr_codex23456",
+      projectId: "project-one",
+      hostId: "host-one",
+    });
+    expect(codex.map((entry) => entry.name)).toContain("CODEX_POOL_AUTH_TOKEN");
+  });
+
+  it("refuses to start a thread pinned to a Gemini account instead of switching it", async () => {
+    const { fixture, gemini } = await oldHost();
+    const configure =
+      fixture.host.harness.registrations.hooks["experimental_thread.configure"];
+    if (configure === null) throw new Error("configure hook missing");
+    await configure({
+      thread: { id: THREAD, providerId: GEMINI_PROVIDER_ID },
+      data: { provider: "gemini", accountId: gemini.id },
+    });
+    await expect(resolveGeminiEnv(fixture.host)).rejects.toThrow(
+      /not available on this machine/u,
+    );
+  });
+
+  it("routes again once the host worker restarts on a build that has them", async () => {
+    const { fixture } = await oldHost();
+    expect((await resolveGeminiEnv(fixture.host)).map((entry) => entry.name)).not.toContain(
+      "GEMINI_HOME",
+    );
+    const calls = () =>
+      fixture.host.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "writeGeminiHome",
+      ).length;
+    const before = calls();
+    // Within the skip window a second launch does not call the old worker again.
+    await resolveGeminiEnv(fixture.host, "thr_second2345");
+    expect(calls()).toBe(before);
+    await fixture.host.harness.behavior.experimental_emitHostWorkerExit("host-one");
+    await resolveGeminiEnv(fixture.host, "thr_third23456");
+    expect(calls()).toBe(before + 1);
   });
 });
 
@@ -748,10 +1187,10 @@ describe("Gemini rows and an older build", () => {
     const fixture = await createGeminiFixture(
       google,
       {
-        "/homes/a": creds("tok-a", "a@example.com"),
-        "/homes/b": creds("tok-b", "b@example.com"),
+        "/homes/a": creds("tok-a"),
+        "/homes/b": creds("tok-b"),
       },
-      true,
+      { withCodex: true },
     );
     const rpc = fixture.host.harness.behavior;
     const claude = (await rpc.callRpc("account.add", {
@@ -787,7 +1226,7 @@ describe("Gemini rows and an older build", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "gemini-2.5-pro",
+          model: "gemini-3-pro",
           project: "x",
           request: { contents: [], session_id: "s1" },
         }),
