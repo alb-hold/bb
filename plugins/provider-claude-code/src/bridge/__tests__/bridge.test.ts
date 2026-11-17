@@ -8345,6 +8345,21 @@ describe("bridge", () => {
         expect.objectContaining({ autoCompactWindow: expect.anything() }),
       );
 
+      bridge.sendRequest(5, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "first turn, file unchanged" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(5);
+      expect(
+        query.applyFlagSettings.mock.calls.filter(([settings]) =>
+          Object.hasOwn(settings, "autoCompactWindow"),
+        ),
+      ).toEqual([]);
+
       writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
       bridge.sendRequest(2, "turn/start", {
         threadId,
