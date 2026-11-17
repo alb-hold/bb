@@ -2278,6 +2278,14 @@ export function ThreadDetailPromptArea({
           }}
           core={{
             parentThread: parentThreadSection,
+            queuedInboxHeld: (() => {
+              const held = queuedMessages.filter(
+                (message) => message.waitingOn?.kind === "inbox",
+              ).length;
+              return held === 0
+                ? null
+                : `${held} held for your next turn`;
+            })(),
             queuedWorkspaceWait: (() => {
               const waiting = queuedMessages.find(
                 (message) => message.waitingOn?.kind === "workspace-busy",

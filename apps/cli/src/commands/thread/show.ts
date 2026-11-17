@@ -85,9 +85,39 @@ interface ThreadOutputCommandOptions {
   self?: boolean;
 }
 
+interface HeldInboxMessage {
+  id: string;
+  senderThreadId: string | null;
+  preview: string;
+  deliverBy: number | null;
+}
+
 interface ThreadStatusPayload {
   lastError?: string | null;
   thread: ThreadGetResult;
+  heldMessages?: HeldInboxMessage[];
+}
+
+async function fetchHeldInboxMessages(
+  sdk: ReturnType<typeof createCliBbSdk>,
+  threadId: string,
+): Promise<HeldInboxMessage[]> {
+  const rows = await sdk.threads.queuedMessages.list({ threadId });
+  return rows
+    .filter((row) => row.waitingOn?.kind === "inbox")
+    .map((row) => {
+      const text = row.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join(" ")
+        .trim();
+      return {
+        id: row.id,
+        senderThreadId: row.senderThreadId ?? null,
+        preview: text === "" ? "(no text)" : text,
+        deliverBy: row.sendAt,
+      };
+    });
 }
 
 type ThreadShowEnvironmentJsonPayload = Environment & {
@@ -456,8 +486,15 @@ export function registerShowCommand(
             ? await fetchLastThreadErrorMessage(sdk, threadId)
             : null;
 
-        const statusPayload: ThreadStatusPayload =
-          thread.status === "error" ? { lastError, thread } : { thread };
+        const heldMessages =
+          thread.queuedMessageCount > 0
+            ? await fetchHeldInboxMessages(sdk, threadId).catch(() => [])
+            : [];
+        const statusPayload: ThreadStatusPayload = {
+          ...(thread.status === "error" ? { lastError } : {}),
+          thread,
+          ...(heldMessages.length > 0 ? { heldMessages } : {}),
+        };
         const [childSummary, spendSummary, usageTimeline] = await Promise.all([
           sdk.threads.childSummary({ threadId }).catch(() => null),
           sdk.threads.spendSummary({ threadId }).catch(() => null),
@@ -828,6 +865,19 @@ function printThreadStatus(
   );
   if (thread.queuedMessageCount > 0) {
     console.log(`  Queued messages: ${thread.queuedMessageCount}`);
+  }
+  if (payload.heldMessages !== undefined) {
+    console.log(`  Held for next turn: ${payload.heldMessages.length}`);
+    for (const held of payload.heldMessages) {
+      const sender = held.senderThreadId ?? "unknown sender";
+      const deliverBy =
+        held.deliverBy === null
+          ? ""
+          : `, delivers by ${new Date(held.deliverBy).toLocaleString()}`;
+      console.log(
+        `    ${held.id} from ${sender}${deliverBy}: ${held.preview.length > 80 ? `${held.preview.slice(0, 79)}…` : held.preview}`,
+      );
+    }
   }
   if (payload.lastError != null) {
     console.log(`  Error: ${payload.lastError}`);

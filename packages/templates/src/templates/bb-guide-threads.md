@@ -102,7 +102,7 @@ Spawning:
     --pinned                       Create the thread in Pinned (combines with --section;
                                    unpinning reveals it in that section)
     --visibility <visibility>      visible or hidden; a child inherits its parent by default
-    --parent-notifications <value> auto (default), stuck, or off; which outcomes wake the parent
+    --parent-notifications <value> auto (default), inbox, stuck, or off; which outcomes wake the parent
     --send-at <when>               Dispatch the first message at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
     --file <path>                  CLI-local absolute path, file: URL, or uploaded file path
     --image <path>                 CLI-local absolute path, file: URL, or uploaded image path
@@ -129,7 +129,10 @@ Spawning:
   value. A hidden child still reports its turns and blockers to its parent
   thread; only source-derived forks stay silent.
   --parent-notifications chooses which child outcomes wake the parent. auto
-  reports every finished, failed, or interrupted turn and every blocker. stuck
+  reports every finished, failed, or interrupted turn and every blocker. inbox
+  holds a finished turn in the parent's inbox while the parent is idle and
+  delivers it with the start of its next turn (or after 6 hours), while
+  failures, interruptions, and blockers arrive at once. stuck
   skips completed turns and keeps failures, interruptions, and blockers on an
   approval or question; the child sends its results with `bb thread tell`, so
   say so in its prompt. off reports nothing. Under stuck and off, unassigning

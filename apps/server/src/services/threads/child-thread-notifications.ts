@@ -544,7 +544,9 @@ async function flushChildThreadTurnNotificationBatch(
     await queueParentSystemMessage(deps, {
       input,
       parentThreadId,
-      holdWhileIdle: batch.items.every((item) => item.holdWhileParentIdle === true),
+      holdWhileIdle: batch.items.every(
+        (item) => item.holdWhileParentIdle === true,
+      ),
       ...childThreadTurnStatusBatchTaxonomy(batch.items),
     });
   } catch (error) {

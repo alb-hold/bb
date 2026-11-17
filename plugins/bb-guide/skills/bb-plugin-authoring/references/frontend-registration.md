@@ -387,7 +387,7 @@ await sdk.threads.update({ id: thread.id, sectionId });
 
 // threads: PluginSidebarThread[] — id, projectId, href (put it on the row's
 // anchor; the host routes clicks in place), title, titleFallback,
-// displayTitle, parentThreadId, parentNotifications ("auto" | "stuck" | "off"),
+// displayTitle, parentThreadId, parentNotifications ("auto" | "inbox" | "stuck" | "off"),
 // lifecycleOwnerThreadId, sourceThreadId, sectionId,
 // originKind, originPluginId, providerId, status (execution status; busy
 // threads sort first in bb's list), runtimeStatus (status refined by host

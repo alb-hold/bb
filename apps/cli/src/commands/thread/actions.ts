@@ -101,6 +101,7 @@ interface ThreadTellCommandOptions {
   file?: string[];
   image?: string[];
   sendAt?: string;
+  deliverBy?: string;
   compactFirst?: boolean;
 }
 
@@ -125,7 +126,7 @@ interface ThreadEditMessageCommandOptions {
   self?: boolean;
 }
 
-type ThreadTellDeliveryMode = "auto" | "queue" | "steer";
+type ThreadTellDeliveryMode = "auto" | "queue" | "steer" | "inbox";
 
 interface PostThreadMessageArgs {
   getUrl: () => string;
@@ -141,6 +142,7 @@ interface PostThreadMessageArgs {
   files?: readonly string[];
   images?: readonly string[];
   sendAt?: number;
+  deliverBy?: number;
   compactFirst: boolean;
 }
 
@@ -587,9 +589,13 @@ export function registerActionsCommands(
     .option("--permission-mode <mode>", PERMISSION_MODE_HELP)
     .option(
       "--mode <mode>",
-      "Message mode: steer (default), queue, or auto (steer a live turn, else start one)",
+      "Message mode: steer (default), queue, auto (steer a live turn, else start one), or inbox (hold for an idle thread's next turn without waking it)",
     )
     .option("--send-at <when>", SEND_AT_HELP)
+    .option(
+      "--deliver-by <when>",
+      "With --mode inbox: deliver as a normal queued message by this time if the thread has not started a turn (ISO 8601 timestamp or duration such as 2h; default and maximum 6h)",
+    )
     .option(
       "--compact-first",
       "Compact the idle thread's context first, then send this message when compaction finishes",
@@ -636,6 +642,9 @@ export function registerActionsCommands(
             ...(opts.sendAt === undefined
               ? {}
               : { sendAt: parseSendAt(opts.sendAt) }),
+            ...(opts.deliverBy === undefined
+              ? {}
+              : { deliverBy: parseDeliverBy(opts.deliverBy, opts.mode) }),
             compactFirst: opts.compactFirst === true,
           });
           if (response.delivery === "sent" && response.refusal) {
@@ -761,13 +770,16 @@ async function postThreadMessage(
           ? "steer-if-active"
           : args.mode === "auto"
             ? "auto"
-            : "queue-if-active",
+            : args.mode === "inbox"
+              ? "inbox"
+              : "queue-if-active",
       ...(args.model ? { model: args.model } : {}),
       ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
       ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
       ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
       ...(args.senderThreadId ? { senderThreadId: args.senderThreadId } : {}),
       ...(args.sendAt === undefined ? {} : { sendAt: args.sendAt }),
+      ...(args.deliverBy === undefined ? {} : { deliverBy: args.deliverBy }),
       ...(args.compactFirst ? { compactFirst: true } : {}),
     });
   } catch (error: unknown) {
@@ -846,6 +858,8 @@ export function describeQueueWait(row: {
       return row.sendAt === null
         ? "scheduled"
         : `scheduled for ${new Date(row.sendAt).toLocaleString()}`;
+    case "inbox":
+      return "held until the thread's next turn";
     case "thread-busy":
       return "waiting for the current turn to finish";
     case "stopping":
@@ -883,7 +897,15 @@ function resolveThreadMessageMode(
   if (normalized === "queue") return "queue";
   if (normalized === "queue-if-active") return "queue";
   if (normalized === "auto") return "auto";
+  if (normalized === "inbox") return "inbox";
   throw new Error(
-    `Invalid message mode '${value}'. Expected 'queue', 'steer', or 'auto'.`,
+    `Invalid message mode '${value}'. Expected 'queue', 'steer', 'auto', or 'inbox'.`,
   );
+}
+
+function parseDeliverBy(value: string, mode: string | undefined): number {
+  if (resolveThreadMessageMode(mode) !== "inbox") {
+    throw new Error("--deliver-by requires --mode inbox.");
+  }
+  return parseSendAt(value);
 }

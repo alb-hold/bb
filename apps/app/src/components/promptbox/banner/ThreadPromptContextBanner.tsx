@@ -117,6 +117,7 @@ export { isThreadDisplayStatusBannerActive } from "./thread-banner-active-status
 
 export interface CoreThreadContext {
   parentThread: ThreadPromptParentThreadSection | null;
+  queuedInboxHeld?: string | null;
   queuedWorkspaceWait?: string | null;
   workspaceSharingThreadCount?: number | null;
 }
@@ -1120,11 +1121,13 @@ function WritableContextBanner({
   input,
   expandedSegment,
   onToggleSegment,
+  queuedInboxHeld,
   queuedWorkspaceWait,
 }: {
   input: ExperimentalThreadContextSegmentInput;
   expandedSegment: string | null;
   onToggleSegment: (key: string) => void;
+  queuedInboxHeld?: string | null;
   queuedWorkspaceWait?: string | null;
 }) {
   const { workspaceSharingThreadCount: sharingThreadCount } =
@@ -1139,6 +1142,14 @@ function WritableContextBanner({
       key: threadContextSegmentKey(slot),
       pluginId: slot.pluginId,
     })),
+    ...(queuedInboxHeld
+      ? [
+          {
+            key: `${CORE_THREAD_CONTEXT_OWNER}/inbox-held`,
+            pluginId: CORE_THREAD_CONTEXT_OWNER,
+          },
+        ]
+      : []),
     ...(queuedWorkspaceWait
       ? [
           {
@@ -1178,6 +1189,7 @@ function WritableContextBanner({
       {observers}
       {entries.length > 0 ||
       queuedWorkspaceWait ||
+      queuedInboxHeld ||
       workspaceSharingThreadCount > 1 ? (
         <PromptStackCard
           ariaLabel="Thread context before sending"
@@ -1208,6 +1220,23 @@ function WritableContextBanner({
                 <span className="truncate">
                   Shared · {workspaceSharingThreadCount} threads
                 </span>
+              </div>
+            ) : null}
+            {queuedInboxHeld ? (
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-1.5 text-xs",
+                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
+                )}
+                role="status"
+                aria-label={queuedInboxHeld}
+              >
+                <Icon
+                  name="TimeSchedule"
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{queuedInboxHeld}</span>
               </div>
             ) : null}
             {queuedWorkspaceWait ? (
@@ -1294,6 +1323,7 @@ export function ThreadPromptContextBanner({
         input={input}
         expandedSegment={expandedSegment}
         onToggleSegment={onToggleSegment}
+        queuedInboxHeld={core.queuedInboxHeld}
         queuedWorkspaceWait={core.queuedWorkspaceWait}
       />
     </CoreThreadContextContext.Provider>

@@ -14,6 +14,12 @@ export const PARENT_NOTIFICATIONS_OPTIONS: readonly ParentNotificationsOption[] 
       description: "Every finished turn, failure, and blocker",
     },
     {
+      value: "inbox",
+      label: "Inbox",
+      description:
+        "Finished turns wait for your next turn; failures and blockers arrive at once",
+    },
+    {
       value: "stuck",
       label: "When stuck",
       description: "Only failures, interruptions, and blockers",
