@@ -154,15 +154,21 @@ afterEach(async () => {
   rmSync(codexHome, { recursive: true, force: true });
 }, TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS);
 
-function runPooledTurn(): Promise<{ status: number | null; output: string }> {
-  const env = {
+function codexTestEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
     ...process.env,
     CODEX_HOME: codexHome,
     CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
-    ...OFFLINE_GIT_ENV,
     CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
-    CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${baseUrl}/oauth/token`,
+    ...extra,
+    ...OFFLINE_GIT_ENV,
   };
+}
+
+function runPooledTurn(): Promise<{ status: number | null; output: string }> {
+  const env = codexTestEnv({
+    CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${baseUrl}/oauth/token`,
+  });
   const launch = resolveAppServerLaunch(env);
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -238,13 +244,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
   }, 90_000);
 
   it("lists the pool's model catalog through app-server model/list with an empty CODEX_HOME", async () => {
-    const env = {
-      ...process.env,
-      CODEX_HOME: codexHome,
-      CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
-      ...OFFLINE_GIT_ENV,
-      CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
-    };
+    const env = codexTestEnv();
     const launch = resolveAppServerLaunch(env);
     const result = await new Promise<unknown>((resolve, reject) => {
       const child = spawn(launch.command, launch.args, {
