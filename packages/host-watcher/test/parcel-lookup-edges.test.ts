@@ -25,6 +25,7 @@ import {
   withPlatformParcelBackend,
 } from "../src/parcel-backend-choice.js";
 import type { ChildToParentMessage } from "../src/parcel-subprocess/messages.js";
+import { processGroupMembers } from "./fixtures/hung-probe.js";
 
 const MARKER = "bb-watchman-ran";
 const execFileAsync = promisify(execFile);
@@ -201,17 +202,6 @@ async function streamDescriptors(): Promise<string[]> {
     if (/^(socket|pipe):/u.test(target)) found.push(`${fd} ${target}`);
   }
   return found;
-}
-
-async function processGroupMembers(pgid: string): Promise<string[]> {
-  const members: string[] = [];
-  for (const entry of await readdir("/proc")) {
-    if (!/^\d+$/u.test(entry)) continue;
-    const stat = await readFile(`/proc/${entry}/stat`, "utf8").catch(() => "");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    if (fields[2] === pgid) members.push(`${entry} ${fields[0]}`);
-  }
-  return members;
 }
 
 describe("the backend choice on darwin", () => {
@@ -494,6 +484,64 @@ describe.skipIf(process.platform !== "linux")(
         },
       );
       expect(JSON.parse(stdout)).toEqual([]);
+    }, 60_000);
+  },
+);
+
+const cancelFixtures = {
+  "the in-process backend": new URL(
+    "./fixtures/in-process-abort-during-probe.ts",
+    import.meta.url,
+  ),
+  "the watcher child's handler": new URL(
+    "./fixtures/child-handler-cancel-during-probe.ts",
+    import.meta.url,
+  ),
+};
+
+async function runCancelFixture(
+  fixture: URL,
+): Promise<Record<string, unknown>> {
+  const root = await scratch();
+  const started = join(root, "started");
+  const PATH = await watchmanAt(
+    root,
+    `cut -d' ' -f5 /proc/$$/stat > '${started}.part'\nmv '${started}.part' '${started}'\nsleep 60 &\nwait`,
+  );
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", fileURLToPath(fixture), root, started],
+    {
+      env: { ...process.env, PATH: `${PATH}:${process.env.PATH ?? ""}` },
+      timeout: 45_000,
+    },
+  );
+  return JSON.parse(stdout);
+}
+
+describe.skipIf(process.platform !== "linux")(
+  "a cancel while the watchman probe hangs",
+  () => {
+    it("rejects the in-process subscribe within 1 s while the probe runs, then reaps the probe and unsubscribes the late subscription", async () => {
+      const row = await runCancelFixture(
+        cancelFixtures["the in-process backend"],
+      );
+      expect(row.outcome).toBe("Parcel watcher subscription was cancelled");
+      expect(row.liveAtAbort).toBeGreaterThan(0);
+      expect(row.rejectMs).toBeLessThan(1_000);
+      expect(row.membersAfter).toEqual([]);
+      expect(row.late).toEqual([{ backend: "inotify", unsubscribed: true }]);
+    }, 60_000);
+
+    it("answers an unsubscribe in the watcher child's handler within 1 s while the probe runs, then reaps the probe and unsubscribes the late subscription", async () => {
+      const row = await runCancelFixture(
+        cancelFixtures["the watcher child's handler"],
+      );
+      expect(row.messages).toEqual([{ kind: "unsubscribed", id: "row" }]);
+      expect(row.liveAtCancel).toBeGreaterThan(0);
+      expect(row.answerMs).toBeLessThan(1_000);
+      expect(row.membersAfter).toEqual([]);
+      expect(row.late).toEqual([{ backend: "inotify", unsubscribed: true }]);
     }, 60_000);
   },
 );
