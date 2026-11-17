@@ -124,7 +124,10 @@ export function parseGoogleDuration(value: unknown): number | null {
   return matched ? Math.round(total) : null;
 }
 
-const NON_QUOTA_REASONS = new Set(["MODEL_CAPACITY_EXHAUSTED"]);
+// Only reasons that name this account's own limit hold it. A reasonless or
+// unrecognized RESOURCE_EXHAUSTED may be shared capacity, so it is returned to
+// the client instead of putting every account on hold in turn.
+const ACCOUNT_QUOTA_REASONS = new Set(["QUOTA_EXHAUSTED", "RATE_LIMIT_EXCEEDED"]);
 
 /**
  * Google signals quota exhaustion in the response body, not in headers.
@@ -176,9 +179,9 @@ export function geminiQuotaRejection(
       : null;
   }
   if (status !== "RESOURCE_EXHAUSTED") return null;
-  if (reason !== null && NON_QUOTA_REASONS.has(reason)) return null;
+  if (reason === null || !ACCOUNT_QUOTA_REASONS.has(reason)) return null;
   return {
-    reason: (reason ?? "RESOURCE_EXHAUSTED").toLowerCase(),
+    reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
     message,
   };

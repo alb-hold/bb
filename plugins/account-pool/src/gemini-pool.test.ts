@@ -141,6 +141,18 @@ describe("Gemini quota parsing", () => {
       },
     });
     expect(geminiQuotaRejection(body, 0)).toBeNull();
+    expect(
+      geminiQuotaRejection(
+        JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", message: "Resource exhausted" } }),
+        0,
+      ),
+    ).toBeNull();
+    expect(
+      geminiQuotaRejection(
+        JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", details: [{ reason: "SOMETHING_NEW" }] } }),
+        0,
+      ),
+    ).toBeNull();
     expect(geminiQuotaRejection('{"error":{"status":"INTERNAL"}}', 0)).toBeNull();
     expect(geminiQuotaRejection("upstream connect error", 0)).toBeNull();
   });
@@ -499,6 +511,55 @@ describe("Gemini account pool", () => {
         priority: 5,
       }),
     ).rejects.toThrow(/BB_GEMINI_OAUTH_CLIENT_ID/u);
+  });
+
+  it("fails over across three accounts and lands on the third one's project", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a", "tok-b": "proj-b", "tok-c": "proj-c" },
+      quotaFraction: {},
+      stream: (bearer) =>
+        bearer === "tok-c"
+          ? { status: 200, body: OK_BODY }
+          : { status: 429, body: QUOTA_BODY },
+    });
+    cleanups.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/a": creds("tok-a", "a@example.com"),
+      "/homes/b": creds("tok-b", "b@example.com"),
+      "/homes/c": creds("tok-c", "c@example.com"),
+    });
+    const rpc = fixture.host.harness.behavior;
+    for (const [home, priority] of [
+      ["/homes/a", 100],
+      ["/homes/b", 200],
+      ["/homes/c", 300],
+    ] as const)
+      await rpc.callRpc("account.add", {
+        provider: "gemini",
+        source: { kind: "import", home },
+        label: null,
+        priority,
+      });
+    const env = await geminiEnv(fixture.host);
+    const response = await rpc.fetchHttp(
+      "POST",
+      "/gemini/v1internal:streamGenerateContent?alt=sse",
+      {
+        headers: {
+          authorization: `Bearer ${env.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gemini-2.5-pro",
+          project: "client-side-project",
+          request: { contents: [], session_id: "s3" },
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const stream = google.calls.filter((call) => call.method === "streamGenerateContent");
+    expect(stream.map((call) => call.bearer)).toEqual(["tok-a", "tok-b", "tok-c"]);
+    expect(stream.map((call) => call.project)).toEqual(["proj-a", "proj-b", "proj-c"]);
   });
 
   it("adds an account from the CLI with --home", async () => {
