@@ -15,31 +15,42 @@ describe.runIf(process.platform !== "win32")(
       const marker = join(directory, "pid");
       const child = spawn(process.execPath, ["-e", `
         const { spawn } = require("node:child_process");
-        const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: ["ignore", 1, "ignore"] });
+        const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { detached: true, stdio: ["ignore", 1, "ignore"] });
         descendant.unref();
       `], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
       const leaderExited = once(child, "exit");
+      onTestFinished(async () => {
+        if (existsSync(marker)) {
+          const writerPid = Number(readFileSync(marker, "utf8").trim());
+          try { process.kill(-writerPid, "SIGKILL"); } catch {}
+          const cleanupDeadline = Date.now() + 1_000;
+          while (Date.now() < cleanupDeadline) {
+            try {
+              process.kill(writerPid, 0);
+              await delay(10);
+            } catch {
+              break;
+            }
+          }
+          expect(() => process.kill(writerPid, 0)).toThrow();
+        }
+        try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+        rmSync(directory, { recursive: true, force: true });
+      });
       const cleanup = trackTestProcess(child, 500);
       const started = Date.now();
-      try {
-        const setupDeadline = Date.now() + 2_000;
-        while (!existsSync(marker)) {
-          if (Date.now() >= setupDeadline) throw new Error("writer did not start");
-          await delay(10);
-        }
-        const writerPid = readFileSync(marker, "utf8").trim();
-        if (child.exitCode === null && child.signalCode === null)
-          await leaderExited;
-        await expect(cleanup()).rejects.toThrow(
-          new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
-        );
-        expect(Date.now() - started).toBeLessThan(2_000);
-      } finally {
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {}
-        rmSync(directory, { recursive: true, force: true });
+      const setupDeadline = Date.now() + 2_000;
+      while (!existsSync(marker)) {
+        if (Date.now() >= setupDeadline) throw new Error("writer did not start");
+        await delay(10);
       }
+      const writerPid = readFileSync(marker, "utf8").trim();
+      if (child.exitCode === null && child.signalCode === null)
+        await leaderExited;
+      await expect(cleanup()).rejects.toThrow(
+        new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
     }, 3_000);
 
     it.each([
