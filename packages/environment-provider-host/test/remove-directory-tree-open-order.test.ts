@@ -104,11 +104,14 @@ describe.runIf(process.platform === "linux")(
         let removing = false;
         const shifted = new Set<number>();
         events.splice(0);
+        const realRoot = await fs.realpath(root);
         const result = await removeDirectoryTree(root, {
           startedAt: Number.MAX_SAFE_INTEGER,
           beforeEntryRemoval: async () => {
             removing = true;
           },
+          readMountTable: async () =>
+            `36 1 0:51 / ${realRoot}/elsewhere rw - tmpfs none rw\n`,
           readDescriptorInfo: async (_entry, fd) => {
             events.push({ kind: "fdinfo", fd });
             const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");

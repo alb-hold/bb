@@ -101,15 +101,30 @@ async function boundTree() {
   return { source, root };
 }
 
-async function settledTree() {
+async function settledTree(name = "tree") {
   const parent = await fs.mkdtemp(path.join(tmpdir(), "bb-mount-id-"));
   roots.push(parent);
-  const root = path.join(parent, "tree");
+  const root = path.join(parent, name);
   await fs.mkdir(path.join(root, "nested"), { recursive: true });
   await fs.writeFile(path.join(root, "nested", "kept.txt"), "kept\n");
   await fs.writeFile(path.join(root, "top.txt"), "top\n");
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
   return root;
+}
+
+function escapedMountPoint(mountPoint: string): string {
+  return mountPoint.replace(
+    /[ \t\n\\]/gu,
+    (character) => `\\${character.charCodeAt(0).toString(8).padStart(3, "0")}`,
+  );
+}
+
+function mountLine(mountPoint: string): string {
+  return `36 1 0:51 / ${escapedMountPoint(mountPoint)} rw,relatime - tmpfs none rw\n`;
+}
+
+async function mountedTable(root: string): Promise<string> {
+  return `${mountLine("/")}${mountLine(path.join(await fs.realpath(root), "elsewhere"))}`;
 }
 
 const linux = process.platform === "linux";
@@ -297,6 +312,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: async (entry, fd) => {
         const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
         return path.resolve(entry) === marker ? shifted(info) : info;
@@ -318,6 +334,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: async (entry, fd) => {
         const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
         return path.basename(entry) === ".git" &&
@@ -344,6 +361,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     const root = await settledTree();
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: async (entry, fd) => {
         const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
         return path.resolve(entry) === root ? shifted(info) : info;
@@ -363,6 +381,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     const root = await settledTree();
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: (entry, fd) =>
         path.resolve(entry) === path.dirname(root)
           ? Promise.reject(new Error("EACCES"))
@@ -384,6 +403,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     const listedDirectories: string[] = [];
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       afterDirectoryListed: async (directory) => {
         listedDirectories.push(path.resolve(directory));
       },
@@ -413,6 +433,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     let removing = false;
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       beforeEntryRemoval: async () => {
         removing = true;
       },
@@ -439,6 +460,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: async (entry, fd) => {
         const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
         return path.resolve(entry) === top ? shifted(info) : info;
@@ -462,6 +484,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       const nested = path.join(root, "nested");
       const result = await removeDirectoryTree(root, {
         startedAt: Number.MAX_SAFE_INTEGER,
+        readMountTable: () => mountedTable(root),
         readDescriptorInfo: (entry, fd) =>
           path.resolve(entry) === nested
             ? unreadable()
@@ -482,6 +505,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     const root = await settledTree();
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: (entry, fd) =>
         path.resolve(entry) === root
           ? Promise.reject(new Error("EACCES"))
@@ -502,6 +526,7 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
     const read: string[] = [];
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: () => mountedTable(root),
       readDescriptorInfo: (entry, fd) => {
         read.push(path.relative(root, path.resolve(entry)));
         return fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
@@ -512,6 +537,85 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
       expect.arrayContaining(["", "nested", "top.txt", "nested/kept.txt"]),
     );
   });
+
+  it("reads no entry's mount id when nothing is mounted at or under the tree", async () => {
+    const root = await settledTree();
+    const real = await fs.realpath(root);
+    const read: string[] = [];
+    const result = await removeDirectoryTree(root, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      readMountTable: async () =>
+        `${mountLine("/")}${mountLine(`${real}-sibling`)}${mountLine(path.dirname(real))}`,
+      readDescriptorInfo: (entry, fd) => {
+        read.push(path.relative(root, path.resolve(entry)));
+        return fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+      },
+    });
+    expect(result.status).toBe("removed");
+    expect(read.sort()).toEqual(["", ".."]);
+  });
+
+  it.each([
+    ["cannot be read", () => Promise.reject(new Error("EACCES"))],
+    ["lists no mounts", () => Promise.resolve("")],
+    [
+      "has a line without a mount point",
+      () => Promise.resolve("36 1 0:51 /\n"),
+    ],
+  ])(
+    "checks each entry's mount id when the mount table %s",
+    async (_label, table) => {
+      const root = await settledTree();
+      const nested = path.join(root, "nested");
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        readMountTable: table,
+        readDescriptorInfo: async (entry, fd) => {
+          const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+          return path.resolve(entry) === nested ? shifted(info) : info;
+        },
+      });
+      expect(result).toMatchObject({
+        status: "retained",
+        mountedPaths: [nested],
+      });
+      await expect(
+        fs.readFile(path.join(nested, "kept.txt"), "utf8"),
+      ).resolves.toBe("kept\n");
+    },
+  );
+
+  it.each([
+    [
+      "under the tree, with escaped characters in its path",
+      "tree with\tspaces",
+      "nested",
+    ],
+    ["at the tree's root", "tree", ""],
+  ])(
+    "checks each entry's mount id when the mount table lists a mount %s",
+    async (_label, name, mounted) => {
+      const root = await settledTree(name);
+      const nested = path.join(root, "nested");
+      const real = await fs.realpath(root);
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        readMountTable: async () =>
+          `${mountLine("/")}${mountLine(path.join(real, mounted))}`,
+        readDescriptorInfo: async (entry, fd) => {
+          const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+          return path.resolve(entry) === nested ? shifted(info) : info;
+        },
+      });
+      expect(result).toMatchObject({
+        status: "retained",
+        mountedPaths: [nested],
+      });
+      await expect(
+        fs.readFile(path.join(nested, "kept.txt"), "utf8"),
+      ).resolves.toBe("kept\n");
+    },
+  );
 });
 
 describe.runIf(process.platform === "darwin")(
@@ -924,7 +1028,12 @@ async function forcedRestore(
   let swapped = "";
   const outcome = await removeDirectoryTree(root, {
     startedAt: Number.MAX_SAFE_INTEGER,
-    ...(readDescriptorInfo === undefined ? {} : { readDescriptorInfo }),
+    ...(readDescriptorInfo === undefined
+      ? {}
+      : {
+          readDescriptorInfo,
+          readMountTable: () => mountedTable(root),
+        }),
     afterEntryQuarantined: async (removed) => {
       if (path.basename(removed) !== "top.txt") return;
       if (occupy !== undefined) await fs.writeFile(removed, occupy);

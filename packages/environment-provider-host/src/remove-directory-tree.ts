@@ -7,6 +7,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   rename,
   rmdir,
   stat,
@@ -68,6 +69,7 @@ export interface RemoveDirectoryTreeHooks {
   ownWrites?: ReadonlyMap<string, OwnWrite>;
   entryDevice?: (entry: string, device: number) => number;
   readDescriptorInfo?: (entry: string, fd: number) => Promise<string>;
+  readMountTable?: () => Promise<string>;
   beforeMarkerOpen?: (marker: string) => Promise<void>;
   beforeFileOpen?: (candidate: string) => Promise<void>;
   beforeDirectoryOpen?: (directory: string) => Promise<void>;
@@ -148,6 +150,26 @@ const LINUX_O_PATH = 0o10000000;
 function mountIdFromDescriptorInfo(info: string): number | null {
   const match = /^mnt_id:\s*(\d+)$/mu.exec(info);
   return match?.[1] === undefined ? null : Number(match[1]);
+}
+
+function decodeMountPoint(field: string): string {
+  return field.replace(/\\([0-7]{3})/gu, (_escape, code: string) =>
+    String.fromCharCode(Number.parseInt(code, 8)),
+  );
+}
+
+function mountsAtOrUnder(table: string, directory: string): boolean | null {
+  const inside = directory === "/" ? "/" : `${directory}/`;
+  let mounts = 0;
+  for (const line of table.split("\n")) {
+    if (line === "") continue;
+    const field = line.split(" ")[4];
+    if (field === undefined || field === "") return null;
+    mounts += 1;
+    const mountPoint = decodeMountPoint(field);
+    if (mountPoint === directory || mountPoint.startsWith(inside)) return true;
+  }
+  return mounts === 0 ? null : false;
 }
 
 function anchorsDirectories(): boolean {
@@ -888,8 +910,22 @@ export async function removeDirectoryTree(
       return result("retained");
     }
   }
+  let mountsInside = true;
+  if (rootMountId !== null) {
+    const realRoot = await realpath(root).catch(() => null);
+    const table =
+      realRoot === null
+        ? null
+        : await (
+            hooks.readMountTable?.() ?? readFile("/proc/self/mountinfo", "utf8")
+          ).catch(() => null);
+    mountsInside =
+      realRoot === null ||
+      table === null ||
+      mountsAtOrUnder(table, realRoot) !== false;
+  }
   const crossesMount = async (entry: string, fd: number): Promise<boolean> => {
-    if (rootMountId === null) return false;
+    if (rootMountId === null || !mountsInside) return false;
     const mountId = await readMountId(entry, fd);
     if (mountId === rootMountId) return false;
     if (mountId === null) unanchoredPaths.add(displayPath(entry));
