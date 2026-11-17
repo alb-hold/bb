@@ -1234,7 +1234,9 @@ function toInitialLiveSessionSettings(
 ): ClaudeLiveSessionSettings {
   const autoCompactWindow = readUserAutoCompactWindow();
   return {
-    ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
+    ...(autoCompactWindow.status === "value"
+      ? { autoCompactWindow: autoCompactWindow.value }
+      : {}),
     fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
@@ -1253,7 +1255,13 @@ function withTurnLiveSessionSettings(
 ): ClaudeLiveSessionSettings {
   const model = params.model ?? current.model;
   const reasoningLevel = params.reasoningLevel ?? current.reasoningLevel;
-  const autoCompactWindow = readUserAutoCompactWindow();
+  const userWindow = readUserAutoCompactWindow();
+  const autoCompactWindow =
+    userWindow.status === "value"
+      ? userWindow.value
+      : userWindow.status === "unreadable"
+        ? current.autoCompactWindow
+        : undefined;
   return {
     ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
     fullAccessApprovalsEnabled:

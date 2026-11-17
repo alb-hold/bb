@@ -8389,6 +8389,30 @@ describe("bridge", () => {
       await bridge.waitForResponse(3);
       expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
 
+      writeFileSync(settingsPath, '{"autoCompactWindow": 2000');
+      bridge.sendRequest(6, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file half written" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(6);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
+      bridge.sendRequest(7, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file readable again" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(7);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
       writeFileSync(settingsPath, JSON.stringify({}));
       bridge.sendRequest(4, "turn/start", {
         threadId,
