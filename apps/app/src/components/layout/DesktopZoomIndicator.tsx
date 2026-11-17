@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  BB_DESKTOP_MAX_ZOOM_PERCENT,
-  BB_DESKTOP_MIN_ZOOM_PERCENT,
-} from "@bb/desktop-contract";
-import { Button } from "@bb/shared-ui/button";
-import { Icon } from "@bb/shared-ui/icon";
-import { cn } from "@bb/shared-ui/lib/utils";
-import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
-import {
-  getBbDesktopInfo,
-  MACOS_APP_REGION_NO_DRAG_CLASS,
-} from "@/lib/bb-desktop";
+import { defineSplit } from "@/lib/define-split";
+import { getBbDesktopInfo } from "@/lib/bb-desktop";
+
+const DesktopZoomIndicatorView = defineSplit<
+  import("./DesktopZoomIndicatorView").DesktopZoomIndicatorViewProps
+>({
+  id: "desktop-zoom-indicator-view",
+  load: () =>
+    import("./DesktopZoomIndicatorView").then(
+      (module) => module.DesktopZoomIndicatorView,
+    ),
+  loading: () => null,
+  error: () => null,
+  tier: "intent",
+});
 
 const HIDE_DELAY_MS = 2000;
 const FADE_OUT_MS = 150;
@@ -46,75 +49,24 @@ export function DesktopZoomIndicator() {
     };
   }, [onZoomChange, restartHideTimer]);
 
+  const onHoverChange = useCallback(
+    (next: boolean) => {
+      hovered.current = next;
+      restartHideTimer();
+    },
+    [restartHideTimer],
+  );
+
   if (zoomFactor === null) {
     return null;
   }
-  const zoomPercent = Math.round(zoomFactor * 100);
 
   return (
-    <div
-      className={`fixed right-0 top-(--bb-app-chrome-row-height) ${MACOS_APP_REGION_NO_DRAG_CLASS}`}
-      style={{ zIndex: APP_OVERLAY_LAYER.sharedPortaledOverlay }}
-    >
-      <div
-        role="toolbar"
-        aria-label="Zoom"
-        className={cn(
-          "mt-2 mr-3 flex items-center gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
-          fading &&
-            "opacity-0 motion-safe:transition-opacity motion-safe:duration-150",
-        )}
-        style={{ zoom: 1 / zoomFactor }}
-        onPointerEnter={() => {
-          hovered.current = true;
-          restartHideTimer();
-        }}
-        onPointerLeave={() => {
-          hovered.current = false;
-          restartHideTimer();
-        }}
-      >
-        <span
-          aria-live="polite"
-          className="min-w-12 text-center text-sm font-medium tabular-nums"
-        >
-          {zoomPercent}%
-        </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          aria-label="Zoom out"
-          disabled={zoomPercent <= BB_DESKTOP_MIN_ZOOM_PERCENT}
-          onClick={() => zoom?.("out")}
-        >
-          <Icon name="Minus" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          aria-label="Zoom in"
-          disabled={zoomPercent >= BB_DESKTOP_MAX_ZOOM_PERCENT}
-          onClick={() => zoom?.("in")}
-        >
-          <Icon name="Plus" />
-        </Button>
-        <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2"
-          aria-label="Reset zoom"
-          disabled={zoomPercent === 100}
-          onClick={() => zoom?.("reset")}
-        >
-          Reset
-        </Button>
-      </div>
-    </div>
+    <DesktopZoomIndicatorView
+      zoomFactor={zoomFactor}
+      fading={fading}
+      zoom={zoom}
+      onHoverChange={onHoverChange}
+    />
   );
 }

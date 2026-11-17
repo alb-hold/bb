@@ -1,4 +1,4 @@
-import { RetainedTerminalViewsProvider } from "@/components/thread/terminal/RetainedTerminalViews";
+import { RetainedTerminalViewsProvider } from "@/components/thread/terminal/RetainedTerminalViewsProvider";
 import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
@@ -75,7 +75,7 @@ import {
   usePanelShelfState,
 } from "@/components/ui/secondary-panel-shelf-visibility";
 
-import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
+import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenuSplit";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
 import {
   PluginPanelHeaderActions,

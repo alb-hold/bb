@@ -1,6 +1,8 @@
 import type { SkillSummary } from "@bb/server-contract";
+import { RESOURCE_GRID_PAGE_SIZE } from "@bb/shared-ui/resource-pagination";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  REGISTRY_PAGE_SIZE,
   buildRegistrySkillReferencePrompt,
   fetchRegistryRepositoryStars,
   fetchRegistrySkillDetail,
@@ -186,5 +188,11 @@ describe("registry skill formatting", () => {
     expect(formatInstallCount(999)).toBe("999");
     expect(formatInstallCount(1_000)).toBe("1.0K");
     expect(formatInstallCount(1_250_000)).toBe("1.3M");
+  });
+});
+
+describe("REGISTRY_PAGE_SIZE", () => {
+  it("matches the shared resource grid page size", () => {
+    expect(REGISTRY_PAGE_SIZE).toBe(RESOURCE_GRID_PAGE_SIZE);
   });
 });

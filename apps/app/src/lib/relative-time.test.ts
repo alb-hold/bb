@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatCompactRelativeTime as sharedFormatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
 import {
+  formatCompactRelativeTime,
   formatRelativeTime,
   formatScheduledTime,
 } from "./relative-time";
@@ -107,5 +109,37 @@ describe("formatRelativeTime", () => {
         day: "numeric",
       }),
     );
+  });
+});
+
+describe("formatCompactRelativeTime", () => {
+  it.each([
+    0,
+    59_000,
+    MINUTE,
+    59 * MINUTE,
+    HOUR,
+    23 * HOUR,
+    DAY,
+    6 * DAY,
+    7 * DAY,
+    34 * DAY,
+    35 * DAY,
+    400 * DAY,
+  ])("matches the shared info-row formatter %i ms back", (age) => {
+    const args = { timestamp: NOW - age, now: NOW };
+    expect(formatCompactRelativeTime(args)).toBe(
+      sharedFormatCompactRelativeTime(args),
+    );
+  });
+
+  it("formats each age band", () => {
+    const at = (age: number) =>
+      formatCompactRelativeTime({ timestamp: NOW - age, now: NOW });
+    expect(at(30_000)).toBe("now");
+    expect(at(5 * MINUTE)).toBe("5m");
+    expect(at(3 * HOUR)).toBe("3h");
+    expect(at(2 * DAY)).toBe("2d");
+    expect(at(21 * DAY)).toBe("3w");
   });
 });
