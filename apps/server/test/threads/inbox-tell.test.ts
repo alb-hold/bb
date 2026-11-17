@@ -44,6 +44,7 @@ import {
 
 const WORKSPACE_PATH = "/tmp/inbox-tell-project";
 const CLOCK_SLACK_MS = 10_000;
+const SEEDED_SETUP_TURN_TEXT = "seeded setup turn";
 
 function seedReceiver(
   harness: TestAppHarness,
@@ -68,6 +69,7 @@ function seedReceiver(
     environmentId: environment.id,
     providerThreadId: `provider-${args.hostId}`,
     threadId: thread.id,
+    inputText: SEEDED_SETUP_TURN_TEXT,
   });
   if (args.status === "active") {
     seedTurnStarted(harness.deps, {
@@ -90,7 +92,11 @@ function turnRequests(
 ): TurnRequestEventData[] {
   return listEvents(harness.db, { threadId })
     .filter((event) => event.type === "client/turn/requested")
-    .map((event) => turnRequestEventDataSchema.parse(JSON.parse(event.data)));
+    .map((event) => turnRequestEventDataSchema.parse(JSON.parse(event.data)))
+    .filter(
+      (request) =>
+        !JSON.stringify(request.input).includes(SEEDED_SETUP_TURN_TEXT),
+    );
 }
 
 function queuedRows(harness: TestAppHarness, threadId: string) {
@@ -230,10 +236,16 @@ describe("inbox tell to an idle thread", () => {
         threadId: thread.id,
         turnId: "turn-real",
       });
-      await vi.waitFor(() => {
+      await vi.waitFor(async () => {
+        await runQueuedMessageDispatch(harness.deps, {
+          kind: "thread-ready",
+          threadId: thread.id,
+        });
         expect(
-          listQueuedThreadCommands(harness, "turn.submit", thread.id).length,
-        ).toBeGreaterThan(0);
+          JSON.stringify(
+            listQueuedThreadCommands(harness, "turn.submit", thread.id),
+          ),
+        ).toContain("second held note");
       });
 
       const commands = JSON.stringify(

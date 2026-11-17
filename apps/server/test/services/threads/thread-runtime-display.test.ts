@@ -42,6 +42,7 @@ import { createMigratedConnection } from "@bb/db/testing";
 import {
   LOCAL_AGENT_TASK_TYPE,
   formatClientTurnRequestIdSuffix,
+  splitParentNotificationsChoice,
   threadScope,
   turnScope,
 } from "@bb/domain";
@@ -307,6 +308,7 @@ function createThreadListEntry(
 ): ThreadWithPendingInteractionState {
   return {
     ...args.thread,
+    ...splitParentNotificationsChoice(args.thread.parentNotifications),
     modelOverride: null,
     reasoningLevelOverride: null,
     storageDeletedAt: null,
