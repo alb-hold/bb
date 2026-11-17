@@ -52,3 +52,29 @@ Source: https://agentsroom.dev/blog/multiple-accounts-antigravity-cli (2026-08-2
 
 ## Not done
 No sign-in, no install, no agy run, no network traffic through any hub. #508 untouched (draft, head 8fae9a30, NOT VERIFIED).
+
+## Step 1b (2026-11-17): the installed `agy` CLI 1.5.10, and the client choice
+
+Source: `~/.local/bin/agy` (Mach-O arm64 Go, 214 MB), read with `strings` plus `agy --help` / `agy acp --help` under `env -i HOME=<empty temp dir>`. No keychain, token file or `~/.gemini*` was read, and agy was never run against any endpoint.
+
+- **Env vars:** agy honours none of the runtime's three. `GEMINI_HOME`, `AGY_ACP_FORCE_FILE_STORAGE` and `AGY_ACP_CCPA_BASE_URL` have 0 hits in the binary. Only `AGY_ACP_ENABLE_GATEWAY_AUTH` is shared.
+- **ACP server:** `agy acp` is an ACP stdio server (added in 1.5.0). `agy acp --login` runs "Log in with Google interactively, then exit (ACP terminal auth)".
+- **Endpoint: redirectable.** Use the `--cloud_code_endpoint` flag ("CCPA API URL", default `https://daily-cloudcode-pa.googleapis.com`) or the `CLOUD_CODE_URL` env var ("Overriding CloudCodeServerURL via CLOUD_CODE_URL environment variable"; "[CLIAuthProvider] UpdateEndpointURL: preserving custom endpoint"). The wire markers are the same family as the runtime: `streamGenerateContent`, `loadCodeAssist`, `retrieveUserQuota*`, `QUOTA_EXHAUSTED`. agy also calls services that `CLOUD_CODE_URL` may not cover (`fetchAdminControls`, JetskiService GETs, the model catalog). That was not confirmed statically.
+- **Directories:** flags `--gemini-dir` (default `.gemini`), `--app-data-dir` (default `antigravity-cli`), `--cli_dir_name`, and env `ANTIGRAVITY_APP_DATA_DIR` / `JETSKI_APP_DATA_DIR`. Paths derive from `os.UserHomeDir`. Config is at `~/.gemini/antigravity-cli/settings.json`.
+- **Login storage: one macOS keychain slot.** `codeassistclient.KeyringTokenStorage` (zalando go-keyring, which shells out to `/usr/bin/security`, values prefixed `go-keyring-base64:`, split tokens healed by `healSplitKeyringToken`).
+  - The item name is a candidate, `jetski-standalone-oauth-token`. A community source says service `gemini` / account `antigravity`. Neither was confirmed.
+  - File storage (`fileTokenStorage`) is used only when a keychain write fails, a load times out, or `shouldBypassKeyring` fires on environment detectors (SSH, container, dbus, WSL, Android). There is no supported switch on macOS.
+  - The token file name and path were not found.
+- **Other auth inputs:**
+  - `AGY_ADC_AUTH`: Application Default Credentials, which the changelog ties to pay-as-you-go Cloud accounts, not the Ultra subscription.
+  - `GEMINI_API_KEY` + `GOOGLE_GEMINI_BASE_URL`: API-key billing.
+  - `JETSKI_OAUTH_TOKEN`: present, meaning UNVERIFIED. It was not probed, because a probe run on macOS could load the owner's keychain token whatever `HOME` is set to.
+- **Client choice: `antigravity-acp` (the runtime), not `agy`.** The pool hub accepts only its own thread-scoped token, sent as a bearer or as `x-bb-account-pool-token` (`hub.ts` `presentedToken`).
+  1. Can the pool put its own token on the wire with no keychain involved? agy: only through `JETSKI_OAUTH_TOKEN`, which is unverified. Otherwise it sends the keychain token and the hub answers 401. Runtime: yes. A per-thread `GEMINI_HOME` plus `AGY_ACP_FORCE_FILE_STORAGE=1` makes it a profile-local file.
+  2. Can N Ultra accounts be imported without clobbering? agy: no. Every sign-in overwrites the one machine-wide slot, including the owner's current agy login. Runtime: yes. Each account signs in once into its own home, and the importer reads a file. This is the Claude/Codex pattern and is testable with fakes.
+  3. Does any traffic escape to Google on the owner's account? agy: possibly, through the uncovered services above, which would break "an explicit choice never silently switches". Runtime: model and quota calls go through `AGY_ACP_CCPA_BASE_URL`. The onboarding `base_url=None` caveat above stands.
+- **Consequence for the owner:** the existing agy login cannot be reused by the pool. Each Ultra account signs in once more, through bb's antigravity-acp agent.
+- **bb registry:** `antigravity-acp` resolves to provider id `acp-antigravity-acp` (`formatCustomAcpProviderId`). It has no npx launch, so bb lists it as `manual-install`. The owner installs the binary once, by hand.
+- **Open for Step 2:**
+  - the `acp_token.json` field names, and whether a far-future expiry with no refresh token stops it refreshing against Google. The `.par` dump is gone, and the Mac is at 15 GB free, so no re-download.
+  - whether `contributeFor` can write the per-thread token file before launch. It runs in the plugin process, so a local host is feasible; a remote host is not.
