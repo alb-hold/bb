@@ -18,6 +18,7 @@ describe.runIf(process.platform !== "win32")(
         const descendant = spawn("sh", ["-c", ${JSON.stringify(`echo $$ > ${marker}; while :; do sleep 1; done`)}], { stdio: ["ignore", 1, "ignore"] });
         descendant.unref();
       `], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+      const leaderExited = once(child, "exit");
       const cleanup = trackTestProcess(child, 500);
       const started = Date.now();
       try {
@@ -27,7 +28,8 @@ describe.runIf(process.platform !== "win32")(
           await delay(10);
         }
         const writerPid = readFileSync(marker, "utf8").trim();
-        await once(child, "exit");
+        if (child.exitCode === null && child.signalCode === null)
+          await leaderExited;
         await expect(cleanup()).rejects.toThrow(
           new RegExp(`pid ${writerPid} \\(sh -c echo .*while :; do sleep 1; done\\)`),
         );
