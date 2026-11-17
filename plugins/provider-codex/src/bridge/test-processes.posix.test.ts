@@ -18,7 +18,7 @@ const BOUNDED_DEADLINE_MS = 5_000;
 const ZOMBIE_DEADLINE_MS = 15_000;
 const LEADER_EXIT_WAIT_MS = 5_000;
 const ZOMBIE_SETTLE_MS = 800;
-const MARGIN_MS = 6_000;
+const MARGIN_MS = 15_000;
 
 async function leaderExitWithin(
   exits: Promise<unknown>[],

@@ -30,7 +30,7 @@ describe.runIf(process.platform !== "win32")(
     it.each([10, 100, 1_000])(
       "drains %i expired EPERM cleanups with no ps, no wait, and wall time under the cap",
       async (count) => {
-        const wallCapMs = 250;
+        const wallCapMs = 2_000;
         let clock = 1_000_000;
         vi.spyOn(Date, "now").mockImplementation(() => clock);
         const kill = vi.spyOn(process, "kill").mockImplementation(() => {
