@@ -161,6 +161,16 @@ type Mount = {
   point: string;
 };
 
+function decodeMountPath(value: string | undefined): string | null {
+  if (value === undefined || !value.startsWith("/")) return null;
+  const decoded = value.replace(
+    /\\(040|011|012|134)/gu,
+    (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+  if (/\\(?![\\])/u.test(decoded)) return null;
+  return path.posix.normalize(decoded);
+}
+
 function parseMountinfo(text: string): Mount[] | null {
   const mounts: Mount[] = [];
   for (const line of text.trim().split("\n")) {
@@ -172,18 +182,9 @@ function parseMountinfo(text: string): Mount[] | null {
       !/^\d+:\d+$/u.test(fields[2] ?? "")
     )
       return null;
-    const decode = (value: string | undefined): string | null => {
-      if (value === undefined || !value.startsWith("/")) return null;
-      const decoded = value.replace(
-        /\\(040|011|012|134)/gu,
-        (_match, octal: string) =>
-          String.fromCharCode(Number.parseInt(octal, 8)),
-      );
-      if (/\\(?![\\])/u.test(decoded)) return null;
-      return path.posix.normalize(decoded);
-    };
-    const mountRoot = decode(fields[3]);
-    const point = decode(fields[4]);
+    if (fields[separator + 1] === "nsfs") continue;
+    const mountRoot = decodeMountPath(fields[3]);
+    const point = decodeMountPath(fields[4]);
     if (mountRoot === null || point === null) return null;
     mounts.push({
       id: fields[0]!,
@@ -197,6 +198,16 @@ function parseMountinfo(text: string): Mount[] | null {
 
 function mountContains(candidate: string, ancestor: string): boolean {
   return ancestor === "/" || isUnder(candidate, ancestor);
+}
+
+function nsfsInside(text: string, directory: string): boolean {
+  for (const line of text.trim().split("\n")) {
+    const fields = line.split(" ");
+    if (fields[fields.indexOf("-") + 1] !== "nsfs") continue;
+    const point = decodeMountPath(fields[4]);
+    if (point === null || mountContains(point, directory)) return true;
+  }
+  return false;
 }
 
 async function worktreeAliases(
@@ -233,37 +244,85 @@ async function worktreeAliases(
   return [...aliases];
 }
 
+type WorktreeView = "unknown" | "hidden" | "mirrored" | { alias: string };
+
+async function foreignWorktreeView(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+  mountNamespace: string,
+): Promise<WorktreeView> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory)
+    return "unknown";
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if (!("value" in namespace) || namespace.value === mountNamespace)
+    return "unknown";
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in own) || !("value" in foreign)) return "unknown";
+  const ownMounts = parseMountinfo(own.value);
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (ownMounts === null || foreignMounts === null) return "unknown";
+  if (nsfsInside(foreign.value, directory)) return "unknown";
+  return worktreeExposure(ownMounts, foreignMounts, directory);
+}
+
+function viewKeepsPaths(view: WorktreeView): boolean {
+  return view === "hidden" || view === "mirrored";
+}
+
 async function foreignMountsExcludeWorktree(
   proc: ProcReader,
   base: string,
   directory: string,
   mountNamespace: string,
 ): Promise<boolean> {
-  const canonical = await readOptional(() => proc.realpath(directory));
-  if (!("value" in canonical) || canonical.value !== directory) return false;
-  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
-  if (!("value" in namespace) || namespace.value === mountNamespace)
-    return false;
-  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
-  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
-  if (!("value" in own) || !("value" in foreign)) return false;
-  const ownMounts = parseMountinfo(own.value);
-  const foreignMounts = parseMountinfo(foreign.value);
-  if (ownMounts === null || foreignMounts === null) return false;
+  return (
+    (await foreignWorktreeView(proc, base, directory, mountNamespace)) ===
+    "hidden"
+  );
+}
+
+function worktreeExposure(
+  ownMounts: Mount[],
+  foreignMounts: Mount[],
+  directory: string,
+): WorktreeView {
   const mount = ownMounts
     .filter((entry) => mountContains(directory, entry.point))
     .sort((a, b) => b.point.length - a.point.length)[0];
-  if (mount === undefined) return false;
+  if (mount === undefined) return "unknown";
   const filesystemPath = path.posix.join(
     mount.root,
     path.posix.relative(mount.point, directory),
   );
-  return !foreignMounts.some(
-    (entry) =>
-      entry.device === mount.device &&
-      (mountContains(filesystemPath, entry.root) ||
-        mountContains(entry.root, filesystemPath)),
-  );
+  let mirrored = false;
+  for (const entry of foreignMounts) {
+    if (entry.device !== mount.device) continue;
+    const alias = mountContains(filesystemPath, entry.root)
+      ? path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        )
+      : mountContains(entry.root, filesystemPath)
+        ? entry.point
+        : null;
+    if (alias === null) continue;
+    if (
+      ownMounts.some(
+        (candidate) =>
+          candidate.device === entry.device &&
+          candidate.root === entry.root &&
+          candidate.point === entry.point,
+      )
+    ) {
+      mirrored = true;
+      continue;
+    }
+    return { alias };
+  }
+  return mirrored ? "mirrored" : "hidden";
 }
 
 type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
@@ -328,37 +387,8 @@ async function systemViewExposure(
   if (foreignMounts === null) return null;
   const ownIds = new Set(ownMounts.map((entry) => entry.id));
   if (foreignMounts.every((entry) => ownIds.has(entry.id))) return null;
-  const mount = ownMounts
-    .filter((entry) => mountContains(directory, entry.point))
-    .sort((a, b) => b.point.length - a.point.length)[0];
-  if (mount === undefined) return null;
-  const filesystemPath = path.posix.join(
-    mount.root,
-    path.posix.relative(mount.point, directory),
-  );
-  for (const entry of foreignMounts) {
-    if (entry.device !== mount.device) continue;
-    const alias = mountContains(filesystemPath, entry.root)
-      ? path.posix.join(
-          entry.point,
-          path.posix.relative(entry.root, filesystemPath),
-        )
-      : mountContains(entry.root, filesystemPath)
-        ? entry.point
-        : null;
-    if (alias === null) continue;
-    if (
-      ownMounts.some(
-        (candidate) =>
-          candidate.device === entry.device &&
-          candidate.root === entry.root &&
-          candidate.point === entry.point,
-      )
-    )
-      continue;
-    return { alias };
-  }
-  return null;
+  const exposure = worktreeExposure(ownMounts, foreignMounts, directory);
+  return typeof exposure === "string" ? null : exposure;
 }
 
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -696,6 +726,24 @@ async function scanMountAliases(
     if ("failed" in value) doubt = `${target} could not be read`;
     return found;
   };
+  const rooted = async (
+    rootBase: string,
+  ): Promise<WorktreeHolder | { gone: true } | string | null> => {
+    const target = `${rootBase}/root`;
+    const value = await readOptional(() => proc.readlink(target));
+    if ("gone" in value) return value;
+    if ("value" in value && matches(value.value))
+      return holder("working folder");
+    const id = await readOptional(() => proc.statId(target));
+    if ("gone" in id) return id;
+    if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+      return holder("working folder");
+    if ("failed" in value) return `${target} could not be read`;
+    if ("failed" in id) return `${target} identity could not be read`;
+    return value.value === "/"
+      ? null
+      : `${rootBase} runs under a different root folder`;
+  };
   for (const [leaf, through, stat] of [
     ["cwd", "working folder", true],
     ["exe", "open file", false],
@@ -825,6 +873,16 @@ async function scanMountAliases(
       }
       if ("failed" in taskNamespace)
         identityDoubt = `${taskBase} mount namespace could not be read`;
+      const taskRoot =
+        "value" in taskNamespace && taskNamespace.value !== mountNamespace
+          ? await rooted(taskBase)
+          : null;
+      if (taskRoot !== null && typeof taskRoot !== "string") {
+        if ("pid" in taskRoot) return taskRoot;
+        doubt = beforeTask.doubt;
+        identityDoubt = beforeTask.identityDoubt;
+        continue;
+      }
       if (
         taskFiles !== null &&
         "uncertain" in taskFiles &&
@@ -841,15 +899,19 @@ async function scanMountAliases(
       if (
         "value" in taskNamespace &&
         taskNamespace.value !== mountNamespace &&
-        (!("value" in namespace) || taskNamespace.value !== namespace.value) &&
-        !(await foreignMountsExcludeWorktree(
+        (!("value" in namespace) || taskNamespace.value !== namespace.value)
+      ) {
+        const taskView = await foreignWorktreeView(
           proc,
           taskBase,
           directory,
           mountNamespace,
-        ))
-      )
-        identityDoubt = `${taskBase} mount isolation could not be proven`;
+        );
+        if (!viewKeepsPaths(taskView))
+          identityDoubt = `${taskBase} mount isolation could not be proven`;
+        else if (taskView === "mirrored" && taskRoot !== null)
+          identityDoubt = taskRoot;
+      } else if (taskRoot !== null) doubt = taskRoot;
     }
   if (sharedMaps) {
     const late = await mappings(base, false);
@@ -866,11 +928,23 @@ async function scanMountAliases(
     "value" in namespace &&
     namespace.value !== mountNamespace
   ) {
-    if (
-      await foreignMountsExcludeWorktree(proc, base, directory, mountNamespace)
-    )
+    const view = await foreignWorktreeView(
+      proc,
+      base,
+      directory,
+      mountNamespace,
+    );
+    if (view === "hidden") {
+      const root = await rooted(base);
+      if (root !== null && typeof root !== "string") return root;
       return { isolated: true };
-    doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
+    }
+    if (view === "mirrored") {
+      const root = await rooted(base);
+      if (typeof root === "string") doubt = root;
+      else if (root !== null) return root;
+    } else
+      doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
   }
   const current = await readOptional(() => proc.readFile(`${base}/status`));
   if ("gone" in current) return current;
@@ -1412,8 +1486,13 @@ async function scanOwnProcess(
   if ("gone" in mount) return null;
   if ("failed" in mount)
     return unreadable(`process ${pid} mount namespace`, mount.failed);
-  if (mount.value !== mountNamespace)
+  if (mount.value !== mountNamespace) {
+    const foreignRoot = await readOptional(() => proc.readlink(`${base}/root`));
+    if ("gone" in foreignRoot) return null;
+    if ("failed" in foreignRoot)
+      return unreadable(`process ${pid} root folder`, foreignRoot.failed);
     return reachesWorktree(proc, pid, base, command, tree);
+  }
   const root = await readOptional(() => proc.readlink(`${base}/root`));
   if ("gone" in root) return null;
   if ("failed" in root)
