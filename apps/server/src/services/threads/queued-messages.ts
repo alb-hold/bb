@@ -700,6 +700,8 @@ function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {
       return `it is waiting on the "${waitingOn.pluginId}" plugin`;
     case "workspace-busy":
       return `thread ${waitingOn.holderThreadId} is using the shared workspace`;
+    case "inbox":
+      return "it is held for the thread's next turn";
     case "time":
     case "thread-busy":
     case undefined:
