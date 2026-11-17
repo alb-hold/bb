@@ -352,6 +352,10 @@ export class SdkSession {
     }
   }
 
+  async applyAutoCompactWindow(window: number | undefined): Promise<void> {
+    await this.query?.applyFlagSettings({ autoCompactWindow: window ?? null });
+  }
+
   async applyMutableSettings(args: {
     effort: ClaudeSdkReasoningEffort | undefined;
     settings: ClaudeMutableFlagSettings;

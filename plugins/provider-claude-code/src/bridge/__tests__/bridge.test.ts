@@ -815,6 +815,9 @@ describe("bridge", () => {
   beforeEach(() => {
     previousHome = process.env.HOME;
     previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const hermeticConfigDir = mkdtempSync(join(tmpdir(), "bb-claude-cfg-"));
+    tempDirs.push(hermeticConfigDir);
+    process.env.CLAUDE_CONFIG_DIR = hermeticConfigDir;
     vi.clearAllMocks();
     if (nativeOpenRef.current) {
       openMock.mockImplementation(nativeOpenRef.current);
@@ -8294,6 +8297,154 @@ describe("bridge", () => {
       queries.at(-1)?.finish();
       await bridge.waitForResponse(4);
       queries.forEach((query) => query.finish());
+      bridge.restore();
+    }
+  });
+
+  it("records autoCompactWindow at spawn without pinning it and re-applies it live when the user setting changes", async () => {
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    if (!configDir) throw new Error("Expected hermetic Claude config dir");
+    const settingsPath = join(configDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 400000 }));
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+    const turnOptions = {
+      permissionMode: "accept-edits",
+      permissionScope: "workspace",
+      approvalReviewer: "user",
+      permissionEscalation: "ask",
+      model: "claude-haiku-4-5",
+      reasoningLevel: "low",
+      providerOptions: {
+        workflowsEnabled: false,
+        memoryEnabled: true,
+        providerSubagentsEnabled: true,
+      },
+    };
+
+    try {
+      const threadId = "thread-auto-compact-window";
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: { ...turnOptions, instructions: "test" },
+      });
+      await bridge.waitForResponse(1);
+
+      const query = queries[0];
+      const call = getLatestQueryCall();
+      if (!query) throw new Error("Expected live Claude query");
+      expect(call.options.settings).not.toHaveProperty("autoCompactWindow");
+      expect(query.applyFlagSettings).not.toHaveBeenCalledWith(
+        expect.objectContaining({ autoCompactWindow: expect.anything() }),
+      );
+
+      bridge.sendRequest(5, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "first turn, file unchanged" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(5);
+      expect(
+        query.applyFlagSettings.mock.calls.filter(([settings]) =>
+          Object.hasOwn(settings, "autoCompactWindow"),
+        ),
+      ).toEqual([]);
+
+      writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
+      bridge.sendRequest(2, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "after the setting moved" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(2);
+
+      expect(queries).toHaveLength(1);
+      expect(query.close).not.toHaveBeenCalled();
+      expect(query.applyFlagSettings).toHaveBeenCalledWith({
+        autoCompactWindow: 200000,
+      });
+      const callsAfterChange = query.applyFlagSettings.mock.calls.length;
+
+      bridge.sendRequest(3, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "unchanged setting" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(3);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      writeFileSync(settingsPath, '{"autoCompactWindow": 2000');
+      bridge.sendRequest(6, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file half written" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(6);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      writeFileSync(settingsPath, JSON.stringify({ autoCompactWindow: 200000 }));
+      bridge.sendRequest(7, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file readable again" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(7);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      rmSync(settingsPath);
+      bridge.sendRequest(8, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "settings file missing" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(8);
+      expect(query.applyFlagSettings).toHaveBeenCalledTimes(callsAfterChange);
+
+      writeFileSync(settingsPath, JSON.stringify({}));
+      bridge.sendRequest(4, "turn/start", {
+        threadId,
+        providerThreadId: threadId,
+        input: [{ type: "text", text: "setting removed" }],
+        clientRequestId: "creq_abcdefghjk",
+        options: turnOptions,
+      });
+      await readNextPrompt(call);
+      await bridge.waitForResponse(4);
+      expect(query.applyFlagSettings).toHaveBeenLastCalledWith({
+        autoCompactWindow: null,
+      });
+    } finally {
+      for (const query of queries) query.finish();
+      await stopBridgeThread({
+        bridge,
+        queries,
+        threadId: "thread-auto-compact-window",
+      });
       bridge.restore();
     }
   });
