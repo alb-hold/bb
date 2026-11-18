@@ -44,6 +44,11 @@ import {
 } from "./actor-routes.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
+import {
+  GEMINI_LOGIN_TIMEOUT_MS,
+  GeminiLoginError,
+  type GeminiLogin,
+} from "./gemini-login.js";
 
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
@@ -317,6 +322,48 @@ async function attempt(
   }
 }
 
+async function startGeminiLogin(
+  geminiLogin: GeminiLogin,
+  options: { label?: string; priority?: number; json?: boolean },
+): Promise<PluginCliResult> {
+  let started;
+  try {
+    started = await geminiLogin.start({
+      label: options.label ?? null,
+      ...(options.priority === undefined ? {} : { priority: options.priority }),
+    });
+  } catch (error) {
+    if (error instanceof GeminiLoginError)
+      throw new PluginCliError(error.message, {
+        code: `gemini_${error.reason}`,
+      });
+    throw error;
+  }
+  const minutes = Math.max(
+    1,
+    Math.round(
+      Math.min(started.expiresAt - Date.now(), GEMINI_LOGIN_TIMEOUT_MS) /
+        60_000,
+    ),
+  );
+  return {
+    exitCode: 0,
+    stdout: options.json
+      ? json({ ok: true, login: started })
+      : `${[
+          "A Google Chrome window is opening on a separate, temporary profile (not your own Chrome profile). Sign in to the Google account you want to add there.",
+          "If the page does not open, paste this URL into that window:",
+          started.authorizeUrl,
+          "",
+          `Session ID: ${started.sessionId}`,
+          `The sign-in must finish within ${minutes} minutes. bb adds the account as soon as Google confirms, then closes the window and deletes the temporary profile.`,
+          "",
+          "To wait for the result:",
+          `{{BB_CLI}} pool account login-poll --session ${started.sessionId}`,
+        ].join("\n")}\n`,
+  };
+}
+
 export function registerPoolCli(
   bb: Pick<BbPluginApi, "cli">,
   operations: PoolOperations,
@@ -324,6 +371,7 @@ export function registerPoolCli(
   codexLogin: CodexDeviceLogin,
   config: AccountPoolConfigController,
   actorRoutes: ActorRouteIssuer,
+  geminiLogin: GeminiLogin,
 ): void {
   bb.cli.register(
     defineCli({
@@ -334,9 +382,9 @@ export function registerPoolCli(
       commands: {
         "account add": cliCommand({
           summary:
-            "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
+            "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and adds the account itself once Google confirms; `{{BB_CLI}} pool account login-poll` waits for the result.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -345,7 +393,7 @@ export function registerPoolCli(
               type: "boolean",
               aliases: ["signin", "sign-in"],
               description:
-                "Start a browser (Claude) or device-code (Codex) login and print the next command",
+                "Start a browser (Claude, Gemini) or device-code (Codex) login and print the next command",
             },
             import: {
               type: "boolean",
@@ -387,18 +435,32 @@ export function registerPoolCli(
           },
           constraints: [
             { kind: "exactly-one", options: ["login", "import", "api-key"] },
-            { kind: "at-most-one", options: ["login", "priority"] },
           ],
           run: (input) =>
             attempt(async () => {
               const provider = input.options.provider;
               if (input.options.login) {
                 if (provider === "gemini") {
+                  if (input.options.home !== undefined)
+                    throw new PluginCliError(
+                      "--home belongs to --import; --login signs in to a fresh private folder of its own.",
+                      { code: "invalid_value" },
+                    );
+                  return startGeminiLogin(geminiLogin, {
+                    ...(input.options.label === undefined
+                      ? {}
+                      : { label: input.options.label }),
+                    ...(input.options.priority === undefined
+                      ? {}
+                      : { priority: input.options.priority }),
+                    json: input.options.json === true,
+                  });
+                }
+                if (input.options.priority !== undefined)
                   throw new PluginCliError(
-                    "Gemini sign-in is not run by this command. Sign in through bb's Antigravity (antigravity-acp) agent with GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1, then add it with --provider gemini --import --home <dir>.",
+                    "--priority cannot be combined with --login for Claude or Codex; set it afterwards with `{{BB_CLI}} pool account priority`.",
                     { code: "invalid_value" },
                   );
-                }
                 if (provider === "codex") {
                   const started = await codexLogin.start();
                   return {
@@ -534,9 +596,9 @@ export function registerPoolCli(
             }),
         }),
         "account login-poll": cliCommand({
-          summary: "Wait for a Codex device-code login to complete",
+          summary: "Wait for a Codex or Gemini login to complete",
           description:
-            "Blocks until the Codex authorization finishes, fails, or the invocation is cancelled.",
+            "Blocks until the Codex authorization or Gemini sign-in finishes, fails, or the invocation is cancelled. Cancelling it cancels the sign-in.",
           options: {
             session: SESSION_OPTION,
             label: {
@@ -554,6 +616,27 @@ export function registerPoolCli(
                   ? {}
                   : { label: input.options.label }),
               });
+              if (geminiLogin.has(parsed.sessionId)) {
+                if (parsed.label !== undefined)
+                  throw new PluginCliError(
+                    "A Gemini sign-in takes its label from `account add --login --label`; drop --label here.",
+                    { code: "invalid_value" },
+                  );
+                const result = await geminiLogin.wait(
+                  parsed.sessionId,
+                  ctx.signal,
+                );
+                if (result.status === "complete")
+                  return {
+                    exitCode: 0,
+                    stdout: input.options.json
+                      ? json({ ok: true, account: result.account })
+                      : `Added ${result.account.label} (${result.account.id}).\n`,
+                  };
+                throw new PluginCliError(result.message, {
+                  code: `gemini_${result.reason}`,
+                });
+              }
               const target = codexLogin.targetOf(parsed.sessionId);
               const signal = ctx.signal;
               const cancel = () => codexLogin.cancel(parsed);

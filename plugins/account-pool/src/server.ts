@@ -18,6 +18,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { registerPoolCli } from "./cli.js";
 import {
+  accountAddInputSchema,
   accountPoolConfigSchema,
   accountPoolConfigSetInputSchema,
   draftSelectionSchema,
@@ -70,6 +71,11 @@ import {
 import { ClaudeOAuthLogin } from "./oauth-login.js";
 import { CodexDeviceLogin } from "./codex-device-login.js";
 import {
+  GeminiLogin,
+  antigravityLaunchFromCustomAgents,
+  type CommandSpec,
+} from "./gemini-login.js";
+import {
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./realtime.js";
@@ -108,6 +114,9 @@ export interface AccountPoolPluginOptions {
   importGeminiCredentials?: (
     home?: string,
   ) => Promise<ImportedGeminiCredentials>;
+  resolveGeminiRuntime?: () => Promise<CommandSpec | null>;
+  geminiLoginBrowser?: CommandSpec;
+  geminiLoginTimeoutMs?: number;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -154,6 +163,7 @@ const OUTRANKING_CLAUDE_CREDENTIALS = [
 ] as const;
 
 const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
+const PROVIDER_ACP_PLUGIN_ID = "provider-acp";
 
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
   claude: [
@@ -723,6 +733,38 @@ export function createAccountPoolPlugin(
       reauthorizeAccount: (accountId, authenticated) =>
         operations.reauthorizeCodex(accountId, authenticated),
     });
+    const geminiLogin = new GeminiLogin({
+      dataDir: path.join(
+        bb.server.experimental_dataDir,
+        "plugins",
+        bb.pluginId,
+      ),
+      resolveRuntime:
+        options.resolveGeminiRuntime ??
+        (async () => {
+          const settings = await bb.sdk.plugins.getSettings({
+            pluginId: PROVIDER_ACP_PLUGIN_ID,
+          });
+          return antigravityLaunchFromCustomAgents(
+            settings.values.customAgents,
+          );
+        }),
+      ...(options.geminiLoginBrowser === undefined
+        ? {}
+        : { browser: options.geminiLoginBrowser }),
+      ...(options.geminiLoginTimeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.geminiLoginTimeoutMs }),
+      importAccount: (home, target) =>
+        operations.add(
+          accountAddInputSchema.parse({
+            provider: "gemini",
+            source: { kind: "import", home },
+            label: target.label,
+            priority: target.priority,
+          }),
+        ),
+    });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
         "Add and enable a Claude or Codex account with `bb pool account add`.",
@@ -878,7 +920,15 @@ export function createAccountPoolPlugin(
           `Account Pooler revoked ${count} route${count === 1 ? "" : "s"} for actor ${actorId}${threadId === null ? "" : ` on thread ${threadId}`}.`,
         ),
     });
-    registerPoolCli(bb, operations, login, codexLogin, config, actorRoutes);
+    registerPoolCli(
+      bb,
+      operations,
+      login,
+      codexLogin,
+      config,
+      actorRoutes,
+      geminiLogin,
+    );
     const markerEntries = (token: string): PoolEnvEntry[] => [
       {
         name: PARENT_URL_ENV,
@@ -1246,6 +1296,7 @@ export function createAccountPoolPlugin(
     );
     bb.onDispose(async () => {
       codexLogin.dispose();
+      await geminiLogin.dispose();
       let timer: ReturnType<typeof setTimeout> | null = null;
       try {
         const inspection = inspectDisableState(bb, operations);

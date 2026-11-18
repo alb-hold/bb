@@ -3,6 +3,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -32,6 +33,9 @@ import { createAccountPoolTestHost } from "./test-host.js";
 
 
 const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+const FAKE_RUNTIME = path.join(FIXTURES, "fake-antigravity-acp.mjs");
+const FAKE_CHROME = path.join(FIXTURES, "fake-chrome.mjs");
 const THREAD = "thr_gemini2345";
 const CLIENT = { clientId: "agy-client", clientSecret: "agy-secret" };
 
@@ -676,6 +680,7 @@ async function createGeminiFixture(
     withCodex?: boolean;
     hostWorker?: "current" | "old";
     kv?: Record<string, unknown>;
+    loginControl?: string;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
@@ -745,11 +750,30 @@ async function createGeminiFixture(
       prod: `${google.url}/prod`,
       daily: `${google.url}/daily`,
     },
+    ...(options.loginControl === undefined
+      ? {}
+      : {
+          resolveGeminiRuntime: async () => ({
+            command: process.execPath,
+            args: [FAKE_RUNTIME, options.loginControl as string],
+          }),
+          geminiLoginBrowser: {
+            command: process.execPath,
+            args: [FAKE_CHROME, options.loginControl],
+          },
+        }),
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
       const found = home === undefined ? undefined : homes[home];
-      if (found === undefined) throw new Error("no fake login for that home");
-      return found;
+      if (found !== undefined) return found;
+      const written =
+        home === undefined
+          ? null
+          : await fs
+              .readFile(path.join(home, "antigravity-acp", "acp_token.json"), "utf8")
+              .catch(() => null);
+      if (written === null) throw new Error("no fake login for that home");
+      return creds((JSON.parse(written) as { access: string }).access);
     },
   })(host.bb);
   const service = host.harness.behavior.runService("hub");
@@ -969,6 +993,65 @@ describe("Gemini account pool", () => {
       "--login",
     ]);
     expect(login.exitCode).not.toBe(0);
+    expect(login.stderr).toContain("No antigravity-acp agent is configured");
+  });
+
+  it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
+    const google = await startGoogle({
+      projects: { "tok-c": "proj-c", "tok-d": "proj-d" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const control = await tempDir("bb-gemini-login-control-");
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/c": creds("tok-c") },
+      { loginControl: control },
+    );
+    const cli = fixture.host.harness.behavior;
+    const signIn = async (access: string, extra: string[] = []) => {
+      await fs.rm(path.join(control, "approve"), { force: true });
+      await fs.writeFile(
+        path.join(control, "config.json"),
+        JSON.stringify({ version: "1.5.0", token: { access } }),
+      );
+      const started = await cli.runCli([
+        "account",
+        "add",
+        "--provider",
+        "gemini",
+        "--login",
+        "--json",
+        ...extra,
+      ]);
+      expect(started.exitCode).toBe(0);
+      const { login } = JSON.parse(started.stdout) as {
+        login: { sessionId: string; authorizeUrl: string };
+      };
+      expect(login.authorizeUrl).toMatch(/^https:\/\/accounts\.google\.com\//u);
+      await fs.writeFile(path.join(control, "approve"), "");
+      return cli.runCli(["account", "login-poll", "--session", login.sessionId]);
+    };
+
+    const added = await signIn("tok-d", ["--label", "ultra-d", "--priority", "7"]);
+    expect(added.exitCode).toBe(0);
+    expect(added.stdout).toMatch(/^Added ultra-d \(/u);
+
+    await cli.runCli(["account", "add", "--provider", "gemini", "--import", "--home", "/homes/c"]);
+    const duplicate = await signIn("tok-c");
+    expect(duplicate.exitCode).not.toBe(0);
+    expect(duplicate.stderr).toContain("already in the account pool");
+
+    const listed = JSON.parse(
+      (await cli.runCli(["account", "list", "--json"])).stdout,
+    ) as { accounts: Array<{ provider: string; label: string; priority: number }> };
+    const gemini = listed.accounts.filter((account) => account.provider === "gemini");
+    expect(gemini).toHaveLength(2);
+    expect(gemini.map((account) => account.label)).toContain("ultra-d");
+    expect(gemini.find((account) => account.label === "ultra-d")?.priority).toBe(7);
+    const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
+    expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
   });
 
   it("points antigravity-acp at the hub with env only, through a home that holds no credential", async () => {
