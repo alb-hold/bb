@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pluginProcessDataDir, type WorktreeHolderScan } from "@bb/process-utils";
+import {
+  pluginProcessDataDir,
+  type WorktreeHolderScan,
+} from "@bb/process-utils";
 import {
   WORKTREE_TRASH_DIR_NAME,
   worktreeTrashEntryTrashedAt,
@@ -203,9 +206,7 @@ export async function directoryTreeBytes(directory: string): Promise<number> {
 }
 
 function isNotFound(error: unknown): boolean {
-  return (
-    error instanceof Error && "code" in error && error.code === "ENOENT"
-  );
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 export type WorktreeTrashSweepTimer = (

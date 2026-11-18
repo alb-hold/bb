@@ -3,10 +3,7 @@ export const WORKTREE_TRASH_DIR_NAME = ".trash";
 const STAMP_PATTERN = /-(\d{8})T(\d{6})(\d{3})Z$/u;
 
 function utcStamp(at: Date): string {
-  return at
-    .toISOString()
-    .replace(/[-:]/gu, "")
-    .replace(".", "");
+  return at.toISOString().replace(/[-:]/gu, "").replace(".", "");
 }
 
 export function worktreeTrashEntryName(id: string, at: Date): string {

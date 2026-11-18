@@ -205,7 +205,11 @@ describe("sweeping the worktree trash", () => {
           "free disk is 12000000000 bytes, under the 20000000000-byte floor",
       },
     ]);
-    expect(logs.every((line) => line.message === "Deleted worktree trash entry early")).toBe(true);
+    expect(
+      logs.every(
+        (line) => line.message === "Deleted worktree trash entry early",
+      ),
+    ).toBe(true);
   });
 
   it("deletes oldest entries early only until the trash is back within its budget", async () => {
@@ -225,16 +229,18 @@ describe("sweeping the worktree trash", () => {
     expect(await present(entries.middle!)).toBe(false);
     expect(await present(entries.recent!)).toBe(true);
     expect(await present(entries.fresh!)).toBe(true);
-    expect(logs.map((line) => [line.fields.entry, line.fields.reason])).toEqual([
+    expect(logs.map((line) => [line.fields.entry, line.fields.reason])).toEqual(
       [
-        entries.older,
-        "the trash holds 36000000000 bytes, over the 20000000000-byte budget",
+        [
+          entries.older,
+          "the trash holds 36000000000 bytes, over the 20000000000-byte budget",
+        ],
+        [
+          entries.middle,
+          "the trash holds 27000000000 bytes, over the 20000000000-byte budget",
+        ],
       ],
-      [
-        entries.middle,
-        "the trash holds 27000000000 bytes, over the 20000000000-byte budget",
-      ],
-    ]);
+    );
   });
 
   it("leaves leftover removal folders out of the trash budget", async () => {
@@ -299,7 +305,10 @@ describe("scheduling the worktree trash sweep", () => {
   it("sweeps at start, then hourly on an unref'd timer, one sweep at a time, until stopped", async () => {
     const { dataDir, entries } = await trashWith({ old: 25 * HOUR_MS });
     const { logger, logs } = recordingLogger();
-    const production = worktreeTrashSweepDeps({ daemonDataDir: dataDir, logger });
+    const production = worktreeTrashSweepDeps({
+      daemonDataDir: dataDir,
+      logger,
+    });
     let removals = 0;
     let releaseRemoval: () => void = () => {};
     const removalGate = new Promise<void>((resolve) => {

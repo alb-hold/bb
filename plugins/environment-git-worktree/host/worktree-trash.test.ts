@@ -57,10 +57,7 @@ async function managedWorktree(): Promise<{
   const root = path.join(dataDir, "worktrees", "thr_trash");
   const bare = path.join(base, "remote.git");
   const workspace = path.join(root, "repo");
-  await Promise.all([
-    fs.mkdir(source),
-    fs.mkdir(root, { recursive: true }),
-  ]);
+  await Promise.all([fs.mkdir(source), fs.mkdir(root, { recursive: true })]);
   await git(base, "init", "--bare", bare);
   await git(source, "init", "--initial-branch=main");
   await git(source, "config", "user.name", "Worktree Test");
@@ -196,7 +193,9 @@ describe("removing a git worktree into the trash", () => {
     );
 
     expect(isWorktreePreservedError(error)).toBe(true);
-    expect((error as Error).message).toContain("could not move it to the trash");
+    expect((error as Error).message).toContain(
+      "could not move it to the trash",
+    );
     expect(
       await fs.readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).toBe("published\n");
