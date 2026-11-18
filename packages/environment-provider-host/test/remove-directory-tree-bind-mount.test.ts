@@ -750,6 +750,7 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
         changed: false,
         mountedPaths: [mounted],
         fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+        stoppedAt: null,
       });
     },
   );
@@ -774,6 +775,7 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
         changed: false,
         mountedPaths: [],
         fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+        stoppedAt: null,
       });
       expect(moved).toBe(inspection.fingerprint);
       expect(removal.status).toBe("retained");

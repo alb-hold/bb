@@ -222,9 +222,7 @@ it("removes a tree in another process that reports every entry boundary", async 
     ).toBe(true);
     expect(heartbeat.ops).toBeLessThanOrEqual(removal.ops);
   }
-  const directories = [0, 1, 2, 3].map((index) =>
-    path.join(root, `d${index}`),
-  );
+  const directories = [0, 1, 2, 3].map((index) => path.join(root, `d${index}`));
   expect(
     heartbeats
       .filter((heartbeat) => heartbeat.directory)
@@ -325,9 +323,7 @@ it("encodes own writes so they survive a JSON round trip unchanged", async () =>
   expect(decoded).toEqual(options);
   expect(
     decodeChildRemovalOptions(
-      JSON.parse(
-        JSON.stringify(encodeChildRemovalOptions({ startedAt: 7 })),
-      ),
+      JSON.parse(JSON.stringify(encodeChildRemovalOptions({ startedAt: 7 }))),
     ),
   ).toEqual({ startedAt: 7 });
 });
@@ -366,73 +362,70 @@ it("starts the removal process when the daemon carries NODE_OPTIONS it cannot lo
   }
 });
 
-it(
-  "switches context less than once per two entries on a 5k-file tree",
-  async () => {
-    const root = await treeOf(10, 500);
+it("switches context less than once per two entries on a 5k-file tree", async () => {
+  const root = await treeOf(10, 500);
+  const heartbeats: RemovalHeartbeat[] = [];
 
-    const removal = await removeDirectoryTreeInChild(root, {
-      startedAt: Number.MAX_SAFE_INTEGER,
-    });
+  const startedAt = performance.now();
+  const removal = await removeDirectoryTreeInChild(root, {
+    startedAt: Number.MAX_SAFE_INTEGER,
+    onHeartbeat: (heartbeat) => heartbeats.push(heartbeat),
+  });
+  const elapsed = performance.now() - startedAt;
 
-    expect(removal.result.status).toBe("removed");
-    expect(removal.ops).toBe(5_030);
-    expect(removal.voluntaryContextSwitches / removal.ops).toBeLessThan(0.5);
-  },
-  120_000,
-);
+  expect(removal.result.status).toBe("removed");
+  expect(removal.ops).toBe(5_030);
+  expect(removal.voluntaryContextSwitches / removal.ops).toBeLessThan(0.5);
+  const entryHeartbeats = heartbeats.filter(
+    (heartbeat) => !heartbeat.directory,
+  );
+  expect(entryHeartbeats.length).toBeGreaterThan(0);
+  expect(entryHeartbeats.length).toBeLessThanOrEqual(elapsed / 10 + 1);
+}, 120_000);
 
-it(
-  "stops a healthy walk within a second of an abort and leaves no half-removed names",
-  async () => {
-    const root = await treeOf(20, 1_000);
-    const controller = new AbortController();
-    let abortedAt = 0;
+it("stops a healthy walk within a second of an abort and leaves no half-removed names", async () => {
+  const root = await treeOf(20, 1_000);
+  const controller = new AbortController();
+  let abortedAt = 0;
 
-    const removal = await removeDirectoryTreeInChild(root, {
-      startedAt: Number.MAX_SAFE_INTEGER,
-      signal: controller.signal,
-      onHeartbeat: (heartbeat) => {
-        if (abortedAt !== 0 || heartbeat.ops < 2_000) return;
-        abortedAt = performance.now();
-        controller.abort();
-      },
-    });
+  const removal = await removeDirectoryTreeInChild(root, {
+    startedAt: Number.MAX_SAFE_INTEGER,
+    signal: controller.signal,
+    onHeartbeat: (heartbeat) => {
+      if (abortedAt !== 0 || heartbeat.ops < 2_000) return;
+      abortedAt = performance.now();
+      controller.abort();
+    },
+  });
 
-    expect(abortedAt).toBeGreaterThan(0);
-    expect(performance.now() - abortedAt).toBeLessThan(1_000);
-    expect(alive(removal.pid)).toBe(false);
-    expect(removal.stop?.cause).toBe("abort");
-    expect(removal.result.status).toBe("retained");
-    expect(removal.result.stoppedPaths.length).toBeGreaterThan(0);
-    const reasons = keptTreeReasons(removal.result, (entry) => entry, CHANGED);
-    expect(reasons).toContain(PARTIALLY_REMOVED_REASON);
-    expect(reasons).not.toContain(CHANGED);
-    await expect(fs.lstat(root)).resolves.toBeDefined();
-    await expect(quarantineLeftovers(root)).resolves.toEqual([]);
-  },
-  120_000,
-);
+  expect(abortedAt).toBeGreaterThan(0);
+  expect(performance.now() - abortedAt).toBeLessThan(1_000);
+  expect(alive(removal.pid)).toBe(false);
+  expect(removal.stop?.cause).toBe("abort");
+  expect(removal.result.status).toBe("retained");
+  expect(removal.result.stoppedPaths.length).toBeGreaterThan(0);
+  const reasons = keptTreeReasons(removal.result, (entry) => entry, CHANGED);
+  expect(reasons).toContain(PARTIALLY_REMOVED_REASON);
+  expect(reasons).not.toContain(CHANGED);
+  await expect(fs.lstat(root)).resolves.toBeDefined();
+  await expect(quarantineLeftovers(root)).resolves.toEqual([]);
+}, 120_000);
 
-it(
-  "lets the walk stop itself at the deadline and exit cleanly",
-  async () => {
-    const root = await treeOf(20, 1_000);
+it("lets the walk stop itself at the deadline and exit cleanly", async () => {
+  const root = await treeOf(20, 1_000);
 
-    const removal = await removeDirectoryTreeInChild(root, {
-      startedAt: Number.MAX_SAFE_INTEGER,
-      deadline: AbortSignal.timeout(1_000),
-    });
+  const removal = await removeDirectoryTreeInChild(root, {
+    startedAt: Number.MAX_SAFE_INTEGER,
+    deadline: AbortSignal.timeout(1_000),
+  });
 
-    expect(removal.stop?.cause).toBe("deadline");
-    expect(removal.exit).toEqual({ code: 0, signal: null });
-    expect(removal.result.status).toBe("retained");
-    expect(removal.result.stoppedPaths.length).toBeGreaterThan(0);
-    expect(removal.result.notRespondingPaths).toEqual([]);
-    await expect(quarantineLeftovers(root)).resolves.toEqual([]);
-  },
-  120_000,
-);
+  expect(removal.stop?.cause).toBe("deadline");
+  expect(removal.exit).toEqual({ code: 0, signal: null });
+  expect(removal.result.status).toBe("retained");
+  expect(removal.result.stoppedPaths.length).toBeGreaterThan(0);
+  expect(removal.result.notRespondingPaths).toEqual([]);
+  await expect(quarantineLeftovers(root)).resolves.toEqual([]);
+}, 120_000);
 
 describe.runIf(fuseAvailable)(
   "a filesystem that stops answering under the tree",
@@ -553,7 +546,9 @@ describe.runIf(fuseAvailable)(
       expect(alive(first.pid)).toBe(true);
       expect(stuckRemovalProcess(root)).toBe(first.pid);
       await expect(
-        removeDirectoryTreeInChild(root, { startedAt: Number.MAX_SAFE_INTEGER }),
+        removeDirectoryTreeInChild(root, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+        }),
       ).rejects.toThrow(stuckRemovalReason(first.pid));
       process.kill(first.pid, "SIGKILL");
       await untilTrue(() => stuckRemovalProcess(root) === null, 5_000);
