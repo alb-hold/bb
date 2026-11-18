@@ -300,7 +300,7 @@ export class GeminiLogin {
   private readonly now: () => number;
   private readonly browser: CommandSpec;
   private disposed = false;
-  private starting = false;
+  private starting: Promise<GeminiLoginStart> | null = null;
 
   constructor(private readonly options: GeminiLoginOptions) {
     this.root = path.join(options.dataDir, LOGIN_ROOT);
@@ -323,7 +323,7 @@ export class GeminiLogin {
   }
 
   async start(target: GeminiLoginTarget): Promise<GeminiLoginStart> {
-    if (this.disposed) throw new Error("Gemini sign-in is shutting down.");
+    this.live();
     this.expireResults();
     const running = this.pending();
     if (running !== null) {
@@ -331,22 +331,34 @@ export class GeminiLogin {
         `A Gemini sign-in is already running (session ${running}). Finish it, or wait for it with \`bb pool account login-poll --session ${running}\`, before starting another.`,
       );
     }
-    if (this.starting)
+    if (this.starting !== null)
       throw new Error("A Gemini sign-in is already starting; wait for it before starting another.");
-    this.starting = true;
+    const starting = this.startOne(target);
+    this.starting = starting;
     try {
-      return await this.startOne(target);
+      return await starting;
     } finally {
-      this.starting = false;
+      if (this.starting === starting) this.starting = null;
     }
+  }
+
+  private live(): void {
+    if (this.disposed)
+      throw new GeminiLoginError(
+        "sign_in_cancelled",
+        "Gemini sign-in is shutting down. No account was added.",
+      );
   }
 
   private async startOne(target: GeminiLoginTarget): Promise<GeminiLoginStart> {
     const runtime = await this.checkedRuntime();
+    this.live();
     await this.sweep();
+    this.live();
     await fs.mkdir(this.options.dataDir, { recursive: true, mode: 0o700 });
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
     await fs.chmod(this.root, 0o700);
+    this.live();
     const sessionId = randomUUID();
     const dir = path.join(this.root, sessionId);
     await privateDir(dir);
@@ -420,9 +432,11 @@ export class GeminiLogin {
 
   async dispose(): Promise<void> {
     this.disposed = true;
-    const running = [...this.sessions.values()];
-    for (const session of running) this.cancel(session.sessionId);
-    await Promise.all(running.map((session) => session.result.catch(() => {})));
+    for (const session of this.sessions.values()) this.cancel(session.sessionId);
+    await this.starting?.catch(() => {});
+    const left = [...this.sessions.values()];
+    for (const session of left) this.cancel(session.sessionId);
+    await Promise.all(left.map((session) => session.result.catch(() => {})));
     this.sessions.clear();
   }
 
@@ -472,6 +486,7 @@ export class GeminiLogin {
       `#!/bin/sh\nprintf '%s\\n' "$1" > ${shellQuote(`${urlFile}.tmp`)} && /bin/mv ${shellQuote(`${urlFile}.tmp`)} ${shellQuote(urlFile)}\n`,
       { mode: 0o700, flag: "wx" },
     );
+    this.live();
     const child = spawn(runtime.command, [...runtime.args], {
       cwd: session.dir,
       detached: true,
@@ -586,11 +601,15 @@ export class GeminiLogin {
   private async openBrowser(session: Session, url: string): Promise<void> {
     const profile = path.join(session.dir, "chrome-profile");
     await privateDir(profile);
+    this.live();
+    if (session.cancelled !== null)
+      throw new GeminiLoginError(session.cancelled.reason, session.cancelled.message);
     const child = spawn(
       this.browser.command,
       [
         ...this.browser.args,
         `--user-data-dir=${profile}`,
+        "--use-mock-keychain",
         "--no-first-run",
         "--no-default-browser-check",
         "--new-window",

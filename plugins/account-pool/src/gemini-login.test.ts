@@ -167,6 +167,7 @@ describe("GeminiLogin", () => {
     const args = browser.args as string[];
     expect(args).toContain(`--user-data-dir=${path.join(dir, "chrome-profile")}`);
     expect(args).toContain("--no-first-run");
+    expect(args).toContain("--use-mock-keychain");
     expect(args.at(-1)).toBe(started.authorizeUrl);
     expect(args.some((arg) => arg.includes("remote-debugging"))).toBe(false);
     await vi.waitFor(() =>
@@ -319,5 +320,44 @@ describe("GeminiLogin", () => {
     await fixture.login.dispose();
     expect(await waiting).toMatchObject({ status: "error", reason: "sign_in_cancelled" });
     await expectNothingLeft(fixture);
+  });
+
+  it("starts nothing when dispose lands while the runtime is being resolved", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let control = "";
+    const fixture = await setup({
+      resolveRuntime: async () => {
+        await gate;
+        return { command: process.execPath, args: [FAKE_RUNTIME, control] };
+      },
+    });
+    control = fixture.control;
+    const starting = fixture.login.start({ label: null }).catch((e: unknown) => e);
+    const disposing = fixture.login.dispose();
+    release();
+    await disposing;
+    const error = await starting;
+    expect(error).toBeInstanceOf(GeminiLoginError);
+    expect((error as GeminiLoginError).reason).toBe("sign_in_cancelled");
+    expect(existsSync(path.join(fixture.control, "env.json"))).toBe(false);
+    expect(existsSync(path.join(fixture.control, "browser.json"))).toBe(false);
+    expect(await fixture.leftovers()).toEqual([]);
+  });
+
+  it("resolves dispose only after a sign-in that is still opening is stopped and removed", async () => {
+    const fixture = await setup({ runtime: { version: null } });
+    const starting = fixture.login.start({ label: null }).catch((e: unknown) => e);
+    await vi.waitFor(() =>
+      expect(existsSync(path.join(fixture.control, "env.json"))).toBe(true),
+    );
+    const runtime = await fixture.readJson("env.json");
+    await fixture.login.dispose();
+    expect(await fixture.leftovers()).toEqual([]);
+    expect(isAlive(runtime.pid as number)).toBe(false);
+    expect(existsSync(path.join(fixture.control, "browser.json"))).toBe(false);
+    expect(((await starting) as GeminiLoginError).reason).toBe("sign_in_cancelled");
   });
 });
