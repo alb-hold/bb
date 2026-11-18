@@ -91,6 +91,9 @@ async function managedWorktree() {
   await git(workspace, "push", "--set-upstream", "origin", "feature");
   await fs.mkdir(path.join(workspace, "sub", "deeper"), { recursive: true });
   await fs.writeFile(path.join(workspace, "sub", "deeper", "kept.txt"), "x\n");
+  await git(workspace, "add", "sub/deeper/kept.txt");
+  await git(workspace, "commit", "-m", "kept");
+  await git(workspace, "push");
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
   return {
     base,
@@ -232,9 +235,9 @@ describe("bounding the macOS inspection before a worktree moves to the trash", (
       expect(
         await fs.readFile(path.join(worktree.path, "README.md"), "utf8"),
       ).toBe("published\n");
-      expect((await fs.readdir(path.join(worktree.path, "sub"))).sort()).toEqual(
-        ["deeper", "mnt"],
-      );
+      expect(
+        (await fs.readdir(path.join(worktree.path, "sub"))).sort(),
+      ).toEqual(["deeper", "mnt"]);
     },
     60_000,
   );

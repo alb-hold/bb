@@ -203,7 +203,9 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       await removeWorktree({
         path: target.path,
         rootPath: target.root,
+        trashRoot: path.join(target.root, "..", ".trash"),
         testHooks: {
+          platform: "linux",
           onRemovalHeartbeat: (heartbeat) => pids.add(heartbeat.pid),
         },
       });
@@ -222,8 +224,12 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       const error = await removeWorktree({
         path: target.path,
         rootPath: target.root,
+        trashRoot: path.join(target.root, "..", ".trash"),
         deadline: { signal: deadline.signal, ms: 120_000 },
-        testHooks: { onRemovalHeartbeat: () => deadline.abort() },
+        testHooks: {
+          platform: "linux",
+          onRemovalHeartbeat: () => deadline.abort(),
+        },
       }).then(
         () => null,
         (caught: unknown) => caught,

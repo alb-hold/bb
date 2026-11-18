@@ -153,7 +153,8 @@ function runTreeChild<T>(
 ): Promise<TreeChildRun<T>> {
   const target = options.target ?? root;
   const stuck = stuckRemovalProcess(target);
-  if (stuck !== null) return Promise.reject(new Error(stuckRemovalReason(stuck)));
+  if (stuck !== null)
+    return Promise.reject(new Error(stuckRemovalReason(stuck)));
   const stallMs = options.stallMs ?? REMOVE_STALL_MS;
   const graceMs = options.graceMs ?? REMOVE_KILL_GRACE_MS;
   const exitWaitMs = options.exitWaitMs ?? REMOVE_EXIT_WAIT_MS;

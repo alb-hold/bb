@@ -21,7 +21,7 @@ import {
 const roots: string[] = [];
 const modulePath = path.resolve(
   import.meta.dirname,
-  "../src/remove-directory-tree.ts",
+  "../src/remove-directory-tree-core.ts",
 );
 
 afterEach(async () => {
