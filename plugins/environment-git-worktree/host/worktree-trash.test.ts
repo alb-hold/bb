@@ -8,10 +8,7 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import {
-  worktreeTrashEntryName,
-  worktreeTrashEntryTrashedAt,
-} from "bb-environment-provider-host/worktree-trash";
+import { worktreeTrashEntryTrashedAt } from "bb-environment-provider-host/worktree-trash";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   isWorktreePreservedError,
@@ -101,21 +98,24 @@ describe("removing a git worktree into the trash", () => {
     await delay(200);
     expect(holder.exitCode).toBeNull();
     setTestWorktreeHolderScan({ status: "clear" });
-    const removedAt = Date.parse("2026-11-18T10:00:00.000Z");
+    const before = Date.now();
 
     await removeWorktree({
       path: worktree.path,
       rootPath: worktree.root,
       trashRoot,
-      testHooks: { platform: "darwin", now: () => removedAt },
+      testHooks: { platform: "darwin" },
     });
+    const after = Date.now();
 
     expect(await missing(worktree.path)).toBe(true);
     const entries = await fs.readdir(trashRoot);
     expect(entries).toHaveLength(1);
     const entry = path.join(trashRoot, entries[0]!);
     expect(entries[0]).toMatch(/^thr_trash-repo-/u);
-    expect(worktreeTrashEntryTrashedAt(entries[0]!)).toBe(removedAt);
+    const trashedAt = worktreeTrashEntryTrashedAt(entries[0]!);
+    expect(trashedAt).toBeGreaterThanOrEqual(before);
+    expect(trashedAt).toBeLessThanOrEqual(after);
     expect(await fs.readFile(path.join(entry, "README.md"), "utf8")).toBe(
       "published\n",
     );
@@ -173,20 +173,19 @@ describe("removing a git worktree into the trash", () => {
   it("puts the worktree back when the move into the trash fails on macOS", async () => {
     const worktree = await managedWorktree();
     const trashRoot = path.join(worktree.dataDir, ".trash");
-    const removedAt = Date.parse("2026-11-18T10:00:00.000Z");
-    const occupied = path.join(
-      trashRoot,
-      worktreeTrashEntryName("thr_trash-repo", new Date(removedAt)),
-    );
-    await fs.mkdir(occupied, { recursive: true });
-    await fs.writeFile(path.join(occupied, "other.txt"), "another tree\n");
     setTestWorktreeHolderScan({ status: "clear" });
 
     const error = await removeWorktree({
       path: worktree.path,
       rootPath: worktree.root,
       trashRoot,
-      testHooks: { platform: "darwin", now: () => removedAt },
+      testHooks: {
+        platform: "darwin",
+        afterFinalCheck: async () => {
+          await fs.rm(trashRoot, { recursive: true });
+          await fs.writeFile(trashRoot, "not a folder\n");
+        },
+      },
     }).then(
       () => null,
       (failure: unknown) => failure,
@@ -199,8 +198,7 @@ describe("removing a git worktree into the trash", () => {
     expect(
       await fs.readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).toBe("published\n");
-    expect(await fs.readdir(trashRoot)).toEqual([path.basename(occupied)]);
-    expect(await fs.readdir(occupied)).toEqual(["other.txt"]);
+    expect(await fs.readFile(trashRoot, "utf8")).toBe("not a folder\n");
     expect(await git(worktree.source, "worktree", "list")).toContain(
       worktree.path,
     );

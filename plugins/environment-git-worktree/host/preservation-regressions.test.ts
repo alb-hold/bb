@@ -331,7 +331,12 @@ async function remove(
   },
 ): Promise<void> {
   await Reflect.apply(removeWorktree, undefined, [
-    { path: worktree.path, rootPath: worktree.root, testHooks },
+    {
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot: path.join(path.dirname(worktree.root), ".trash"),
+      testHooks,
+    },
   ]);
 }
 

@@ -92,7 +92,11 @@ function sweepDeps(
   return {
     logs,
     deps: {
-      ...worktreeTrashSweepDeps({ daemonDataDir: dataDir, logger }),
+      ...worktreeTrashSweepDeps({
+        daemonDataDir: dataDir,
+        logger,
+        testWorktreeHolderScan: { status: "clear" },
+      }),
       now: () => NOW,
       freeBytes: async () => PLENTY,
       treeBytes: async () => 0,
@@ -144,7 +148,14 @@ describe("sweeping the worktree trash", () => {
     children.push(holder);
     await delay(200);
     expect(holder.exitCode).toBeNull();
-    const { deps, logs } = sweepDeps(dataDir);
+    const { logger, logs } = recordingLogger();
+    const deps: WorktreeTrashSweepDeps = {
+      ...worktreeTrashSweepDeps({ daemonDataDir: dataDir, logger }),
+      now: () => NOW,
+      freeBytes: async () => PLENTY,
+      treeBytes: async () => 0,
+      keptLogged: new Set(),
+    };
 
     await sweepWorktreeTrash(deps);
     await sweepWorktreeTrash(deps);
@@ -157,6 +168,8 @@ describe("sweeping the worktree trash", () => {
       ["warn", "Kept worktree trash entry"],
     ]);
     expect(logs[0]!.fields.entry).toBe(entries.old);
+    const reason = String(logs[0]!.fields.reason);
+    expect(reason, reason).toContain(`pid ${holder.pid} through`);
   });
 
   it("deletes nothing under 24 hours while free disk and the trash are within limits", async () => {
@@ -308,6 +321,7 @@ describe("scheduling the worktree trash sweep", () => {
     const production = worktreeTrashSweepDeps({
       daemonDataDir: dataDir,
       logger,
+      testWorktreeHolderScan: { status: "clear" },
     });
     let removals = 0;
     let releaseRemoval: () => void = () => {};
