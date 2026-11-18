@@ -19,9 +19,14 @@ import {
   FILE_TIMESTAMP_LAG_MS,
   recordOwnWrite,
   removeDirectoryTree,
+  removeDirectoryTreeInChild,
   RetainedRecoveryError,
   keptTreeReasons,
   untrustedTimestampFilesystem,
+  type ChildRemovalOptions,
+  type RemoveDirectoryTreeHooks,
+  type RemoveDirectoryTreeResult,
+  type RemovalHeartbeat,
   type RemoveTreeFileHandle,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
@@ -157,6 +162,7 @@ interface RemoveWorktreeArgs {
         ) => Promise<{ bytesWritten: number }>;
         beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
         createPinSuffix?: () => string;
+        onRemovalHeartbeat?: (heartbeat: RemovalHeartbeat) => void;
       }
     | undefined;
 }
@@ -901,6 +907,43 @@ export async function createWorktree(
   }
 }
 
+type TreeWalkHooks = Pick<
+  RemoveDirectoryTreeHooks,
+  | "afterDirectoryListed"
+  | "beforeEntryRemoval"
+  | "beforeEntryRename"
+  | "afterEntryCheck"
+  | "afterEntryQuarantined"
+  | "beforeQuarantinePinLink"
+  | "recoveryLink"
+  | "recoveryWrite"
+  | "beforePinCleanup"
+  | "createPinSuffix"
+  | "entryDevice"
+>;
+
+async function removeTree(
+  root: string,
+  options: ChildRemovalOptions & {
+    onHeartbeat?: ((heartbeat: RemovalHeartbeat) => void) | undefined;
+  },
+  walkHooks: TreeWalkHooks,
+): Promise<RemoveDirectoryTreeResult> {
+  if (Object.values(walkHooks).some((hook) => hook !== undefined))
+    return removeDirectoryTree(root, {
+      startedAt: options.startedAt,
+      ...(options.rootMetadataBaseline === undefined
+        ? {}
+        : { rootMetadataBaseline: options.rootMetadataBaseline }),
+      ...(options.ownWrites === undefined ? {} : { ownWrites: options.ownWrites }),
+      ...(options.allowQuarantinedRoot === true
+        ? { allowQuarantinedRoot: true }
+        : {}),
+      ...walkHooks,
+    });
+  return (await removeDirectoryTreeInChild(root, options)).result;
+}
+
 async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
   try {
     await fs.rmdir(pathToRemove);
@@ -1071,24 +1114,30 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
-      const removed = await removeDirectoryTree(quarantinedPath, {
-        startedAt: finalCheckStartedAt,
-        rootMetadataBaseline: {
-          ctimeMs: workspaceMetadataBaseline.ctimeMs,
-          mtimeMs: workspaceMetadataBaseline.mtimeMs,
+      const removed = await removeTree(
+        quarantinedPath,
+        {
+          startedAt: finalCheckStartedAt,
+          rootMetadataBaseline: {
+            ctimeMs: workspaceMetadataBaseline.ctimeMs,
+            mtimeMs: workspaceMetadataBaseline.mtimeMs,
+          },
+          onHeartbeat: args.testHooks?.onRemovalHeartbeat,
         },
-        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
-        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
-        beforeEntryRename: args.testHooks?.beforeEntryRename,
-        afterEntryCheck: args.testHooks?.afterEntryCheck,
-        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
-        beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
-        recoveryLink: args.testHooks?.recoveryLink,
-        recoveryWrite: args.testHooks?.recoveryWrite,
-        beforePinCleanup: args.testHooks?.beforePinCleanup,
-        createPinSuffix: args.testHooks?.createPinSuffix,
-        entryDevice: args.testHooks?.entryDevice,
-      });
+        {
+          afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+          beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+          beforeEntryRename: args.testHooks?.beforeEntryRename,
+          afterEntryCheck: args.testHooks?.afterEntryCheck,
+          afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+          beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
+          recoveryLink: args.testHooks?.recoveryLink,
+          recoveryWrite: args.testHooks?.recoveryWrite,
+          beforePinCleanup: args.testHooks?.beforePinCleanup,
+          createPinSuffix: args.testHooks?.createPinSuffix,
+          entryDevice: args.testHooks?.entryDevice,
+        },
+      );
       if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
           ...keptTreeReasons(
@@ -1105,21 +1154,27 @@ async function removeRegisteredWorktree(
         ]);
       }
       workspaceRemoved = true;
-      const removedGitDir = await removeDirectoryTree(severedGitDir, {
-        startedAt: finalCheckStartedAt,
-        allowQuarantinedRoot: true,
-        rootMetadataBaseline: {
-          ctimeMs: severedMetadataBaseline.ctimeMs,
-          mtimeMs: severedMetadataBaseline.mtimeMs,
+      const removedGitDir = await removeTree(
+        severedGitDir,
+        {
+          startedAt: finalCheckStartedAt,
+          allowQuarantinedRoot: true,
+          rootMetadataBaseline: {
+            ctimeMs: severedMetadataBaseline.ctimeMs,
+            mtimeMs: severedMetadataBaseline.mtimeMs,
+          },
+          ownWrites: teardownWrites,
+          onHeartbeat: args.testHooks?.onRemovalHeartbeat,
         },
-        ownWrites: teardownWrites,
-        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
-        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
-        beforeEntryRename: args.testHooks?.beforeEntryRename,
-        afterEntryCheck: args.testHooks?.afterEntryCheck,
-        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
-        entryDevice: args.testHooks?.entryDevice,
-      });
+        {
+          afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+          beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+          beforeEntryRename: args.testHooks?.beforeEntryRename,
+          afterEntryCheck: args.testHooks?.afterEntryCheck,
+          afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+          entryDevice: args.testHooks?.entryDevice,
+        },
+      );
       if (removedGitDir.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
           ...keptTreeReasons(

@@ -39,6 +39,11 @@
       "types": "./src/remove-directory-tree.ts",
       "default": "./src/remove-directory-tree.ts"
     },
+    "./remove-timeout": {
+      "source": "./src/remove-timeout.ts",
+      "types": "./src/remove-timeout.ts",
+      "default": "./src/remove-timeout.ts"
+    },
     "./terminal-output": {
       "source": "./src/terminal-output.ts",
       "types": "./src/terminal-output.ts",
@@ -56,7 +61,8 @@
     }
   },
   "scripts": {
-    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "clean": "rimraf dist src/generated tsconfig.tsbuildinfo",
+    "generate:remove-tree-child": "node scripts/generate-remove-tree-child.mjs",
     "lint": "oxlint src test",
     "typecheck": "tsrs --noEmit",
     "test": "vitest run --config vitest.config.ts"

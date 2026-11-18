@@ -34,6 +34,24 @@ vi.mock(
           ...hooks,
           ...(injected.hooks?.() ?? {}),
         }),
+      removeDirectoryTreeInChild: async (
+        root: string,
+        options: Parameters<typeof actual.removeDirectoryTreeInChild>[1],
+      ) => {
+        if (injected.hooks === null)
+          return actual.removeDirectoryTreeInChild(root, options);
+        return {
+          result: await actual.removeDirectoryTree(root, {
+            ...actual.decodeChildRemovalOptions(
+              actual.encodeChildRemovalOptions(options),
+            ),
+            ...injected.hooks(),
+          }),
+          pid: process.pid,
+          ops: 0,
+          voluntaryContextSwitches: 0,
+        };
+      },
     };
   },
 );
@@ -160,6 +178,25 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       );
       expect(message).toContain("partially removed");
       expect(message).not.toContain("new or changed");
+    });
+
+    it("removes the worktree tree in a separate process", async () => {
+      const target = await worktree();
+      const pids = new Set<number>();
+
+      await removeWorktree({
+        path: target.path,
+        rootPath: target.root,
+        testHooks: {
+          onRemovalHeartbeat: (heartbeat) => pids.add(heartbeat.pid),
+        },
+      });
+
+      await expect(fs.lstat(target.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(pids.size).toBeGreaterThan(0);
+      expect(pids.has(process.pid)).toBe(false);
     });
   },
 );

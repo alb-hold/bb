@@ -167,6 +167,7 @@ export interface RemoveDirectoryTreeHooks {
     entries: readonly string[],
   ) => Promise<void>;
   beforeEntryRemoval?: (entry: string) => Promise<void>;
+  entryBoundary?: (entry: string, removalStarted: boolean) => Promise<boolean>;
   beforeEntryRename?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
@@ -1931,6 +1932,14 @@ export async function removeDirectoryTree(
           return retainedEntry();
         }
         if (currentNames.some((current) => !remainingNames.has(current)))
+          return retainedEntry();
+        if (
+          hooks.entryBoundary !== undefined &&
+          !(await hooks.entryBoundary(
+            path.join(entry, childName),
+            removalStarted,
+          ))
+        )
           return retainedEntry();
         const childResult = await removeEntry(
           directoryPath,
