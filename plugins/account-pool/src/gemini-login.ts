@@ -85,6 +85,7 @@ interface Session {
   runtime: ChildProcess | null;
   browser: ChildProcess | null;
   cancelled: { reason: GeminiLoginFailure; message: string } | null;
+  signedIn: boolean;
   importing: boolean;
   wake: () => void;
   result: Promise<GeminiLoginResult>;
@@ -401,6 +402,7 @@ export class GeminiLogin {
       runtime: null,
       browser: null,
       cancelled: null,
+      signedIn: false,
       importing: false,
       wake: () => wake(),
       result: Promise.resolve({ status: "error", ...CANCELLED }),
@@ -667,7 +669,7 @@ export class GeminiLogin {
       if (
         session.settled === null &&
         session.cancelled === null &&
-        !session.importing
+        !session.signedIn
       ) {
         session.cancelled = {
           reason: "sign_in_cancelled",
@@ -720,6 +722,7 @@ export class GeminiLogin {
               ? "Google sign-in did not complete (it was declined or failed). No account was added."
               : "The antigravity-acp runtime exited before sign-in finished. No account was added.",
         };
+      session.signedIn = true;
       const home = path.join(session.dir, "home");
       if (!(await exists(geminiCredentialsPath(home))))
         return {
@@ -736,8 +739,10 @@ export class GeminiLogin {
           reason: "sign_in_timeout",
           message: `Gemini sign-in did not finish within ${Math.round(this.timeoutMs / 60_000)} minutes. No account was added.`,
         };
-      session.importing = true;
       await stop(session.runtime);
+      const stopCancel = session.cancelled as Session["cancelled"];
+      if (stopCancel !== null) return { status: "error", ...stopCancel };
+      session.importing = true;
       try {
         const account = await this.options.importAccount(home, target);
         return { status: "complete", account };

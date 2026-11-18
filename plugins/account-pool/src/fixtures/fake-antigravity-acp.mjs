@@ -90,3 +90,8 @@ process.stdin.on("data", (chunk) => {
   }
 });
 process.stdin.on("end", () => process.exit(0));
+if (config.lingerOnTerm)
+  process.on("SIGTERM", () => {
+    fs.writeFileSync(path.join(control, "terminating"), "");
+    setTimeout(() => process.exit(0), 1_500);
+  });

@@ -45,6 +45,7 @@ interface RuntimeConfig {
   url?: string;
   browserMode?: "open" | "none";
   token?: unknown;
+  lingerOnTerm?: boolean;
 }
 
 async function setup(
@@ -235,6 +236,20 @@ describe("GeminiLogin", () => {
     controller.abort();
     expect(await waiting).toMatchObject({ status: "error", reason: "sign_in_cancelled" });
     await fixture.approve();
+    expect(fixture.imports).toEqual([]);
+    await expectNothingLeft(fixture);
+  });
+
+  it("adds nothing when the command is interrupted while the signed-in runtime is stopping", async () => {
+    const fixture = await setup({ runtime: { lingerOnTerm: true } });
+    const started = await fixture.login.start({ label: null });
+    const controller = new AbortController();
+    const waiting = fixture.login.wait(started.sessionId, controller.signal);
+    await fixture.approve();
+    const terminating = path.join(fixture.control, "terminating");
+    while (!existsSync(terminating)) await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    expect(await waiting).toMatchObject({ status: "error", reason: "sign_in_cancelled" });
     expect(fixture.imports).toEqual([]);
     await expectNothingLeft(fixture);
   });
