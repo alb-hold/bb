@@ -305,6 +305,10 @@ describe("scheduling the worktree trash sweep", () => {
     const removalGate = new Promise<void>((resolve) => {
       releaseRemoval = resolve;
     });
+    let removalStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
     const timer = {
       callback: null as (() => void) | null,
       intervalMs: 0,
@@ -318,6 +322,7 @@ describe("scheduling the worktree trash sweep", () => {
         now: () => NOW,
         remove: async (entry) => {
           removals += 1;
+          removalStarted();
           await removalGate;
           await production.remove(entry);
         },
@@ -338,7 +343,7 @@ describe("scheduling the worktree trash sweep", () => {
 
     expect(timer.intervalMs).toBe(3_600_000);
     expect(timer.unrefs).toBe(1);
-    await delay(50);
+    await started;
     expect(removals).toBe(1);
     timer.callback!();
     await delay(50);

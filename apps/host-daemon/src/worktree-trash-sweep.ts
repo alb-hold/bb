@@ -94,6 +94,7 @@ export async function sweepWorktreeTrash(
     })
     .sort((left, right) => right.ageMs - left.ageMs);
   const remaining = new Set(entries);
+  const sizes = new Map<TrashEntry, number>();
   for (const entry of entries) {
     if (entry.ageMs < WORKTREE_TRASH_RETENTION_MS) continue;
     if (await removeEntry(deps, entry, null)) remaining.delete(entry);
@@ -105,7 +106,7 @@ export async function sweepWorktreeTrash(
     ) {
       continue;
     }
-    const reason = await earlyDeleteReason(deps, remaining);
+    const reason = await earlyDeleteReason(deps, remaining, sizes);
     if (reason === null) return;
     if (await removeEntry(deps, entry, reason)) remaining.delete(entry);
   }
@@ -114,17 +115,30 @@ export async function sweepWorktreeTrash(
 async function earlyDeleteReason(
   deps: WorktreeTrashSweepDeps,
   remaining: ReadonlySet<TrashEntry>,
+  sizes: Map<TrashEntry, number>,
 ): Promise<string | null> {
   const free = await deps.freeBytes(deps.trashRoot);
   if (free !== null && free < WORKTREE_TRASH_FREE_DISK_FLOOR_BYTES) {
     return `free disk is ${free} bytes, under the ${WORKTREE_TRASH_FREE_DISK_FLOOR_BYTES}-byte floor`;
   }
   let size = 0;
-  for (const entry of remaining) size += await deps.treeBytes(entry.entry);
+  for (const entry of remaining) size += await entryBytes(deps, sizes, entry);
   if (size > WORKTREE_TRASH_BUDGET_BYTES) {
     return `the trash holds ${size} bytes, over the ${WORKTREE_TRASH_BUDGET_BYTES}-byte budget`;
   }
   return null;
+}
+
+async function entryBytes(
+  deps: WorktreeTrashSweepDeps,
+  sizes: Map<TrashEntry, number>,
+  entry: TrashEntry,
+): Promise<number> {
+  const known = sizes.get(entry);
+  if (known !== undefined) return known;
+  const bytes = await deps.treeBytes(entry.entry);
+  sizes.set(entry, bytes);
+  return bytes;
 }
 
 async function removeEntry(
