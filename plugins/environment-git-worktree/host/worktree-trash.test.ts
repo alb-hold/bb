@@ -238,6 +238,39 @@ describe("removing a git worktree into the trash", () => {
     );
   });
 
+  it("keeps the worktree on macOS when a tracked file is edited in place after its final inspection", async () => {
+    const worktree = await managedWorktree();
+    const trashRoot = path.join(worktree.dataDir, ".trash");
+    setTestWorktreeHolderScan({ status: "clear" });
+
+    const error = await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot,
+      testHooks: {
+        platform: "darwin",
+        afterFinalCheck: async (target) => {
+          await fs.writeFile(path.join(target, "README.md"), "edited\n");
+        },
+      },
+    }).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+
+    expect(isWorktreePreservedError(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      "new or changed data was found after its final inspection, before moving it to the trash",
+    );
+    expect(
+      await fs.readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).toBe("edited\n");
+    expect(await fs.readdir(trashRoot)).toEqual([]);
+    expect(await git(worktree.source, "worktree", "list")).toContain(
+      worktree.path,
+    );
+  });
+
   it("keeps the worktree on macOS when another filesystem is mounted inside it", async () => {
     const worktree = await managedWorktree();
     const trashRoot = path.join(worktree.dataDir, ".trash");
