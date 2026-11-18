@@ -1969,4 +1969,134 @@ time.sleep(120)`,
       });
     },
   );
+
+  it("keeps the worktree when a renamed child of a same-user sshd-session holds it", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const directory = await worktree();
+    const parent = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, os, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, b"sshd-session", 0, 0, 0)
+child = os.fork()
+if child == 0:
+    libc.prctl(1, 9, 0, 0, 0)
+    os.chdir(${JSON.stringify(directory)})
+    held = open("held", "w")
+    libc.prctl(4, 0, 0, 0, 0)
+    libc.prctl(15, b"sshd-session", 0, 0, 0)
+    time.sleep(120)
+    os._exit(0)
+print(child, flush=True)
+time.sleep(120)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(parent);
+    const [line] =
+      parent.stdout === null ? [""] : await once(parent.stdout, "data");
+    const child = Number.parseInt(String(line), 10);
+    try {
+      skip(
+        !(await nonDumpable(parent.pid ?? 0)) || !(await nonDumpable(child)),
+        "the kernel lets this user read it",
+      );
+      const chain: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc"
+            ? ["self", String(parent.pid), String(child)]
+            : hostProc.readdir(target),
+      };
+      expect(await scanLinux(directory, chain)).toMatchObject({
+        status: "unknown",
+        blockingProcesses: expect.arrayContaining([
+          expect.objectContaining({ pid: child }),
+        ]),
+        reason: expect.stringContaining(
+          `process ${child} (sshd-session) has an unreadable holder path`,
+        ),
+      });
+    } finally {
+      process.kill(child, "SIGKILL");
+    }
+  });
+});
+
+describe("a faked non-dumpable sshd-session", () => {
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+
+  function sessionProc(options: {
+    aliasCwd?: string;
+    parentUids?: string;
+  }): ProcReader {
+    const base = mountAliasProc("/work/tree", "plain", 1000);
+    const own = (target: string) => target.startsWith("/proc/101/");
+    return {
+      ...base,
+      readlink: async (target) => {
+        if (options.aliasCwd !== undefined && target === "/proc/101/cwd")
+          return options.aliasCwd;
+        return own(target) ? denied() : base.readlink(target);
+      },
+      readdir: async (target) =>
+        own(target) ? denied() : base.readdir(target),
+      statId: async (target) => (own(target) ? denied() : base.statId(target)),
+      statAccess: async (target) =>
+        target === "/proc/101/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+      readFile: async (target) => {
+        if (target === "/proc/101/status")
+          return "Name:\tsshd-session\nState:\tS (sleeping)\nPPid:\t200\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+        if (target === "/proc/200/status")
+          return `Name:\tsshd-session\nState:\tS (sleeping)\nPPid:\t1\nUid:\t${options.parentUids ?? "0\t0\t0\t0"}\nGid:\t0\t0\t0\t0\n`;
+        if (target === "/proc/101/comm" || target === "/proc/200/comm")
+          return "sshd-session\n";
+        return own(target) ? denied() : base.readFile(target);
+      },
+    };
+  }
+
+  it("clears one whose parent is a root-owned sshd-session", async () => {
+    expect(await scanLinux("/work/tree", sessionProc({}), 4242)).toMatchObject({
+      status: "clear",
+    });
+  });
+
+  it("keeps the worktree when its parent is owned by our uid", async () => {
+    expect(
+      await scanLinux(
+        "/work/tree",
+        sessionProc({ parentUids: "1000\t1000\t1000\t1000" }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 101 }],
+      reason: expect.stringContaining(
+        "process 101 (sshd-session) has an unreadable holder path",
+      ),
+    });
+  });
+
+  it("reports it as held when the mount alias scan finds its working folder in the worktree", async () => {
+    expect(
+      await scanLinux(
+        "/work/tree",
+        sessionProc({ aliasCwd: "/work/tree" }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "held",
+      holders: [{ pid: 101, through: "working folder" }],
+    });
+  });
 });

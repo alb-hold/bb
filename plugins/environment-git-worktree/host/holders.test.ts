@@ -2064,6 +2064,8 @@ describe("an unreadable same-user sshd-session", () => {
     uidValues?: [number, number, number, number];
     fdOwner?: number;
     parent?: { comm: string; uids: string } | null;
+    readable?: boolean;
+    aliasCwd?: string;
   }
 
   function sessionProc(options: SessionOptions): ProcReader {
@@ -2072,7 +2074,8 @@ describe("an unreadable same-user sshd-session", () => {
         300: {
           uid: 1000,
           uidValues: options.uidValues,
-          denied: true,
+          denied: options.readable !== true,
+          cwd: options.readable === true ? "/work/tree" : undefined,
           name: options.comm ?? "sshd-session",
           comm: options.comm ?? "sshd-session",
           argv0: "sshd-session: alex@notty",
@@ -2093,6 +2096,10 @@ describe("an unreadable same-user sshd-session", () => {
           return `${parent.comm}\n`;
         return base.readFile(target);
       },
+      readlink: async (target) =>
+        options.aliasCwd !== undefined && target === "/proc/300/cwd"
+          ? options.aliasCwd
+          : base.readlink(target),
       statAccess: async (target) =>
         target === "/proc/300/fd"
           ? { uid: options.fdOwner ?? 0, gid: 0, mode: 0o40500 }
@@ -2140,6 +2147,21 @@ describe("an unreadable same-user sshd-session", () => {
       `process 300 (${options.comm ?? "sshd-session"}) has an unreadable holder path`,
     );
     expect(reason).not.toContain("alex@notty");
+  });
+
+  it.each<[string, SessionOptions]>([
+    ["its working folder reads inside the worktree", { readable: true }],
+    [
+      "the mount alias scan finds its working folder in the worktree",
+      { aliasCwd: "/work/tree" },
+    ],
+  ])("reports a matching sshd-session as held when %s", async (_, options) => {
+    expect(
+      await scanLinux("/work/tree", sessionProc(options), 4242),
+    ).toMatchObject({
+      status: "held",
+      holders: [{ pid: 300, through: "working folder" }],
+    });
   });
 });
 
