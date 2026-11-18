@@ -5,4 +5,5 @@ export {
 export type {
   RemoveDirectoryTreeHooks,
   RemoveDirectoryTreeResult,
+  RemoveTreeFileHandle,
 } from "bb-environment-provider-host/remove-directory-tree";

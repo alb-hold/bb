@@ -1,22 +1,162 @@
-import { constants } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 import {
-  link,
-  lstat,
-  open,
-  readFile,
-  readdir,
-  readlink,
-  realpath,
-  rename,
-  rmdir,
-  stat,
-  statfs,
-  symlink,
-  unlink,
-} from "node:fs/promises";
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeSync,
+  type BigIntStats,
+  type Stats,
+} from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+
+function closedHandleError(syscall: string): NodeJS.ErrnoException {
+  const error: NodeJS.ErrnoException = new Error(
+    `EBADF: bad file descriptor, ${syscall}`,
+  );
+  error.code = "EBADF";
+  error.errno = -9;
+  error.syscall = syscall;
+  return error;
+}
+
+export class RemoveTreeFileHandle {
+  fd: number;
+
+  constructor(fd: number) {
+    this.fd = fd;
+  }
+
+  private openDescriptor(syscall: string): number {
+    if (this.fd === -1) throw closedHandleError(syscall);
+    return this.fd;
+  }
+
+  stat(options: { bigint: true }): Promise<BigIntStats>;
+  stat(options?: { bigint?: false }): Promise<Stats>;
+  async stat(options?: { bigint?: boolean }): Promise<Stats | BigIntStats> {
+    const fd = this.openDescriptor("fstat");
+    return options?.bigint === true
+      ? fstatSync(fd, { bigint: true })
+      : fstatSync(fd);
+  }
+
+  async chmod(mode: number): Promise<void> {
+    fchmodSync(this.openDescriptor("fchmod"), mode);
+  }
+
+  async read(
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesRead: number; buffer: Buffer }> {
+    const bytesRead = readSync(
+      this.openDescriptor("read"),
+      buffer,
+      offset,
+      length,
+      position,
+    );
+    return { bytesRead, buffer };
+  }
+
+  async write(
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesWritten: number; buffer: Buffer }> {
+    const bytesWritten = writeSync(
+      this.openDescriptor("write"),
+      buffer,
+      offset,
+      length,
+      position,
+    );
+    return { bytesWritten, buffer };
+  }
+
+  async close(): Promise<void> {
+    if (this.fd === -1) return;
+    const fd = this.fd;
+    this.fd = -1;
+    closeSync(fd);
+  }
+}
+
+async function open(
+  target: string,
+  flags: string | number,
+  mode?: number,
+): Promise<RemoveTreeFileHandle> {
+  return new RemoveTreeFileHandle(openSync(target, flags, mode));
+}
+
+function lstat(target: string, options: { bigint: true }): Promise<BigIntStats>;
+function lstat(target: string, options?: { bigint?: false }): Promise<Stats>;
+async function lstat(
+  target: string,
+  options?: { bigint?: boolean },
+): Promise<Stats | BigIntStats> {
+  return options?.bigint === true
+    ? lstatSync(target, { bigint: true })
+    : lstatSync(target);
+}
+
+async function stat(target: string): Promise<Stats> {
+  return statSync(target);
+}
+
+async function readFile(target: string, encoding: "utf8"): Promise<string> {
+  return readFileSync(target, encoding);
+}
+
+async function readdir(target: string): Promise<string[]> {
+  return readdirSync(target);
+}
+
+async function readlink(target: string): Promise<string> {
+  return readlinkSync(target);
+}
+
+async function realpath(target: string): Promise<string> {
+  return realpathSync.native(target);
+}
+
+async function link(existing: string, created: string): Promise<void> {
+  linkSync(existing, created);
+}
+
+async function symlink(target: string, created: string): Promise<void> {
+  symlinkSync(target, created);
+}
+
+async function rename(source: string, destination: string): Promise<void> {
+  renameSync(source, destination);
+}
+
+async function unlink(target: string): Promise<void> {
+  unlinkSync(target);
+}
+
+async function rmdir(target: string): Promise<void> {
+  rmdirSync(target);
+}
 
 export interface RemoveDirectoryTreeHooks {
   startedAt?: number;
@@ -50,7 +190,7 @@ export interface RemoveDirectoryTreeHooks {
   beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
   recoveryLink?: (pin: string, destination: string) => Promise<void>;
   recoveryWrite?: (
-    destination: FileHandle,
+    destination: RemoveTreeFileHandle,
     buffer: Buffer,
     offset: number,
     length: number,
@@ -73,7 +213,7 @@ export interface RemoveDirectoryTreeHooks {
   beforeMarkerOpen?: (marker: string) => Promise<void>;
   beforeFileOpen?: (candidate: string) => Promise<void>;
   beforeDirectoryOpen?: (directory: string) => Promise<void>;
-  afterMarkerReopen?: (reopened: FileHandle) => Promise<void>;
+  afterMarkerReopen?: (reopened: RemoveTreeFileHandle) => Promise<void>;
 }
 
 export interface RemoveDirectoryTreeResult {
@@ -252,7 +392,9 @@ async function openDirectory(directory: string) {
   }
 }
 
-async function readableDirectory(located: FileHandle): Promise<FileHandle> {
+async function readableDirectory(
+  located: RemoveTreeFileHandle,
+): Promise<RemoveTreeFileHandle> {
   if (process.platform !== "linux") return located;
   try {
     const reopened = await open(
@@ -317,7 +459,7 @@ async function createRecoveredEntry(
 
 async function recoverFileFromHandle(
   parentDirectory: string,
-  source: FileHandle,
+  source: RemoveTreeFileHandle,
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
 ): Promise<string> {
@@ -332,8 +474,8 @@ async function recoverFileFromHandle(
 }
 
 async function copyRecoveredFile(
-  destination: FileHandle,
-  source: FileHandle,
+  destination: RemoveTreeFileHandle,
+  source: RemoveTreeFileHandle,
   mode: bigint,
   candidate: string,
   hooks: RemoveDirectoryTreeHooks,
@@ -383,7 +525,7 @@ async function copyRecoveredFile(
 }
 
 async function hashFileHandle(
-  handle: FileHandle,
+  handle: RemoveTreeFileHandle,
   size: bigint,
 ): Promise<string> {
   if (size > BigInt(Number.MAX_SAFE_INTEGER))
@@ -407,8 +549,8 @@ async function hashFileHandle(
 }
 
 async function verifyFileContents(
-  recovered: FileHandle,
-  original: FileHandle,
+  recovered: RemoveTreeFileHandle,
+  original: RemoveTreeFileHandle,
 ): Promise<void> {
   const [recoveredInfo, originalInfo] = await Promise.all([
     recovered.stat({ bigint: true }),
@@ -425,7 +567,7 @@ async function verifyFileContents(
 
 type MountCheck = (entry: string, fd: number) => Promise<boolean>;
 
-async function locateFile(candidate: string): Promise<FileHandle> {
+async function locateFile(candidate: string): Promise<RemoveTreeFileHandle> {
   return await open(
     candidate,
     process.platform === "linux"
@@ -436,7 +578,9 @@ async function locateFile(candidate: string): Promise<FileHandle> {
   );
 }
 
-async function readableFile(located: FileHandle): Promise<FileHandle> {
+async function readableFile(
+  located: RemoveTreeFileHandle,
+): Promise<RemoveTreeFileHandle> {
   if (process.platform !== "linux") return located;
   try {
     const reopened = await open(
@@ -465,10 +609,10 @@ async function readableFile(located: FileHandle): Promise<FileHandle> {
 
 async function openSameFile(
   candidate: string,
-  original: FileHandle,
+  original: RemoveTreeFileHandle,
   hooks: RemoveDirectoryTreeHooks,
   crossesMount: MountCheck,
-): Promise<FileHandle> {
+): Promise<RemoveTreeFileHandle> {
   await hooks.beforeFileOpen?.(candidate);
   const opened = await locateFile(candidate);
   try {
@@ -493,7 +637,7 @@ async function openSameFile(
 
 async function verifyPathContents(
   candidate: string,
-  original: FileHandle,
+  original: RemoveTreeFileHandle,
   hooks: RemoveDirectoryTreeHooks,
   crossesMount: MountCheck,
 ): Promise<void> {
@@ -536,7 +680,7 @@ async function createPinFromPath(
   parentDirectory: string,
   sourcePath: string,
   expected: { dev: bigint; ino: bigint },
-  heldHandle: FileHandle | null,
+  heldHandle: RemoveTreeFileHandle | null,
   hooks: RemoveDirectoryTreeHooks,
 ): Promise<{ pin: string | null; mismatchPath?: string }> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -571,7 +715,7 @@ async function createPinFromPath(
 async function recoverFileFromPin(
   parentDirectory: string,
   pin: string,
-  source: FileHandle,
+  source: RemoveTreeFileHandle,
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
   crossesMount: MountCheck,
@@ -653,7 +797,8 @@ export async function untrustedTimestampFilesystem(
   probe: TimestampFilesystemProbe = {},
 ): Promise<string | null> {
   const platform = probe.platform ?? process.platform;
-  const readType = probe.statfs ?? ((candidate: string) => statfs(candidate));
+  const readType =
+    probe.statfs ?? ((candidate: string) => fsPromises.statfs(candidate));
   try {
     const type = (await readType(target)).type;
     if (platform === "linux")
@@ -689,7 +834,7 @@ export async function recordOwnWrite(
   file: string,
   contents: string,
 ): Promise<OwnWrite> {
-  const info = await lstat(file, { bigint: true });
+  const info = await fsPromises.lstat(file, { bigint: true });
   return {
     dev: info.dev,
     ino: info.ino,
@@ -733,14 +878,17 @@ export async function directoryTreeChangedSince(
     const ownWrite = baseline.ownWrites?.get(entry);
     if (ownWrite !== undefined) {
       try {
-        return !matchesOwnWrite(await lstat(entry, { bigint: true }), ownWrite);
+        return !matchesOwnWrite(
+          await fsPromises.lstat(entry, { bigint: true }),
+          ownWrite,
+        );
       } catch {
         return true;
       }
     }
     let info;
     try {
-      info = await lstat(entry);
+      info = await fsPromises.lstat(entry);
     } catch {
       return true;
     }
@@ -755,7 +903,7 @@ export async function directoryTreeChangedSince(
     if (!info.isDirectory()) return false;
     let listed: string[];
     try {
-      listed = await readdir(entry);
+      listed = await fsPromises.readdir(entry);
     } catch {
       return true;
     }
@@ -764,7 +912,7 @@ export async function directoryTreeChangedSince(
     }
     let after: string[];
     try {
-      after = await readdir(entry);
+      after = await fsPromises.readdir(entry);
     } catch {
       return true;
     }
@@ -1252,7 +1400,7 @@ export async function removeDirectoryTree(
       const strippedMode = checkedPreciseInfo.isFile()
         ? originalMode & ~0o222n
         : originalMode;
-      let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
+      let fileHandle: RemoveTreeFileHandle | null = null;
       let modeChanged = false;
       let symbolicLinkTarget: string | null = null;
       let recoveryPin: string | null = null;
@@ -1697,7 +1845,7 @@ export async function removeDirectoryTree(
     }
     const directory = await readableDirectory(located).catch(() => null);
     if (directory === null) return retainedEntry();
-    let heldGitMarkerHandle: FileHandle | null = null;
+    let heldGitMarkerHandle: RemoveTreeFileHandle | null = null;
     try {
       const openedInfo = await directory.stat();
       if (!sameDirectory(info, openedInfo)) return retainedEntry();

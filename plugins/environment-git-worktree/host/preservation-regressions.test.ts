@@ -24,6 +24,7 @@ import {
   FILE_TIMESTAMP_LAG_MS,
   type RemoveDirectoryTreeHooks,
   type RemoveDirectoryTreeResult,
+  type RemoveTreeFileHandle,
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
   hostProc,
@@ -320,7 +321,7 @@ async function remove(
     beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
     recoveryLink?: (pin: string, destination: string) => Promise<void>;
     recoveryWrite?: (
-      destination: Awaited<ReturnType<typeof fs.open>>,
+      destination: RemoveTreeFileHandle,
       buffer: Buffer,
       offset: number,
       length: number,

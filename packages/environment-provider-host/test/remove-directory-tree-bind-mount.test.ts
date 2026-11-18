@@ -5,7 +5,7 @@ import {
   spawn,
 } from "node:child_process";
 import { existsSync } from "node:fs";
-import fs, { type FileHandle } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,6 +15,7 @@ import {
   keptTreeReasons,
   removeDirectoryTree,
   type RemoveDirectoryTreeResult,
+  type RemoveTreeFileHandle,
 } from "../src/remove-directory-tree.js";
 
 const roots: string[] = [];
@@ -1028,7 +1029,7 @@ describe.runIf(linux)("reopening the held .git marker", () => {
     const marker = path.join(root, ".git");
     await fs.writeFile(marker, "gitdir: /nowhere\n");
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
-    let reopened: FileHandle | undefined;
+    let reopened: RemoveTreeFileHandle | undefined;
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
       afterMarkerReopen: async (handle) => {

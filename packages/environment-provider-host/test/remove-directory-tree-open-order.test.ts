@@ -1,5 +1,3 @@
-import { fstatSync } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,39 +17,39 @@ type OpenEvent =
 
 const events = vi.hoisted(() => [] as OpenEvent[]);
 
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const fs = await importOriginal<typeof import("node:fs/promises")>();
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
   const descriptor = /^\/proc\/self\/fd\/(\d+)$/u;
+  const openSync = (...args: Parameters<typeof fs.openSync>) => {
+    const fd = fs.openSync(...args);
+    if (typeof args[1] !== "number") return fd;
+    const opened = fs.fstatSync(fd);
+    events.push({
+      kind: "open",
+      path: String(args[0]),
+      flags: args[1],
+      dev: opened.dev,
+      ino: opened.ino,
+      fd,
+    });
+    return fd;
+  };
+  const fstatSync = ((fd: number, options?: { bigint?: boolean }) => {
+    events.push({ kind: "stat", fd });
+    return fs.fstatSync(fd, options);
+  }) as typeof fs.fstatSync;
+  const statSync = ((target: string, options?: { bigint?: boolean }) => {
+    const match = descriptor.exec(String(target));
+    if (match?.[1] !== undefined)
+      events.push({ kind: "stat", fd: Number(match[1]) });
+    return fs.statSync(target, options);
+  }) as typeof fs.statSync;
   return {
     ...fs,
-    open: async (...args: Parameters<typeof fs.open>) => {
-      const handle = await fs.open(...args);
-      if (typeof args[1] !== "number") return handle;
-      const fd = handle.fd;
-      const opened = fstatSync(fd);
-      events.push({
-        kind: "open",
-        path: String(args[0]),
-        flags: args[1],
-        dev: opened.dev,
-        ino: opened.ino,
-        fd,
-      });
-      const original = handle.stat.bind(handle);
-      Object.defineProperty(handle, "stat", {
-        value: (async (...options: Parameters<FileHandle["stat"]>) => {
-          events.push({ kind: "stat", fd });
-          return await original(...options);
-        }) as FileHandle["stat"],
-      });
-      return handle;
-    },
-    stat: async (...args: Parameters<typeof fs.stat>) => {
-      const match = descriptor.exec(String(args[0]));
-      if (match?.[1] !== undefined)
-        events.push({ kind: "stat", fd: Number(match[1]) });
-      return await fs.stat(...args);
-    },
+    default: { ...fs, openSync, fstatSync, statSync },
+    openSync,
+    fstatSync,
+    statSync,
   };
 });
 
@@ -115,6 +113,8 @@ describe.runIf(process.platform === "linux")(
           readDescriptorInfo: async (_entry, fd) => {
             events.push({ kind: "fdinfo", fd });
             const info = await fs.readFile(`/proc/self/fdinfo/${fd}`, "utf8");
+            const { fstatSync } =
+              await vi.importActual<typeof import("node:fs")>("node:fs");
             const opened = fstatSync(fd);
             const isTarget =
               opened.dev === identity.dev && opened.ino === identity.ino;

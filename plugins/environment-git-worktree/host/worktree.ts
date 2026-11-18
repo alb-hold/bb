@@ -22,6 +22,7 @@ import {
   RetainedRecoveryError,
   keptTreeReasons,
   untrustedTimestampFilesystem,
+  type RemoveTreeFileHandle,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
 import { randomUUID } from "node:crypto";
@@ -148,7 +149,7 @@ interface RemoveWorktreeArgs {
         ) => Promise<void>;
         recoveryLink?: (pin: string, destination: string) => Promise<void>;
         recoveryWrite?: (
-          destination: Awaited<ReturnType<typeof fs.open>>,
+          destination: RemoveTreeFileHandle,
           buffer: Buffer,
           offset: number,
           length: number,
