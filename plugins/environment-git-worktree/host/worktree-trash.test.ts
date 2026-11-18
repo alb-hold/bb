@@ -229,9 +229,9 @@ describe("removing a git worktree into the trash", () => {
     expect((error as Error).message).toContain(
       "new or changed data was found after its final inspection, before moving it to the trash",
     );
-    expect(await fs.readFile(path.join(worktree.path, "late.txt"), "utf8")).toBe(
-      "late\n",
-    );
+    expect(
+      await fs.readFile(path.join(worktree.path, "late.txt"), "utf8"),
+    ).toBe("late\n");
     expect(await fs.readdir(trashRoot)).toEqual([]);
     expect(await git(worktree.source, "worktree", "list")).toContain(
       worktree.path,
