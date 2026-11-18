@@ -100,8 +100,9 @@ export type RoutedThread = z.infer<typeof routedThreadSchema> & {
 export class AccountStore {
   private mutationLock: Promise<void> | null = null;
   private holdingLock = false;
-  // A write across both keys failed and so did putting them back.
-  private needsRecovery = false;
+  // A journal may hold a write that failed: one an earlier run left, or one
+  // this store could not put back. The first read or write checks for it.
+  private needsRecovery = true;
   private readonly activePlanWrites = new Set<string>();
   private readonly profileWrites = new Map<Promise<void>, string>();
   private readonly credentialWrites = new Map<Promise<void>, string>();
@@ -119,7 +120,6 @@ export class AccountStore {
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
     signal?.throwIfAborted();
     await fs.chmod(this.secretsDir, 0o700);
-    await this.serialized(() => this.recover());
   }
 
   async list(signal?: AbortSignal): Promise<Account[]> {
