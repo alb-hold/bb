@@ -238,6 +238,45 @@ describe("removing a git worktree into the trash", () => {
     );
   });
 
+  it("moves a tree on macOS whose folder gained a file after the final inspection listed it, and that file is newer than the trash entry's change baseline", async () => {
+    const worktree = await managedWorktree();
+    const trashRoot = path.join(worktree.dataDir, ".trash");
+    setTestWorktreeHolderScan({ status: "clear" });
+    let lateWrites = 0;
+
+    await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot,
+      testHooks: {
+        platform: "darwin",
+        afterDirectoryListed: async (directory, entries) => {
+          if (lateWrites > 0 || !entries.includes("README.md")) return;
+          lateWrites += 1;
+          await fs.writeFile(
+            path.join(directory, "late.txt"),
+            "written after its folder was listed\n",
+          );
+        },
+      },
+    });
+
+    expect(lateWrites).toBe(1);
+    expect(await missing(worktree.path)).toBe(true);
+    const entries = await fs.readdir(trashRoot);
+    expect(entries).toHaveLength(1);
+    const lateFile = path.join(trashRoot, entries[0]!, "late.txt");
+    expect(await fs.readFile(lateFile, "utf8")).toBe(
+      "written after its folder was listed\n",
+    );
+    const trashedAt = worktreeTrashEntryTrashedAt(entries[0]!);
+    expect(trashedAt).not.toBeNull();
+    const late = await fs.lstat(lateFile);
+    expect(
+      Math.max(late.ctimeMs, late.mtimeMs),
+    ).toBeGreaterThanOrEqual(trashedAt! - FILE_TIMESTAMP_LAG_MS);
+  });
+
   it("keeps the worktree on macOS when a tracked file is edited in place after its final inspection", async () => {
     const worktree = await managedWorktree();
     const trashRoot = path.join(worktree.dataDir, ".trash");

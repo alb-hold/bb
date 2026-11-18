@@ -30,6 +30,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   afterHolderScan?: (quarantine: string) => Promise<void>;
   now?: () => number;
   afterBaseline?: (directory: string) => Promise<void>;
+  keepChangesSince?: number;
   testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
@@ -53,7 +54,10 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
-  const startedAt = (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
+  const startedAt = Math.min(
+    (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS,
+    args.keepChangesSince ?? Number.POSITIVE_INFINITY,
+  );
   await args.afterBaseline?.(args.directory);
   try {
     await fs.rename(args.directory, quarantine);

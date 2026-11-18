@@ -21,7 +21,7 @@ import {
 } from "./worktree-trash-sweep.js";
 
 const HOUR_MS = 60 * 60_000;
-const NOW = Date.parse("2026-11-18T12:00:00.000Z");
+const NOW = Date.now() + 48 * HOUR_MS;
 const PLENTY = 500_000_000_000;
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -225,6 +225,72 @@ describe("sweeping the worktree trash", () => {
     ).toBe(true);
   });
 
+  it("keeps data written into an entry after its final inspection through an early delete, still deletes an unchanged entry early, and deletes the kept entry after 24 hours", async () => {
+    const dataDir = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-trash-sweep-")),
+    );
+    roots.push(dataDir);
+    const trashRoot = resolveWorktreeTrashRoot(dataDir);
+    const staged: Record<string, string> = {};
+    for (const label of ["unchanged", "late"]) {
+      staged[label] = path.join(trashRoot, `.staging-${label}`);
+      await fs.mkdir(path.join(staged[label]!, "src"), { recursive: true });
+      await fs.writeFile(path.join(staged[label]!, "src", "index.txt"), label);
+    }
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const inspectedAt = Date.now();
+    const unchanged = path.join(
+      trashRoot,
+      worktreeTrashEntryName("unchanged", new Date(inspectedAt - 1)),
+    );
+    const late = path.join(
+      trashRoot,
+      worktreeTrashEntryName("late", new Date(inspectedAt)),
+    );
+    await fs.rename(staged.unchanged!, unchanged);
+    await fs.rename(staged.late!, late);
+    await fs.writeFile(
+      path.join(late, "src", "late.txt"),
+      "written after the final inspection\n",
+    );
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    let now = inspectedAt + 2 * HOUR_MS;
+    const { deps, logs } = sweepDeps(dataDir, {
+      now: () => now,
+      freeBytes: async () => 12_000_000_000,
+    });
+
+    await sweepWorktreeTrash(deps);
+
+    expect(await present(unchanged)).toBe(false);
+    expect(
+      await fs.readFile(path.join(late, "src", "late.txt"), "utf8"),
+    ).toBe("written after the final inspection\n");
+    expect(logs.map((line) => [line.level, line.message, line.fields.entry])).toEqual([
+      ["info", "Deleted worktree trash entry early", unchanged],
+      ["warn", "Kept worktree trash entry", late],
+    ]);
+    expect(String(logs[1]!.fields.reason)).toContain("new or changed data");
+
+    await sweepWorktreeTrash(deps);
+
+    expect(logs).toHaveLength(2);
+    expect(await fs.readdir(trashRoot)).toEqual([path.basename(late)]);
+
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    now = inspectedAt + 25 * HOUR_MS;
+    await sweepWorktreeTrash(deps);
+
+    expect(await present(late)).toBe(false);
+    expect(logs.slice(2)).toEqual([
+      {
+        level: "info",
+        fields: { entry: late, ageMs: 25 * HOUR_MS },
+        message: "Deleted worktree trash entry",
+      },
+    ]);
+  });
+
   it("deletes oldest entries early only until the trash is back within its budget", async () => {
     const { dataDir, entries } = await trashWith({
       fresh: 10 * 60_000,
@@ -343,11 +409,11 @@ describe("scheduling the worktree trash sweep", () => {
       deps: {
         ...production,
         now: () => NOW,
-        remove: async (entry) => {
+        remove: async (entry, keepChangesSince) => {
           removals += 1;
           removalStarted();
           await removalGate;
-          await production.remove(entry);
+          await production.remove(entry, keepChangesSince);
         },
       },
       setIntervalFn: (callback, intervalMs) => {

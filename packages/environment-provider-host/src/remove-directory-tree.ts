@@ -787,6 +787,9 @@ export async function inspectTreeBeforeMove(
   baseline: {
     rootMetadata: { ctimeMs: number; mtimeMs: number };
     entryDevice?: ((entry: string, device: number) => number) | undefined;
+    afterDirectoryListed?:
+      | ((directory: string, entries: readonly string[]) => Promise<void>)
+      | undefined;
   },
 ): Promise<TreeMoveInspection> {
   const result: TreeMoveInspection = { changed: false, mountedPaths: [] };
@@ -825,6 +828,7 @@ export async function inspectTreeBeforeMove(
       result.changed = true;
       continue;
     }
+    await baseline.afterDirectoryListed?.(entry, listed);
     for (const name of listed) pending.push(path.join(entry, name));
   }
   return result;

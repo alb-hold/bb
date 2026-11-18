@@ -1095,6 +1095,7 @@ async function removeRegisteredWorktree(
               mtimeMs: workspaceMetadataBaseline.mtimeMs,
             },
             entryDevice: args.testHooks?.entryDevice,
+            afterDirectoryListed: args.testHooks?.afterDirectoryListed,
           },
         );
         if (inspected.changed || inspected.mountedPaths.length > 0) {

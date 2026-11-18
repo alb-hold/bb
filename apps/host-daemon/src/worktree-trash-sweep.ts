@@ -8,6 +8,7 @@ import {
   WORKTREE_TRASH_DIR_NAME,
   worktreeTrashEntryTrashedAt,
 } from "bb-environment-provider-host/worktree-trash";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { removeDirectoryAfterHolderRecheck } from "./command-handlers/remove-held-directory.js";
 import type { HostDaemonLogger } from "./logger.js";
 import { readDiskFreeBytes } from "./server-move/host-probes.js";
@@ -25,13 +26,14 @@ export interface WorktreeTrashSweepDeps {
   now: () => number;
   freeBytes: (directory: string) => Promise<number | null>;
   treeBytes: (directory: string) => Promise<number>;
-  remove: (entry: string) => Promise<void>;
+  remove: (entry: string, keepChangesSince: number | null) => Promise<void>;
   keptLogged: Set<string>;
 }
 
 interface TrashEntry {
   name: string;
   entry: string;
+  trashedAt: number;
   ageMs: number;
 }
 
@@ -58,11 +60,12 @@ export function worktreeTrashSweepDeps(args: {
     now: Date.now,
     freeBytes: readDiskFreeBytes,
     treeBytes: directoryTreeBytes,
-    remove: (entry) =>
+    remove: (entry, keepChangesSince) =>
       removeDirectoryAfterHolderRecheck({
         directory: entry,
         action: "delete worktree trash entry",
         recursive: true,
+        ...(keepChangesSince === null ? {} : { keepChangesSince }),
         ...(scan === undefined ? {} : { testWorktreeHolderScan: scan }),
       }),
   };
@@ -91,6 +94,7 @@ export async function sweepWorktreeTrash(
             {
               name,
               entry: path.join(deps.trashRoot, name),
+              trashedAt,
               ageMs: now - trashedAt,
             },
           ];
@@ -150,7 +154,10 @@ async function removeEntry(
   earlyReason: string | null,
 ): Promise<boolean> {
   try {
-    await deps.remove(entry.entry);
+    await deps.remove(
+      entry.entry,
+      earlyReason === null ? null : entry.trashedAt - FILE_TIMESTAMP_LAG_MS,
+    );
   } catch (error) {
     if (deps.keptLogged.has(entry.name)) return false;
     deps.keptLogged.add(entry.name);
