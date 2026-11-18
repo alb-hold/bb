@@ -58,6 +58,11 @@
       "source": "./src/workspace-git.ts",
       "types": "./src/workspace-git.ts",
       "default": "./src/workspace-git.ts"
+    },
+    "./worktree-trash": {
+      "source": "./src/worktree-trash.ts",
+      "types": "./src/worktree-trash.ts",
+      "default": "./src/worktree-trash.ts"
     }
   },
   "scripts": {

@@ -1,4 +1,5 @@
 import { WorkspaceError } from "bb-environment-provider-host/git";
+import { WORKTREE_TRASH_DIR_NAME } from "bb-environment-provider-host/worktree-trash";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -82,6 +83,10 @@ export function resolveWorktreesRoot(dataDir: string): string {
 
 export function resolveRetainedRoot(dataDir: string): string {
   return path.join(dataDir, "retained");
+}
+
+export function resolveTrashRoot(dataDir: string): string {
+  return path.join(dataDir, WORKTREE_TRASH_DIR_NAME);
 }
 
 export function resolveWorktreeAttemptRoot(args: {

@@ -65,7 +65,11 @@ describe.runIf(process.platform === "darwin")(
   () => {
     it("removes a worktree whose node_modules/.bin holds live and dangling symbolic links", async () => {
       const worktree = await worktreeWithLinkedTools();
-      await removeWorktree({ path: worktree.path, rootPath: worktree.root });
+      await removeWorktree({
+        path: worktree.path,
+        rootPath: worktree.root,
+        trashRoot: path.join(worktree.root, "..", ".trash"),
+      });
       await expect(fs.lstat(worktree.path)).rejects.toMatchObject({
         code: "ENOENT",
       });

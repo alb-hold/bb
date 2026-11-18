@@ -143,6 +143,8 @@ async function keptMessage(target: {
   const error = await removeWorktree({
     path: target.path,
     rootPath: target.root,
+    trashRoot: path.join(target.root, "..", ".trash"),
+    testHooks: { platform: "linux" },
   }).then(
     () => null,
     (caught: unknown) => caught,

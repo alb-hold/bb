@@ -17,6 +17,7 @@ import {
 import {
   resolveWorktreeChildPath,
   resolveRetainedRoot,
+  resolveTrashRoot,
   resolveWorktreesRoot,
   resolveWorktreeAttemptRoot,
   resolveWorktreeTargetPath,
@@ -185,6 +186,7 @@ export function createWorktreeHostEntry() {
             retainedRoot: resolveRetainedRoot(
               context.experimental_paths.dataDir,
             ),
+            trashRoot: resolveTrashRoot(context.experimental_paths.dataDir),
             branchName: input.branchName,
             baseBranch,
             branchMode: input.branchMode,
@@ -284,6 +286,7 @@ export function createWorktreeHostEntry() {
               await removeWorktree({
                 path: target,
                 rootPath: attemptRoot,
+                trashRoot: resolveTrashRoot(dataDir),
                 completionPath: completionPathForWorktree(target),
                 onProgress,
                 signal: context.signal,
