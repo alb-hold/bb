@@ -951,6 +951,7 @@ export interface TreeMoveInspection {
   changed: boolean;
   mountedPaths: string[];
   fingerprint: string;
+  stoppedAt: string | null;
 }
 
 export async function inspectTreeBeforeMove(
@@ -962,6 +963,7 @@ export async function inspectTreeBeforeMove(
     afterDirectoryListed?:
       | ((directory: string, entries: readonly string[]) => Promise<void>)
       | undefined;
+    entryBoundary?: RemoveDirectoryTreeHooks["entryBoundary"];
   },
 ): Promise<TreeMoveInspection> {
   const hash = createHash("sha256");
@@ -975,6 +977,7 @@ export async function inspectTreeBeforeMove(
       changed: true,
       mountedPaths,
       fingerprint: fingerprintDigest(hash),
+      stoppedAt: null,
     };
   }
   const pending = [""];
@@ -988,6 +991,16 @@ export async function inspectTreeBeforeMove(
       changed = true;
       continue;
     }
+    if (
+      baseline.entryBoundary !== undefined &&
+      !(await baseline.entryBoundary(entry, false, info.isDirectory()))
+    )
+      return {
+        changed,
+        mountedPaths,
+        fingerprint: fingerprintDigest(hash),
+        stoppedAt: entry,
+      };
     if (relative !== "") hash.update(treeFingerprintRecord(relative, info));
     const device = Number(info.dev);
     if ((baseline.entryDevice?.(entry, device) ?? device) !== rootDevice) {
@@ -1014,7 +1027,12 @@ export async function inspectTreeBeforeMove(
     await baseline.afterDirectoryListed?.(entry, listed);
     pushChildren(pending, relative, listed);
   }
-  return { changed, mountedPaths, fingerprint: fingerprintDigest(hash) };
+  return {
+    changed,
+    mountedPaths,
+    fingerprint: fingerprintDigest(hash),
+    stoppedAt: null,
+  };
 }
 
 export interface TreeSnapshot {

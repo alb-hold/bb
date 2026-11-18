@@ -1,5 +1,6 @@
 import {
   RetainedRecoveryError,
+  inspectTreeBeforeMove,
   removeDirectoryTree,
 } from "./remove-directory-tree-core.js";
 import {
@@ -41,20 +42,36 @@ async function entryBoundary(
 }
 
 async function run(
-  message: Extract<ParentMessage, { type: "start" }>,
+  message: Extract<ParentMessage, { type: "start" | "inspect" }>,
 ): Promise<void> {
   let outcome: ChildMessage;
   try {
-    const result = await removeDirectoryTree(message.root, {
-      ...decodeChildRemovalOptions(message.options),
-      entryBoundary,
-    });
-    outcome = {
-      type: "result",
-      result,
-      ops,
-      voluntaryContextSwitches: process.resourceUsage().voluntaryContextSwitches,
-    };
+    if (message.type === "inspect") {
+      const inspection = await inspectTreeBeforeMove(
+        message.root,
+        message.options.startedAt,
+        { rootMetadata: message.options.rootMetadata, entryBoundary },
+      );
+      outcome = {
+        type: "inspection",
+        inspection,
+        ops,
+        voluntaryContextSwitches:
+          process.resourceUsage().voluntaryContextSwitches,
+      };
+    } else {
+      const result = await removeDirectoryTree(message.root, {
+        ...decodeChildRemovalOptions(message.options),
+        entryBoundary,
+      });
+      outcome = {
+        type: "result",
+        result,
+        ops,
+        voluntaryContextSwitches:
+          process.resourceUsage().voluntaryContextSwitches,
+      };
+    }
   } catch (error) {
     outcome = {
       type: "error",

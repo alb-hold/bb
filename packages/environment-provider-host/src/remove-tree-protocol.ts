@@ -1,6 +1,7 @@
 import type {
   OwnWrite,
   RemoveDirectoryTreeResult,
+  TreeMoveInspection,
 } from "./remove-directory-tree-core.js";
 
 export interface ChildRemovalOptions {
@@ -8,6 +9,11 @@ export interface ChildRemovalOptions {
   rootMetadataBaseline?: { ctimeMs: number; mtimeMs: number };
   ownWrites?: ReadonlyMap<string, OwnWrite>;
   allowQuarantinedRoot?: true;
+}
+
+export interface ChildInspectionOptions {
+  startedAt: number;
+  rootMetadata: { ctimeMs: number; mtimeMs: number };
 }
 
 export interface EncodedOwnWrite {
@@ -28,6 +34,7 @@ export interface EncodedChildRemovalOptions {
 
 export type ParentMessage =
   | { type: "start"; root: string; options: EncodedChildRemovalOptions }
+  | { type: "inspect"; root: string; options: ChildInspectionOptions }
   | { type: "stop" };
 
 export type ChildMessage =
@@ -42,6 +49,12 @@ export type ChildMessage =
   | {
       type: "result";
       result: RemoveDirectoryTreeResult;
+      ops: number;
+      voluntaryContextSwitches: number;
+    }
+  | {
+      type: "inspection";
+      inspection: TreeMoveInspection;
       ops: number;
       voluntaryContextSwitches: number;
     }

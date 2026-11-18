@@ -4,6 +4,7 @@ import { removeTreeChildSource } from "./generated/remove-tree-child.js";
 import {
   RetainedRecoveryError,
   type RemoveDirectoryTreeResult,
+  type TreeMoveInspection,
 } from "./remove-directory-tree-core.js";
 import {
   REMOVE_EXIT_WAIT_MS,
@@ -12,6 +13,7 @@ import {
 } from "./remove-timeout.js";
 import {
   encodeChildRemovalOptions,
+  type ChildInspectionOptions,
   type ChildRemovalOptions,
   type ParentMessage,
 } from "./remove-tree-protocol.js";
@@ -45,6 +47,17 @@ const childMessageSchema = z.discriminatedUnion("type", [
       notRespondingPaths: z.array(z.string()),
       stoppedPaths: z.array(z.string()),
       removalStarted: z.boolean(),
+    }),
+    ops: z.number().int().nonnegative(),
+    voluntaryContextSwitches: z.number().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("inspection"),
+    inspection: z.object({
+      changed: z.boolean(),
+      mountedPaths: z.array(z.string()),
+      fingerprint: z.string(),
+      stoppedAt: z.string().nullable(),
     }),
     ops: z.number().int().nonnegative(),
     voluntaryContextSwitches: z.number().nonnegative(),
@@ -115,10 +128,29 @@ export function removalChildEnvironment(
   return selected;
 }
 
-export function removeDirectoryTreeInChild(
+type ChildMessageFromSchema = z.infer<typeof childMessageSchema>;
+
+type FinishMessage = Extract<
+  ChildMessageFromSchema,
+  { type: "result" | "inspection" }
+>;
+
+interface TreeChildRun<T> {
+  value: T;
+  pid: number;
+  ops: number;
+  voluntaryContextSwitches: number;
+  stop: RemovalStop | null;
+  exit: { code: number | null; signal: NodeJS.Signals | null } | null;
+}
+
+function runTreeChild<T>(
   root: string,
-  options: ChildRemovalOptions & ChildRemovalControls,
-): Promise<ChildRemoval> {
+  start: ParentMessage,
+  options: ChildRemovalControls,
+  finished: (message: FinishMessage) => T | null,
+  killed: (killedDuring: string, notResponding: string | null) => T,
+): Promise<TreeChildRun<T>> {
   const target = options.target ?? root;
   const stuck = stuckRemovalProcess(target);
   if (stuck !== null) return Promise.reject(new Error(stuckRemovalReason(stuck)));
@@ -148,7 +180,7 @@ export function removeDirectoryTreeInChild(
     let outcome:
       | {
           kind: "result";
-          result: RemoveDirectoryTreeResult;
+          value: T;
           ops: number;
           voluntaryContextSwitches: number;
         }
@@ -177,7 +209,7 @@ export function removeDirectoryTreeInChild(
       }
       if (outcome?.kind === "result") {
         resolve({
-          result: outcome.result,
+          value: outcome.value,
           pid: child.pid!,
           ops: outcome.ops,
           voluntaryContextSwitches: outcome.voluntaryContextSwitches,
@@ -188,15 +220,7 @@ export function removeDirectoryTreeInChild(
       }
       if (stop !== null && stop.killedDuring !== null) {
         resolve({
-          result: {
-            status: "retained",
-            retainedPaths: [root],
-            mountedPaths: [],
-            unanchoredPaths: [],
-            notRespondingPaths: notResponding === null ? [] : [notResponding],
-            stoppedPaths: notResponding === null ? [stop.killedDuring] : [],
-            removalStarted: true,
-          },
+          value: killed(stop.killedDuring, notResponding),
           pid: child.pid!,
           ops: 0,
           voluntaryContextSwitches: 0,
@@ -273,11 +297,6 @@ export function removeDirectoryTreeInChild(
       if (message.type === "ready") {
         if (startSent) return;
         startSent = true;
-        const start: ParentMessage = {
-          type: "start",
-          root,
-          options: encodeChildRemovalOptions(options),
-        };
         child.send(start, (error) => {
           if (error !== null) fail(error);
         });
@@ -301,24 +320,34 @@ export function removeDirectoryTreeInChild(
       if (outcome !== undefined) return;
       clearTimeout(stallTimer);
       clearTimeout(graceTimer);
-      outcome =
-        message.type === "result"
-          ? {
-              kind: "result",
-              result: message.result,
-              ops: message.ops,
-              voluntaryContextSwitches: message.voluntaryContextSwitches,
-            }
-          : {
-              kind: "error",
-              error:
-                message.name === "RetainedRecoveryError"
-                  ? new RetainedRecoveryError(
-                      message.message,
-                      message.retainedPaths,
-                    )
-                  : new Error(message.message),
-            };
+      if (message.type === "error") {
+        outcome = {
+          kind: "error",
+          error:
+            message.name === "RetainedRecoveryError"
+              ? new RetainedRecoveryError(
+                  message.message,
+                  message.retainedPaths,
+                )
+              : new Error(message.message),
+        };
+        return;
+      }
+      const value = finished(message);
+      if (value === null) {
+        fail(
+          new Error(
+            "the tree removal process answered a different request than it was sent",
+          ),
+        );
+        return;
+      }
+      outcome = {
+        kind: "result",
+        value,
+        ops: message.ops,
+        voluntaryContextSwitches: message.voluntaryContextSwitches,
+      };
     });
     child.on("exit", (code, signal) => {
       if (stuckRemovals.get(target) === child.pid) stuckRemovals.delete(target);
@@ -330,4 +359,83 @@ export function removeDirectoryTreeInChild(
     else if (options.deadline?.aborted) requestStop("deadline");
     child.stdin!.end(removeTreeChildSource);
   });
+}
+
+export async function removeDirectoryTreeInChild(
+  root: string,
+  options: ChildRemovalOptions & ChildRemovalControls,
+): Promise<ChildRemoval> {
+  const { value, ...run } = await runTreeChild<RemoveDirectoryTreeResult>(
+    root,
+    { type: "start", root, options: encodeChildRemovalOptions(options) },
+    options,
+    (message) => (message.type === "result" ? message.result : null),
+    (killedDuring, notResponding) => ({
+      status: "retained",
+      retainedPaths: [root],
+      mountedPaths: [],
+      unanchoredPaths: [],
+      notRespondingPaths: notResponding === null ? [] : [notResponding],
+      stoppedPaths: notResponding === null ? [killedDuring] : [],
+      removalStarted: true,
+    }),
+  );
+  return { result: value, ...run };
+}
+
+export type ChildInspectionOutcome =
+  | { status: "inspected"; inspection: TreeMoveInspection }
+  | { status: "stopped"; result: RemoveDirectoryTreeResult };
+
+export interface ChildInspection {
+  outcome: ChildInspectionOutcome;
+  pid: number;
+  stop: RemovalStop | null;
+}
+
+function stoppedInspection(
+  notRespondingPaths: string[],
+  stoppedPaths: string[],
+): ChildInspectionOutcome {
+  return {
+    status: "stopped",
+    result: {
+      status: "retained",
+      retainedPaths: [],
+      mountedPaths: [],
+      unanchoredPaths: [],
+      notRespondingPaths,
+      stoppedPaths,
+      removalStarted: false,
+    },
+  };
+}
+
+export async function inspectTreeBeforeMoveInChild(
+  root: string,
+  options: ChildInspectionOptions & ChildRemovalControls,
+): Promise<ChildInspection> {
+  const run = await runTreeChild<ChildInspectionOutcome>(
+    root,
+    {
+      type: "inspect",
+      root,
+      options: {
+        startedAt: options.startedAt,
+        rootMetadata: options.rootMetadata,
+      },
+    },
+    options,
+    (message) =>
+      message.type !== "inspection"
+        ? null
+        : message.inspection.stoppedAt === null
+          ? { status: "inspected", inspection: message.inspection }
+          : stoppedInspection([], [message.inspection.stoppedAt]),
+    (killedDuring, notResponding) =>
+      notResponding === null
+        ? stoppedInspection([], [killedDuring])
+        : stoppedInspection([notResponding], []),
+  );
+  return { outcome: run.value, pid: run.pid, stop: run.stop };
 }

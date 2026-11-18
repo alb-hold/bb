@@ -17,6 +17,7 @@ import {
   directoryTreeChangedSince,
   coarseFileTimestamp,
   inspectTreeBeforeMove,
+  inspectTreeBeforeMoveInChild,
   FILE_TIMESTAMP_LAG_MS,
   recordOwnWrite,
   removeDirectoryTree,
@@ -26,6 +27,8 @@ import {
   stuckRemovalProcess,
   stuckRemovalReason,
   untrustedTimestampFilesystem,
+  type ChildInspectionOptions,
+  type ChildInspectionOutcome,
   type ChildRemovalControls,
   type ChildRemovalOptions,
   type RemoveDirectoryTreeHooks,
@@ -993,6 +996,45 @@ async function removeTree(
   };
 }
 
+interface TreeInspection {
+  outcome: ChildInspectionOutcome;
+  killed: { pid: number; entry: string } | null;
+}
+
+async function inspectTree(
+  root: string,
+  options: ChildInspectionOptions & {
+    onHeartbeat?: ((heartbeat: RemovalHeartbeat) => void) | undefined;
+  },
+  walkHooks: Pick<TreeWalkHooks, "afterDirectoryListed" | "entryDevice">,
+  bounds: TreeWalkBounds,
+): Promise<TreeInspection> {
+  if (Object.values(walkHooks).some((hook) => hook !== undefined))
+    return {
+      outcome: {
+        status: "inspected",
+        inspection: await inspectTreeBeforeMove(root, options.startedAt, {
+          rootMetadata: options.rootMetadata,
+          ...walkHooks,
+        }),
+      },
+      killed: null,
+    };
+  const inspection = await inspectTreeBeforeMoveInChild(root, {
+    ...options,
+    signal: bounds.signal,
+    deadline: bounds.deadline?.signal,
+    target: bounds.target,
+  });
+  return {
+    outcome: inspection.outcome,
+    killed:
+      inspection.stop?.killedDuring == null
+        ? null
+        : { pid: inspection.pid, entry: inspection.stop.killedDuring },
+  };
+}
+
 function stoppedTreeReason(bounds: TreeWalkBounds): string {
   return bounds.deadline?.signal.aborted === true &&
     bounds.signal?.aborted !== true
@@ -1200,18 +1242,42 @@ async function removeRegisteredWorktree(
       if (trashId !== null) {
         bounds.stage.current =
           "inspecting its directory before moving it to the trash";
-        const inspected = await inspectTreeBeforeMove(
+        const shown = (entry: string) =>
+          path.join(identity.path, path.relative(quarantinedPath, entry));
+        const inspectedTree = await inspectTree(
           quarantinedPath,
-          finalCheckStartedAt,
           {
+            startedAt: finalCheckStartedAt,
             rootMetadata: {
               ctimeMs: workspaceMetadataBaseline.ctimeMs,
               mtimeMs: workspaceMetadataBaseline.mtimeMs,
             },
+            onHeartbeat: args.testHooks?.onRemovalHeartbeat,
+          },
+          {
             entryDevice: args.testHooks?.entryDevice,
             afterDirectoryListed: args.testHooks?.afterDirectoryListed,
           },
+          bounds,
         );
+        if (inspectedTree.outcome.status === "stopped") {
+          const killed = inspectedTree.killed;
+          throw worktreePreservedError(identity.path, [
+            ...keptTreeReasons(
+              inspectedTree.outcome.result,
+              shown,
+              "new or changed data was found after its final inspection, before moving it to the trash",
+              stoppedTreeReason(bounds),
+            ),
+            ...(killed === null
+              ? []
+              : [
+                  `the inspection process ${killed.pid} was killed while it read ${shown(killed.entry)}`,
+                ]),
+            ...keptNote,
+          ]);
+        }
+        const inspected = inspectedTree.outcome.inspection;
         if (inspected.changed || inspected.mountedPaths.length > 0) {
           throw worktreePreservedError(identity.path, [
             ...inspected.mountedPaths.map(
