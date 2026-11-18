@@ -1363,6 +1363,21 @@ export async function removeDirectoryTree(
       await located.close();
     }
   };
+  let reportedInspectionDirectory: string | null = null;
+  const reportInspectedDirectory = async (
+    directory: string,
+  ): Promise<boolean> => {
+    if (
+      hooks.entryBoundary === undefined ||
+      reportedInspectionDirectory === directory
+    )
+      return true;
+    reportedInspectionDirectory = directory;
+    if (await hooks.entryBoundary(displayPath(directory), false, true))
+      return true;
+    stoppedPaths.add(displayPath(directory));
+    return false;
+  };
   const inspectBeforeRemoval = async (
     directory: string,
     rootEntry = false,
@@ -1417,6 +1432,7 @@ export async function removeDirectoryTree(
       }
       return !(await markerCrossesMount(directory, info));
     }
+    if (!(await reportInspectedDirectory(directory))) return false;
     await hooks.beforeDirectoryOpen?.(directory);
     const handle = await openDirectory(directory);
     if (handle === null) return false;
@@ -1461,6 +1477,7 @@ export async function removeDirectoryTree(
       )
         return false;
       for (const name of listed) {
+        if (!(await reportInspectedDirectory(directory))) return false;
         if (
           !(await inspectBeforeRemoval(
             path.join(directory, name),
