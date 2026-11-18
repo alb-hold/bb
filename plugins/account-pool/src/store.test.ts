@@ -306,29 +306,42 @@ describe("AccountStore", () => {
       });
       const kv = host.bb.storage.kv;
       const failing = new Set<string>();
+      // Fails a single call: the nth (from 1) set or delete of a key.
+      const failOnce = new Set<string>();
+      const calls = new Map<string, number>();
+      const fails = (op: "set" | "delete", key: string) => {
+        const n = (calls.get(`${op} ${key}`) ?? 0) + 1;
+        calls.set(`${op} ${key}`, n);
+        return failing.has(`${op === "set" ? "" : "delete "}${key}`) ||
+          failOnce.has(`${op} ${key} ${n}`);
+      };
       const secrets = path.join(dataDir, "secrets");
       const store = new AccountStore(
         {
           get: (key) => kv.get(key),
           async set(key, value) {
-            if (failing.has(key)) throw new Error(`write ${key} failed`);
+            if (fails("set", key)) throw new Error(`write ${key} failed`);
             await kv.set(key, value);
           },
-          delete: (key) => kv.delete(key),
+          async delete(key) {
+            if (fails("delete", key)) throw new Error(`delete ${key} failed`);
+            await kv.delete(key);
+          },
           list: (prefix) => kv.list(prefix),
         },
         secrets,
       );
       await store.initialize();
+      const rows = (accounts: readonly Account[]) =>
+        accounts.map(({ id, provider, enabled }) => ({ id, provider, enabled }));
+      // A fresh store over what is persisted, as after a restart.
       const reload = async () => {
         const fresh = new AccountStore(kv, secrets);
-        return (await fresh.list()).map(({ id, provider, enabled }) => ({
-          id,
-          provider,
-          enabled,
-        }));
+        await fresh.initialize();
+        return rows(await fresh.list());
       };
-      return { store, failing, secrets, reload };
+      const journal = () => kv.get("accounts:journal:v1");
+      return { store, failing, failOnce, calls, secrets, reload, rows, journal };
     }
     const input = (provider: "claude" | "gemini", label: string) =>
       ({
@@ -403,6 +416,92 @@ describe("AccountStore", () => {
         ]);
       },
     );
+
+    async function bothKeys() {
+      const ctx = await failingStore();
+      const claude = await ctx.store.add(input("claude", "c"), secret);
+      const gemini = await ctx.store.add(input("gemini", "g"), secret);
+      const before = await ctx.reload();
+      ctx.calls.clear();
+      const disableBoth = () => ctx.store.disableWhere(() => [claude.id, gemini.id]);
+      return { ...ctx, claude, gemini, before, disableBoth };
+    }
+
+    it("restores both keys after a restart when the Claude/Codex write and putting the Gemini key back both fail", async () => {
+      const { failing, failOnce, reload, journal, before, disableBoth } =
+        await bothKeys();
+      failing.add("accounts:v1");
+      // The first Gemini write lands; the second, which would put it back, fails.
+      failOnce.add("set accounts:gemini:v1 2");
+      await expect(disableBoth()).rejects.toThrow("write accounts:v1 failed");
+      failing.clear();
+      expect(await journal()).toBeDefined();
+      expect(await reload()).toEqual(before);
+      expect(await journal()).toBeUndefined();
+    });
+
+    it("restores both keys on the same store's next read when putting them back failed", async () => {
+      const { store, failing, failOnce, rows, journal, before, disableBoth } =
+        await bothKeys();
+      failing.add("accounts:v1");
+      failOnce.add("set accounts:gemini:v1 2");
+      await expect(disableBoth()).rejects.toThrow("write accounts:v1 failed");
+      failing.clear();
+      expect(rows(await store.list())).toEqual(before);
+      expect(await journal()).toBeUndefined();
+    });
+
+    it("fails a write whose journal cannot be removed, and a restart shows the state before it", async () => {
+      const { failing, reload, journal, before, disableBoth } = await bothKeys();
+      failing.add("delete accounts:journal:v1");
+      await expect(disableBoth()).rejects.toThrow(
+        "delete accounts:journal:v1 failed",
+      );
+      expect(await reload()).toEqual(before);
+      expect(await journal()).toBeUndefined();
+    });
+
+    it("changes nothing when the journal cannot be written", async () => {
+      const { store, failing, rows, reload, journal, before, disableBoth } =
+        await bothKeys();
+      failing.add("accounts:journal:v1");
+      await expect(disableBoth()).rejects.toThrow(
+        "write accounts:journal:v1 failed",
+      );
+      expect(await journal()).toBeUndefined();
+      expect(rows(await store.list())).toEqual(before);
+      expect(await reload()).toEqual(before);
+    });
+
+    it("restores a failed write before a later Claude write, so a restart never undoes a write that succeeded", async () => {
+      const { store, failing, failOnce, reload, journal, before, disableBoth } =
+        await bothKeys();
+      failing.add("accounts:v1");
+      failOnce.add("set accounts:gemini:v1 2");
+      await expect(disableBoth()).rejects.toThrow("write accounts:v1 failed");
+      failing.clear();
+      const later = await store.add(input("claude", "later"), secret);
+      expect(await journal()).toBeUndefined();
+      expect(await reload()).toEqual([
+        ...before.filter((row) => row.provider !== "gemini"),
+        { id: later.id, provider: "claude", enabled: true },
+        ...before.filter((row) => row.provider === "gemini"),
+      ]);
+    });
+
+    it("refuses a later Claude write while the failed write still cannot be put back", async () => {
+      const { store, failing, reload, journal, before, disableBoth } =
+        await bothKeys();
+      failing.add("accounts:v1");
+      await expect(disableBoth()).rejects.toThrow("write accounts:v1 failed");
+      // accounts:v1 still fails, so the restore cannot finish either.
+      await expect(store.add(input("claude", "later"), secret)).rejects.toThrow(
+        "write accounts:v1 failed",
+      );
+      failing.clear();
+      expect(await journal()).toBeDefined();
+      expect(await reload()).toEqual(before);
+    });
   });
 });
 

@@ -31,6 +31,11 @@ const ACCOUNTS_KEY = "accounts:v1";
 // Gemini rows live under their own key so a build that only knows claude and
 // codex never parses them (its accountsSchema would throw on the provider).
 const GEMINI_ACCOUNTS_KEY = "accounts:gemini:v1";
+// Both keys as they were before a write that changes both. While it exists,
+// that write has not happened: the store puts both keys back from it.
+const ACCOUNTS_JOURNAL_KEY = "accounts:journal:v1";
+const RECOVERY_PENDING =
+  "The Account Pooler is restoring its accounts after a failed write. Retry in a moment.";
 const ORGANIZATIONS_KEY = "organizations:v1";
 const PLAN_NAMES_KEY = "plan-display-names:v1";
 const PLAN_CHECKS_PREFIX = "plan-display-names:v2:";
@@ -55,6 +60,10 @@ const planClock = z
 Reflect.set(globalThis, planClockKey, planClock);
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
 const accountsSchema = z.array(accountSchema);
+const accountsJournalSchema = z.object({
+  gemini: accountsSchema.nullable(),
+  others: accountsSchema,
+});
 const organizationsSchema = z.record(z.string(), z.string().uuid());
 const HUB_TOKEN_PREFIX = "hub-token-";
 const HUB_TOKEN_GRACE_MS = 10 * 60 * 1_000;
@@ -90,6 +99,9 @@ export type RoutedThread = z.infer<typeof routedThreadSchema> & {
 
 export class AccountStore {
   private mutationLock: Promise<void> | null = null;
+  private holdingLock = false;
+  // A write across both keys failed and so did putting them back.
+  private needsRecovery = false;
   private readonly activePlanWrites = new Set<string>();
   private readonly profileWrites = new Map<Promise<void>, string>();
   private readonly credentialWrites = new Map<Promise<void>, string>();
@@ -107,10 +119,16 @@ export class AccountStore {
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
     signal?.throwIfAborted();
     await fs.chmod(this.secretsDir, 0o700);
+    await this.serialized(() => this.recover());
   }
 
   async list(signal?: AbortSignal): Promise<Account[]> {
     signal?.throwIfAborted();
+    if (this.needsRecovery) {
+      // Taking the lock runs the recovery; inside it, there is none to take.
+      if (this.holdingLock) throw new Error(RECOVERY_PENDING);
+      await this.serialized(async () => undefined);
+    }
     const value = await this.kv.get(ACCOUNTS_KEY);
     const gemini =
       this.geminiCache === null
@@ -149,33 +167,53 @@ export class AccountStore {
       await this.kv.set(ACCOUNTS_KEY, others);
       return;
     }
-    // Two keys cannot be written atomically. When only the Gemini half changed
-    // it is one write; otherwise the Gemini key goes first and is put back if
-    // the other write fails, so neither key keeps an account the caller's
-    // failed write is about to roll back.
     const stored = await this.kv.get(ACCOUNTS_KEY);
     const base = stored === undefined ? [] : accountsSchema.parse(stored);
-    const othersChanged = JSON.stringify(base) !== JSON.stringify(others);
+    if (JSON.stringify(base) === JSON.stringify(others)) {
+      // Only the Gemini half changed: one write.
+      try {
+        await this.kv.set(GEMINI_ACCOUNTS_KEY, gemini);
+      } catch (error) {
+        this.geminiCache = null;
+        throw error;
+      }
+      this.geminiCache = { rows: gemini };
+      return;
+    }
+    // Two keys cannot be written atomically, so the write is journaled: the
+    // before-state goes first, and the write returns only once the journal is
+    // gone. A write that throws leaves both keys as they were, at once or, if
+    // putting them back fails too, before the store is next read or written.
+    await this.kv.set(ACCOUNTS_JOURNAL_KEY, {
+      gemini: cached ?? null,
+      others: base,
+    });
     try {
       await this.kv.set(GEMINI_ACCOUNTS_KEY, gemini);
+      await this.kv.set(ACCOUNTS_KEY, others);
+      await this.kv.delete(ACCOUNTS_JOURNAL_KEY);
     } catch (error) {
       this.geminiCache = null;
+      this.needsRecovery = true;
+      await this.recover().catch(() => undefined);
       throw error;
     }
     this.geminiCache = { rows: gemini };
-    if (!othersChanged) return;
-    try {
-      await this.kv.set(ACCOUNTS_KEY, others);
-    } catch (error) {
-      try {
-        if (cached === undefined) await this.kv.delete(GEMINI_ACCOUNTS_KEY);
-        else await this.kv.set(GEMINI_ACCOUNTS_KEY, cached);
-        this.geminiCache = { rows: cached };
-      } catch {
-        this.geminiCache = null;
-      }
-      throw error;
+  }
+
+  /** Puts both account keys back from a journal a failed write left. */
+  private async recover(): Promise<void> {
+    const stored = await this.kv.get(ACCOUNTS_JOURNAL_KEY);
+    if (stored !== undefined) {
+      const before = accountsJournalSchema.parse(stored);
+      this.geminiCache = null;
+      if (before.gemini === null) await this.kv.delete(GEMINI_ACCOUNTS_KEY);
+      else await this.kv.set(GEMINI_ACCOUNTS_KEY, before.gemini);
+      await this.kv.set(ACCOUNTS_KEY, before.others);
+      await this.kv.delete(ACCOUNTS_JOURNAL_KEY);
+      this.geminiCache = { rows: before.gemini ?? undefined };
     }
+    this.needsRecovery = false;
   }
 
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {
@@ -715,9 +753,12 @@ export class AccountStore {
     const tail = previous.then(() => current);
     this.mutationLock = tail;
     await previous;
+    this.holdingLock = true;
     try {
+      if (this.needsRecovery) await this.recover();
       return await action();
     } finally {
+      this.holdingLock = false;
       release();
       if (this.mutationLock === tail) this.mutationLock = null;
     }
