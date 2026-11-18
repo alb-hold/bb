@@ -490,6 +490,13 @@ export function createGeminiAdapter(options: {
         options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
         accessToken,
       );
+      // The email is how the pool tells one Google login from another, so an
+      // import that cannot read it would let the same login in twice.
+      if (email === null) {
+        throw new Error(
+          "bb could not read this Google account's email, so it cannot tell whether the account is already in the pool. Check the connection and retry.",
+        );
+      }
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           doFetch,
@@ -506,7 +513,7 @@ export function createGeminiAdapter(options: {
         );
       }
       return {
-        label: email ?? "Gemini account",
+        label: email,
         email,
         geminiProject: project,
         geminiEndpoint: info.endpoint,

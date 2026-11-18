@@ -549,6 +549,10 @@ async function startGoogle(args: {
           return;
         }
         if (request.url === "/userinfo") {
+          if (bearer.startsWith("tok-noemail")) {
+            send(503, { error: "unavailable" });
+            return;
+          }
           send(200, { email: `${bearer.replace(/^tok-/u, "")}@example.com` });
           return;
         }
@@ -898,6 +902,25 @@ describe("Gemini account pool", () => {
       [...new Set(google.calls.filter((call) => call.method === "loadCodeAssist").map((call) => call.bearer))].sort(),
     ).toEqual(["tok-a", "tok-b"]);
     await expect(addGemini(fixture.host, "/homes/a", 5)).rejects.toThrow();
+  });
+
+  it("refuses an import whose Google email cannot be read, so a login never enters twice", async () => {
+    const google = await startGoogle({
+      projects: { "tok-noemail": "proj-n" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, { "/homes/n": creds("tok-noemail") });
+    for (let attempt = 0; attempt < 2; attempt += 1)
+      await expect(addGemini(fixture.host, "/homes/n", attempt)).rejects.toThrow(
+        /could not read this Google account's email/u,
+      );
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(status.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
+    expect(await fixture.host.bb.storage.kv.get("accounts:gemini:v1")).toBeUndefined();
   });
 
   it("fails over across three accounts and lands on the third one's project", async () => {
