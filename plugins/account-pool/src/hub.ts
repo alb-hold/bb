@@ -2327,7 +2327,7 @@ export function createHub(options: {
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
   /** Model ids a Gemini model list offered, so their routes can be served. */
-  onGeminiModels?: (ids: readonly string[]) => void;
+  onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [

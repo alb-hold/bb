@@ -447,7 +447,7 @@ export function createGeminiAdapter(options: {
   fetch?: typeof fetch;
   now?: () => number;
   /** Sees the model ids each served model list offers. */
-  onModels?: (ids: string[]) => void;
+  onModels?: (accountId: string, ids: string[]) => void;
 }): ProviderAdapter {
   const bases = {
     prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
@@ -576,7 +576,7 @@ export function createGeminiAdapter(options: {
       const transform =
         call === null || call.kind === "models"
           ? modelListResponse(call?.api ?? "v1beta", (ids) =>
-              options.onModels?.(ids),
+              options.onModels?.(context.account.id, ids),
             )
           : call.method === "generateContent"
             ? unwrapUnary()

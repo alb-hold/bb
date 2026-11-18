@@ -295,6 +295,115 @@ describe("AccountStore", () => {
       { id: twin.id, enabled: false },
     ]);
   });
+
+  describe("a failed write across the Claude/Codex and Gemini keys", () => {
+    async function failingStore() {
+      const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
+      const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
+      cleanups.push(async () => {
+        await host.harness.lifecycle.dispose();
+        await fs.rm(dataDir, { recursive: true, force: true });
+      });
+      const kv = host.bb.storage.kv;
+      const failing = new Set<string>();
+      const secrets = path.join(dataDir, "secrets");
+      const store = new AccountStore(
+        {
+          get: (key) => kv.get(key),
+          async set(key, value) {
+            if (failing.has(key)) throw new Error(`write ${key} failed`);
+            await kv.set(key, value);
+          },
+          delete: (key) => kv.delete(key),
+          list: (prefix) => kv.list(prefix),
+        },
+        secrets,
+      );
+      await store.initialize();
+      const reload = async () => {
+        const fresh = new AccountStore(kv, secrets);
+        return (await fresh.list()).map(({ id, provider, enabled }) => ({
+          id,
+          provider,
+          enabled,
+        }));
+      };
+      return { store, failing, secrets, reload };
+    }
+    const input = (provider: "claude" | "gemini", label: string) =>
+      ({
+        provider,
+        kind: "oauth",
+        label,
+        email: null,
+        accountUuid: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        enabled: true,
+        priority: 1,
+      }) as const;
+    const secret = {
+      kind: "oauth",
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresAt: null,
+    } as const;
+
+    it("leaves no Gemini row or secret when the Gemini write fails on add", async () => {
+      const { store, failing, secrets, reload } = await failingStore();
+      const claude = await store.add(input("claude", "c"), secret);
+      failing.add("accounts:gemini:v1");
+      await expect(store.add(input("gemini", "g"), secret)).rejects.toThrow(
+        "write accounts:gemini:v1 failed",
+      );
+      expect(await reload()).toEqual([
+        { id: claude.id, provider: "claude", enabled: true },
+      ]);
+      expect(await store.list()).toHaveLength(1);
+      expect((await fs.readdir(secrets)).length).toBe(1);
+    });
+
+    it("adds a Gemini account without rewriting the Claude/Codex key", async () => {
+      const { store, failing, reload } = await failingStore();
+      const claude = await store.add(input("claude", "c"), secret);
+      failing.add("accounts:v1");
+      const gemini = await store.add(input("gemini", "g"), secret);
+      expect(await reload()).toEqual([
+        { id: claude.id, provider: "claude", enabled: true },
+        { id: gemini.id, provider: "gemini", enabled: true },
+      ]);
+    });
+
+    it.each(["accounts:v1", "accounts:gemini:v1"])(
+      "keeps both keys as they were when %s fails in a write that changes both",
+      async (key) => {
+        const { store, failing, reload } = await failingStore();
+        const claude = await store.add(input("claude", "c"), secret);
+        const gemini = await store.add(input("gemini", "g"), secret);
+        const before = await reload();
+        failing.add(key);
+        await expect(
+          store.disableWhere(() => [claude.id, gemini.id]),
+        ).rejects.toThrow(`write ${key} failed`);
+        expect(await reload()).toEqual(before);
+        expect(
+          (await store.list()).map(({ id, provider, enabled }) => ({
+            id,
+            provider,
+            enabled,
+          })),
+        ).toEqual(before);
+        failing.clear();
+        expect(
+          (await store.disableWhere(() => [claude.id, gemini.id]))?.length,
+        ).toBe(2);
+        expect((await reload()).map(({ enabled }) => enabled)).toEqual([
+          false,
+          false,
+        ]);
+      },
+    );
+  });
 });
 
 describe("QuotaStore", () => {

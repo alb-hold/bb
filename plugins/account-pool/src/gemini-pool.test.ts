@@ -20,6 +20,7 @@ import {
 } from "./gemini-credentials.js";
 import {
   codeAssistModel,
+  codeAssistModels,
   geminiRuntimeRefusal,
   geminiUpstreamUserAgent,
   unwrapSse,
@@ -422,6 +423,40 @@ describe("Gemini gateway translation", () => {
     expect(codeAssistModel("gemini-3.1-flash-lite-image", { contents: [] }).model).toBe(
       "gemini-3.1-flash-image",
     );
+    // A level that was thinkingConfig's only key leaves no thinkingConfig: the
+    // OAuth path sends none for a literal id.
+    expect(
+      codeAssistModel("gemini-4-carbon", {
+        contents: [],
+        generationConfig: { maxOutputTokens: 65535, thinkingConfig: { thinkingLevel: "high" } },
+      }),
+    ).toEqual({
+      model: "gemini-4-carbon-high",
+      request: { contents: [], generationConfig: { maxOutputTokens: 65535 } },
+    });
+  });
+
+  it("drops models agentModelSorts leaves out, as the runtime does, unless there are no sorts", () => {
+    const models = {
+      ...MODELS_PAYLOAD.models,
+      "gemini-unsorted": { displayName: "Unsorted" },
+    };
+    // _parse_ccpa_response offers only the ids its sorts name.
+    expect(codeAssistModels({ ...MODELS_PAYLOAD, models }).map((model) => model.id)).toEqual([
+      "gemini-orchestrator",
+      "gemini-4-carbon-high",
+      "gemini-3.8-flash",
+    ]);
+    // With no sorted ids, the enabled Gemini models are listed anyway, so the
+    // runtime does not fall back to its built-in ids.
+    const expected = ["gemini-4-carbon-high", "gemini-3.8-flash", "gemini-orchestrator", "gemini-unsorted"];
+    for (const agentModelSorts of [undefined, [], [{ groups: [] }]])
+      expect(
+        codeAssistModels({ models, ...(agentModelSorts === undefined ? {} : { agentModelSorts }) }).map(
+          (model) => model.id,
+        ),
+      ).toEqual(expected);
+    expect(codeAssistModels({ agentModelSorts: MODELS_PAYLOAD.agentModelSorts })).toEqual([]);
   });
 
   it("serves only antigravity-acp 1.5.0, and names the reason otherwise", () => {
@@ -658,7 +693,12 @@ const TRANSPORT_HEADERS = new Set([
 async function createGeminiFixture(
   google: { url: string },
   homes: Record<string, ImportedGeminiCredentials>,
-  options: { withCodex?: boolean; hostWorker?: "current" | "old" } = {},
+  options: {
+    withCodex?: boolean;
+    hostWorker?: "current" | "old";
+    /** Plugin kv entries a previous run left, written before start. */
+    kv?: Record<string, unknown>;
+  } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
   const hostDataDir = await tempDir("bb-host-worker-");
@@ -704,6 +744,8 @@ async function createGeminiFixture(
     anthropicUpstreamBaseUrl: google.url,
     codexUpstreamBaseUrl: google.url,
   });
+  for (const [key, value] of Object.entries(options.kv ?? {}))
+    await host.bb.storage.kv.set(key, value);
   await createAccountPoolPlugin({
     usageUrl: "data:application/json,{}",
     codexRefreshUrl: `${google.url}/oauth`,
@@ -1104,6 +1146,55 @@ describe("Gemini account pool", () => {
     });
     expect(routed.status).toBe(200);
     await routed.text();
+  });
+
+  it("keeps the ids each account served, and routes them after a restart with no model list", async () => {
+    const { google, fixture, env, ids } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    await (
+      await runtimeCall(fixture.host, env.token, { method: "GET", path: "/gemini/v1beta/models" })
+    ).text();
+    await vi.waitFor(async () => {
+      expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+        [ids.a]: ["gemini-orchestrator", "gemini-4-carbon-high", "gemini-3.8-flash"],
+      });
+    });
+
+    // A restarted bb: Fleet's models were served before it, and the runtime
+    // kept its catalog, so no model list is fetched again.
+    const restarted = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      {
+        kv: {
+          "gemini-served-models:v1": {
+            [ids.a]: ["gemini-orchestrator"],
+            "00000000-0000-4000-8000-000000000001": [
+              "gemini-4-hydrogen-high",
+              "gemini-4-hydrogen-xhigh",
+              "gemini-pro-orchestrator",
+              "gemini-pro-orchestrator-argon",
+            ],
+          },
+        },
+      },
+    );
+    await addGemini(restarted.host, "/homes/a", 0);
+    const restartedEnv = await geminiEnv(restarted.host);
+    const lists = google.calls.filter((call) => call.method === "fetchAvailableModels").length;
+    for (const model of ["gemini-4-hydrogen-high", "gemini-pro-orchestrator-argon", "gemini-orchestrator"]) {
+      const response = await runtimeCall(restarted.host, restartedEnv.token, {
+        path: `/gemini/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(google.calls.filter((call) => call.method === "fetchAvailableModels")).toHaveLength(lists);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model)
+        .slice(-3),
+    ).toEqual(["gemini-4-hydrogen-high", "gemini-pro-orchestrator-argon", "gemini-orchestrator"]);
   });
 
   it("refuses an unsupported runtime by name, never forwarding it, and clears once 1.5.0 calls", async () => {

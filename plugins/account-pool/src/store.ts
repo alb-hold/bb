@@ -149,11 +149,33 @@ export class AccountStore {
       await this.kv.set(ACCOUNTS_KEY, others);
       return;
     }
-    await Promise.all([
-      this.kv.set(ACCOUNTS_KEY, others),
-      this.kv.set(GEMINI_ACCOUNTS_KEY, gemini),
-    ]);
+    // Two keys cannot be written atomically. When only the Gemini half changed
+    // it is one write; otherwise the Gemini key goes first and is put back if
+    // the other write fails, so neither key keeps an account the caller's
+    // failed write is about to roll back.
+    const stored = await this.kv.get(ACCOUNTS_KEY);
+    const base = stored === undefined ? [] : accountsSchema.parse(stored);
+    const othersChanged = JSON.stringify(base) !== JSON.stringify(others);
+    try {
+      await this.kv.set(GEMINI_ACCOUNTS_KEY, gemini);
+    } catch (error) {
+      this.geminiCache = null;
+      throw error;
+    }
     this.geminiCache = { rows: gemini };
+    if (!othersChanged) return;
+    try {
+      await this.kv.set(ACCOUNTS_KEY, others);
+    } catch (error) {
+      try {
+        if (cached === undefined) await this.kv.delete(GEMINI_ACCOUNTS_KEY);
+        else await this.kv.set(GEMINI_ACCOUNTS_KEY, cached);
+        this.geminiCache = { rows: cached };
+      } catch {
+        this.geminiCache = null;
+      }
+      throw error;
+    }
   }
 
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {

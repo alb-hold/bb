@@ -131,6 +131,12 @@ const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
 const GEMINI_HOME_HOSTS_KEY = "gemini-home-hosts";
+// The model ids each Gemini account's list last offered, so a runtime that
+// kept its catalog across a bb restart still finds their routes.
+const GEMINI_SERVED_MODELS_KEY = "gemini-served-models:v1";
+const geminiServedModelsSchema = z
+  .record(z.string(), z.array(z.string()))
+  .catch({});
 // A host whose worker cannot write Gemini homes (an older bb there, or a
 // failing worker) is skipped for this long, so each launch does not wait out
 // the call timeout; a worker restart clears it at once.
@@ -501,8 +507,9 @@ export function createAccountPoolPlugin(
     // the reason, until a request from that host is accepted again.
     const geminiRefusals = new Map<string, string>();
     // Plugin routes match exact paths, so every model id the runtime may call
-    // gets its own routes: the built-in ids up front, and each id a served
-    // model list offers when it is first seen.
+    // gets its own routes: the built-in ids and the ids each account last
+    // served up front, and each id a served model list offers when it is
+    // first seen.
     const geminiModelRoutes = new Set<string>();
     const routeGeminiModel = (id: string): void => {
       if (!GEMINI_MODEL_ID.test(id) || geminiModelRoutes.has(id)) return;
@@ -518,6 +525,11 @@ export function createAccountPoolPlugin(
           );
         }
     };
+    let geminiServedModels = geminiServedModelsSchema.parse(
+      await bb.storage.kv.get(GEMINI_SERVED_MODELS_KEY),
+    );
+    let geminiServedModelsWrite: Promise<void> = Promise.resolve();
+    bb.onDispose(() => geminiServedModelsWrite);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);
     const quotas = new QuotaStore(db);
@@ -592,8 +604,21 @@ export function createAccountPoolPlugin(
           bb.log.warn(`Account Pooler refused Gemini on host ${hostId}: ${reason}`);
         geminiRefusals.set(hostId, reason);
       },
-      onGeminiModels: (ids) => {
+      onGeminiModels: (accountId, ids) => {
         for (const id of ids) routeGeminiModel(id);
+        if (
+          JSON.stringify(geminiServedModels[accountId]) === JSON.stringify(ids)
+        )
+          return;
+        geminiServedModels = { ...geminiServedModels, [accountId]: [...ids] };
+        const snapshot = geminiServedModels;
+        geminiServedModelsWrite = geminiServedModelsWrite
+          .then(() => bb.storage.kv.set(GEMINI_SERVED_MODELS_KEY, snapshot))
+          .catch((error: unknown) => {
+            bb.log.warn(
+              `Account Pooler could not save the Gemini model ids: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
       },
     });
     if (transport !== null) {
@@ -1301,6 +1326,8 @@ export function createAccountPoolPlugin(
       );
     }
     for (const id of STATIC_GEMINI_MODEL_IDS) routeGeminiModel(id);
+    for (const ids of Object.values(geminiServedModels))
+      for (const id of ids) routeGeminiModel(id);
     bb.http.route(
       "GET",
       "/v1/models",

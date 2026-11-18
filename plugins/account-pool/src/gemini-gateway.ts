@@ -134,11 +134,16 @@ export function codeAssistModel(
   if (mapped === undefined || generation === null || thinking === null)
     return { model: pathModel, request: body };
   const { thinkingLevel: _level, ...restThinking } = thinking;
+  const { thinkingConfig: _thinking, ...restGeneration } = generation;
+  // The OAuth path sends no thinkingConfig for a literal id, never `{}`.
   return {
     model: mapped,
     request: {
       ...body,
-      generationConfig: { ...generation, thinkingConfig: restThinking },
+      generationConfig:
+        Object.keys(restThinking).length === 0
+          ? restGeneration
+          : { ...restGeneration, thinkingConfig: restThinking },
     },
   };
 }
@@ -251,7 +256,10 @@ interface CodeAssistModel {
 
 /**
  * The account's models from `fetchAvailableModels`, in the order its
- * `agentModelSorts` give, Gemini models only (as `_parse_ccpa_response`).
+ * `agentModelSorts` give, Gemini models only. Like the runtime's
+ * `_parse_ccpa_response`, a model the sorts leave out is dropped. A response
+ * with no sorted ids at all lists its `models` keys instead, so the runtime
+ * is not left on its built-in fallback ids while the account has models.
  */
 export function codeAssistModels(payload: unknown): CodeAssistModel[] {
   const root = record(payload);
@@ -267,6 +275,7 @@ export function codeAssistModels(payload: unknown): CodeAssistModel[] {
         if (typeof id === "string" && !order.includes(id)) order.push(id);
     }
   }
+  if (order.length === 0) order.push(...Object.keys(models));
   return order.flatMap((id) => {
     const entry = record(models[id]);
     if (
