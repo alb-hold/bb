@@ -272,9 +272,9 @@ describe("removing a git worktree into the trash", () => {
     const trashedAt = worktreeTrashEntryTrashedAt(entries[0]!);
     expect(trashedAt).not.toBeNull();
     const late = await fs.lstat(lateFile);
-    expect(
-      Math.max(late.ctimeMs, late.mtimeMs),
-    ).toBeGreaterThanOrEqual(trashedAt! - FILE_TIMESTAMP_LAG_MS);
+    expect(Math.max(late.ctimeMs, late.mtimeMs)).toBeGreaterThanOrEqual(
+      trashedAt! - FILE_TIMESTAMP_LAG_MS,
+    );
   });
 
   it("keeps the worktree on macOS when a tracked file is edited in place after its final inspection", async () => {

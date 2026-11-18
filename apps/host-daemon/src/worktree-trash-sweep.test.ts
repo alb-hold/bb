@@ -263,10 +263,12 @@ describe("sweeping the worktree trash", () => {
     await sweepWorktreeTrash(deps);
 
     expect(await present(unchanged)).toBe(false);
+    expect(await fs.readFile(path.join(late, "src", "late.txt"), "utf8")).toBe(
+      "written after the final inspection\n",
+    );
     expect(
-      await fs.readFile(path.join(late, "src", "late.txt"), "utf8"),
-    ).toBe("written after the final inspection\n");
-    expect(logs.map((line) => [line.level, line.message, line.fields.entry])).toEqual([
+      logs.map((line) => [line.level, line.message, line.fields.entry]),
+    ).toEqual([
       ["info", "Deleted worktree trash entry early", unchanged],
       ["warn", "Kept worktree trash entry", late],
     ]);
