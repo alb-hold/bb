@@ -7,7 +7,7 @@ import {
   keptForChangedData,
   removeDirectoryTree,
   keptTreeReasons,
-  treeFingerprint,
+  treeSnapshot,
   type RemoveDirectoryTreeResult,
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
@@ -29,6 +29,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
   afterHolderScan?: (quarantine: string) => Promise<void>;
+  afterFingerprint?: (quarantine: string) => Promise<void>;
   now?: () => number;
   afterBaseline?: (directory: string) => Promise<void>;
   earlyDeleteGuard?: { changesSince: number; fingerprint: string };
@@ -98,14 +99,20 @@ export async function removeDirectoryAfterHolderRecheck(args: {
         : { testWorktreeHolderScan: args.testWorktreeHolderScan }),
     });
     await args.afterHolderScan?.(quarantine);
+    let expectedEntries: ReadonlyMap<string, string> | undefined;
     if (args.earlyDeleteGuard !== undefined) {
-      const fingerprint = await treeFingerprint(quarantine);
-      if (fingerprint !== args.earlyDeleteGuard.fingerprint) {
+      const snapshot = await treeSnapshot(quarantine);
+      if (
+        snapshot === null ||
+        snapshot.fingerprint !== args.earlyDeleteGuard.fingerprint
+      ) {
         throw new CommandDispatchError(
           "path_in_use",
-          `Refusing to ${args.action} ${args.directory}: ${fingerprint === null ? "its contents could not be read in full" : "its contents changed"} since it was moved to the trash. Nothing was stopped.`,
+          `Refusing to ${args.action} ${args.directory}: ${snapshot === null ? "its contents could not be read in full" : "its contents changed"} since it was moved to the trash. Nothing was stopped.`,
         );
       }
+      expectedEntries = snapshot.entries;
+      await args.afterFingerprint?.(quarantine);
     }
     if (args.recursive === true) {
       const removal = await removeDirectoryTree(quarantine, {
@@ -114,6 +121,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
           ctimeMs: rootInfo.ctimeMs,
           mtimeMs: rootInfo.mtimeMs,
         },
+        ...(expectedEntries === undefined ? {} : { expectedEntries }),
       });
       if (removal.status !== "removed") {
         const shown = (entry: string) =>

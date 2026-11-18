@@ -12,9 +12,11 @@ import {
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
   WORKTREE_TRASH_DIR_NAME,
+  parseWorktreeTrashEntryName,
   worktreeTrashEntryName,
 } from "bb-environment-provider-host/worktree-trash";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeDirectoryAfterHolderRecheck } from "./command-handlers/remove-held-directory.js";
 import {
   resolveWorktreeTrashRoot,
   startWorktreeTrashSweep,
@@ -400,6 +402,52 @@ describe("sweeping the worktree trash", () => {
     expect(logs.slice(2).map((line) => line.message)).toEqual([
       "Deleted worktree trash entry",
     ]);
+  });
+
+  it("keeps every byte of an early-deleted entry written after its fingerprint was checked, when the clock went back during the removal", async () => {
+    const { dataDir, trashRoot } = await trashDataDir();
+    const stampedAt = Date.now() + HOUR_MS;
+    const entry = await moveIntoTrash(dataDir, trashRoot, "racing", stampedAt);
+    const name = path.basename(entry);
+    const fingerprint = parseWorktreeTrashEntryName(name)?.fingerprint;
+    expect(fingerprint).toMatch(/^[0-9a-f]{16}$/u);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const written: string[] = [];
+
+    const outcome = await removeDirectoryAfterHolderRecheck({
+      directory: entry,
+      action: "delete worktree trash entry",
+      recursive: true,
+      now: () => stampedAt + 2 * HOUR_MS,
+      earlyDeleteGuard: {
+        changesSince: stampedAt - FILE_TIMESTAMP_LAG_MS,
+        fingerprint: fingerprint!,
+      },
+      testWorktreeHolderScan: { status: "clear" },
+      afterFingerprint: async (quarantine) => {
+        await fs.writeFile(
+          path.join(quarantine, "src", "deep", "file.txt"),
+          "written in the gap\n",
+        );
+        await fs.writeFile(
+          path.join(quarantine, "src", "gap.txt"),
+          "new in the gap\n",
+        );
+        written.push(quarantine);
+      },
+    }).then(
+      () => "removed",
+      (error: unknown) => (error instanceof Error ? error.message : "refused"),
+    );
+
+    expect(written).toHaveLength(1);
+    expect(outcome).toContain(`Refusing to delete worktree trash entry ${entry}`);
+    expect(await fs.readdir(trashRoot)).toEqual([name]);
+    expect(await treeFiles(entry)).toEqual({
+      "src/index.txt": "racing",
+      "src/deep/file.txt": "written in the gap\n",
+      "src/gap.txt": "new in the gap\n",
+    });
   });
 
   it("keeps an entry through an early delete when a nested file was rewritten in place with its size and modification time put back", async () => {
