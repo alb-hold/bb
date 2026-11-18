@@ -212,22 +212,44 @@ it("removes a tree in another process that reports every entry boundary", async 
   expect(removal.result.status).toBe("removed");
   await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   expect(removal.pid).not.toBe(process.pid);
-  expect(removal.ops).toBe(204);
+  expect(removal.ops).toBe(212);
   expect(heartbeats.length).toBeGreaterThan(0);
   for (const heartbeat of heartbeats) {
     expect(heartbeat.pid).toBe(removal.pid);
-    expect(heartbeat.entry.startsWith(`${root}${path.sep}`)).toBe(true);
+    expect(
+      heartbeat.entry === root ||
+        heartbeat.entry.startsWith(`${root}${path.sep}`),
+    ).toBe(true);
     expect(heartbeat.ops).toBeLessThanOrEqual(removal.ops);
   }
+  const directories = [0, 1, 2, 3].map((index) =>
+    path.join(root, `d${index}`),
+  );
   expect(
     heartbeats
       .filter((heartbeat) => heartbeat.directory)
       .map((heartbeat) => heartbeat.entry)
       .sort(),
-  ).toEqual([0, 1, 2, 3].map((index) => path.join(root, `d${index}`)).sort());
+  ).toEqual([...Array(4).fill(root), ...directories, ...directories].sort());
 });
 
-it("returns a retained result with the changed entry from the other process", async () => {
+it("returns a retained result naming the entry the other process kept", async () => {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "bb-remove-child-"));
+  roots.push(root);
+  const pin = path.join(root, "sub", ".bb-pin-stale");
+  await fs.mkdir(path.dirname(pin));
+  await fs.writeFile(pin, "pin\n");
+
+  const removal = await removeDirectoryTreeInChild(root, {
+    startedAt: Number.MAX_SAFE_INTEGER,
+  });
+
+  expect(removal.result.status).toBe("retained");
+  expect(removal.result.retainedPaths).toEqual([pin]);
+  await expect(fs.readFile(pin, "utf8")).resolves.toBe("pin\n");
+});
+
+it("keeps the whole tree when an entry changed after the removal started", async () => {
   const root = await fs.mkdtemp(path.join(tmpdir(), "bb-remove-child-"));
   roots.push(root);
   const startedAt = Date.now() - 5_000;
@@ -244,7 +266,8 @@ it("returns a retained result with the changed entry from the other process", as
   });
 
   expect(removal.result.status).toBe("retained");
-  expect(removal.result.retainedPaths).toContain(late);
+  expect(removal.result.retainedPaths).toEqual([root]);
+  expect(removal.result.removalStarted).toBe(false);
   await expect(fs.readFile(late, "utf8")).resolves.toBe("late\n");
 });
 
@@ -353,7 +376,7 @@ it(
     });
 
     expect(removal.result.status).toBe("removed");
-    expect(removal.ops).toBe(5_010);
+    expect(removal.ops).toBe(5_030);
     expect(removal.voluntaryContextSwitches / removal.ops).toBeLessThan(0.5);
   },
   120_000,
