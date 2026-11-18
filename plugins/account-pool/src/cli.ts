@@ -44,11 +44,7 @@ import {
 } from "./actor-routes.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
-import {
-  GEMINI_LOGIN_TIMEOUT_MS,
-  GeminiLoginError,
-  type GeminiLogin,
-} from "./gemini-login.js";
+import { GeminiLoginError, type GeminiLogin } from "./gemini-login.js";
 
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
@@ -322,9 +318,10 @@ async function attempt(
   }
 }
 
-async function startGeminiLogin(
+async function runGeminiLogin(
   geminiLogin: GeminiLogin,
   options: { label?: string; priority?: number; json?: boolean },
+  signal: AbortSignal | undefined,
 ): Promise<PluginCliResult> {
   let started;
   try {
@@ -339,27 +336,19 @@ async function startGeminiLogin(
       });
     throw error;
   }
-  const minutes = Math.max(
-    1,
-    Math.round(
-      Math.min(started.expiresAt - Date.now(), GEMINI_LOGIN_TIMEOUT_MS) /
-        60_000,
-    ),
-  );
+  const result = await geminiLogin.wait(started.sessionId, signal);
+  if (result.status !== "complete")
+    throw new PluginCliError(
+      `${result.message}\nThe temporary Chrome profile and sign-in folder were deleted. The sign-in page was: ${started.authorizeUrl}`,
+      { code: `gemini_${result.reason}` },
+    );
   return {
     exitCode: 0,
     stdout: options.json
-      ? json({ ok: true, login: started })
+      ? json({ ok: true, account: result.account, login: started })
       : `${[
-          "A Google Chrome window is opening on a separate, temporary profile (not your own Chrome profile). Sign in to the Google account you want to add there.",
-          "If the page does not open, paste this URL into that window:",
-          started.authorizeUrl,
-          "",
-          `Session ID: ${started.sessionId}`,
-          `The sign-in must finish within ${minutes} minutes. bb adds the account as soon as Google confirms, then closes the window and deletes the temporary profile.`,
-          "",
-          "To wait for the result:",
-          `{{BB_CLI}} pool account login-poll --session ${started.sessionId}`,
+          `Signed in through a separate, temporary Chrome profile (not your own Chrome profile), opened on ${started.authorizeUrl}`,
+          `Added ${result.account.label} (${result.account.id}). The window was closed and the temporary profile and sign-in folder were deleted.`,
         ].join("\n")}\n`,
   };
 }
@@ -384,7 +373,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and adds the account itself once Google confirms; `{{BB_CLI}} pool account login-poll` waits for the result.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -393,7 +382,7 @@ export function registerPoolCli(
               type: "boolean",
               aliases: ["signin", "sign-in"],
               description:
-                "Start a browser (Claude, Gemini) or device-code (Codex) login and print the next command",
+                "Start a browser (Claude) or device-code (Codex) login and print the next command; for Gemini, sign in through a temporary Chrome profile and add the account in this one command",
             },
             import: {
               type: "boolean",
@@ -436,7 +425,7 @@ export function registerPoolCli(
           constraints: [
             { kind: "exactly-one", options: ["login", "import", "api-key"] },
           ],
-          run: (input) =>
+          run: (input, ctx) =>
             attempt(async () => {
               const provider = input.options.provider;
               if (input.options.login) {
@@ -446,15 +435,19 @@ export function registerPoolCli(
                       "--home belongs to --import; --login signs in to a fresh private folder of its own.",
                       { code: "invalid_value" },
                     );
-                  return startGeminiLogin(geminiLogin, {
-                    ...(input.options.label === undefined
-                      ? {}
-                      : { label: input.options.label }),
-                    ...(input.options.priority === undefined
-                      ? {}
-                      : { priority: input.options.priority }),
-                    json: input.options.json === true,
-                  });
+                  return runGeminiLogin(
+                    geminiLogin,
+                    {
+                      ...(input.options.label === undefined
+                        ? {}
+                        : { label: input.options.label }),
+                      ...(input.options.priority === undefined
+                        ? {}
+                        : { priority: input.options.priority }),
+                      json: input.options.json === true,
+                    },
+                    ctx.signal,
+                  );
                 }
                 if (input.options.priority !== undefined)
                   throw new PluginCliError(

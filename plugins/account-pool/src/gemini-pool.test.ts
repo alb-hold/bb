@@ -36,6 +36,33 @@ const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const FAKE_RUNTIME = path.join(FIXTURES, "fake-antigravity-acp.mjs");
 const FAKE_CHROME = path.join(FIXTURES, "fake-chrome.mjs");
+
+async function waitForFile(file: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await fs.access(file);
+      return;
+    } catch {
+      if (Date.now() > deadline) throw new Error(`${file} never appeared`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function accountSecretFiles(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { recursive: true }).catch(() => [] as string[]);
+  return entries.filter((entry) => /(^|\/)account-[^/]*\.json$/u.test(entry));
+}
 const THREAD = "thr_gemini2345";
 const CLIENT = { clientId: "agy-client", clientSecret: "agy-secret" };
 
@@ -681,6 +708,7 @@ async function createGeminiFixture(
     hostWorker?: "current" | "old";
     kv?: Record<string, unknown>;
     loginControl?: string;
+    loginTimeoutMs?: number;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
@@ -761,6 +789,9 @@ async function createGeminiFixture(
             command: process.execPath,
             args: [FAKE_CHROME, options.loginControl],
           },
+          ...(options.loginTimeoutMs === undefined
+            ? {}
+            : { geminiLoginTimeoutMs: options.loginTimeoutMs }),
         }),
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
@@ -1012,31 +1043,36 @@ describe("Gemini account pool", () => {
     const cli = fixture.host.harness.behavior;
     const signIn = async (access: string, extra: string[] = []) => {
       await fs.rm(path.join(control, "approve"), { force: true });
+      await fs.rm(path.join(control, "browser.json"), { force: true });
       await fs.writeFile(
         path.join(control, "config.json"),
         JSON.stringify({ version: "1.5.0", token: { access } }),
       );
-      const started = await cli.runCli([
+      const running = cli.runCli([
         "account",
         "add",
         "--provider",
         "gemini",
         "--login",
-        "--json",
         ...extra,
       ]);
-      expect(started.exitCode).toBe(0);
-      const { login } = JSON.parse(started.stdout) as {
-        login: { sessionId: string; authorizeUrl: string };
-      };
-      expect(login.authorizeUrl).toMatch(/^https:\/\/accounts\.google\.com\//u);
+      await waitForFile(path.join(control, "browser.json"));
       await fs.writeFile(path.join(control, "approve"), "");
-      return cli.runCli(["account", "login-poll", "--session", login.sessionId]);
+      return running;
     };
 
     const added = await signIn("tok-d", ["--label", "ultra-d", "--priority", "7"]);
     expect(added.exitCode).toBe(0);
-    expect(added.stdout).toMatch(/^Added ultra-d \(/u);
+    expect(added.stdout).toContain(
+      "Signed in through a separate, temporary Chrome profile (not your own Chrome profile), opened on https://accounts.google.com/",
+    );
+    expect(added.stdout).toMatch(/\nAdded ultra-d \(/u);
+    expect(added.stdout).toContain("the temporary profile and sign-in folder were deleted");
+    const browser = JSON.parse(
+      await fs.readFile(path.join(control, "browser.json"), "utf8"),
+    ) as { args: string[]; pid: number };
+    expect(browser.args).toContain("--use-mock-keychain");
+    expect(isAlive(browser.pid)).toBe(false);
 
     await cli.runCli(["account", "add", "--provider", "gemini", "--import", "--home", "/homes/c"]);
     const duplicate = await signIn("tok-c");
@@ -1053,6 +1089,61 @@ describe("Gemini account pool", () => {
     const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
     expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
   });
+
+  for (const ending of ["interrupted", "timed out"] as const) {
+    it(`adds nothing and leaves nothing behind when add --login is ${ending}`, async () => {
+      const google = await startGoogle({
+        projects: { "tok-e": "proj-e" },
+        quotaFraction: {},
+        stream: () => ({ status: 200, body: OK_BODY }),
+      });
+      upstreams.push(google.close);
+      const control = await tempDir("bb-gemini-login-control-");
+      await fs.writeFile(
+        path.join(control, "config.json"),
+        JSON.stringify({ version: "1.5.0", token: { access: "tok-e" } }),
+      );
+      const fixture = await createGeminiFixture(
+        google,
+        {},
+        {
+          loginControl: control,
+          ...(ending === "timed out" ? { loginTimeoutMs: 300 } : {}),
+        },
+      );
+      const cli = fixture.host.harness.behavior;
+      const abort = new AbortController();
+      const running = cli.runCli(
+        ["account", "add", "--provider", "gemini", "--login", "--label", "never"],
+        { signal: abort.signal },
+      );
+      await waitForFile(path.join(control, "browser.json"));
+      if (ending === "interrupted") abort.abort();
+      const result = await running;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain(
+        "The temporary Chrome profile and sign-in folder were deleted.",
+      );
+      expect(result.stderr).toContain("https://accounts.google.com/");
+      expect(result.stderr).not.toContain("tok-e");
+      const listed = JSON.parse(
+        (await cli.runCli(["account", "list", "--json"])).stdout,
+      ) as { accounts: Array<{ provider: string }> };
+      expect(listed.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
+      expect(await accountSecretFiles(fixture.dataDir)).toEqual([]);
+      const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
+      expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+      const browser = JSON.parse(
+        await fs.readFile(path.join(control, "browser.json"), "utf8"),
+      ) as { pid: number };
+      const runtime = JSON.parse(
+        await fs.readFile(path.join(control, "env.json"), "utf8"),
+      ) as { pid: number };
+      expect(isAlive(browser.pid)).toBe(false);
+      expect(isAlive(runtime.pid)).toBe(false);
+    });
+  }
 
   it("points antigravity-acp at the hub with env only, through a home that holds no credential", async () => {
     const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
