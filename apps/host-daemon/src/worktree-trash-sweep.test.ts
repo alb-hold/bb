@@ -441,7 +441,9 @@ describe("sweeping the worktree trash", () => {
     );
 
     expect(written).toHaveLength(1);
-    expect(outcome).toContain(`Refusing to delete worktree trash entry ${entry}`);
+    expect(outcome).toContain(
+      `Refusing to delete worktree trash entry ${entry}`,
+    );
     expect(await fs.readdir(trashRoot)).toEqual([name]);
     expect(await treeFiles(entry)).toEqual({
       "src/index.txt": "racing",
