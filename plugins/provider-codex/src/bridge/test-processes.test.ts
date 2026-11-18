@@ -46,7 +46,7 @@ function exited(child: ChildProcess): void {
 describe("test process group teardown", () => {
   it("signals a live leader's whole group and awaits the surviving grandchild's termination", async () => {
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     const kill = vi.spyOn(process, "kill").mockImplementation(() => {
       exited(child);
       return true;
@@ -68,7 +68,7 @@ describe("test process group teardown", () => {
 
   it("never signals an already exited leader's group while waiting for remaining members", async () => {
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     exited(child);
     const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     vi.mocked(execFileSync)
@@ -80,7 +80,7 @@ describe("test process group teardown", () => {
 
   it("fails visibly without signalling when an already exited leader's group still has writers", async () => {
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     exited(child);
     const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     vi.mocked(execFileSync).mockReturnValue(`${pid} S\n`);
@@ -108,7 +108,7 @@ describe("test process group teardown", () => {
   it("bounds waiting for a leader that never reports exit", async () => {
     vi.useFakeTimers();
     const child = leader();
-    const cleanup = helper.trackTestProcess(child);
+    const cleanup = helper.trackTestProcess(child, 5_000);
     const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     const result = expect(cleanup()).rejects.toThrow(
       `Test process group ${pid} still has live writers`,

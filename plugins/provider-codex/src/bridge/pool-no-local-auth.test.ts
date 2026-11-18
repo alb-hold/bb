@@ -18,9 +18,21 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
-import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
+import {
+  drainTestProcessCleanups,
+  killSurvivingTestProcessGroupMembers,
+  killTestProcessGroup,
+  TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS,
+  type TestProcessCleanup,
+  trackTestProcess,
+} from "./test-processes.js";
 import { parseModelCatalog } from "../models.js";
 
+const OFFLINE_GIT_ENV = {
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "http.proxy",
+  GIT_CONFIG_VALUE_0: "http://127.0.0.1:9",
+};
 const POOL_TOKEN = "pool-token-for-no-local-auth-test";
 const modelCatalogBody = readFileSync(
   new URL("./pool-model-catalog.fixture.json", import.meta.url),
@@ -65,7 +77,7 @@ function expiredChatgptAuthFile(): string {
   });
 }
 
-const processCleanups: Array<() => Promise<void>> = [];
+const processCleanups: TestProcessCleanup[] = [];
 
 let codexHome: string;
 let server: Server;
@@ -138,19 +150,26 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  while (processCleanups.length > 0) await processCleanups.pop()?.();
+  await drainTestProcessCleanups(processCleanups);
   await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(codexHome, { recursive: true, force: true });
-});
+}, TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS);
 
-function runPooledTurn(): Promise<{ status: number | null; output: string }> {
-  const env = {
+function codexTestEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
     ...process.env,
     CODEX_HOME: codexHome,
     CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
     CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
-    CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${baseUrl}/oauth/token`,
+    ...extra,
+    ...OFFLINE_GIT_ENV,
   };
+}
+
+function runPooledTurn(): Promise<{ status: number | null; output: string }> {
+  const env = codexTestEnv({
+    CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${baseUrl}/oauth/token`,
+  });
   const launch = resolveAppServerLaunch(env);
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -170,6 +189,7 @@ function runPooledTurn(): Promise<{ status: number | null; output: string }> {
       },
     );
     processCleanups.push(trackTestProcess(child));
+    child.on("exit", () => killSurvivingTestProcessGroupMembers(child));
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
@@ -226,12 +246,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
   }, 90_000);
 
   it("lists the pool's model catalog through app-server model/list with an empty CODEX_HOME", async () => {
-    const env = {
-      ...process.env,
-      CODEX_HOME: codexHome,
-      CODEX_OPENAI_BASE_URL: `${baseUrl}/pool/v1`,
-      CODEX_POOL_AUTH_TOKEN: POOL_TOKEN,
-    };
+    const env = codexTestEnv();
     const launch = resolveAppServerLaunch(env);
     const result = await new Promise<unknown>((resolve, reject) => {
       const child = spawn(launch.command, launch.args, {
@@ -240,6 +255,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
         stdio: ["pipe", "pipe", "ignore"],
       });
       processCleanups.push(trackTestProcess(child));
+      child.on("exit", () => killSurvivingTestProcessGroupMembers(child));
       const timer = setTimeout(() => {
         killTestProcessGroup(child, "SIGKILL");
         reject(new Error("model/list timed out"));

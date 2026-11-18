@@ -1,17 +1,32 @@
 import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
-function hasLiveGroupMembers(pid: number, deadline: number): boolean {
-  return execFileSync("ps", ["-axo", "pgid=,stat="], {
+export const TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS = 15_000;
+export const TEST_PROCESS_CLEANUP_HOOK_TIMEOUT_MS =
+  TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS + 10_000;
+
+interface GroupScan {
+  live: boolean;
+  writer: string | undefined;
+}
+
+function scanGroup(pid: number, deadline: number): GroupScan {
+  const rows = execFileSync("ps", ["-axo", "pgid=,stat=,pid=,command="], {
     encoding: "utf8",
     timeout: Math.max(1, deadline - Date.now()),
   })
     .trim()
-    .split("\n")
-    .some((line) => {
-      const [group, state] = line.trim().split(/\s+/u);
-      return Number(group) === pid && !state?.startsWith("Z");
-    });
+    .split("\n");
+  for (const line of rows) {
+    const match = line.trim().match(/^(\d+)\s+(\S+)(?:\s+(\d+)\s+(.+))?$/u);
+    if (match && Number(match[1]) === pid && !match[2]?.startsWith("Z"))
+      return {
+        live: true,
+        writer:
+          match[3] === undefined ? undefined : `pid ${match[3]} (${match[4]})`,
+      };
+  }
+  return { live: false, writer: undefined };
 }
 
 const windowsSnapshotArguments = [
@@ -116,9 +131,12 @@ function killWindowsProcess(
   }
 }
 
+class LiveWriterEpermError extends Error {}
+
 export function killTestProcessGroup(
   child: ChildProcess,
   signal: NodeJS.Signals | number = "SIGTERM",
+  deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
 ): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
@@ -127,6 +145,19 @@ export function killTestProcessGroup(
   try {
     return process.kill(-pid, signal);
   } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EPERM") {
+      if (Date.now() >= deadline)
+        throw new Error(
+          `kill EPERM for test process group ${pid} (deadline expired before diagnosis)`,
+          { cause: error },
+        );
+      const scan = scanGroup(pid, deadline);
+      if (!scan.live) return false;
+      throw new LiveWriterEpermError(
+        `kill EPERM for test process group ${pid} with live writer${scan.writer ? `: ${scan.writer}` : ""}`,
+        { cause: error },
+      );
+    }
     if (
       !(error instanceof Error) ||
       !("code" in error) ||
@@ -137,7 +168,52 @@ export function killTestProcessGroup(
   }
 }
 
-export function trackTestProcess(child: ChildProcess): () => Promise<void> {
+export function killSurvivingTestProcessGroupMembers(
+  child: ChildProcess,
+  deadline = Date.now() + TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): boolean {
+  const pid = child.pid;
+  if (pid === undefined || process.platform === "win32") return false;
+  if (!scanGroup(pid, deadline).live) return false;
+  try {
+    return process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH")
+      return false;
+    throw error;
+  }
+}
+
+export type TestProcessCleanup = (sharedDeadline?: number) => Promise<void>;
+
+export async function drainTestProcessCleanups(
+  cleanups: TestProcessCleanup[],
+  timeoutMs = TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const pending = cleanups.splice(0);
+  const results = await Promise.allSettled(
+    pending.map((cleanup) => cleanup(deadline)),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason as unknown] : [],
+  );
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      failures
+        .map((failure) =>
+          failure instanceof Error ? failure.message : String(failure),
+        )
+        .join("; "),
+    );
+}
+
+export function trackTestProcess(
+  child: ChildProcess,
+  timeoutMs = TEST_PROCESS_GROUP_EXIT_TIMEOUT_MS,
+): TestProcessCleanup {
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
     child.once("error", () => resolve());
@@ -181,11 +257,23 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
     discoveryTimer.unref();
     void exited.then(() => clearInterval(discoveryTimer));
   }
-  return async () => {
+  return async (sharedDeadline) => {
     if (pid === undefined) return;
-    const deadline = Date.now() + 5_000;
-    const stillWriting = () =>
-      new Error(`Test process group ${pid} still has live writers`);
+    const deadline = sharedDeadline ?? Date.now() + timeoutMs;
+    let lastWriter: string | undefined;
+    const noteWriter = () => {
+      if (process.platform === "win32" || Date.now() >= deadline) return;
+      try {
+        lastWriter = scanGroup(pid, deadline).writer ?? lastWriter;
+      } catch {}
+    };
+    const stillWriting = () => {
+      const expired = Date.now() >= deadline;
+      if (!expired && lastWriter === undefined) noteWriter();
+      return new Error(
+        `Test process group ${pid} still has live writers${lastWriter ? `: ${lastWriter}` : expired ? " (deadline expired before diagnosis)" : ""}`,
+      );
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (process.platform === "win32") {
@@ -223,9 +311,21 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
           killWindowsProcess(descendant, deadline, identity);
         }
       } else {
-        killTestProcessGroup(child, "SIGKILL");
+        let namedEperm: LiveWriterEpermError | undefined;
+        for (;;) {
+          try {
+            killTestProcessGroup(child, "SIGKILL", deadline);
+            break;
+          } catch (error) {
+            if (error instanceof LiveWriterEpermError) namedEperm = error;
+            else if (namedEperm === undefined) throw error;
+            if (Date.now() >= deadline) throw namedEperm ?? error;
+            await delay(50);
+          }
+        }
       }
       if (child.exitCode === null && child.signalCode === null) {
+        noteWriter();
         await Promise.race([
           exited,
           new Promise<never>((_, reject) => {
@@ -254,14 +354,23 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
       }
       for (;;) {
         if (Date.now() >= deadline) throw stillWriting();
-        let live: boolean;
+        let scan: GroupScan;
         try {
-          live = hasLiveGroupMembers(pid, deadline);
+          scan = scanGroup(pid, deadline);
         } catch (error) {
           if (Date.now() >= deadline) throw stillWriting();
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ETIMEDOUT"
+          ) {
+            await delay(10);
+            continue;
+          }
           throw error;
         }
-        if (!live) return;
+        if (!scan.live) return;
+        lastWriter = scan.writer ?? lastWriter;
         await delay(10);
       }
     } finally {
