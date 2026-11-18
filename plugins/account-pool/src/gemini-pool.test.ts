@@ -906,12 +906,25 @@ describe("Gemini account pool", () => {
 
   it("refuses an import whose Google email cannot be read, so a login never enters twice", async () => {
     const google = await startGoogle({
-      projects: { "tok-noemail": "proj-n" },
+      projects: { "tok-noemail": "proj-n", "tok-a": "proj-a" },
       quotaFraction: {},
       stream: () => ({ status: 200, body: OK_BODY }),
     });
     upstreams.push(google.close);
-    const fixture = await createGeminiFixture(google, { "/homes/n": creds("tok-noemail") });
+    const fixture = await createGeminiFixture(google, {
+      "/homes/n": creds("tok-noemail"),
+      "/homes/a": creds("tok-a"),
+    });
+    // Every file the store keeps under its secrets directory.
+    const secretFiles = async () =>
+      (
+        await fs.readdir(path.join(fixture.dataDir, "plugins"), {
+          recursive: true,
+          withFileTypes: true,
+        })
+      )
+        .filter((entry) => entry.isFile() && entry.parentPath.includes(`${path.sep}secrets`))
+        .map((entry) => path.join(entry.parentPath, entry.name));
     for (let attempt = 0; attempt < 2; attempt += 1)
       await expect(addGemini(fixture.host, "/homes/n", attempt)).rejects.toThrow(
         /could not read this Google account's email/u,
@@ -921,6 +934,11 @@ describe("Gemini account pool", () => {
     );
     expect(status.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
     expect(await fixture.host.bb.storage.kv.get("accounts:gemini:v1")).toBeUndefined();
+    expect(google.calls.filter((call) => call.method === "loadCodeAssist")).toEqual([]);
+    expect(await secretFiles()).toEqual([]);
+    // The same store does keep a secret for a login whose email reads.
+    await addGemini(fixture.host, "/homes/a", 0);
+    expect(await secretFiles()).toHaveLength(1);
   });
 
   it("fails over across three accounts and lands on the third one's project", async () => {
