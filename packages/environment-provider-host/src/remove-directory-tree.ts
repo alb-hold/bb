@@ -776,6 +776,60 @@ export async function directoryTreeChangedSince(
   return inspect(root);
 }
 
+export interface TreeMoveInspection {
+  changed: boolean;
+  mountedPaths: string[];
+}
+
+export async function inspectTreeBeforeMove(
+  root: string,
+  startedAt: number,
+  baseline: {
+    rootMetadata: { ctimeMs: number; mtimeMs: number };
+    entryDevice?: ((entry: string, device: number) => number) | undefined;
+  },
+): Promise<TreeMoveInspection> {
+  const result: TreeMoveInspection = { changed: false, mountedPaths: [] };
+  let rootDevice: number;
+  try {
+    rootDevice = (await lstat(root)).dev;
+  } catch {
+    return { changed: true, mountedPaths: [] };
+  }
+  const pending = [root];
+  while (pending.length > 0) {
+    const entry = pending.pop()!;
+    let info;
+    try {
+      info = await lstat(entry);
+    } catch {
+      result.changed = true;
+      continue;
+    }
+    if ((baseline.entryDevice?.(entry, info.dev) ?? info.dev) !== rootDevice) {
+      result.mountedPaths.push(entry);
+      continue;
+    }
+    if (
+      entry === root
+        ? info.ctimeMs > baseline.rootMetadata.ctimeMs ||
+          info.mtimeMs > baseline.rootMetadata.mtimeMs
+        : changedSince(info, startedAt)
+    )
+      result.changed = true;
+    if (!info.isDirectory()) continue;
+    let listed: string[];
+    try {
+      listed = await readdir(entry);
+    } catch {
+      result.changed = true;
+      continue;
+    }
+    for (const name of listed) pending.push(path.join(entry, name));
+  }
+  return result;
+}
+
 function changedSince(
   info: { ctimeMs: number; mtimeMs: number },
   startedAt: number,

@@ -489,6 +489,7 @@ describe.runIf(supported)("removing a worktree with submodules", () => {
   it("keeps a nested repository created in the worktree after the final inspection", async () => {
     const worktree = await fixture();
     const reasons = await removal(worktree, {
+      platform: "linux",
       afterFinalInspection: async (worktreePath) => {
         await repository(path.join(worktreePath, "node_modules", "late"));
       },

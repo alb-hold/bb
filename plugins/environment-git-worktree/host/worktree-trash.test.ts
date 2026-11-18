@@ -205,6 +205,71 @@ describe("removing a git worktree into the trash", () => {
     expect(await git(worktree.path, "status", "--porcelain")).toBe("");
   });
 
+  it("keeps the worktree on macOS when a file is written after its final inspection, instead of moving it to the trash", async () => {
+    const worktree = await managedWorktree();
+    const trashRoot = path.join(worktree.dataDir, ".trash");
+    setTestWorktreeHolderScan({ status: "clear" });
+
+    const error = await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot,
+      testHooks: {
+        platform: "darwin",
+        afterFinalCheck: async (target) => {
+          await fs.writeFile(path.join(target, "late.txt"), "late\n");
+        },
+      },
+    }).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+
+    expect(isWorktreePreservedError(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      "new or changed data was found after its final inspection, before moving it to the trash",
+    );
+    expect(await fs.readFile(path.join(worktree.path, "late.txt"), "utf8")).toBe(
+      "late\n",
+    );
+    expect(await fs.readdir(trashRoot)).toEqual([]);
+    expect(await git(worktree.source, "worktree", "list")).toContain(
+      worktree.path,
+    );
+  });
+
+  it("keeps the worktree on macOS when another filesystem is mounted inside it", async () => {
+    const worktree = await managedWorktree();
+    const trashRoot = path.join(worktree.dataDir, ".trash");
+    setTestWorktreeHolderScan({ status: "clear" });
+
+    const error = await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot,
+      testHooks: {
+        platform: "darwin",
+        entryDevice: (entry, device) =>
+          path.basename(entry) === "README.md" ? device + 1 : device,
+      },
+    }).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+
+    expect(isWorktreePreservedError(error)).toBe(true);
+    expect((error as Error).message).toContain(
+      `a different filesystem is mounted here: ${path.join(worktree.path, "README.md")}`,
+    );
+    expect(
+      await fs.readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).toBe("published\n");
+    expect(await fs.readdir(trashRoot)).toEqual([]);
+    expect(await git(worktree.source, "worktree", "list")).toContain(
+      worktree.path,
+    );
+  });
+
   it("deletes the worktree at once on Linux and leaves no trash", async () => {
     const worktree = await managedWorktree();
     const trashRoot = path.join(worktree.dataDir, ".trash");
