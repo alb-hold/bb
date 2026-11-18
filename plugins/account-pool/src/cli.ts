@@ -328,7 +328,7 @@ async function runGeminiLogin(
     started = await geminiLogin.start({
       label: options.label ?? null,
       ...(options.priority === undefined ? {} : { priority: options.priority }),
-    });
+    }, signal);
   } catch (error) {
     if (error instanceof GeminiLoginError)
       throw new PluginCliError(error.message, {

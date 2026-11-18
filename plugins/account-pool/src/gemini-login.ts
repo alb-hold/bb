@@ -300,6 +300,7 @@ export class GeminiLogin {
   private readonly now: () => number;
   private readonly browser: CommandSpec;
   private disposed = false;
+  private readonly shutdown = new AbortController();
   private starting: Promise<GeminiLoginStart> | null = null;
 
   constructor(private readonly options: GeminiLoginOptions) {
@@ -322,8 +323,12 @@ export class GeminiLogin {
     return null;
   }
 
-  async start(target: GeminiLoginTarget): Promise<GeminiLoginStart> {
+  async start(
+    target: GeminiLoginTarget,
+    signal?: AbortSignal,
+  ): Promise<GeminiLoginStart> {
     this.live();
+    if (signal?.aborted) throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
     this.expireResults();
     const running = this.pending();
     if (running !== null) {
@@ -333,7 +338,11 @@ export class GeminiLogin {
     }
     if (this.starting !== null)
       throw new Error("A Gemini sign-in is already starting; wait for it before starting another.");
-    const starting = this.startOne(target);
+    const abort =
+      signal === undefined
+        ? this.shutdown.signal
+        : AbortSignal.any([signal, this.shutdown.signal]);
+    const starting = this.startOne(target, abort);
     this.starting = starting;
     try {
       return await starting;
@@ -342,23 +351,41 @@ export class GeminiLogin {
     }
   }
 
-  private live(): void {
+  private live(abort?: AbortSignal): void {
     if (this.disposed)
       throw new GeminiLoginError(
         "sign_in_cancelled",
         "Gemini sign-in is shutting down. No account was added.",
       );
+    if (abort?.aborted) throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
   }
 
-  private async startOne(target: GeminiLoginTarget): Promise<GeminiLoginStart> {
-    const runtime = await this.checkedRuntime();
-    this.live();
-    await this.sweep();
-    this.live();
+  private async unlessAborted<T>(work: Promise<T>, abort: AbortSignal): Promise<T> {
+    let onAbort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new GeminiLoginError(CANCELLED.reason, CANCELLED.message));
+      if (abort.aborted) onAbort();
+      else abort.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([work, aborted]);
+    } finally {
+      abort.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async startOne(
+    target: GeminiLoginTarget,
+    abort: AbortSignal,
+  ): Promise<GeminiLoginStart> {
+    const runtime = await this.unlessAborted(this.checkedRuntime(), abort);
+    this.live(abort);
+    await this.unlessAborted(this.sweep(), abort);
+    this.live(abort);
     await fs.mkdir(this.options.dataDir, { recursive: true, mode: 0o700 });
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
     await fs.chmod(this.root, 0o700);
-    this.live();
+    this.live(abort);
     const sessionId = randomUUID();
     const dir = path.join(this.root, sessionId);
     await privateDir(dir);
@@ -382,16 +409,22 @@ export class GeminiLogin {
     const deadline = this.now() + this.timeoutMs;
     let authenticated: Promise<unknown>;
     let authorizeUrl: string;
+    const onAbort = () => this.cancel(sessionId);
+    abort.addEventListener("abort", onAbort, { once: true });
     try {
+      if (abort.aborted) onAbort();
       ({ authenticated, authorizeUrl } = await this.open(
         session,
         runtime,
         woken,
       ));
+      if (session.cancelled !== null) throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
     } catch (error) {
       await this.cleanup(session);
       this.sessions.delete(sessionId);
       throw error;
+    } finally {
+      abort.removeEventListener("abort", onAbort);
     }
     session.result = this.finish(session, target, authenticated, woken, deadline);
     void session.result.then((result) => {
@@ -432,6 +465,7 @@ export class GeminiLogin {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.shutdown.abort();
     for (const session of this.sessions.values()) this.cancel(session.sessionId);
     await this.starting?.catch(() => {});
     const left = [...this.sessions.values()];

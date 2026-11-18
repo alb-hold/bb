@@ -709,6 +709,7 @@ async function createGeminiFixture(
     kv?: Record<string, unknown>;
     loginControl?: string;
     loginTimeoutMs?: number;
+    runtimeGate?: Promise<void>;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
@@ -781,10 +782,13 @@ async function createGeminiFixture(
     ...(options.loginControl === undefined
       ? {}
       : {
-          resolveGeminiRuntime: async () => ({
-            command: process.execPath,
-            args: [FAKE_RUNTIME, options.loginControl as string],
-          }),
+          resolveGeminiRuntime: async () => {
+            await options.runtimeGate;
+            return {
+              command: process.execPath,
+              args: [FAKE_RUNTIME, options.loginControl as string],
+            };
+          },
           geminiLoginBrowser: {
             command: process.execPath,
             args: [FAKE_CHROME, options.loginControl],
@@ -1088,6 +1092,55 @@ describe("Gemini account pool", () => {
     expect(gemini.find((account) => account.label === "ultra-d")?.priority).toBe(7);
     const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
     expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+  });
+
+  it("returns at once and starts nothing when add --login is interrupted while the runtime is still being resolved", async () => {
+    const google = await startGoogle({
+      projects: {},
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const control = await tempDir("bb-gemini-login-control-");
+    await fs.writeFile(
+      path.join(control, "config.json"),
+      JSON.stringify({ version: "1.5.0", token: { access: "tok-f" } }),
+    );
+    let resolved = false;
+    let release = () => {};
+    const runtimeGate = new Promise<void>((resolve) => {
+      release = () => {
+        resolved = true;
+        resolve();
+      };
+    });
+    const fixture = await createGeminiFixture(
+      google,
+      {},
+      { loginControl: control, runtimeGate },
+    );
+    const cli = fixture.host.harness.behavior;
+    const abort = new AbortController();
+    const running = cli.runCli(["account", "add", "--provider", "gemini", "--login"], {
+      signal: abort.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    abort.abort();
+    const result = await running;
+    expect(resolved).toBe(false);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("cancelled");
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await fs.readdir(control)).toEqual(["config.json"]);
+    const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
+    expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+    expect(await accountSecretFiles(fixture.dataDir)).toEqual([]);
+    const listed = JSON.parse(
+      (await cli.runCli(["account", "list", "--json"])).stdout,
+    ) as { accounts: Array<{ provider: string }> };
+    expect(listed.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
   });
 
   for (const ending of ["interrupted", "timed out"] as const) {
