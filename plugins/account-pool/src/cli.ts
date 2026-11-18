@@ -44,6 +44,7 @@ import {
 } from "./actor-routes.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
+import { GeminiLoginError, type GeminiLogin } from "./gemini-login.js";
 
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
@@ -317,6 +318,41 @@ async function attempt(
   }
 }
 
+async function runGeminiLogin(
+  geminiLogin: GeminiLogin,
+  options: { label?: string; priority?: number; json?: boolean },
+  signal: AbortSignal | undefined,
+): Promise<PluginCliResult> {
+  let started;
+  try {
+    started = await geminiLogin.start({
+      label: options.label ?? null,
+      ...(options.priority === undefined ? {} : { priority: options.priority }),
+    }, signal);
+  } catch (error) {
+    if (error instanceof GeminiLoginError)
+      throw new PluginCliError(error.message, {
+        code: `gemini_${error.reason}`,
+      });
+    throw error;
+  }
+  const result = await geminiLogin.wait(started.sessionId, signal);
+  if (result.status !== "complete")
+    throw new PluginCliError(
+      `${result.message}\nThe temporary Chrome profile and sign-in folder were deleted. The sign-in page was: ${started.authorizeUrl}`,
+      { code: `gemini_${result.reason}` },
+    );
+  return {
+    exitCode: 0,
+    stdout: options.json
+      ? json({ ok: true, account: result.account, login: started })
+      : `${[
+          `Signed in through a separate, temporary Chrome profile (not your own Chrome profile), opened on ${started.authorizeUrl}`,
+          `Added ${result.account.label} (${result.account.id}). The window was closed and the temporary profile and sign-in folder were deleted.`,
+        ].join("\n")}\n`,
+  };
+}
+
 export function registerPoolCli(
   bb: Pick<BbPluginApi, "cli">,
   operations: PoolOperations,
@@ -324,6 +360,7 @@ export function registerPoolCli(
   codexLogin: CodexDeviceLogin,
   config: AccountPoolConfigController,
   actorRoutes: ActorRouteIssuer,
+  geminiLogin: GeminiLogin,
 ): void {
   bb.cli.register(
     defineCli({
@@ -334,9 +371,9 @@ export function registerPoolCli(
       commands: {
         "account add": cliCommand({
           summary:
-            "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
+            "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -345,7 +382,7 @@ export function registerPoolCli(
               type: "boolean",
               aliases: ["signin", "sign-in"],
               description:
-                "Start a browser (Claude) or device-code (Codex) login and print the next command",
+                "Start a browser (Claude) or device-code (Codex) login and print the next command; for Gemini, sign in through a temporary Chrome profile and add the account in this one command",
             },
             import: {
               type: "boolean",
@@ -387,18 +424,36 @@ export function registerPoolCli(
           },
           constraints: [
             { kind: "exactly-one", options: ["login", "import", "api-key"] },
-            { kind: "at-most-one", options: ["login", "priority"] },
           ],
-          run: (input) =>
+          run: (input, ctx) =>
             attempt(async () => {
               const provider = input.options.provider;
               if (input.options.login) {
                 if (provider === "gemini") {
-                  throw new PluginCliError(
-                    "Gemini sign-in is not run by this command. Sign in through bb's Antigravity (antigravity-acp) agent with GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1, then add it with --provider gemini --import --home <dir>.",
-                    { code: "invalid_value" },
+                  if (input.options.home !== undefined)
+                    throw new PluginCliError(
+                      "--home belongs to --import; --login signs in to a fresh private folder of its own.",
+                      { code: "invalid_value" },
+                    );
+                  return runGeminiLogin(
+                    geminiLogin,
+                    {
+                      ...(input.options.label === undefined
+                        ? {}
+                        : { label: input.options.label }),
+                      ...(input.options.priority === undefined
+                        ? {}
+                        : { priority: input.options.priority }),
+                      json: input.options.json === true,
+                    },
+                    ctx.signal,
                   );
                 }
+                if (input.options.priority !== undefined)
+                  throw new PluginCliError(
+                    "--priority cannot be combined with --login for Claude or Codex; set it afterwards with `{{BB_CLI}} pool account priority`.",
+                    { code: "invalid_value" },
+                  );
                 if (provider === "codex") {
                   const started = await codexLogin.start();
                   return {
@@ -534,9 +589,9 @@ export function registerPoolCli(
             }),
         }),
         "account login-poll": cliCommand({
-          summary: "Wait for a Codex device-code login to complete",
+          summary: "Wait for a Codex or Gemini login to complete",
           description:
-            "Blocks until the Codex authorization finishes, fails, or the invocation is cancelled.",
+            "Blocks until the Codex authorization or Gemini sign-in finishes, fails, or the invocation is cancelled. Cancelling it cancels the sign-in.",
           options: {
             session: SESSION_OPTION,
             label: {
@@ -554,6 +609,27 @@ export function registerPoolCli(
                   ? {}
                   : { label: input.options.label }),
               });
+              if (geminiLogin.has(parsed.sessionId)) {
+                if (parsed.label !== undefined)
+                  throw new PluginCliError(
+                    "A Gemini sign-in takes its label from `account add --login --label`; drop --label here.",
+                    { code: "invalid_value" },
+                  );
+                const result = await geminiLogin.wait(
+                  parsed.sessionId,
+                  ctx.signal,
+                );
+                if (result.status === "complete")
+                  return {
+                    exitCode: 0,
+                    stdout: input.options.json
+                      ? json({ ok: true, account: result.account })
+                      : `Added ${result.account.label} (${result.account.id}).\n`,
+                  };
+                throw new PluginCliError(result.message, {
+                  code: `gemini_${result.reason}`,
+                });
+              }
               const target = codexLogin.targetOf(parsed.sessionId);
               const signal = ctx.signal;
               const cancel = () => codexLogin.cancel(parsed);
