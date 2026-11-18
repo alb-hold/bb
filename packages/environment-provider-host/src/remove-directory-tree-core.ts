@@ -167,7 +167,11 @@ export interface RemoveDirectoryTreeHooks {
     entries: readonly string[],
   ) => Promise<void>;
   beforeEntryRemoval?: (entry: string) => Promise<void>;
-  entryBoundary?: (entry: string, removalStarted: boolean) => Promise<boolean>;
+  entryBoundary?: (
+    entry: string,
+    removalStarted: boolean,
+    directory: boolean,
+  ) => Promise<boolean>;
   beforeEntryRename?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
@@ -222,6 +226,8 @@ export interface RemoveDirectoryTreeResult {
   retainedPaths: string[];
   mountedPaths: string[];
   unanchoredPaths: string[];
+  notRespondingPaths: string[];
+  stoppedPaths: string[];
   removalStarted: boolean;
 }
 
@@ -230,6 +236,9 @@ export const UNANCHORED_DIRECTORY_REASON =
 
 export const PARTIALLY_REMOVED_REASON =
   "the directory may be partially removed";
+
+export const NOT_RESPONDING_REASON =
+  "a filesystem was not responding while listing";
 
 function explainedBy(retainedPath: string, cause: string): boolean {
   return (
@@ -240,7 +249,12 @@ function explainedBy(retainedPath: string, cause: string): boolean {
 }
 
 export function keptForChangedData(result: RemoveDirectoryTreeResult): boolean {
-  const causes = [...result.unanchoredPaths, ...result.mountedPaths];
+  const causes = [
+    ...result.unanchoredPaths,
+    ...result.mountedPaths,
+    ...result.notRespondingPaths,
+    ...result.stoppedPaths,
+  ];
   if (causes.length === 0) return true;
   return result.retainedPaths.some(
     (retainedPath) => !causes.some((cause) => explainedBy(retainedPath, cause)),
@@ -251,6 +265,7 @@ export function keptTreeReasons(
   result: RemoveDirectoryTreeResult,
   shown: (entry: string) => string,
   changedDataReason: string,
+  stoppedReason = "the removal was stopped",
 ): string[] {
   return [
     ...result.unanchoredPaths.map(
@@ -258,6 +273,12 @@ export function keptTreeReasons(
     ),
     ...result.mountedPaths.map(
       (entry) => `a different filesystem is mounted here: ${shown(entry)}`,
+    ),
+    ...result.notRespondingPaths.map(
+      (entry) => `${NOT_RESPONDING_REASON} ${shown(entry)}`,
+    ),
+    ...result.stoppedPaths.map(
+      (entry) => `${stoppedReason} (it stopped at ${shown(entry)})`,
     ),
     ...(keptForChangedData(result) ? [changedDataReason] : []),
     ...(result.removalStarted ? [PARTIALLY_REMOVED_REASON] : []),
@@ -968,6 +989,7 @@ export async function removeDirectoryTree(
   const retainedPaths = new Set<string>();
   const mountedPaths = new Set<string>();
   const unanchoredPaths = new Set<string>();
+  const stoppedPaths = new Set<string>();
   let removalStarted = false;
   const statDescriptor = hooks.statDescriptor ?? stat;
   const activePins = new Set<string>();
@@ -996,6 +1018,8 @@ export async function removeDirectoryTree(
       retainedPaths: [...retainedPaths],
       mountedPaths: [...mountedPaths],
       unanchoredPaths: [...unanchoredPaths],
+      notRespondingPaths: [],
+      stoppedPaths: [...stoppedPaths],
       removalStarted,
     };
   };
@@ -1924,7 +1948,7 @@ export async function removeDirectoryTree(
         ...(listed.includes(".git") && !rootEntry ? [".git"] : []),
       ];
       const remainingNames = new Set(listed);
-      for (const childName of removalOrder) {
+      for (const [childIndex, childName] of removalOrder.entries()) {
         let currentNames: string[];
         try {
           currentNames = await readDirectoryNames(directoryPath);
@@ -1936,11 +1960,14 @@ export async function removeDirectoryTree(
         if (
           hooks.entryBoundary !== undefined &&
           !(await hooks.entryBoundary(
-            path.join(entry, childName),
+            displayPath(path.join(entry, childName)),
             removalStarted,
+            childIndex < directories.length,
           ))
-        )
+        ) {
+          stoppedPaths.add(displayPath(path.join(entry, childName)));
           return retainedEntry();
+        }
         const childResult = await removeEntry(
           directoryPath,
           childName,

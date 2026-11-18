@@ -91,6 +91,8 @@ async function removeDirectoryTree(
       retainedPaths: [],
       mountedPaths: [],
       unanchoredPaths: [],
+      notRespondingPaths: [],
+      stoppedPaths: [],
       removalStarted: result === "removed",
     };
   return result as RemoveDirectoryTreeResult;

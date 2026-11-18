@@ -27,12 +27,14 @@ function send(message: ChildMessage, then?: () => void): void {
 async function entryBoundary(
   entry: string,
   removalStarted: boolean,
+  directory: boolean,
 ): Promise<boolean> {
   ops += 1;
   const now = performance.now();
-  if (now - lastHeartbeat < HEARTBEAT_INTERVAL_MS) return !stopRequested;
+  if (!directory && now - lastHeartbeat < HEARTBEAT_INTERVAL_MS)
+    return !stopRequested;
   lastHeartbeat = now;
-  send({ type: "heartbeat", ops, entry, removalStarted });
+  send({ type: "heartbeat", ops, entry, removalStarted, directory });
   await new Promise(setImmediate);
   if (parentGone()) process.exit(1);
   return !stopRequested;

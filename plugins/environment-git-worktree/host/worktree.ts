@@ -22,7 +22,10 @@ import {
   removeDirectoryTreeInChild,
   RetainedRecoveryError,
   keptTreeReasons,
+  stuckRemovalProcess,
+  stuckRemovalReason,
   untrustedTimestampFilesystem,
+  type ChildRemovalControls,
   type ChildRemovalOptions,
   type RemoveDirectoryTreeHooks,
   type RemoveDirectoryTreeResult,
@@ -30,6 +33,7 @@ import {
   type RemoveTreeFileHandle,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
+import { removalDeadlineReason } from "bb-environment-provider-host/remove-timeout";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -107,6 +111,18 @@ interface CreateWorktreeArgs {
   signal?: AbortSignal | undefined;
 }
 
+export interface RemovalDeadline {
+  signal: AbortSignal;
+  ms: number;
+}
+
+interface TreeWalkBounds {
+  signal: AbortSignal | undefined;
+  deadline: RemovalDeadline | undefined;
+  target: string;
+  stage: { current: string };
+}
+
 interface RemoveWorktreeArgs {
   path: string;
   rootPath: string;
@@ -117,6 +133,7 @@ interface RemoveWorktreeArgs {
   retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
+  deadline?: RemovalDeadline | undefined;
   fetchTimeoutMs?: number | undefined;
   testHooks?:
     | {
@@ -922,26 +939,80 @@ type TreeWalkHooks = Pick<
   | "entryDevice"
 >;
 
+interface TreeRemoval {
+  result: RemoveDirectoryTreeResult;
+  killed: { pid: number; entry: string } | null;
+}
+
 async function removeTree(
   root: string,
   options: ChildRemovalOptions & {
     onHeartbeat?: ((heartbeat: RemovalHeartbeat) => void) | undefined;
   },
   walkHooks: TreeWalkHooks,
-): Promise<RemoveDirectoryTreeResult> {
+  bounds: TreeWalkBounds,
+): Promise<TreeRemoval> {
   if (Object.values(walkHooks).some((hook) => hook !== undefined))
-    return removeDirectoryTree(root, {
-      startedAt: options.startedAt,
-      ...(options.rootMetadataBaseline === undefined
-        ? {}
-        : { rootMetadataBaseline: options.rootMetadataBaseline }),
-      ...(options.ownWrites === undefined ? {} : { ownWrites: options.ownWrites }),
-      ...(options.allowQuarantinedRoot === true
-        ? { allowQuarantinedRoot: true }
-        : {}),
-      ...walkHooks,
-    });
-  return (await removeDirectoryTreeInChild(root, options)).result;
+    return {
+      result: await removeDirectoryTree(root, {
+        startedAt: options.startedAt,
+        ...(options.rootMetadataBaseline === undefined
+          ? {}
+          : { rootMetadataBaseline: options.rootMetadataBaseline }),
+        ...(options.ownWrites === undefined
+          ? {}
+          : { ownWrites: options.ownWrites }),
+        ...(options.allowQuarantinedRoot === true
+          ? { allowQuarantinedRoot: true }
+          : {}),
+        ...walkHooks,
+      }),
+      killed: null,
+    };
+  const controls: ChildRemovalControls = {
+    signal: bounds.signal,
+    deadline: bounds.deadline?.signal,
+    target: bounds.target,
+  };
+  const removal = await removeDirectoryTreeInChild(root, {
+    ...options,
+    ...controls,
+  });
+  return {
+    result: removal.result,
+    killed:
+      removal.stop?.killedDuring == null
+        ? null
+        : { pid: removal.pid, entry: removal.stop.killedDuring },
+  };
+}
+
+function stoppedTreeReason(bounds: TreeWalkBounds): string {
+  return bounds.deadline?.signal.aborted === true &&
+    bounds.signal?.aborted !== true
+    ? removalDeadlineReason(bounds.deadline.ms)
+    : "the removal was cancelled";
+}
+
+function keptTreeRemovalReasons(
+  removal: TreeRemoval,
+  shown: (entry: string) => string,
+  changedDataReason: string,
+  bounds: TreeWalkBounds,
+): string[] {
+  return [
+    ...keptTreeReasons(
+      removal.result,
+      shown,
+      changedDataReason,
+      stoppedTreeReason(bounds),
+    ),
+    ...(removal.killed === null
+      ? []
+      : [
+          `the removal process ${removal.killed.pid} was killed during ${shown(removal.killed.entry)}; a partly removed entry may remain at ${path.join(shown(path.dirname(removal.killed.entry)), ".bb-removing-*")}`,
+        ]),
+  ];
 }
 
 async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
@@ -985,6 +1056,7 @@ async function removeRegisteredWorktree(
   args: RemoveWorktreeArgs,
   retention: RetentionState,
   remotes: RemoteEvidence,
+  bounds: TreeWalkBounds,
 ): Promise<RemoveWorktreeResult> {
   if (args.createdBy !== undefined) {
     const kept = await retainCreatedCopies(
@@ -1082,6 +1154,7 @@ async function removeRegisteredWorktree(
         path: quarantinedPath,
         gitDir: severedGitDir,
       };
+      bounds.stage.current = "making its final check for unsaved work";
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
@@ -1114,6 +1187,7 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
+      bounds.stage.current = "removing its directory";
       const removed = await removeTree(
         quarantinedPath,
         {
@@ -1137,16 +1211,18 @@ async function removeRegisteredWorktree(
           createPinSuffix: args.testHooks?.createPinSuffix,
           entryDevice: args.testHooks?.entryDevice,
         },
+        bounds,
       );
-      if (removed.status === "retained") {
+      if (removed.result.status === "retained") {
         throw worktreePreservedError(identity.path, [
-          ...keptTreeReasons(
+          ...keptTreeRemovalReasons(
             removed,
             (entry) =>
               path.join(identity.path, path.relative(quarantinedPath, entry)),
             "new or changed data was found during directory removal",
+            bounds,
           ),
-          ...removed.retainedPaths.map(
+          ...removed.result.retainedPaths.map(
             (retainedPath) =>
               `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
           ),
@@ -1154,6 +1230,7 @@ async function removeRegisteredWorktree(
         ]);
       }
       workspaceRemoved = true;
+      bounds.stage.current = "removing its Git metadata";
       const removedGitDir = await removeTree(
         severedGitDir,
         {
@@ -1174,15 +1251,17 @@ async function removeRegisteredWorktree(
           afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
           entryDevice: args.testHooks?.entryDevice,
         },
+        bounds,
       );
-      if (removedGitDir.status === "retained") {
+      if (removedGitDir.result.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
-          ...keptTreeReasons(
+          ...keptTreeRemovalReasons(
             removedGitDir,
             (entry) => entry,
             "new or changed Git metadata was found during admin-directory removal",
+            bounds,
           ),
-          ...removedGitDir.retainedPaths.map(
+          ...removedGitDir.result.retainedPaths.map(
             (entry) => `preserved entry at ${entry}`,
           ),
           ...keptNote,
@@ -1255,6 +1334,15 @@ export async function inspectWorktreeRemoval(args: {
   { status: "removable" } | { status: "protected"; message: string }
 > {
   const workspacePath = path.resolve(args.path);
+  const stuck = stuckRemovalProcess(workspacePath);
+  if (stuck !== null) {
+    return {
+      status: "protected",
+      message: worktreePreservedError(workspacePath, [
+        stuckRemovalReason(stuck),
+      ]).message,
+    };
+  }
   const quarantine = await findQuarantinedWorktree(workspacePath);
   if (quarantine !== null) {
     return {
@@ -1286,13 +1374,50 @@ export async function inspectWorktreeRemoval(args: {
       };
 }
 
+function boundedSignal(
+  signal: AbortSignal | undefined,
+  deadline: RemovalDeadline | undefined,
+): AbortSignal | undefined {
+  if (deadline === undefined) return signal;
+  return signal === undefined
+    ? deadline.signal
+    : AbortSignal.any([signal, deadline.signal]);
+}
+
+function deadlineError(
+  error: unknown,
+  args: RemoveWorktreeArgs,
+  workspacePath: string,
+  stage: string,
+): unknown {
+  if (args.deadline?.signal.aborted !== true || args.signal?.aborted === true)
+    return error;
+  const reason = removalDeadlineReason(args.deadline.ms);
+  if (isWorktreePreservedError(error) && error.message.includes(reason))
+    return error;
+  return worktreePreservedError(workspacePath, [
+    `${reason} (it stopped while ${stage})`,
+  ]);
+}
+
 export async function removeWorktree(
   args: RemoveWorktreeArgs,
 ): Promise<RemoveWorktreeResult> {
   const retention = args.retention ?? { retained: null };
+  const workspacePath = path.resolve(args.path);
+  const bounds: TreeWalkBounds = {
+    signal: args.signal,
+    deadline: args.deadline,
+    target: workspacePath,
+    stage: { current: "starting" },
+  };
+  const signal = boundedSignal(args.signal, args.deadline);
+  const boundedArgs: RemoveWorktreeArgs = { ...args, signal };
   try {
-    throwIfProvisionAborted(args.signal);
-    const workspacePath = path.resolve(args.path);
+    const stuck = stuckRemovalProcess(workspacePath);
+    if (stuck !== null)
+      throw worktreePreservedError(workspacePath, [stuckRemovalReason(stuck)]);
+    throwIfProvisionAborted(signal);
     const parentPath = path.dirname(workspacePath);
     const quarantine = await findQuarantinedWorktree(workspacePath);
     if (quarantine !== null) {
@@ -1300,10 +1425,11 @@ export async function removeWorktree(
         `a prior removal attempt left recoverable data at ${quarantine}`,
       ]);
     }
+    bounds.stage.current = "identifying the worktree";
     const identified = await identifyWorktree({
       path: workspacePath,
       rootPath: args.rootPath,
-      signal: args.signal,
+      signal,
     });
     if (identified.status === "preserve") {
       throw worktreePreservedError(workspacePath, identified.reasons);
@@ -1318,7 +1444,8 @@ export async function removeWorktree(
       const removed = await tryWithCheckoutMutationLock(
         identity.path,
         async () => {
-          const lease = await acquireRemoteEvidence(identity, args.signal, {
+          bounds.stage.current = "fetching its remotes";
+          const lease = await acquireRemoteEvidence(identity, signal, {
             untrustedRoots: [path.dirname(path.resolve(args.rootPath))],
             ...(args.fetchTimeoutMs === undefined
               ? {}
@@ -1337,28 +1464,30 @@ export async function removeWorktree(
                 "git-fetch",
                 `Fetched its remotes into a temporary repository of ${Math.ceil(lease.evidence.bytes / 1024)} KiB, removed after the check`,
               );
-            await assertWorktreeRemovable(identity, args, {
+            bounds.stage.current = "checking it for unsaved work";
+            await assertWorktreeRemovable(identity, boundedArgs, {
               remotes: lease.evidence,
             });
-            throwIfProvisionAborted(args.signal);
-            throwIfProvisionAborted(args.signal);
-            await assertWorktreeRemovable(identity, args, {
+            throwIfProvisionAborted(signal);
+            throwIfProvisionAborted(signal);
+            await assertWorktreeRemovable(identity, boundedArgs, {
               fetchRemotes: false,
               remotes: lease.evidence,
             });
             await removeRegisteredWorktree(
               identity,
-              args,
+              boundedArgs,
               retention,
               lease.evidence,
+              bounds,
             );
             return true;
           } finally {
             await lease.release();
           }
         },
-        args.signal,
-        signalOptions(args.signal),
+        signal,
+        signalOptions(signal),
       );
       if (removed === null) {
         throw worktreePreservedError(workspacePath, [
@@ -1372,7 +1501,10 @@ export async function removeWorktree(
     await removeDirectoryIfEmpty(parentPath);
     return { retained: retention.retained };
   } catch (error) {
-    throw annotateRetained(error, retention.retained);
+    throw annotateRetained(
+      deadlineError(error, args, workspacePath, bounds.stage.current),
+      retention.retained,
+    );
   }
 }
 

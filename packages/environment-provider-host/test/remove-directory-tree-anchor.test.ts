@@ -100,6 +100,8 @@ describe.runIf(anchoring)("removing a tree anchored by its descriptors", () => {
       retainedPaths: [],
       mountedPaths: [],
       unanchoredPaths: [],
+      notRespondingPaths: [],
+      stoppedPaths: [],
       removalStarted: true,
     });
     await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });

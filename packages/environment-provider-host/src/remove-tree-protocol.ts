@@ -37,6 +37,7 @@ export type ChildMessage =
       ops: number;
       entry: string;
       removalStarted: boolean;
+      directory: boolean;
     }
   | {
       type: "result";

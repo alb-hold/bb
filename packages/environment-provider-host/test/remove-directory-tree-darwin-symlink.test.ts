@@ -70,6 +70,8 @@ describe.runIf(process.platform === "darwin")(
         retainedPaths: [],
         mountedPaths: [],
         unanchoredPaths: [],
+        notRespondingPaths: [],
+        stoppedPaths: [],
         removalStarted: true,
       });
       await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });

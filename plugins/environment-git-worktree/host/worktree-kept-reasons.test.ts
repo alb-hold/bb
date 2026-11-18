@@ -50,6 +50,8 @@ vi.mock(
           pid: process.pid,
           ops: 0,
           voluntaryContextSwitches: 0,
+          stop: null,
+          exit: { code: 0, signal: null },
         };
       },
     };
