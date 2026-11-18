@@ -131,15 +131,10 @@ const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
 const GEMINI_HOME_HOSTS_KEY = "gemini-home-hosts";
-// The model ids each Gemini account's list last offered, so a runtime that
-// kept its catalog across a bb restart still finds their routes.
 const GEMINI_SERVED_MODELS_KEY = "gemini-served-models:v1";
 const geminiServedModelsSchema = z
   .record(z.string(), z.array(z.string()))
   .catch({});
-// A host whose worker cannot write Gemini homes (an older bb there, or a
-// failing worker) is skipped for this long, so each launch does not wait out
-// the call timeout; a worker restart clears it at once.
 const GEMINI_HOME_UNAVAILABLE_MS = 60_000;
 const GEMINI_HOME_UNAVAILABLE_MESSAGE =
   "Gemini through the Account Pooler is not available on this machine: its bb host worker could not prepare the thread's Gemini home. Update bb on this machine, or choose Automatic to start on the local login.";
@@ -158,7 +153,6 @@ const OUTRANKING_CLAUDE_CREDENTIALS = [
   "ANTHROPIC_API_KEY",
 ] as const;
 
-/** bb's provider id for the antigravity-acp (Google AI Ultra) runtime. */
 const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
 
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
@@ -392,8 +386,6 @@ export function createAccountPoolPlugin(
         .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY));
       await Promise.all(hosts.map((hostId) => syncArtifactProxy(hostId)));
     };
-    // Gemini homes have their own per-host queue so a slow or old host worker
-    // never delays the Claude Artifact proxy, and the reverse.
     const geminiQueues = new Map<string, Promise<unknown>>();
     const geminiUnavailableUntil = new Map<string, number>();
     let lastGeminiWarningAt = 0;
@@ -503,13 +495,7 @@ export function createAccountPoolPlugin(
       for (const timer of proxyRetryTimers) clearTimeout(timer);
     });
     void reconcileArtifactProxies().catch(() => undefined);
-    // A host whose antigravity-acp the Gemini translation does not speak, with
-    // the reason, until a request from that host is accepted again.
     const geminiRefusals = new Map<string, string>();
-    // Plugin routes match exact paths, so every model id the runtime may call
-    // gets its own routes: the built-in ids and the ids each account last
-    // served up front, and each id a served model list offers when it is
-    // first seen.
     const geminiModelRoutes = new Set<string>();
     const routeGeminiModel = (id: string): void => {
       if (!GEMINI_MODEL_ID.test(id) || geminiModelRoutes.has(id)) return;
@@ -798,8 +784,6 @@ export function createAccountPoolPlugin(
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
-        // Parent availability only knows claude and codex; Gemini accounts are
-        // served by the pool that owns them, never relayed through a parent.
         return provider === "gemini"
           ? false
           : (await availability.get())[provider];
@@ -1054,8 +1038,6 @@ export function createAccountPoolPlugin(
           if (await revokeIfArchived(context.threadId)) return unrouted();
           const served = await serving(token, "thread", context);
           if (served === null) {
-            // The host cannot take this provider's routing. An explicit
-            // account choice must never quietly run on another login.
             if (accountId !== null)
               throw new Error(GEMINI_HOME_UNAVAILABLE_MESSAGE);
             await bb.storage.kv.delete(`retry-route:${context.threadId}`);

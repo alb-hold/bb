@@ -313,7 +313,6 @@ export class ThreadTokenStore {
     return [...digests];
   }
 
-  /** Threads on this host that still hold an unarchived route for `provider`. */
   async activeThreadIds(
     hostId: string,
     provider: ThreadRoute["provider"],

@@ -9,9 +9,6 @@ export interface ImportedGeminiCredentials {
   projectId: string | null;
 }
 
-// google-auth "authorized_user" JSON, as the antigravity-acp runtime writes it
-// with AGY_ACP_FORCE_FILE_STORAGE=1. It holds no access token; the runtime
-// refreshes on every start.
 const acpTokenSchema = z
   .object({
     client_id: z.string().min(1),
@@ -21,12 +18,6 @@ const acpTokenSchema = z
   })
   .passthrough();
 
-/**
- * The antigravity-acp runtime keeps one login per `GEMINI_HOME`, at
- * `<home>/antigravity-acp/acp_token.json` (`~/.gemini` when GEMINI_HOME is
- * unset). An account is added by pointing at the home its sign-in wrote into,
- * so each Google account stays in its own directory.
- */
 export function geminiCredentialsPath(home: string): string {
   return path.join(home, "antigravity-acp", "acp_token.json");
 }

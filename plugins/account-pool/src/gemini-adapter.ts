@@ -27,11 +27,6 @@ import {
 } from "./provider-adapter.js";
 import { retryAfterMilliseconds } from "./quota.js";
 
-// A refresh token is bound to the OAuth client it was issued to. Imported
-// accounts carry their own client (from the runtime's token file) in the
-// secret; this env fallback (BB_GEMINI_OAUTH_CLIENT_ID and
-// BB_GEMINI_OAUTH_CLIENT_SECRET) only serves a secret without one. No client
-// secret lives in source.
 export interface GeminiOAuthClient {
   clientId: string;
   clientSecret: string;
@@ -46,10 +41,6 @@ export function geminiOAuthClientFromEnv(
 }
 
 export const DEFAULT_GEMINI_REFRESH_URL = "https://oauth2.googleapis.com/token";
-// antigravity-acp 1.5.0 (onboarding module): the first loadCodeAssist goes to
-// Prod, then `_determine_endpoint` sends an account whose paidTier has
-// usesGcpTos (Enterprise/Workspace) to Prod and every consumer tier (Free,
-// Google AI Pro/Ultra) to Prod Daily.
 export interface GeminiUpstreamBaseUrls {
   prod: string;
   daily: string;
@@ -91,9 +82,6 @@ const loadCodeAssistSchema = z
   })
   .passthrough();
 
-// google.internal.cloud.code.v1internal.QuotaSummaryBucket, as embedded in the
-// antigravity-acp 1.5.0 runtime: bucket_id, display_name, description, window,
-// remaining_fraction, remaining_amount, disabled, reset_time. It has no model id.
 const quotaBucketSchema = z
   .object({
     bucketId: z.string().nullish(),
@@ -117,8 +105,6 @@ const retrieveUserQuotaSummarySchema = z
   })
   .passthrough();
 
-// The summary also carries buckets for the third-party and image models the
-// subscription offers. They never hold the Gemini account.
 const NON_GEMINI_BUCKET = /claude|gpt-oss|image/iu;
 const PRIMARY_BUCKET = /pro|carbon|argon|hydrogen|orchestrator/iu;
 
@@ -141,7 +127,6 @@ export function parseLoadCodeAssist(payload: unknown): GeminiProjectInfo | null 
   };
 }
 
-/** Parses a protobuf-style duration such as "3600s", "1h2m3.5s" or "250ms". */
 export function parseGoogleDuration(value: unknown): number | null {
   if (typeof value !== "string") return null;
   let total = 0;
@@ -162,17 +147,8 @@ export function parseGoogleDuration(value: unknown): number | null {
   return matched ? Math.round(total) : null;
 }
 
-// Only reasons that name this account's own limit hold it. A reasonless or
-// unrecognized RESOURCE_EXHAUSTED may be shared capacity, so it is returned to
-// the client instead of putting every account on hold in turn.
 const ACCOUNT_QUOTA_REASONS = new Set(["QUOTA_EXHAUSTED", "RATE_LIMIT_EXCEEDED"]);
 
-/**
- * Google signals quota exhaustion in the response body, not in headers.
- * `RESOURCE_EXHAUSTED` with a quota reason means this account is out; model
- * capacity exhaustion is shared Google-side load and says nothing about the
- * account.
- */
 export function geminiQuotaRejection(
   detail: string,
   now: number,
@@ -224,13 +200,10 @@ export function geminiQuotaRejection(
   }
   if (status !== "RESOURCE_EXHAUSTED") return null;
   if (reason === null || !ACCOUNT_QUOTA_REASONS.has(reason)) return null;
-  // A third-party model's quota says nothing about the Gemini models.
   if (model !== null && NON_GEMINI_BUCKET.test(model)) return null;
   return {
     reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
-    // Google's own error, unchanged: the runtime renders its quota message
-    // and reset time from it.
     message: detail,
   };
 }
@@ -242,8 +215,6 @@ export function geminiWindowsFromQuota(
   const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
   if (!parsed.success) return null;
   const slots = new Map<LimitWindowSlot, LimitWindow>();
-  // A bucket listed both at the top level and in a group is harmless: each slot
-  // keeps the worst bucket, so a repeat changes nothing.
   const buckets = [
     ...(parsed.data.buckets ?? []),
     ...(parsed.data.groups ?? []).flatMap((group) => group.buckets ?? []),
@@ -420,8 +391,6 @@ async function googleEmail(
   }
 }
 
-// Exactly what antigravity-acp 1.5.0 sends (`_IDE_TYPE = "ANTIGRAVITY"`), so
-// Code Assist attributes the call to the Antigravity client.
 const LOAD_CODE_ASSIST_BODY = { metadata: { ideType: "ANTIGRAVITY" } };
 
 function genaiBody(body: Uint8Array): Record<string, unknown> | null {
@@ -446,14 +415,12 @@ export function createGeminiAdapter(options: {
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
   now?: () => number;
-  /** Sees the model ids each served model list offers. */
   onModels?: (accountId: string, ids: string[]) => void;
 }): ProviderAdapter {
   const bases = {
     prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
     daily: options.upstreamBaseUrls.daily.replace(/\/+$/u, ""),
   };
-  // A row without an endpoint yet is sent where the runtime starts: Prod.
   const baseFor = (account: { geminiEndpoint?: "prod" | "daily" }) =>
     bases[account.geminiEndpoint ?? "prod"];
   const doFetch: typeof fetch = (input, init) =>
@@ -469,8 +436,6 @@ export function createGeminiAdapter(options: {
     },
     async importAccount(importOptions) {
       const imported = await readCredentials(importOptions?.home);
-      // The runtime's token file holds no access token, so import always
-      // refreshes once, with the client the token was issued to.
       const refreshed = await refreshGoogleToken(
         doFetch,
         clock,
@@ -490,8 +455,6 @@ export function createGeminiAdapter(options: {
         options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
         accessToken,
       );
-      // The email is how the pool tells one Google login from another, so an
-      // import that cannot read it would let the same login in twice.
       if (email === null) {
         throw new Error(
           "bb could not read this Google account's email, so it cannot tell whether the account is already in the pool. Check the connection and retry.",
@@ -532,8 +495,6 @@ export function createGeminiAdapter(options: {
     parseRequest(body, _headers, url) {
       const call = geminiGatewayCall(url);
       if (call?.kind !== "generate") {
-        // The model list is the account's own: fetchAvailableModels for its
-        // project.
         return {
           family: "other",
           affinityId: null,
@@ -570,7 +531,6 @@ export function createGeminiAdapter(options: {
     requestHeaders(inbound, _account, secret) {
       if (secret.kind !== "oauth")
         throw new Error("Gemini accounts require OAuth credentials.");
-      // Exactly the three headers the runtime's own OAuth client sends.
       return new Headers({
         authorization: `Bearer ${secret.accessToken}`,
         "content-type": "application/json",
@@ -721,7 +681,6 @@ export function createGeminiAdapter(options: {
       context.quotas.put(quota);
     },
     errorResponse(status, message, headers) {
-      // Google's own error JSON goes back unchanged.
       try {
         const parsed: unknown = JSON.parse(message);
         if (
@@ -733,7 +692,6 @@ export function createGeminiAdapter(options: {
         )
           return Response.json(parsed, { status, headers });
       } catch {
-        // A plain message is wrapped below.
       }
       return Response.json(
         {

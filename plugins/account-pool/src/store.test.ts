@@ -387,7 +387,6 @@ describe("AccountStore", () => {
         await expect(
           store.disableWhere(() => [claude.id, gemini.id]),
         ).rejects.toThrow(`write ${key} failed`);
-        // The Gemini half landed or not; the Claude half is as it was.
         const after = [
           { id: claude.id, provider: "claude", enabled: enabled[0] },
           { id: gemini.id, provider: "gemini", enabled: enabled[1] },

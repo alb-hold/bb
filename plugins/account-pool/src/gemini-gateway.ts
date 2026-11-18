@@ -1,25 +1,8 @@
-// Translation between antigravity-acp's gateway auth (genai `v1beta/models`
-// calls to the hub) and the Code Assist `v1internal` API that the runtime's
-// own OAuth path calls. Every rule here mirrors antigravity-acp 1.5.0:
-// - ccpa_connection/proxy_server.py: the model comes from the request path,
-//   the genai body is forwarded unchanged as `request`, and each SSE
-//   `data:` event's `response` is unwrapped back to genai.
-// - ccpa_connection client: POST `<tier base>/v1internal:<method>` with
-//   `{project, model, request}` and exactly Authorization, Content-Type and
-//   User-Agent.
-// - useragent.py: one aidev User-Agent; the gateway path only adds
-//   `auth_method=gateway`.
-// - server `_build_literal_model_target` (OAuth) sends the picked id as is;
-//   `_build_mapped_model_target` (gateway) splits a mapped id into its base
-//   model plus `thinkingLevel`, so the hub joins it back.
 
-/** The only antigravity-acp release whose gateway wire this hub speaks. */
 export const SUPPORTED_RUNTIME_VERSION = "1.5.0";
 
 const RUNTIME_USER_AGENT = /antigravity\/acp\/([^\s(]+) \(([^)]*)\)/u;
 
-// DEFAULT_MODEL_METADATA_MAP in antigravity-acp 1.5.0 (model_selection):
-// [family id, base model id, thinking levels].
 const THINKING_FAMILIES: readonly (readonly [string, string, readonly string[]])[] =
   [
     ["gemini-4-carbon", "gemini-4-carbon", ["medium", "high", "low"]],
@@ -37,12 +20,9 @@ const MAPPED_MODELS = new Map<string, string>(
   ),
 );
 
-// The gateway path's image target is the SDK default; the OAuth path names
-// `_OAUTH_IMAGE_MODEL`.
 const GATEWAY_IMAGE_MODEL = "gemini-3.1-flash-lite-image";
 const OAUTH_IMAGE_MODEL = "gemini-3.1-flash-image";
 
-/** Ids the runtime can call before any model list was served. */
 export const STATIC_GEMINI_MODEL_IDS: readonly string[] = [
   ...new Set([
     ...THINKING_FAMILIES.flatMap(([family, base, levels]) => [
@@ -82,11 +62,6 @@ export function geminiGatewayCall(url: URL): GeminiGatewayCall | null {
   };
 }
 
-/**
- * Why this client cannot be routed, or null. Only a runtime whose gateway wire
- * matches this translation is served; anything else is told so by name
- * instead of being forwarded.
- */
 export function geminiRuntimeRefusal(headers: Headers): string | null {
   const match = RUNTIME_USER_AGENT.exec(headers.get("user-agent") ?? "");
   if (match === null)
@@ -96,7 +71,6 @@ export function geminiRuntimeRefusal(headers: Headers): string | null {
   return null;
 }
 
-/** The runtime's own User-Agent, as its OAuth path sends it upstream. */
 export function geminiUpstreamUserAgent(headers: Headers): string {
   const match = RUNTIME_USER_AGENT.exec(headers.get("user-agent") ?? "");
   if (match === null) return `antigravity/acp/${SUPPORTED_RUNTIME_VERSION}`;
@@ -113,11 +87,6 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/**
- * The Code Assist model id and genai request for a gateway call: a mapped id
- * the runtime split into base + thinkingLevel is joined back, as the OAuth
- * path would have sent it.
- */
 export function codeAssistModel(
   pathModel: string,
   body: Record<string, unknown>,
@@ -135,7 +104,6 @@ export function codeAssistModel(
     return { model: pathModel, request: body };
   const { thinkingLevel: _level, ...restThinking } = thinking;
   const { thinkingConfig: _thinking, ...restGeneration } = generation;
-  // The OAuth path sends no thinkingConfig for a literal id, never `{}`.
   return {
     model: mapped,
     request: {
@@ -180,7 +148,6 @@ function bufferedJson(
   });
 }
 
-/** `generateContent`: the genai response is the `response` member. */
 export function unwrapUnary(): TransformStream<Uint8Array, Uint8Array> {
   return bufferedJson((payload) => {
     const wrapped = record(payload);
@@ -188,11 +155,6 @@ export function unwrapUnary(): TransformStream<Uint8Array, Uint8Array> {
   });
 }
 
-/**
- * `streamGenerateContent?alt=sse`: each `data:` event's `response` is written
- * in its place; every other line passes through. An in-stream error event is
- * passed on as is, after `onError` sees it.
- */
 export function unwrapSse(
   onError: (detail: string) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
@@ -254,13 +216,6 @@ interface CodeAssistModel {
   maxTokens: number | null;
 }
 
-/**
- * The account's models from `fetchAvailableModels`, in the order its
- * `agentModelSorts` give, Gemini models only. Like the runtime's
- * `_parse_ccpa_response`, a model the sorts leave out is dropped. A response
- * with no sorted ids at all lists its `models` keys instead, so the runtime
- * is not left on its built-in fallback ids while the account has models.
- */
 export function codeAssistModels(payload: unknown): CodeAssistModel[] {
   const root = record(payload);
   const models = record(root?.models);
@@ -296,7 +251,6 @@ export function codeAssistModels(payload: unknown): CodeAssistModel[] {
   });
 }
 
-/** The model list in the shape the runtime asked for. */
 export function modelListResponse(
   api: "v1beta" | "v1",
   onModels: (ids: string[]) => void,

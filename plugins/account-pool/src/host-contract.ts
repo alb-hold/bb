@@ -1,8 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-// Thread ids are `thr_` plus ten characters of bb's id alphabet. "catalog"
-// is the home of the machine-scoped model-catalog process.
 export const GEMINI_HOME_KEY =
   /^(?:thr_[23456789abcdefghijkmnpqrstuvwxyz]{10}|catalog)$/u;
 

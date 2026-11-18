@@ -3,11 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { GEMINI_HOME_KEY } from "./host-contract.js";
 
-// antigravity-acp 1.5.0 selects its "gateway" auth from settings.json
-// (`_auth_state_from_settings`) and reads the hub URL and thread token from
-// AGY_GATEWAY_URL / AGY_GATEWAY_API_KEY, so a home holds no credential at all.
-// A token file left by an older build would make the runtime sign in to Google
-// itself, so it is removed.
 const STALE_TOKEN_FILE = "acp_token.json";
 
 function homesRoot(dataDir: string): string {
@@ -57,11 +52,6 @@ async function gatewaySettings(file: string): Promise<string> {
   return `${JSON.stringify(settings)}\n`;
 }
 
-/**
- * Writes the GEMINI_HOME an antigravity-acp thread runs under: only a
- * settings.json that selects the gateway auth. The hub URL and the thread's hub
- * token reach the runtime through env, so no token is written to disk.
- */
 export async function writeGeminiHome(options: {
   dataDir: string;
   key: string;
@@ -79,7 +69,6 @@ export async function writeGeminiHome(options: {
   return home;
 }
 
-/** Removes the homes of threads that no longer hold a Gemini route. */
 export async function pruneGeminiHomes(options: {
   dataDir: string;
   keep: readonly string[];

@@ -109,19 +109,9 @@ export interface ProviderAdapter {
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
-    /** The upstream method when it differs from the client's (default: same). */
     upstreamMethod?: string;
   };
-  /**
-   * A reason this client cannot be routed (an unsupported runtime version),
-   * or null. A refused request never reaches the upstream.
-   */
   refuseClient?(headers: Headers): string | null;
-  /**
-   * Rewrites a successful upstream response into the client's protocol.
-   * `onQuotaRejection` holds the serving account when the stream itself
-   * reports its quota is gone, so the next request fails over.
-   */
   transformResponse?(
     response: Response,
     context: {
@@ -148,7 +138,6 @@ export interface ProviderAdapter {
     now: number,
   ): AccountQuota;
   isQuotaRejection(headers: Headers): boolean;
-  /** Providers that signal quota exhaustion in a 429 body instead of headers. */
   quotaRejectionFromBody?(
     detail: string,
     now: number,

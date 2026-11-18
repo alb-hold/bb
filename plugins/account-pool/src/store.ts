@@ -28,8 +28,6 @@ import {
 import { modelWeeklySchema, type ModelWeekly } from "./display.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
-// Gemini rows live under their own key so a build that only knows claude and
-// codex never parses them (its accountsSchema would throw on the provider).
 const GEMINI_ACCOUNTS_KEY = "accounts:gemini:v1";
 const ORGANIZATIONS_KEY = "organizations:v1";
 const PLAN_NAMES_KEY = "plan-display-names:v1";
@@ -121,14 +119,10 @@ export class AccountStore {
     return gemini === undefined ? base : [...base, ...gemini];
   }
 
-  // Gemini rows are written only through this store, so after the first read
-  // they are served from memory: a Claude or Codex read or write then costs the
-  // same single kv call it did before Gemini rows had their own key.
   private geminiCache: { rows: Account[] | undefined } | null = null;
 
   private async loadGeminiRows(): Promise<Account[] | undefined> {
     const stored = await this.kv.get(GEMINI_ACCOUNTS_KEY);
-    // A write that landed while this read was in flight wins.
     this.geminiCache ??= {
       rows: stored === undefined ? undefined : accountsSchema.parse(stored),
     };
@@ -149,11 +143,6 @@ export class AccountStore {
       await this.kv.set(ACCOUNTS_KEY, others);
       return;
     }
-    // The two halves are independent: no order, id check, reference or secret
-    // spans them (priorities and subscriptions are per provider), so each is
-    // written in one kv call, Gemini first, and only if it changed. A failure
-    // between the two leaves new Gemini rows beside old Claude/Codex rows,
-    // and a read meanwhile sees the same: a valid state, not a torn one.
     const stored = await this.kv.get(ACCOUNTS_KEY);
     const base = stored === undefined ? [] : accountsSchema.parse(stored);
     try {

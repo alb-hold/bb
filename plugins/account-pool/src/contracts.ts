@@ -187,8 +187,6 @@ export const oauthSecretSchema = z
     refreshToken: z.string().min(1),
     expiresAt: z.number().int().positive().nullable(),
     idToken: z.string().min(1).optional(),
-    // Gemini only: the OAuth client the account signed in with, which its
-    // refresh token is bound to.
     client: z
       .object({
         clientId: z.string().min(1),

@@ -81,7 +81,6 @@ const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
 const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
-// Google's RESOURCE_EXHAUSTED body carries ErrorInfo after a long message.
 const MAX_BODY_REJECTION_BYTES = 16_384;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
 const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
@@ -136,10 +135,6 @@ interface HubOptions {
     actorId: string;
   }) => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
-  /**
-   * Each `refuseClient` verdict for a host's runtime: the reason it cannot be
-   * routed, or null once a request from that host is accepted.
-   */
   onClientRefused: (
     provider: PoolProvider,
     hostId: string,
@@ -1378,8 +1373,6 @@ export class AccountPoolHub {
                   headers: {},
                 };
               } else {
-                // Not this account's own limit (shared capacity, unknown
-                // reason): hand the 429 on without holding the account.
                 failure = { status: 429, message: detail, headers: {} };
               }
               break;
@@ -1849,8 +1842,6 @@ export class AccountPoolHub {
           this.affinityBindings.set(affinityKey, accepted);
         }
         if (advance && this.activeAccounts.get(provider) === active) {
-          // Gemini's active account stays in memory: a persisted row with an
-          // unknown provider would make an older build's parser throw.
           if (provider !== "gemini")
             this.options.affinity.putActiveAccount(
               provider,
@@ -2326,7 +2317,6 @@ export function createHub(options: {
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
-  /** Model ids a Gemini model list offered, so their routes can be served. */
   onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([

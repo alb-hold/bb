@@ -30,7 +30,6 @@ import { PARENT_TOKEN_ENV, PARENT_URL_ENV } from "./parent-pool.js";
 import { createAccountPoolPlugin } from "./server.js";
 import { createAccountPoolTestHost } from "./test-host.js";
 
-// Every credential below is a fake string. Nothing here reaches Google.
 
 const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
 const THREAD = "thr_gemini2345";
@@ -57,7 +56,6 @@ async function tempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-/** A fake antigravity-acp sign-in, laid out the way the runtime writes it. */
 async function writeSignIn(args: {
   refresh: string;
   projectId?: string;
@@ -121,7 +119,6 @@ describe("Gemini homes the host worker writes", () => {
   it("holds only settings that select the gateway sign-in, privately, and no token", async () => {
     const dataDir = await tempDir("bb-host-data-");
     const runtimeDir = path.join(dataDir, "gemini-homes", THREAD, "antigravity-acp");
-    // A token file and settings left by an older build or by the runtime.
     await fs.mkdir(runtimeDir, { recursive: true });
     await fs.writeFile(path.join(runtimeDir, "acp_token.json"), '{"refresh_token":"old"}');
     await fs.writeFile(
@@ -201,7 +198,6 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection(body, 1_000)).toEqual({
       reason: "quota_exhausted",
       resetAt: 91_000,
-      // Google's error JSON as is, so the runtime gets the genai error shape.
       message: body,
     });
   });
@@ -301,7 +297,6 @@ describe("Gemini quota parsing", () => {
       expect.objectContaining({ slot: "primary", utilization: 0.4, status: "allowed" }),
       expect.objectContaining({ slot: "secondary", utilization: 0.5, status: "allowed" }),
     ]);
-    // Only third-party buckets: no Gemini window at all, so nothing holds the account.
     expect(
       geminiWindowsFromQuota(
         { buckets: [{ bucketId: "claude-sonnet", remainingFraction: 0 }] },
@@ -348,7 +343,6 @@ async function piped(
   return new Response(source.pipeThrough(transform)).text();
 }
 
-/** The `data:` payloads of an SSE body. */
 function sseData(text: string): unknown[] {
   return text
     .split(/\r?\n/u)
@@ -370,7 +364,6 @@ describe("Gemini gateway translation", () => {
         ": keep-alive\n\n" +
         'data: {"usageMetadata":{"totalTokenCount":3}}\n\n',
     );
-    // Every split point, including inside \r\n and inside a multi-byte char.
     for (let cut = 1; cut < bytes.length; cut += 1)
       expect(
         await piped(unwrapSse(() => undefined), [bytes.slice(0, cut), bytes.slice(cut)]),
@@ -409,7 +402,6 @@ describe("Gemini gateway translation", () => {
         generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
       }).model,
     ).toBe("gemini-3.1-pro-low");
-    // A literal id, or a level the family does not have, is sent as is.
     const literal = { contents: [], generationConfig: { thinkingConfig: { thinkingLevel: "low" } } };
     expect(codeAssistModel("gemini-3-flash-preview", literal)).toEqual({
       model: "gemini-3-flash-preview",
@@ -423,8 +415,6 @@ describe("Gemini gateway translation", () => {
     expect(codeAssistModel("gemini-3.1-flash-lite-image", { contents: [] }).model).toBe(
       "gemini-3.1-flash-image",
     );
-    // A level that was thinkingConfig's only key leaves no thinkingConfig: the
-    // OAuth path sends none for a literal id.
     expect(
       codeAssistModel("gemini-4-carbon", {
         contents: [],
@@ -441,14 +431,11 @@ describe("Gemini gateway translation", () => {
       ...MODELS_PAYLOAD.models,
       "gemini-unsorted": { displayName: "Unsorted" },
     };
-    // _parse_ccpa_response offers only the ids its sorts name.
     expect(codeAssistModels({ ...MODELS_PAYLOAD, models }).map((model) => model.id)).toEqual([
       "gemini-orchestrator",
       "gemini-4-carbon-high",
       "gemini-3.8-flash",
     ]);
-    // With no sorted ids, the enabled Gemini models are listed anyway, so the
-    // runtime does not fall back to its built-in ids.
     const expected = ["gemini-4-carbon-high", "gemini-3.8-flash", "gemini-orchestrator", "gemini-unsorted"];
     for (const agentModelSorts of [undefined, [], [{ groups: [] }]])
       expect(
@@ -469,7 +456,6 @@ describe("Gemini gateway translation", () => {
       "Gemini routing is not available: the request is not from antigravity-acp.",
     );
     expect(geminiRuntimeRefusal(new Headers())).not.toBeNull();
-    // Upstream it is the runtime's own OAuth User-Agent: no gateway marker.
     expect(geminiUpstreamUserAgent(ua(RUNTIME_UA))).toBe(UPSTREAM_UA);
   });
 });
@@ -490,18 +476,11 @@ type StreamBehavior = (bearer: string) => {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
-  /** Raw SSE chunks for a 200 stream (default: one event holding `body`). */
   sse?: string[];
 };
 
-/**
- * Fake Google: the token endpoint trades `refresh-<tok>` (with the
- * antigravity client) for `<tok>`, userinfo names `<x>@example.com` for
- * `tok-<x>`, and Code Assist answers per bearer.
- */
 async function startGoogle(args: {
   projects: Record<string, string>;
-  /** Bearers whose paid tier is Enterprise/Workspace (usesGcpTos). */
   gcpTos?: string[];
   quotaFraction: Record<string, number>;
   extraBuckets?: unknown[];
@@ -558,7 +537,6 @@ async function startGoogle(args: {
         }
         const mount = /^\/(prod|daily)(\/.*)$/u.exec(String(request.url));
         if (mount === null) {
-          // Claude and Codex upstream calls in the same fixture.
           calls.push({ method: String(request.url), bearer, project: null, sessionId: null });
           send(200, { ok: true });
           return;
@@ -661,8 +639,6 @@ const CAPACITY_BODY = {
 
 const OK_BODY = { response: { candidates: [] } };
 
-// fetchAvailableModels for an account: Gemini and third-party models, in the
-// order agentModelSorts gives.
 const MODELS_PAYLOAD = {
   models: {
     "gemini-4-carbon-high": { displayName: "Gemini 4 Carbon (High)", maxTokens: 1048576 },
@@ -682,7 +658,6 @@ const MODELS_PAYLOAD = {
   ],
 };
 
-// Headers any HTTP client adds; the rest must be exactly the runtime's three.
 const TRANSPORT_HEADERS = new Set([
   "accept",
   "accept-encoding",
@@ -700,7 +675,6 @@ async function createGeminiFixture(
   options: {
     withCodex?: boolean;
     hostWorker?: "current" | "old";
-    /** Plugin kv entries a previous run left, written before start. */
     kv?: Record<string, unknown>;
   } = {},
 ) {
@@ -722,8 +696,6 @@ async function createGeminiFixture(
         list: async () => ({ plugins: [{ id: "account-pool", enabled: true }] }),
       },
     },
-    // The real host-worker file code, run against a temp data dir. An "old"
-    // worker is a bb build whose host entry predates these methods.
     experimental_callHostRpc: async (call) => {
       if (call.method === "writeGeminiHome" || call.method === "pruneGeminiHomes") {
         if (options.hostWorker === "old")
@@ -813,7 +785,6 @@ function resolveGeminiEnv(host: GeminiHost, threadId: string | null = THREAD) {
 const GENERATE_ROUTE =
   "/gemini/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent";
 
-/** Resolves a thread's env the way bb launches antigravity-acp. */
 async function geminiEnv(host: GeminiHost, threadId = THREAD) {
   const entries = await resolveGeminiEnv(host, threadId);
   const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
@@ -824,7 +795,6 @@ async function geminiEnv(host: GeminiHost, threadId = THREAD) {
   return { token, home, byName, entries };
 }
 
-/** A request as antigravity-acp sends it on its gateway path. */
 function runtimeCall(
   host: GeminiHost,
   token: string,
@@ -841,7 +811,6 @@ function runtimeCall(
       ? {}
       : { body: JSON.stringify(options.body ?? { contents: [], sessionId: "s" }) }),
   });
-  // A body a test never reads would keep the hub's request open past teardown.
   upstreams.push(async () => {
     const settled = await response.catch(() => null);
     if (settled !== null && !settled.bodyUsed) await settled.body?.cancel();
@@ -894,7 +863,6 @@ describe("Gemini account pool", () => {
       "a@example.com",
       "b@example.com",
     ]);
-    // Import refreshed each sign-in with its own antigravity client.
     expect(
       google.calls.filter((call) => call.method === "token").map((call) => call.bearer).sort(),
     ).toEqual(["refresh-tok-a", "refresh-tok-b"]);
@@ -915,7 +883,6 @@ describe("Gemini account pool", () => {
       "/homes/n": creds("tok-noemail"),
       "/homes/a": creds("tok-a"),
     });
-    // Every file the store keeps under its secrets directory.
     const secretFiles = async () =>
       (
         await fs.readdir(path.join(fixture.dataDir, "plugins"), {
@@ -936,7 +903,6 @@ describe("Gemini account pool", () => {
     expect(await fixture.host.bb.storage.kv.get("accounts:gemini:v1")).toBeUndefined();
     expect(google.calls.filter((call) => call.method === "loadCodeAssist")).toEqual([]);
     expect(await secretFiles()).toEqual([]);
-    // The same store does keep a secret for a login whose email reads.
     await addGemini(fixture.host, "/homes/a", 0);
     expect(await secretFiles()).toHaveLength(1);
   });
@@ -1200,8 +1166,6 @@ describe("Gemini account pool", () => {
       });
     });
 
-    // A restarted bb: Fleet's models were served before it, and the runtime
-    // kept its catalog, so no model list is fetched again.
     const restarted = await createGeminiFixture(
       google,
       { "/homes/a": creds("tok-a") },
@@ -1258,7 +1222,6 @@ describe("Gemini account pool", () => {
     );
     const foreign = await runtimeCall(fixture.host, env.token, { userAgent: "curl/8.7.1" });
     expect(foreign.status).toBe(400);
-    // Only account upkeep (import, usage refresh) reached Google; no runtime call was forwarded.
     expect(
       google.calls.filter(
         (call) =>
@@ -1296,7 +1259,6 @@ describe("Gemini account pool", () => {
     );
     const a = status.accounts.find((account) => account.email === "a@example.com");
     expect(a?.usageRestriction?.reason).toBe("quota_exhausted");
-    // The same conversation's next turn goes to the next account.
     const second = await post("session-mid");
     expect(sseData(await second.text())).toEqual([OK_BODY.response]);
     expect(
@@ -1336,7 +1298,6 @@ describe("Gemini account pool", () => {
     });
     await addGemini(fixture.host, "/homes/a", 0);
     await addGemini(fixture.host, "/homes/e", 100);
-    // Import asks Prod first, with the runtime's exact client metadata.
     const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
     expect(loads.length).toBeGreaterThanOrEqual(2);
     expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["prod"]));
@@ -1347,7 +1308,6 @@ describe("Gemini account pool", () => {
       body: { contents: [], sessionId: "ep" },
     });
     expect(response.status).toBe(200);
-    // The consumer (Ultra) account goes to Prod Daily; the Enterprise one to Prod.
     expect(
       google.calls
         .filter((call) => call.method === "streamGenerateContent")
@@ -1356,7 +1316,6 @@ describe("Gemini account pool", () => {
       ["tok-a", "daily"],
       ["tok-e", "prod"],
     ]);
-    // Usage reads go to the account's own endpoint too.
     const status = statusSchema.parse(
       await fixture.host.harness.behavior.callRpc("status.get", null),
     );
@@ -1389,7 +1348,6 @@ describe("Gemini account pool", () => {
       ["tok-a", "proj-a"],
       ["tok-b", "proj-b"],
     ]);
-    // Account A is now out for the reset window: the next conversation skips it.
     await (await post("session-2")).text();
     const after = google.calls.filter((call) => call.method === "streamGenerateContent");
     expect(after.slice(2).map((call) => call.bearer)).toEqual(["tok-b"]);
@@ -1446,7 +1404,6 @@ describe("Gemini account pool", () => {
     );
     expect((await post("s-capacity-1")).status).toBe(429);
     degraded = false;
-    // Held accounts would still be skipped here; none may be.
     expect((await post("s-capacity-2")).status).toBe(200);
   });
 
@@ -1454,7 +1411,6 @@ describe("Gemini account pool", () => {
     const { post } = await twoAccounts(() => ({ status: 429, body: QUOTA_BODY }));
     const response = await post();
     expect(response.status).toBe(429);
-    // Google's error in the genai shape the runtime parses.
     expect(await response.json()).toEqual(QUOTA_BODY);
     const unauthorized = await post("s-bad", "not-a-hub-token");
     expect(unauthorized.status).toBe(401);
@@ -1523,7 +1479,6 @@ describe("Gemini account pool", () => {
       force: true,
     });
     await writeGeminiHome({ dataDir: fixture.hostDataDir, key: "thr_expired234" });
-    // The reconcile pass a credential change schedules prunes the stale home.
     await fixture.host.harness.behavior.callRpc("account.add", {
       provider: "claude",
       source: { kind: "api-key", apiKey: "sk-fake-claude" },
@@ -1581,7 +1536,6 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
       label: "Not available",
       statusMessage: expect.stringContaining("not available on this machine"),
     });
-    // Codex on the same host is untouched.
     const codex = await fixture.host.harness.behavior.resolveProviderEnv("codex", {
       threadId: "thr_cdex234567",
       projectId: "project-one",
@@ -1614,7 +1568,6 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
         (call) => call.method === "writeGeminiHome",
       ).length;
     const before = calls();
-    // Within the skip window a second launch does not call the old worker again.
     await resolveGeminiEnv(fixture.host, "thr_secnd23456");
     expect(calls()).toBe(before);
     await fixture.host.harness.behavior.experimental_emitHostWorkerExit("host-one");
@@ -1623,9 +1576,6 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
   });
 });
 
-// Frozen copies of the schemas an older build (origin/ours 198f84bf) applies
-// to stored rows. They are deliberately NOT imported from contracts.ts: the
-// point is what a build that only knows claude|codex does with this store.
 const OLD_PROVIDERS = z.enum(["claude", "codex"]);
 const oldAccountSchema = z
   .object({
@@ -1694,7 +1644,6 @@ describe("Gemini rows and an older build", () => {
         priority,
       });
     const env = await geminiEnv(fixture.host);
-    // Real Gemini traffic with a forced failover, so the active account moves.
     const response = await runtimeCall(fixture.host, env.token, {
       body: { contents: [], sessionId: "s1" },
     });
@@ -1710,7 +1659,6 @@ describe("Gemini rows and an older build", () => {
     expect(oldView.map((account) => account.id).sort()).toEqual(
       [claude.id, codex.id].sort(),
     );
-    // The Gemini row exists, just not where an older build looks.
     const geminiRows = (await kv.get("accounts:gemini:v1")) as Array<{
       provider: string;
     }>;
