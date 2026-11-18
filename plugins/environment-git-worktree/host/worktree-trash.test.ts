@@ -7,8 +7,11 @@ import path from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import { worktreeTrashEntryTrashedAt } from "bb-environment-provider-host/worktree-trash";
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  treeFingerprint,
+} from "bb-environment-provider-host/remove-directory-tree";
+import { parseWorktreeTrashEntryName } from "bb-environment-provider-host/worktree-trash";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   isWorktreePreservedError,
@@ -113,7 +116,10 @@ describe("removing a git worktree into the trash", () => {
     expect(entries).toHaveLength(1);
     const entry = path.join(trashRoot, entries[0]!);
     expect(entries[0]).toMatch(/^thr_trash-repo-/u);
-    const trashedAt = worktreeTrashEntryTrashedAt(entries[0]!);
+    const parsed = parseWorktreeTrashEntryName(entries[0]!);
+    expect(parsed?.fingerprint).toMatch(/^[0-9a-f]{16}$/u);
+    expect(await treeFingerprint(entry)).toBe(parsed?.fingerprint);
+    const trashedAt = parsed!.trashedAt;
     expect(trashedAt).toBeGreaterThanOrEqual(before);
     expect(trashedAt).toBeLessThanOrEqual(after);
     expect(await fs.readFile(path.join(entry, "README.md"), "utf8")).toBe(
@@ -269,11 +275,14 @@ describe("removing a git worktree into the trash", () => {
     expect(await fs.readFile(lateFile, "utf8")).toBe(
       "written after its folder was listed\n",
     );
-    const trashedAt = worktreeTrashEntryTrashedAt(entries[0]!);
-    expect(trashedAt).not.toBeNull();
+    const parsed = parseWorktreeTrashEntryName(entries[0]!);
+    expect(parsed?.fingerprint).toMatch(/^[0-9a-f]{16}$/u);
+    const moved = await treeFingerprint(path.join(trashRoot, entries[0]!));
+    expect(moved).toMatch(/^[0-9a-f]{16}$/u);
+    expect(moved).not.toBe(parsed?.fingerprint);
     const late = await fs.lstat(lateFile);
     expect(Math.max(late.ctimeMs, late.mtimeMs)).toBeGreaterThanOrEqual(
-      trashedAt! - FILE_TIMESTAMP_LAG_MS,
+      parsed!.trashedAt - FILE_TIMESTAMP_LAG_MS,
     );
   });
 

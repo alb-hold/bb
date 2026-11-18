@@ -6,7 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ensurePluginProcessDataDir } from "@bb/process-utils";
-import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  treeFingerprint,
+} from "bb-environment-provider-host/remove-directory-tree";
 import {
   WORKTREE_TRASH_DIR_NAME,
   worktreeTrashEntryName,
@@ -46,29 +49,95 @@ interface LogLine {
   message: string;
 }
 
-async function trashWith(ages: Record<string, number>): Promise<{
-  dataDir: string;
-  trashRoot: string;
-  entries: Record<string, string>;
-}> {
+const SETTLED_SECONDS = 1_600_000_000;
+
+async function trashDataDir(): Promise<{ dataDir: string; trashRoot: string }> {
   const dataDir = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "bb-trash-sweep-")),
   );
   roots.push(dataDir);
   const trashRoot = resolveWorktreeTrashRoot(dataDir);
   await fs.mkdir(trashRoot, { recursive: true });
+  return { dataDir, trashRoot };
+}
+
+async function buildWorktree(dataDir: string, label: string): Promise<string> {
+  const worktree = path.join(dataDir, "worktrees", label);
+  await fs.mkdir(path.join(worktree, "src", "deep"), { recursive: true });
+  await fs.writeFile(path.join(worktree, "src", "index.txt"), label);
+  const deep = path.join(worktree, "src", "deep", "file.txt");
+  await fs.writeFile(deep, "settled\n");
+  await fs.utimes(deep, SETTLED_SECONDS, SETTLED_SECONDS);
+  return worktree;
+}
+
+async function trashWorktree(
+  worktree: string,
+  trashRoot: string,
+  trashedAt: number,
+): Promise<string> {
+  const fingerprint = await treeFingerprint(worktree);
+  expect(fingerprint).toMatch(/^[0-9a-f]{16}$/u);
+  const entry = path.join(
+    trashRoot,
+    worktreeTrashEntryName(
+      path.basename(worktree),
+      new Date(trashedAt),
+      fingerprint!,
+    ),
+  );
+  await fs.rename(worktree, entry);
+  expect(await treeFingerprint(entry)).toBe(fingerprint);
+  return entry;
+}
+
+async function moveIntoTrash(
+  dataDir: string,
+  trashRoot: string,
+  label: string,
+  trashedAt: number,
+): Promise<string> {
+  return trashWorktree(
+    await buildWorktree(dataDir, label),
+    trashRoot,
+    trashedAt,
+  );
+}
+
+async function trashWith(ages: Record<string, number>): Promise<{
+  dataDir: string;
+  trashRoot: string;
+  entries: Record<string, string>;
+}> {
+  const { dataDir, trashRoot } = await trashDataDir();
   const entries: Record<string, string> = {};
   for (const [label, ageMs] of Object.entries(ages)) {
-    const entry = path.join(
+    entries[label] = await moveIntoTrash(
+      dataDir,
       trashRoot,
-      worktreeTrashEntryName(label, new Date(NOW - ageMs)),
+      label,
+      NOW - ageMs,
     );
-    await fs.mkdir(path.join(entry, "src"), { recursive: true });
-    await fs.writeFile(path.join(entry, "src", "index.txt"), label);
-    entries[label] = entry;
   }
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
   return { dataDir, trashRoot, entries };
+}
+
+async function treeFiles(root: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  const pending = [""];
+  while (pending.length > 0) {
+    const relative = pending.pop()!;
+    const entry = path.join(root, relative);
+    if ((await fs.lstat(entry)).isDirectory()) {
+      for (const name of await fs.readdir(entry)) {
+        pending.push(path.join(relative, name));
+      }
+    } else {
+      files[relative] = await fs.readFile(entry, "utf8");
+    }
+  }
+  return files;
 }
 
 function recordingLogger(): {
@@ -170,7 +239,7 @@ describe("sweeping the worktree trash", () => {
     expect(logs[0]!.fields.entry).toBe(entries.old);
     const reason = String(logs[0]!.fields.reason);
     expect(reason, reason).toContain(`pid ${holder.pid} through`);
-  });
+  }, 60_000);
 
   it("deletes nothing under 24 hours while free disk and the trash are within limits", async () => {
     const { dataDir, entries } = await trashWith({
@@ -226,29 +295,19 @@ describe("sweeping the worktree trash", () => {
   });
 
   it("keeps data written into an entry after its final inspection through an early delete, still deletes an unchanged entry early, and deletes the kept entry after 24 hours", async () => {
-    const dataDir = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), "bb-trash-sweep-")),
-    );
-    roots.push(dataDir);
-    const trashRoot = resolveWorktreeTrashRoot(dataDir);
-    const staged: Record<string, string> = {};
-    for (const label of ["unchanged", "late"]) {
-      staged[label] = path.join(trashRoot, `.staging-${label}`);
-      await fs.mkdir(path.join(staged[label]!, "src"), { recursive: true });
-      await fs.writeFile(path.join(staged[label]!, "src", "index.txt"), label);
-    }
+    const { dataDir, trashRoot } = await trashDataDir();
+    const built = {
+      unchanged: await buildWorktree(dataDir, "unchanged"),
+      late: await buildWorktree(dataDir, "late"),
+    };
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const inspectedAt = Date.now();
-    const unchanged = path.join(
+    const unchanged = await trashWorktree(
+      built.unchanged,
       trashRoot,
-      worktreeTrashEntryName("unchanged", new Date(inspectedAt - 1)),
+      inspectedAt - 1,
     );
-    const late = path.join(
-      trashRoot,
-      worktreeTrashEntryName("late", new Date(inspectedAt)),
-    );
-    await fs.rename(staged.unchanged!, unchanged);
-    await fs.rename(staged.late!, late);
+    const late = await trashWorktree(built.late, trashRoot, inspectedAt);
     await fs.writeFile(
       path.join(late, "src", "late.txt"),
       "written after the final inspection\n",
@@ -272,7 +331,9 @@ describe("sweeping the worktree trash", () => {
       ["info", "Deleted worktree trash entry early", unchanged],
       ["warn", "Kept worktree trash entry", late],
     ]);
-    expect(String(logs[1]!.fields.reason)).toContain("new or changed data");
+    expect(String(logs[1]!.fields.reason)).toContain(
+      "its contents changed since it was moved to the trash",
+    );
 
     await sweepWorktreeTrash(deps);
 
@@ -288,6 +349,152 @@ describe("sweeping the worktree trash", () => {
       {
         level: "info",
         fields: { entry: late, ageMs: 25 * HOUR_MS },
+        message: "Deleted worktree trash entry",
+      },
+    ]);
+  });
+
+  it("keeps an entry that gained a file through an early delete when the clock was ahead at the move and went back before the write", async () => {
+    const { dataDir, trashRoot } = await trashDataDir();
+    const stampedAt = Date.now() + HOUR_MS;
+    const unchanged = await moveIntoTrash(
+      dataDir,
+      trashRoot,
+      "unchanged",
+      stampedAt - 1,
+    );
+    const late = await moveIntoTrash(dataDir, trashRoot, "late", stampedAt);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await fs.writeFile(path.join(late, "src", "late.txt"), "after rollback\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    let now = stampedAt + 2 * HOUR_MS;
+    const { deps, logs } = sweepDeps(dataDir, {
+      now: () => now,
+      freeBytes: async () => 12_000_000_000,
+    });
+
+    await sweepWorktreeTrash(deps);
+    await sweepWorktreeTrash(deps);
+
+    expect(await present(unchanged)).toBe(false);
+    expect(await fs.readdir(trashRoot)).toEqual([path.basename(late)]);
+    expect(await treeFiles(late)).toEqual({
+      "src/index.txt": "late",
+      "src/deep/file.txt": "settled\n",
+      "src/late.txt": "after rollback\n",
+    });
+    expect(
+      logs.map((line) => [line.level, line.message, line.fields.entry]),
+    ).toEqual([
+      ["info", "Deleted worktree trash entry early", unchanged],
+      ["warn", "Kept worktree trash entry", late],
+    ]);
+    expect(String(logs[1]!.fields.reason)).toContain(
+      "its contents changed since it was moved to the trash",
+    );
+
+    now = stampedAt + 25 * HOUR_MS;
+    await sweepWorktreeTrash(deps);
+
+    expect(await present(late)).toBe(false);
+    expect(logs.slice(2).map((line) => line.message)).toEqual([
+      "Deleted worktree trash entry",
+    ]);
+  });
+
+  it("keeps an entry through an early delete when a nested file was rewritten in place with its size and modification time put back", async () => {
+    const { dataDir, trashRoot } = await trashDataDir();
+    const stampedAt = Date.now() + HOUR_MS;
+    const entry = await moveIntoTrash(
+      dataDir,
+      trashRoot,
+      "rewritten",
+      stampedAt,
+    );
+    const deep = path.join(entry, "src", "deep", "file.txt");
+    const before = await fs.lstat(deep, { bigint: true });
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await fs.writeFile(deep, "changed\n");
+    await fs.utimes(deep, SETTLED_SECONDS, SETTLED_SECONDS);
+    const after = await fs.lstat(deep, { bigint: true });
+    expect([after.ino, after.size, after.mtimeNs]).toEqual([
+      before.ino,
+      before.size,
+      before.mtimeNs,
+    ]);
+    expect(after.ctimeNs).not.toBe(before.ctimeNs);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const { deps, logs } = sweepDeps(dataDir, {
+      now: () => stampedAt + 2 * HOUR_MS,
+      freeBytes: async () => 12_000_000_000,
+    });
+
+    await sweepWorktreeTrash(deps);
+
+    expect(await fs.readFile(deep, "utf8")).toBe("changed\n");
+    expect(await fs.readdir(trashRoot)).toEqual([path.basename(entry)]);
+    expect(logs.map((line) => [line.level, line.message])).toEqual([
+      ["warn", "Kept worktree trash entry"],
+    ]);
+  });
+
+  it("keeps an entry through an early delete when a file in it is newer than its trash time, even when its name's fingerprint matches its contents", async () => {
+    const { dataDir, trashRoot } = await trashDataDir();
+    const built = await buildWorktree(dataDir, "rehashed");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const trashedAt = Date.now();
+    await fs.writeFile(path.join(built, "src", "late.txt"), "after the move\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const entry = await trashWorktree(built, trashRoot, trashedAt);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    const { deps, logs } = sweepDeps(dataDir, {
+      now: () => trashedAt + 2 * HOUR_MS,
+      freeBytes: async () => 12_000_000_000,
+    });
+
+    await sweepWorktreeTrash(deps);
+
+    expect(await fs.readdir(trashRoot)).toEqual([path.basename(entry)]);
+    expect(await treeFiles(entry)).toEqual({
+      "src/index.txt": "rehashed",
+      "src/deep/file.txt": "settled\n",
+      "src/late.txt": "after the move\n",
+    });
+    expect(logs.map((line) => [line.level, line.message])).toEqual([
+      ["warn", "Kept worktree trash entry"],
+    ]);
+  });
+
+  it("never deletes an entry without a fingerprint in its name early, and deletes it after 24 hours", async () => {
+    const { dataDir, trashRoot } = await trashDataDir();
+    const fingerprinted = await moveIntoTrash(
+      dataDir,
+      trashRoot,
+      "named",
+      NOW - 2 * HOUR_MS,
+    );
+    const unnamed = fingerprinted.slice(0, -17);
+    await fs.rename(fingerprinted, unnamed);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    let now = NOW;
+    const { deps, logs } = sweepDeps(dataDir, {
+      now: () => now,
+      freeBytes: async () => 12_000_000_000,
+    });
+
+    await sweepWorktreeTrash(deps);
+
+    expect(await fs.readdir(trashRoot)).toEqual([path.basename(unnamed)]);
+    expect(logs).toEqual([]);
+
+    now = NOW + 23 * HOUR_MS;
+    await sweepWorktreeTrash(deps);
+
+    expect(await present(unnamed)).toBe(false);
+    expect(logs).toEqual([
+      {
+        level: "info",
+        fields: { entry: unnamed, ageMs: 25 * HOUR_MS },
         message: "Deleted worktree trash entry",
       },
     ]);
@@ -411,11 +618,11 @@ describe("scheduling the worktree trash sweep", () => {
       deps: {
         ...production,
         now: () => NOW,
-        remove: async (entry, keepChangesSince) => {
+        remove: async (entry, earlyDeleteGuard) => {
           removals += 1;
           removalStarted();
           await removalGate;
-          await production.remove(entry, keepChangesSince);
+          await production.remove(entry, earlyDeleteGuard);
         },
       },
       setIntervalFn: (callback, intervalMs) => {

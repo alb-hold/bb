@@ -6,7 +6,7 @@ import {
 } from "@bb/process-utils";
 import {
   WORKTREE_TRASH_DIR_NAME,
-  worktreeTrashEntryTrashedAt,
+  parseWorktreeTrashEntryName,
 } from "bb-environment-provider-host/worktree-trash";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { removeDirectoryAfterHolderRecheck } from "./command-handlers/remove-held-directory.js";
@@ -26,14 +26,23 @@ export interface WorktreeTrashSweepDeps {
   now: () => number;
   freeBytes: (directory: string) => Promise<number | null>;
   treeBytes: (directory: string) => Promise<number>;
-  remove: (entry: string, keepChangesSince: number | null) => Promise<void>;
+  remove: (
+    entry: string,
+    earlyDeleteGuard: WorktreeTrashEarlyDeleteGuard | null,
+  ) => Promise<void>;
   keptLogged: Set<string>;
+}
+
+export interface WorktreeTrashEarlyDeleteGuard {
+  changesSince: number;
+  fingerprint: string;
 }
 
 interface TrashEntry {
   name: string;
   entry: string;
   trashedAt: number;
+  fingerprint: string | null;
   ageMs: number;
 }
 
@@ -60,12 +69,12 @@ export function worktreeTrashSweepDeps(args: {
     now: Date.now,
     freeBytes: readDiskFreeBytes,
     treeBytes: directoryTreeBytes,
-    remove: (entry, keepChangesSince) =>
+    remove: (entry, earlyDeleteGuard) =>
       removeDirectoryAfterHolderRecheck({
         directory: entry,
         action: "delete worktree trash entry",
         recursive: true,
-        ...(keepChangesSince === null ? {} : { keepChangesSince }),
+        ...(earlyDeleteGuard === null ? {} : { earlyDeleteGuard }),
         ...(scan === undefined ? {} : { testWorktreeHolderScan: scan }),
       }),
   };
@@ -87,15 +96,16 @@ export async function sweepWorktreeTrash(
   const now = deps.now();
   const entries = names
     .flatMap((name): TrashEntry[] => {
-      const trashedAt = worktreeTrashEntryTrashedAt(name);
-      return trashedAt === null
+      const parsed = parseWorktreeTrashEntryName(name);
+      return parsed === null
         ? []
         : [
             {
               name,
               entry: path.join(deps.trashRoot, name),
-              trashedAt,
-              ageMs: now - trashedAt,
+              trashedAt: parsed.trashedAt,
+              fingerprint: parsed.fingerprint,
+              ageMs: now - parsed.trashedAt,
             },
           ];
     })
@@ -108,6 +118,7 @@ export async function sweepWorktreeTrash(
   }
   for (const entry of entries) {
     if (
+      entry.fingerprint === null ||
       entry.ageMs < WORKTREE_TRASH_EARLY_MIN_AGE_MS ||
       entry.ageMs >= WORKTREE_TRASH_RETENTION_MS
     ) {
@@ -115,7 +126,8 @@ export async function sweepWorktreeTrash(
     }
     const reason = await earlyDeleteReason(deps, remaining, sizes);
     if (reason === null) return;
-    if (await removeEntry(deps, entry, reason)) remaining.delete(entry);
+    const early = { reason, fingerprint: entry.fingerprint };
+    if (await removeEntry(deps, entry, early)) remaining.delete(entry);
   }
 }
 
@@ -151,12 +163,17 @@ async function entryBytes(
 async function removeEntry(
   deps: WorktreeTrashSweepDeps,
   entry: TrashEntry,
-  earlyReason: string | null,
+  early: { reason: string; fingerprint: string } | null,
 ): Promise<boolean> {
   try {
     await deps.remove(
       entry.entry,
-      earlyReason === null ? null : entry.trashedAt - FILE_TIMESTAMP_LAG_MS,
+      early === null
+        ? null
+        : {
+            changesSince: entry.trashedAt - FILE_TIMESTAMP_LAG_MS,
+            fingerprint: early.fingerprint,
+          },
     );
   } catch (error) {
     if (deps.keptLogged.has(entry.name)) return false;
@@ -172,14 +189,14 @@ async function removeEntry(
     return false;
   }
   deps.keptLogged.delete(entry.name);
-  if (earlyReason === null) {
+  if (early === null) {
     deps.logger.info(
       { entry: entry.entry, ageMs: entry.ageMs },
       "Deleted worktree trash entry",
     );
   } else {
     deps.logger.info(
-      { entry: entry.entry, ageMs: entry.ageMs, reason: earlyReason },
+      { entry: entry.entry, ageMs: entry.ageMs, reason: early.reason },
       "Deleted worktree trash entry early",
     );
   }

@@ -715,17 +715,18 @@ process.stdout.write(JSON.stringify(inspection));
 
 const inspectMoveAndRemove = `
 const fs = await import("node:fs/promises");
-const { inspectTreeBeforeMove, removeDirectoryTree } = await import(process.argv[1]);
+const { inspectTreeBeforeMove, removeDirectoryTree, treeFingerprint } = await import(process.argv[1]);
 const [root, trashEntry] = process.argv.slice(2);
 const info = await fs.lstat(root);
 const inspection = await inspectTreeBeforeMove(root, Number.MAX_SAFE_INTEGER, {
   rootMetadata: { ctimeMs: info.ctimeMs, mtimeMs: info.mtimeMs },
 });
 await fs.rename(root, trashEntry);
+const moved = await treeFingerprint(trashEntry);
 const removal = await removeDirectoryTree(trashEntry, {
   startedAt: Number.MAX_SAFE_INTEGER,
 });
-process.stdout.write(JSON.stringify({ inspection, removal }));
+process.stdout.write(JSON.stringify({ inspection, moved, removal }));
 `;
 
 describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
@@ -744,7 +745,11 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
           [root, mounted],
         ),
       );
-      expect(inspection).toEqual({ changed: false, mountedPaths: [mounted] });
+      expect(inspection).toEqual({
+        changed: false,
+        mountedPaths: [mounted],
+        fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+      });
     },
   );
 
@@ -756,7 +761,7 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
       await fs.mkdir(trash);
       const trashEntry = path.join(trash, "tree-entry");
       const bound = path.join(root, "sub", "child");
-      const { inspection, removal } = JSON.parse(
+      const { inspection, moved, removal } = JSON.parse(
         await inMountNamespace(
           'mount --bind "$1" "$2"',
           [source, bound],
@@ -764,7 +769,12 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
           [root, trashEntry],
         ),
       );
-      expect(inspection).toEqual({ changed: false, mountedPaths: [] });
+      expect(inspection).toEqual({
+        changed: false,
+        mountedPaths: [],
+        fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+      });
+      expect(moved).toBe(inspection.fingerprint);
       expect(removal.status).toBe("retained");
       expect(removal.mountedPaths.length).toBeGreaterThan(0);
       await expect(
@@ -774,6 +784,9 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
         fs.readFile(path.join(source, "nested", "b.txt"), "utf8"),
       ).resolves.toBe("keep too\n");
       expect(existsSync(root)).toBe(false);
+      expect(
+        (await fs.lstat(path.join(trashEntry, "sub", "child"))).isDirectory(),
+      ).toBe(true);
     },
   );
 });

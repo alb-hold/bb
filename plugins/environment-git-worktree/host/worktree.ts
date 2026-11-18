@@ -1007,14 +1007,9 @@ async function removeRegisteredWorktree(
     }
     const finalCheckClock = (args.testHooks?.now ?? Date.now)();
     const finalCheckStartedAt = finalCheckClock - FILE_TIMESTAMP_LAG_MS;
-    const trashEntry =
+    const trashId =
       (args.testHooks?.platform ?? process.platform) === "darwin"
-        ? await sameDeviceTrashEntry(
-            identity.path,
-            args.trashRoot,
-            finalCheckClock,
-            keptNote,
-          )
+        ? await sameDeviceTrashId(identity.path, args.trashRoot, keptNote)
         : null;
     await args.testHooks?.afterFinalBaseline?.(identity.path, identity.gitDir);
     await fs.rename(identity.path, quarantinedPath);
@@ -1085,7 +1080,7 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
-      if (trashEntry !== null) {
+      if (trashId !== null) {
         const inspected = await inspectTreeBeforeMove(
           quarantinedPath,
           finalCheckStartedAt,
@@ -1112,6 +1107,14 @@ async function removeRegisteredWorktree(
             ...keptNote,
           ]);
         }
+        const trashEntry = path.join(
+          args.trashRoot,
+          worktreeTrashEntryName(
+            trashId,
+            new Date(finalCheckClock),
+            inspected.fingerprint,
+          ),
+        );
         try {
           await fs.rename(quarantinedPath, trashEntry);
         } catch (error) {
@@ -1229,10 +1232,9 @@ async function removeRegisteredWorktree(
   });
 }
 
-async function sameDeviceTrashEntry(
+async function sameDeviceTrashId(
   worktreePath: string,
   trashRoot: string,
-  trashedAt: number,
   keptNote: readonly string[],
 ): Promise<string> {
   await fs.mkdir(trashRoot, { recursive: true });
@@ -1246,13 +1248,7 @@ async function sameDeviceTrashEntry(
       ...keptNote,
     ]);
   }
-  return path.join(
-    trashRoot,
-    worktreeTrashEntryName(
-      `${path.basename(path.dirname(worktreePath))}-${path.basename(worktreePath)}`,
-      new Date(trashedAt),
-    ),
-  );
+  return `${path.basename(path.dirname(worktreePath))}-${path.basename(worktreePath)}`;
 }
 
 async function findQuarantinedWorktree(

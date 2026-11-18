@@ -1,5 +1,6 @@
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import {
   link,
   lstat,
@@ -779,6 +780,7 @@ export async function directoryTreeChangedSince(
 export interface TreeMoveInspection {
   changed: boolean;
   mountedPaths: string[];
+  fingerprint: string;
 }
 
 export async function inspectTreeBeforeMove(
@@ -792,46 +794,113 @@ export async function inspectTreeBeforeMove(
       | undefined;
   },
 ): Promise<TreeMoveInspection> {
-  const result: TreeMoveInspection = { changed: false, mountedPaths: [] };
+  const hash = createHash("sha256");
+  const mountedPaths: string[] = [];
+  let changed = false;
   let rootDevice: number;
   try {
-    rootDevice = (await lstat(root)).dev;
+    rootDevice = Number((await fsPromises.lstat(root, { bigint: true })).dev);
   } catch {
-    return { changed: true, mountedPaths: [] };
+    return {
+      changed: true,
+      mountedPaths,
+      fingerprint: fingerprintDigest(hash),
+    };
   }
-  const pending = [root];
+  const pending = [""];
   while (pending.length > 0) {
-    const entry = pending.pop()!;
-    let info;
+    const relative = pending.pop()!;
+    const entry = relative === "" ? root : path.join(root, relative);
+    let info: BigIntStats;
     try {
-      info = await lstat(entry);
+      info = await fsPromises.lstat(entry, { bigint: true });
     } catch {
-      result.changed = true;
+      changed = true;
       continue;
     }
-    if ((baseline.entryDevice?.(entry, info.dev) ?? info.dev) !== rootDevice) {
-      result.mountedPaths.push(entry);
+    if (relative !== "") hash.update(treeFingerprintRecord(relative, info));
+    const device = Number(info.dev);
+    if ((baseline.entryDevice?.(entry, device) ?? device) !== rootDevice) {
+      mountedPaths.push(entry);
       continue;
     }
+    const ctimeMs = msFromNs(info.ctimeNs);
+    const mtimeMs = msFromNs(info.mtimeNs);
     if (
-      entry === root
-        ? info.ctimeMs > baseline.rootMetadata.ctimeMs ||
-          info.mtimeMs > baseline.rootMetadata.mtimeMs
-        : changedSince(info, startedAt)
+      relative === ""
+        ? ctimeMs > baseline.rootMetadata.ctimeMs ||
+          mtimeMs > baseline.rootMetadata.mtimeMs
+        : changedSince({ ctimeMs, mtimeMs }, startedAt)
     )
-      result.changed = true;
+      changed = true;
     if (!info.isDirectory()) continue;
     let listed: string[];
     try {
-      listed = await readdir(entry);
+      listed = (await fsPromises.readdir(entry)).sort();
     } catch {
-      result.changed = true;
+      changed = true;
       continue;
     }
     await baseline.afterDirectoryListed?.(entry, listed);
-    for (const name of listed) pending.push(path.join(entry, name));
+    pushChildren(pending, relative, listed);
   }
-  return result;
+  return { changed, mountedPaths, fingerprint: fingerprintDigest(hash) };
+}
+
+export async function treeFingerprint(root: string): Promise<string | null> {
+  const hash = createHash("sha256");
+  const pending = [""];
+  while (pending.length > 0) {
+    const relative = pending.pop()!;
+    const entry = relative === "" ? root : path.join(root, relative);
+    let info: BigIntStats;
+    let listed: string[] = [];
+    try {
+      info = await fsPromises.lstat(entry, { bigint: true });
+      if (info.isDirectory()) listed = (await fsPromises.readdir(entry)).sort();
+    } catch {
+      return null;
+    }
+    if (relative === "") {
+      if (!info.isDirectory()) return null;
+    } else {
+      hash.update(treeFingerprintRecord(relative, info));
+    }
+    pushChildren(pending, relative, listed);
+  }
+  return fingerprintDigest(hash);
+}
+
+export function treeFingerprintRecord(
+  relative: string,
+  info: BigIntStats,
+): string {
+  const type = info.isDirectory()
+    ? "d"
+    : info.isSymbolicLink()
+      ? "l"
+      : info.isFile()
+        ? "f"
+        : "o";
+  return `${type}\0${relative}\0${info.ino}\0${info.size}\0${info.mtimeNs}\0${info.ctimeNs}\n`;
+}
+
+function pushChildren(
+  pending: string[],
+  relative: string,
+  listed: readonly string[],
+): void {
+  for (let index = listed.length - 1; index >= 0; index -= 1) {
+    pending.push(path.join(relative, listed[index]!));
+  }
+}
+
+function fingerprintDigest(hash: ReturnType<typeof createHash>): string {
+  return hash.digest("hex").slice(0, 16);
+}
+
+function msFromNs(ns: bigint): number {
+  return Number(ns / 1_000_000_000n) * 1e3 + Number(ns % 1_000_000_000n) / 1e6;
 }
 
 function changedSince(
