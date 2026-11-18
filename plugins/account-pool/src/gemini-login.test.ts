@@ -351,7 +351,7 @@ describe("GeminiLogin", () => {
     await expectNothingLeft(fixture);
   });
 
-  it("starts nothing when dispose lands while the runtime is being resolved", async () => {
+  it("resolves dispose and starts nothing while the runtime is still being resolved", async () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -365,10 +365,9 @@ describe("GeminiLogin", () => {
     });
     control = fixture.control;
     const starting = fixture.login.start({ label: null }).catch((e: unknown) => e);
-    const disposing = fixture.login.dispose();
-    release();
-    await disposing;
+    await fixture.login.dispose();
     const error = await starting;
+    release();
     expect(error).toBeInstanceOf(GeminiLoginError);
     expect((error as GeminiLoginError).reason).toBe("sign_in_cancelled");
     expect(existsSync(path.join(fixture.control, "env.json"))).toBe(false);
