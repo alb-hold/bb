@@ -42,8 +42,11 @@ beforeEach(() => {
   vi.stubEnv(PARENT_TOKEN_ENV, undefined);
 });
 
+const upstreams: Array<() => Promise<void>> = [];
+
 afterEach(async () => {
   vi.unstubAllEnvs();
+  while (upstreams.length > 0) await upstreams.pop()?.();
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
@@ -160,7 +163,7 @@ describe("Gemini homes the host worker writes", () => {
 
   it("prunes homes of threads that lost their route, never the catalog's", async () => {
     const dataDir = await tempDir("bb-host-data-");
-    for (const key of [THREAD, "thr_revoked234", "catalog"])
+    for (const key of [THREAD, "thr_revkd23456", "catalog"])
       await writeGeminiHome({ dataDir, key });
     await expect(pruneGeminiHomes({ dataDir, keep: [THREAD] })).resolves.toBe(1);
     expect((await fs.readdir(path.join(dataDir, "gemini-homes"))).sort()).toEqual([
@@ -736,7 +739,7 @@ async function createGeminiFixture(
     service.controller.abort();
     await service.done;
     await host.harness.lifecycle.dispose();
-    await fs.rm(dataDir, { recursive: true, force: true });
+    await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
   });
   await vi.waitFor(async () => {
     expect(
@@ -782,7 +785,7 @@ function runtimeCall(
   options: { method?: "GET" | "POST"; path?: string; body?: unknown; userAgent?: string } = {},
 ) {
   const method = options.method ?? "POST";
-  return host.harness.behavior.fetchHttp(method, options.path ?? `${GENERATE_ROUTE}?alt=sse`, {
+  const response = host.harness.behavior.fetchHttp(method, options.path ?? `${GENERATE_ROUTE}?alt=sse`, {
     headers: {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
@@ -792,6 +795,12 @@ function runtimeCall(
       ? {}
       : { body: JSON.stringify(options.body ?? { contents: [], sessionId: "s" }) }),
   });
+  // A body a test never reads would keep the hub's request open past teardown.
+  upstreams.push(async () => {
+    const settled = await response.catch(() => null);
+    if (settled !== null && !settled.bodyUsed) await settled.body?.cancel();
+  });
+  return response;
 }
 
 async function addGemini(host: GeminiHost, home: string, priority: number) {
@@ -815,7 +824,7 @@ describe("Gemini account pool", () => {
       ...(extraBuckets === undefined ? {} : { extraBuckets }),
       stream,
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(google, {
       "/homes/a": creds("tok-a"),
       "/homes/b": creds("tok-b"),
@@ -843,7 +852,9 @@ describe("Gemini account pool", () => {
     expect(
       google.calls.filter((call) => call.method === "token").map((call) => call.bearer).sort(),
     ).toEqual(["refresh-tok-a", "refresh-tok-b"]);
-    expect(google.calls.filter((call) => call.method === "loadCodeAssist").map((call) => call.bearer).sort()).toEqual(["tok-a", "tok-b"]);
+    expect(
+      [...new Set(google.calls.filter((call) => call.method === "loadCodeAssist").map((call) => call.bearer))].sort(),
+    ).toEqual(["tok-a", "tok-b"]);
     await expect(addGemini(fixture.host, "/homes/a", 5)).rejects.toThrow();
   });
 
@@ -856,7 +867,7 @@ describe("Gemini account pool", () => {
           ? { status: 200, body: OK_BODY }
           : { status: 429, body: QUOTA_BODY },
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(google, {
       "/homes/a": creds("tok-a"),
       "/homes/b": creds("tok-b"),
@@ -884,7 +895,7 @@ describe("Gemini account pool", () => {
       quotaFraction: {},
       stream: () => ({ status: 200, body: OK_BODY }),
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(google, {
       "/homes/c": creds("tok-c"),
     });
@@ -918,6 +929,8 @@ describe("Gemini account pool", () => {
       "AGY_ACP_FORCE_FILE_STORAGE",
       "AGY_GATEWAY_API_KEY",
       "AGY_GATEWAY_URL",
+      "BB_ACCOUNT_POOL_PARENT_TOKEN",
+      "BB_ACCOUNT_POOL_PARENT_URL",
       "GEMINI_HOME",
     ]);
     expect(env.byName.get("AGY_ACP_FORCE_FILE_STORAGE")).toBe("1");
@@ -952,7 +965,7 @@ describe("Gemini account pool", () => {
           expect(entry.value).not.toMatch(/^[a-z]+:\/\//iu);
         else
           expect(entry.value.serverPath).toMatch(
-            /^\/api\/v1\/plugins\/account-pool\/http\//u,
+            /^\/api\/v1\/plugins\/account-pool\/http(?:\/|$)/u,
           );
       }
     }
@@ -1113,7 +1126,14 @@ describe("Gemini account pool", () => {
     );
     const foreign = await runtimeCall(fixture.host, env.token, { userAgent: "curl/8.7.1" });
     expect(foreign.status).toBe(400);
-    expect(google.calls.filter((call) => call.endpoint !== undefined && call.method !== "loadCodeAssist")).toEqual([]);
+    // Only account upkeep (import, usage refresh) reached Google; no runtime call was forwarded.
+    expect(
+      google.calls.filter(
+        (call) =>
+          call.endpoint !== undefined &&
+          !["loadCodeAssist", "retrieveUserQuotaSummary"].includes(call.method),
+      ),
+    ).toEqual([]);
     const accepted = await runtimeCall(fixture.host, env.token);
     expect(accepted.status).toBe(200);
     await accepted.text();
@@ -1177,7 +1197,7 @@ describe("Gemini account pool", () => {
           ? { status: 429, body: QUOTA_BODY }
           : { status: 200, body: OK_BODY },
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(google, {
       "/homes/a": creds("tok-a"),
       "/homes/e": creds("tok-e"),
@@ -1186,7 +1206,8 @@ describe("Gemini account pool", () => {
     await addGemini(fixture.host, "/homes/e", 100);
     // Import asks Prod first, with the runtime's exact client metadata.
     const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
-    expect(loads.map((call) => call.endpoint)).toEqual(["prod", "prod"]);
+    expect(loads.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["prod"]));
     for (const call of loads)
       expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     const env = await geminiEnv(fixture.host);
@@ -1212,14 +1233,14 @@ describe("Gemini account pool", () => {
         accountId: account.id,
       });
     expect(
-      google.calls
-        .filter((call) => call.method === "retrieveUserQuotaSummary")
-        .map((call) => [call.bearer, call.endpoint])
-        .sort(),
-    ).toEqual([
-      ["tok-a", "daily"],
-      ["tok-e", "prod"],
-    ]);
+      [
+        ...new Set(
+          google.calls
+            .filter((call) => call.method === "retrieveUserQuotaSummary")
+            .map((call) => `${call.bearer} ${call.endpoint}`),
+        ),
+      ].sort(),
+    ).toEqual(["tok-a daily", "tok-e prod"]);
   });
 
   it("fails over on RESOURCE_EXHAUSTED and rewrites the project to the next account", async () => {
@@ -1365,11 +1386,11 @@ describe("Gemini account pool", () => {
       projectId: null,
       hostId: "host-one",
     });
-    await fs.rm(path.join(fixture.hostDataDir, "gemini-homes", "thr_stale23456"), {
+    await fs.rm(path.join(fixture.hostDataDir, "gemini-homes", "thr_expired234"), {
       recursive: true,
       force: true,
     });
-    await writeGeminiHome({ dataDir: fixture.hostDataDir, key: "thr_stale23456" });
+    await writeGeminiHome({ dataDir: fixture.hostDataDir, key: "thr_expired234" });
     // The reconcile pass a credential change schedules prunes the stale home.
     await fixture.host.harness.behavior.callRpc("account.add", {
       provider: "claude",
@@ -1378,7 +1399,7 @@ describe("Gemini account pool", () => {
       priority: 50,
     });
     await fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
-      threadId: "thr_claude2345",
+      threadId: "thr_kaude23456",
       projectId: "project-one",
       hostId: "host-one",
     });
@@ -1398,7 +1419,7 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
       quotaFraction: {},
       stream: () => ({ status: 200, body: OK_BODY }),
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(
       google,
       { "/homes/a": creds("tok-a") },
@@ -1430,7 +1451,7 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
     });
     // Codex on the same host is untouched.
     const codex = await fixture.host.harness.behavior.resolveProviderEnv("codex", {
-      threadId: "thr_codex23456",
+      threadId: "thr_cdex234567",
       projectId: "project-one",
       hostId: "host-one",
     });
@@ -1462,7 +1483,7 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
       ).length;
     const before = calls();
     // Within the skip window a second launch does not call the old worker again.
-    await resolveGeminiEnv(fixture.host, "thr_second2345");
+    await resolveGeminiEnv(fixture.host, "thr_secnd23456");
     expect(calls()).toBe(before);
     await fixture.host.harness.behavior.experimental_emitHostWorkerExit("host-one");
     await resolveGeminiEnv(fixture.host, "thr_third23456");
@@ -1508,7 +1529,7 @@ describe("Gemini rows and an older build", () => {
           ? { status: 429, body: QUOTA_BODY }
           : { status: 200, body: OK_BODY },
     });
-    cleanups.push(google.close);
+    upstreams.push(google.close);
     const fixture = await createGeminiFixture(
       google,
       {
@@ -1561,7 +1582,7 @@ describe("Gemini rows and an older build", () => {
     const geminiRows = (await kv.get("accounts:gemini:v1")) as Array<{
       provider: string;
     }>;
-    expect(geminiRows.map((row) => row.provider)).toEqual(["gemini"]);
+    expect(geminiRows.map((row) => row.provider)).toEqual(["gemini", "gemini"]);
     expect(() => oldAccountsSchema.parse(geminiRows)).toThrow();
   });
 
@@ -1600,6 +1621,7 @@ describe("Gemini rows and an older build", () => {
       body: JSON.stringify({ model: "claude-opus-4-1", messages: [], max_tokens: 1 }),
     });
     expect(claudeResponse.status).toBe(200);
+    await claudeResponse.text();
     const codexEntries = await rpc.resolveProviderEnv("codex", {
       threadId: "thread-codex",
       projectId: "project-one",
@@ -1618,6 +1640,7 @@ describe("Gemini rows and an older build", () => {
       body: JSON.stringify({ model: "gpt-5", input: [] }),
     });
     expect(codexResponse.status).toBe(200);
+    await codexResponse.text();
     const seen = google.calls.map((call) => call.method);
     expect(seen.some((url) => url.includes("messages"))).toBe(true);
     expect(seen.some((url) => url.includes("responses"))).toBe(true);

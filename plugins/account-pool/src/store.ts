@@ -112,24 +112,48 @@ export class AccountStore {
   async list(signal?: AbortSignal): Promise<Account[]> {
     signal?.throwIfAborted();
     const value = await this.kv.get(ACCOUNTS_KEY);
-    const geminiValue = await this.kv.get(GEMINI_ACCOUNTS_KEY);
+    const gemini =
+      this.geminiCache === null
+        ? await this.loadGeminiRows()
+        : this.geminiCache.rows;
     signal?.throwIfAborted();
     const base = value === undefined ? [] : accountsSchema.parse(value);
-    if (geminiValue === undefined) return base;
-    return [...base, ...accountsSchema.parse(geminiValue)];
+    return gemini === undefined ? base : [...base, ...gemini];
+  }
+
+  // Gemini rows are written only through this store, so after the first read
+  // they are served from memory: a Claude or Codex read or write then costs the
+  // same single kv call it did before Gemini rows had their own key.
+  private geminiCache: { rows: Account[] | undefined } | null = null;
+
+  private async loadGeminiRows(): Promise<Account[] | undefined> {
+    const stored = await this.kv.get(GEMINI_ACCOUNTS_KEY);
+    // A write that landed while this read was in flight wins.
+    this.geminiCache ??= {
+      rows: stored === undefined ? undefined : accountsSchema.parse(stored),
+    };
+    return this.geminiCache.rows;
   }
 
   private async writeAccounts(accounts: readonly Account[]): Promise<void> {
     const gemini = accounts.filter((account) => account.provider === "gemini");
-    await this.kv.set(
-      ACCOUNTS_KEY,
-      accounts.filter((account) => account.provider !== "gemini"),
-    );
+    const others = accounts.filter((account) => account.provider !== "gemini");
+    const cached =
+      this.geminiCache === null
+        ? await this.loadGeminiRows()
+        : this.geminiCache.rows;
     if (
-      gemini.length > 0 ||
-      (await this.kv.get(GEMINI_ACCOUNTS_KEY)) !== undefined
-    )
-      await this.kv.set(GEMINI_ACCOUNTS_KEY, gemini);
+      (cached === undefined && gemini.length === 0) ||
+      JSON.stringify(cached) === JSON.stringify(gemini)
+    ) {
+      await this.kv.set(ACCOUNTS_KEY, others);
+      return;
+    }
+    await Promise.all([
+      this.kv.set(ACCOUNTS_KEY, others),
+      this.kv.set(GEMINI_ACCOUNTS_KEY, gemini),
+    ]);
+    this.geminiCache = { rows: gemini };
   }
 
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {
@@ -1020,6 +1044,7 @@ export class RoutingStore {
     await Promise.all([
       this.kv.delete(`selection:claude:${threadId}`),
       this.kv.delete(`selection:codex:${threadId}`),
+      this.kv.delete(`selection:gemini:${threadId}`),
       this.kv.delete(this.bypassKey(threadId)),
       this.kv.delete(this.routedKey(threadId)),
     ]);

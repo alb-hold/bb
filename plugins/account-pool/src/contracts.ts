@@ -365,7 +365,9 @@ export const statusSchema = z
     accepting: z.boolean(),
     hosts: z.array(hubTokenSummarySchema),
     accounts: z.array(accountSummarySchema),
-    routing: z.object({ claude: z.boolean(), codex: z.boolean() }).strict(),
+    routing: z
+      .object({ claude: z.boolean(), codex: z.boolean(), gemini: z.boolean() })
+      .strict(),
     parent: z
       .object({
         baseUrl: z.string(),

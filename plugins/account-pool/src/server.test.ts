@@ -1973,12 +1973,12 @@ describe("Account Pool plugin", () => {
       "account",
       "add",
       "--provider",
-      "gemini",
+      "openai",
       "--import",
     ]);
     expect(badProvider.exitCode).toBe(1);
     expect(badProvider.stderr).toContain(
-      "invalid value 'gemini' for --provider. Expected one of: claude, codex",
+      "invalid value 'openai' for --provider. Expected one of: claude, codex, gemini",
     );
 
     const conflicting = await run([
@@ -6921,7 +6921,7 @@ describe("Account Pool plugin", () => {
     const result = statusSchema.parse(
       await fixture.host.harness.behavior.callRpc("status.get", null),
     );
-    expect(result.routing).toEqual({ claude: false, codex: true });
+    expect(result.routing).toEqual({ claude: false, codex: true, gemini: true });
   });
 
   it("records the selected account's last-use time and host", async () => {

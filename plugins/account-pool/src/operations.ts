@@ -645,9 +645,10 @@ export class PoolOperations {
     await this.hubTokens.prune(hosts.map((host) => host.id));
     const status = await this.hub.status();
     const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, gemini] = await Promise.all([
       this.routing.isProviderEnabled("claude"),
       this.routing.isProviderEnabled("codex"),
+      this.routing.isProviderEnabled("gemini"),
     ]);
     return {
       ...status,
@@ -662,7 +663,7 @@ export class PoolOperations {
             ? null
             : (hostNames.get(account.lastUsedHostId) ?? null),
       })),
-      routing: { claude, codex },
+      routing: { claude, codex, gemini },
       parent: await this.parentStatus(),
     };
   }
