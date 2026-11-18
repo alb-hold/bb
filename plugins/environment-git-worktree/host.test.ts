@@ -2070,6 +2070,7 @@ setTimeout(() => {}, 300_000);`,
             removeWorktree({
               path: worktree.path,
               rootPath: join(worktree.dataDir, "worktrees"),
+              trashRoot: join(join(worktree.dataDir, "worktrees"), "..", ".trash"),
               createdBy: { head: createdHead, copies: new Map() },
             }),
           ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -2114,6 +2115,7 @@ setTimeout(() => {}, 300_000);`,
             removeWorktree({
               path: worktree.path,
               rootPath: join(worktree.dataDir, "worktrees"),
+              trashRoot: join(join(worktree.dataDir, "worktrees"), "..", ".trash"),
               createdBy,
             }),
           ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -2141,6 +2143,7 @@ setTimeout(() => {}, 300_000);`,
             removeWorktree({
               path: worktree.path,
               rootPath: join(worktree.dataDir, "worktrees"),
+              trashRoot: join(join(worktree.dataDir, "worktrees"), "..", ".trash"),
               createdBy: {
                 head: createdHead,
                 copies: new Map([
@@ -2176,6 +2179,7 @@ setTimeout(() => {}, 300_000);`,
             removeWorktree({
               path: worktree.path,
               rootPath: join(worktree.dataDir, "worktrees"),
+              trashRoot: join(join(worktree.dataDir, "worktrees"), "..", ".trash"),
               createdBy: {
                 head: createdHead,
                 copies: new Map([["README.md", { state: "pending" }]]),

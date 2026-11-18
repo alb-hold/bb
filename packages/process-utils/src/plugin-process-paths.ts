@@ -13,17 +13,25 @@ export function safePluginSegment(pluginId: string): string {
   return encodeURIComponent(pluginId);
 }
 
-export async function ensurePluginProcessDataDir(args: {
+export function pluginProcessDataDir(args: {
   daemonDataDir: string;
   pluginId: string;
   kind: PluginProcessDataKind;
-}): Promise<string> {
-  const directory = join(
+}): string {
+  return join(
     args.daemonDataDir,
     "plugins",
     safePluginSegment(args.pluginId),
     args.kind,
   );
+}
+
+export async function ensurePluginProcessDataDir(args: {
+  daemonDataDir: string;
+  pluginId: string;
+  kind: PluginProcessDataKind;
+}): Promise<string> {
+  const directory = pluginProcessDataDir(args);
   await mkdir(directory, { recursive: true });
   return directory;
 }

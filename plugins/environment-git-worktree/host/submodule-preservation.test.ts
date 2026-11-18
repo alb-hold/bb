@@ -148,6 +148,7 @@ async function removal(
     await removeWorktree({
       path: worktree.path,
       rootPath: worktree.root,
+      trashRoot: path.join(worktree.root, "..", ".trash"),
       ...(testHooks !== undefined ? { testHooks } : {}),
     });
     return "removed";

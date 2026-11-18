@@ -24,6 +24,7 @@ import {
   untrustedTimestampFilesystem,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
+import { worktreeTrashEntryName } from "bb-environment-provider-host/worktree-trash";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -93,6 +94,7 @@ interface CreateWorktreeArgs {
   completionPath: string;
   ownWorktreesRoot: string;
   retainedRoot: string;
+  trashRoot: string;
   branchName: string;
   previousAttempt?: PreviousAttemptRequest | undefined;
   baseBranch: ResolvedWorktreeBaseBranch | null;
@@ -108,6 +110,7 @@ interface RemoveWorktreeArgs {
   createdBy?: CreatedBy | undefined;
   branchName?: string | undefined;
   retainedRoot?: string | undefined;
+  trashRoot: string;
   retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
@@ -115,6 +118,7 @@ interface RemoveWorktreeArgs {
   testHooks?:
     | {
         now?: () => number;
+        platform?: NodeJS.Platform;
         timestampFilesystem?: TimestampFilesystemProbe;
         renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
         entryDevice?: (entry: string, device: number) => number;
@@ -660,6 +664,7 @@ async function removeCreateTarget(
     createdBy,
     branchName: args.branchName,
     retainedRoot: args.retainedRoot,
+    trashRoot: args.trashRoot,
     retention,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
@@ -1001,6 +1006,10 @@ async function removeRegisteredWorktree(
     }
     const finalCheckStartedAt =
       (args.testHooks?.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
+    const trashEntry =
+      (args.testHooks?.platform ?? process.platform) === "darwin"
+        ? await sameDeviceTrashEntry(identity.path, args, keptNote)
+        : null;
     await args.testHooks?.afterFinalBaseline?.(identity.path, identity.gitDir);
     await fs.rename(identity.path, quarantinedPath);
     let metadataSevered = false;
@@ -1070,38 +1079,49 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
-      const removed = await removeDirectoryTree(quarantinedPath, {
-        startedAt: finalCheckStartedAt,
-        rootMetadataBaseline: {
-          ctimeMs: workspaceMetadataBaseline.ctimeMs,
-          mtimeMs: workspaceMetadataBaseline.mtimeMs,
-        },
-        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
-        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
-        beforeEntryRename: args.testHooks?.beforeEntryRename,
-        afterEntryCheck: args.testHooks?.afterEntryCheck,
-        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
-        beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
-        recoveryLink: args.testHooks?.recoveryLink,
-        recoveryWrite: args.testHooks?.recoveryWrite,
-        beforePinCleanup: args.testHooks?.beforePinCleanup,
-        createPinSuffix: args.testHooks?.createPinSuffix,
-        entryDevice: args.testHooks?.entryDevice,
-      });
-      if (removed.status === "retained") {
-        throw worktreePreservedError(identity.path, [
-          ...keptTreeReasons(
-            removed,
-            (entry) =>
-              path.join(identity.path, path.relative(quarantinedPath, entry)),
-            "new or changed data was found during directory removal",
-          ),
-          ...removed.retainedPaths.map(
-            (retainedPath) =>
-              `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
-          ),
-          ...keptNote,
-        ]);
+      if (trashEntry !== null) {
+        try {
+          await fs.rename(quarantinedPath, trashEntry);
+        } catch (error) {
+          throw worktreePreservedError(identity.path, [
+            `could not move it to the trash at ${trashEntry} (${error instanceof Error ? error.message : String(error)})`,
+            ...keptNote,
+          ]);
+        }
+      } else {
+        const removed = await removeDirectoryTree(quarantinedPath, {
+          startedAt: finalCheckStartedAt,
+          rootMetadataBaseline: {
+            ctimeMs: workspaceMetadataBaseline.ctimeMs,
+            mtimeMs: workspaceMetadataBaseline.mtimeMs,
+          },
+          afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+          beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+          beforeEntryRename: args.testHooks?.beforeEntryRename,
+          afterEntryCheck: args.testHooks?.afterEntryCheck,
+          afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+          beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
+          recoveryLink: args.testHooks?.recoveryLink,
+          recoveryWrite: args.testHooks?.recoveryWrite,
+          beforePinCleanup: args.testHooks?.beforePinCleanup,
+          createPinSuffix: args.testHooks?.createPinSuffix,
+          entryDevice: args.testHooks?.entryDevice,
+        });
+        if (removed.status === "retained") {
+          throw worktreePreservedError(identity.path, [
+            ...keptTreeReasons(
+              removed,
+              (entry) =>
+                path.join(identity.path, path.relative(quarantinedPath, entry)),
+              "new or changed data was found during directory removal",
+            ),
+            ...removed.retainedPaths.map(
+              (retainedPath) =>
+                `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
+            ),
+            ...keptNote,
+          ]);
+        }
       }
       workspaceRemoved = true;
       const removedGitDir = await removeDirectoryTree(severedGitDir, {
@@ -1175,6 +1195,31 @@ async function removeRegisteredWorktree(
       throw error;
     }
   });
+}
+
+async function sameDeviceTrashEntry(
+  worktreePath: string,
+  args: RemoveWorktreeArgs,
+  keptNote: readonly string[],
+): Promise<string> {
+  await fs.mkdir(args.trashRoot, { recursive: true });
+  const [worktree, trash] = await Promise.all([
+    fs.lstat(worktreePath),
+    fs.lstat(args.trashRoot),
+  ]);
+  if (worktree.dev !== trash.dev) {
+    throw worktreePreservedError(worktreePath, [
+      `its trash folder ${args.trashRoot} is on another device (${trash.dev}) than the worktree (${worktree.dev}), and bb never copies a worktree across devices`,
+      ...keptNote,
+    ]);
+  }
+  return path.join(
+    args.trashRoot,
+    worktreeTrashEntryName(
+      `${path.basename(path.dirname(worktreePath))}-${path.basename(worktreePath)}`,
+      new Date((args.testHooks?.now ?? Date.now)()),
+    ),
+  );
 }
 
 async function findQuarantinedWorktree(

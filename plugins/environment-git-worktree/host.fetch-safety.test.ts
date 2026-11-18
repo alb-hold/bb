@@ -848,6 +848,7 @@ describe("the fetch that checks whether commits are published", () => {
     const outcome = await removeWorktree({
       path: fixture.path,
       rootPath: fixture.attemptRoot,
+      trashRoot: join(fixture.attemptRoot, "..", ".trash"),
       fetchTimeoutMs: 20_000,
     }).then(
       (result) => ({ result, error: null }),
@@ -1077,6 +1078,7 @@ describe("the fetch that checks whether commits are published", () => {
       const outcome = await removeWorktree({
         path: fixture.path,
         rootPath: fixture.attemptRoot,
+        trashRoot: join(fixture.attemptRoot, "..", ".trash"),
         fetchTimeoutMs: 1_500,
       }).then(
         (result) => ({ result, error: null }),
