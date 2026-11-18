@@ -54,6 +54,11 @@ import {
 import { runtimeErrorLogFields, summarizeError } from "./error-utils.js";
 import { ensureThreadStorageRoot } from "./thread-storage-root.js";
 import {
+  nodeIntervalTimer,
+  startWorktreeTrashSweep,
+  worktreeTrashSweepDeps,
+} from "./worktree-trash-sweep.js";
+import {
   createRuntimeShellEnvCache,
   type RuntimeShellEnvRefreshArgs,
 } from "./runtime-shell-env-cache.js";
@@ -778,6 +783,17 @@ export async function createHostDaemonApp(
       };
     },
   });
+  const worktreeTrashSweep =
+    process.platform === "darwin"
+      ? startWorktreeTrashSweep({
+          deps: worktreeTrashSweepDeps({
+            daemonDataDir: options.dataDir,
+            logger: options.logger,
+            testWorktreeHolderScan: options.testWorktreeHolderScan,
+          }),
+          setIntervalFn: nodeIntervalTimer,
+        })
+      : null;
   const terminalManager: TerminalManager = new TerminalManager({
     logger: options.logger,
     runtimeManager,
@@ -1084,6 +1100,7 @@ export async function createHostDaemonApp(
     },
     shutdownRuntimes: async () => {
       idleProviderSessionReaper.stop();
+      worktreeTrashSweep?.stop();
       eventLoopStallMonitor.stop();
       hostDaemonHealthMonitor.stop();
       await announceDetachedThreads({

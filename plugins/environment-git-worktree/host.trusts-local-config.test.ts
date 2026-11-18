@@ -732,6 +732,7 @@ describe("the published check, run against fresh remote branches and the source'
     await removeWorktree({
       path: fixture.path,
       rootPath: fixture.attemptRoot,
+      trashRoot: join(fixture.attemptRoot, "..", ".trash"),
       fetchTimeoutMs: 20_000,
     });
 
@@ -1091,6 +1092,7 @@ describe("teardown's fetch reads the user's config only from files outside every
       removeWorktree({
         path: fixture.path,
         rootPath: fixture.attemptRoot,
+        trashRoot: join(fixture.attemptRoot, "..", ".trash"),
         fetchTimeoutMs: 20_000,
       }),
     ).rejects.toThrow("could not fetch its remotes");

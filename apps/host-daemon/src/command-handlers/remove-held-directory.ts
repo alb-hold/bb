@@ -7,6 +7,7 @@ import {
   keptForChangedData,
   removeDirectoryTree,
   keptTreeReasons,
+  treeSnapshot,
   type RemoveDirectoryTreeResult,
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
@@ -28,8 +29,10 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
   afterHolderScan?: (quarantine: string) => Promise<void>;
+  afterFingerprint?: (quarantine: string) => Promise<void>;
   now?: () => number;
   afterBaseline?: (directory: string) => Promise<void>;
+  earlyDeleteGuard?: { changesSince: number; fingerprint: string };
   testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
@@ -53,7 +56,10 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
-  const startedAt = (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
+  const startedAt = Math.min(
+    (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS,
+    args.earlyDeleteGuard?.changesSince ?? Number.POSITIVE_INFINITY,
+  );
   await args.afterBaseline?.(args.directory);
   try {
     await fs.rename(args.directory, quarantine);
@@ -93,6 +99,21 @@ export async function removeDirectoryAfterHolderRecheck(args: {
         : { testWorktreeHolderScan: args.testWorktreeHolderScan }),
     });
     await args.afterHolderScan?.(quarantine);
+    let expectedEntries: ReadonlyMap<string, string> | undefined;
+    if (args.earlyDeleteGuard !== undefined) {
+      const snapshot = await treeSnapshot(quarantine);
+      if (
+        snapshot === null ||
+        snapshot.fingerprint !== args.earlyDeleteGuard.fingerprint
+      ) {
+        throw new CommandDispatchError(
+          "path_in_use",
+          `Refusing to ${args.action} ${args.directory}: ${snapshot === null ? "its contents could not be read in full" : "its contents changed"} since it was moved to the trash. Nothing was stopped.`,
+        );
+      }
+      expectedEntries = snapshot.entries;
+      await args.afterFingerprint?.(quarantine);
+    }
     if (args.recursive === true) {
       const removal = await removeDirectoryTree(quarantine, {
         startedAt,
@@ -100,6 +121,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
           ctimeMs: rootInfo.ctimeMs,
           mtimeMs: rootInfo.mtimeMs,
         },
+        ...(expectedEntries === undefined ? {} : { expectedEntries }),
       });
       if (removal.status !== "removed") {
         const shown = (entry: string) =>

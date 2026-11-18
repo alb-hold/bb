@@ -1,5 +1,6 @@
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import {
   link,
   lstat,
@@ -21,6 +22,7 @@ import { createHash, randomUUID } from "node:crypto";
 export interface RemoveDirectoryTreeHooks {
   startedAt?: number;
   rootMetadataBaseline?: { ctimeMs: number; mtimeMs: number };
+  expectedEntries?: ReadonlyMap<string, string>;
   afterStart?: (startedAt: number) => Promise<void>;
   afterDirectoryListed?: (
     directory: string,
@@ -776,6 +778,144 @@ export async function directoryTreeChangedSince(
   return inspect(root);
 }
 
+export interface TreeMoveInspection {
+  changed: boolean;
+  mountedPaths: string[];
+  fingerprint: string;
+}
+
+export async function inspectTreeBeforeMove(
+  root: string,
+  startedAt: number,
+  baseline: {
+    rootMetadata: { ctimeMs: number; mtimeMs: number };
+    entryDevice?: ((entry: string, device: number) => number) | undefined;
+    afterDirectoryListed?:
+      | ((directory: string, entries: readonly string[]) => Promise<void>)
+      | undefined;
+  },
+): Promise<TreeMoveInspection> {
+  const hash = createHash("sha256");
+  const mountedPaths: string[] = [];
+  let changed = false;
+  let rootDevice: number;
+  try {
+    rootDevice = Number((await fsPromises.lstat(root, { bigint: true })).dev);
+  } catch {
+    return {
+      changed: true,
+      mountedPaths,
+      fingerprint: fingerprintDigest(hash),
+    };
+  }
+  const pending = [""];
+  while (pending.length > 0) {
+    const relative = pending.pop()!;
+    const entry = relative === "" ? root : path.join(root, relative);
+    let info: BigIntStats;
+    try {
+      info = await fsPromises.lstat(entry, { bigint: true });
+    } catch {
+      changed = true;
+      continue;
+    }
+    if (relative !== "") hash.update(treeFingerprintRecord(relative, info));
+    const device = Number(info.dev);
+    if ((baseline.entryDevice?.(entry, device) ?? device) !== rootDevice) {
+      mountedPaths.push(entry);
+      continue;
+    }
+    const ctimeMs = msFromNs(info.ctimeNs);
+    const mtimeMs = msFromNs(info.mtimeNs);
+    if (
+      relative === ""
+        ? ctimeMs > baseline.rootMetadata.ctimeMs ||
+          mtimeMs > baseline.rootMetadata.mtimeMs
+        : changedSince({ ctimeMs, mtimeMs }, startedAt)
+    )
+      changed = true;
+    if (!info.isDirectory()) continue;
+    let listed: string[];
+    try {
+      listed = (await fsPromises.readdir(entry)).sort();
+    } catch {
+      changed = true;
+      continue;
+    }
+    await baseline.afterDirectoryListed?.(entry, listed);
+    pushChildren(pending, relative, listed);
+  }
+  return { changed, mountedPaths, fingerprint: fingerprintDigest(hash) };
+}
+
+export interface TreeSnapshot {
+  fingerprint: string;
+  entries: ReadonlyMap<string, string>;
+}
+
+export async function treeFingerprint(root: string): Promise<string | null> {
+  return (await treeSnapshot(root))?.fingerprint ?? null;
+}
+
+export async function treeSnapshot(root: string): Promise<TreeSnapshot | null> {
+  const hash = createHash("sha256");
+  const entries = new Map<string, string>();
+  const pending = [""];
+  while (pending.length > 0) {
+    const relative = pending.pop()!;
+    const entry = relative === "" ? root : path.join(root, relative);
+    let info: BigIntStats;
+    let listed: string[] = [];
+    try {
+      info = await fsPromises.lstat(entry, { bigint: true });
+      if (info.isDirectory()) listed = (await fsPromises.readdir(entry)).sort();
+    } catch {
+      return null;
+    }
+    if (relative === "") {
+      if (!info.isDirectory()) return null;
+    } else {
+      const record = treeFingerprintRecord(relative, info);
+      hash.update(record);
+      entries.set(relative, record);
+    }
+    pushChildren(pending, relative, listed);
+  }
+  return { fingerprint: fingerprintDigest(hash), entries };
+}
+
+export function treeFingerprintRecord(
+  relative: string,
+  info: BigIntStats,
+): string {
+  const type = info.isDirectory()
+    ? "d"
+    : info.isSymbolicLink()
+      ? "l"
+      : info.isFile()
+        ? "f"
+        : "o";
+  return `${type}\0${relative}\0${info.ino}\0${info.size}\0${info.mtimeNs}\0${info.ctimeNs}\n`;
+}
+
+function pushChildren(
+  pending: string[],
+  relative: string,
+  listed: readonly string[],
+): void {
+  for (let index = listed.length - 1; index >= 0; index -= 1) {
+    pending.push(path.join(relative, listed[index]!));
+  }
+}
+
+function fingerprintDigest(hash: ReturnType<typeof createHash>): string {
+  return hash.digest("hex").slice(0, 16);
+}
+
+function msFromNs(ns: bigint): number {
+  return Number(ns / 1_000_000_000n) * 1e3 + Number(ns % 1_000_000_000n) / 1e6;
+}
+
 function changedSince(
   info: { ctimeMs: number; mtimeMs: number },
   startedAt: number,
@@ -815,6 +955,14 @@ export async function removeDirectoryTree(
   hooks: RemoveDirectoryTreeHooks = {},
 ): Promise<RemoveDirectoryTreeResult> {
   const startedAt = hooks.startedAt ?? Date.now();
+  const differsFromSnapshot = (entry: string, info: BigIntStats): boolean => {
+    if (hooks.expectedEntries === undefined) return false;
+    const relative = path.relative(root, entry);
+    return (
+      hooks.expectedEntries.get(relative) !==
+      treeFingerprintRecord(relative, info)
+    );
+  };
   const readDirectoryNames = hooks.readDirectoryNames ?? readdir;
   const retainedPaths = new Set<string>();
   const mountedPaths = new Set<string>();
@@ -1062,6 +1210,13 @@ export async function removeDirectoryTree(
         : changedSince(info, startedAt)
     )
       return false;
+    if (!rootEntry && hooks.expectedEntries !== undefined) {
+      const precise = await lstat(directory, { bigint: true }).catch(
+        () => null,
+      );
+      if (precise === null || differsFromSnapshot(directory, precise))
+        return false;
+    }
     if (!info.isDirectory()) {
       if (!rootMarker || rootMountId === null || info.isSymbolicLink())
         return true;
@@ -1227,7 +1382,8 @@ export async function removeDirectoryTree(
               },
               startedAt,
             )
-          : !matchesOwnWrite(checkedPreciseInfo, ownWrite))
+          : !matchesOwnWrite(checkedPreciseInfo, ownWrite)) ||
+        (!rootEntry && differsFromSnapshot(entry, checkedPreciseInfo))
       ) {
         return retainedEntry();
       }
@@ -1745,6 +1901,19 @@ export async function removeDirectoryTree(
           : changedSince(currentInfo, startedAt);
       if (changedDuringListing) {
         return retainedEntry();
+      }
+      if (!rootEntry && hooks.expectedEntries !== undefined) {
+        let listedInfo;
+        try {
+          listedInfo = await lstat(anchoredEntry, { bigint: true });
+        } catch {
+          return retainedEntry();
+        }
+        if (
+          listedInfo.ino !== BigInt(openedInfo.ino) ||
+          differsFromSnapshot(entry, listedInfo)
+        )
+          return retainedEntry();
       }
       let afterHook: string[];
       try {

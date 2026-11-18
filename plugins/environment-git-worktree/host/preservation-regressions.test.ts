@@ -328,10 +328,16 @@ async function remove(
     ) => Promise<{ bytesWritten: number }>;
     beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
     createPinSuffix?: () => string;
+    platform?: NodeJS.Platform;
   },
 ): Promise<void> {
   await Reflect.apply(removeWorktree, undefined, [
-    { path: worktree.path, rootPath: worktree.root, testHooks },
+    {
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot: path.join(path.dirname(worktree.root), ".trash"),
+      testHooks,
+    },
   ]);
 }
 
@@ -1407,6 +1413,7 @@ describe("real worktree teardown preservation", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
+        platform: "linux",
         afterDirectoryListed: async (directory, entries) => {
           if (
             !directory.endsWith("late-dir") ||
@@ -1442,6 +1449,7 @@ describe("real worktree teardown preservation", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
+        platform: "linux",
         beforeEntryRename: async (entry) => {
           if (path.basename(entry) !== ".gitignore") return;
           expect((await fs.stat(entry)).mode & 0o222).toBe(0);
@@ -1593,6 +1601,7 @@ describe("real worktree teardown preservation", () => {
     try {
       outcome = await Promise.allSettled([
         remove(worktree, {
+          platform: "linux",
           afterEntryCheck: async (entry) => {
             if (!entry.endsWith("/README.md")) return;
             const opened = await fs.open(entry, "r+");
@@ -1646,6 +1655,7 @@ describe("real worktree teardown preservation", () => {
 
     await expect(
       remove(worktree, {
+        platform: "linux",
         afterEntryCheck: async (entry) => {
           checkedEntries.push(entry);
           if (path.basename(entry) !== ".gitignore" || injected) return;
@@ -1728,6 +1738,7 @@ describe("real worktree teardown preservation", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
+        platform: "linux",
         afterEntryCheck: async (entry) => {
           if (!entry.endsWith("/replace-me") || replaced) return;
           replaced = true;
@@ -1784,6 +1795,7 @@ describe("real worktree teardown preservation", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
+        platform: "linux",
         afterDirectoryListed: async (directory) => {
           if (!directory.endsWith("late-dir") || injected) return;
           injected = true;

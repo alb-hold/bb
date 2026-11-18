@@ -667,6 +667,130 @@ describe.runIf(linux)("removing a tree with a same-device bind mount", () => {
   );
 });
 
+async function inMountNamespace(
+  mount: string,
+  mountArgs: readonly string[],
+  script: string,
+  scriptArgs: readonly string[],
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      "unshare",
+      [
+        "--user",
+        "--map-root-user",
+        "--mount",
+        "sh",
+        "-c",
+        `${mount} && shift ${mountArgs.length} && exec "$@"`,
+        "sh",
+        ...mountArgs,
+        process.execPath,
+        "--input-type=module",
+        "-e",
+        script,
+        modulePath,
+        ...scriptArgs,
+      ],
+      (error, out, stderr) =>
+        error === null
+          ? resolve(out)
+          : reject(new Error(`${error.message}\n${stderr}`)),
+    );
+  });
+}
+
+const inspectMountedTree = `
+const fs = await import("node:fs/promises");
+const path = await import("node:path");
+const { inspectTreeBeforeMove } = await import(process.argv[1]);
+const [root, mounted] = process.argv.slice(2);
+await fs.writeFile(path.join(mounted, "inside.txt"), "inside\\n");
+const info = await fs.lstat(root);
+const inspection = await inspectTreeBeforeMove(root, Number.MAX_SAFE_INTEGER, {
+  rootMetadata: { ctimeMs: info.ctimeMs, mtimeMs: info.mtimeMs },
+});
+process.stdout.write(JSON.stringify(inspection));
+`;
+
+const inspectMoveAndRemove = `
+const fs = await import("node:fs/promises");
+const { inspectTreeBeforeMove, removeDirectoryTree, treeFingerprint } = await import(process.argv[1]);
+const [root, trashEntry] = process.argv.slice(2);
+const info = await fs.lstat(root);
+const inspection = await inspectTreeBeforeMove(root, Number.MAX_SAFE_INTEGER, {
+  rootMetadata: { ctimeMs: info.ctimeMs, mtimeMs: info.mtimeMs },
+});
+await fs.rename(root, trashEntry);
+const moved = await treeFingerprint(trashEntry);
+const removal = await removeDirectoryTree(trashEntry, {
+  startedAt: Number.MAX_SAFE_INTEGER,
+});
+process.stdout.write(JSON.stringify({ inspection, moved, removal }));
+`;
+
+describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
+  it.runIf(linux && mountNamespacesAvailable())(
+    "reports a real tmpfs mounted inside the tree, which has its own device as every macOS mount does",
+    async () => {
+      const root = await settledTree();
+      const mounted = path.join(root, "nested", "mounted");
+      await fs.mkdir(mounted);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      const inspection = JSON.parse(
+        await inMountNamespace(
+          'mount -t tmpfs none "$1"',
+          [mounted],
+          inspectMountedTree,
+          [root, mounted],
+        ),
+      );
+      expect(inspection).toEqual({
+        changed: false,
+        mountedPaths: [mounted],
+        fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+      });
+    },
+  );
+
+  it.runIf(linux && mountNamespacesAvailable())(
+    "cannot see a same-device bind mount by device, so removing the moved trash entry finds it and keeps the bind source whole",
+    async () => {
+      const { source, root } = await boundTree();
+      const trash = path.join(path.dirname(root), ".trash");
+      await fs.mkdir(trash);
+      const trashEntry = path.join(trash, "tree-entry");
+      const bound = path.join(root, "sub", "child");
+      const { inspection, moved, removal } = JSON.parse(
+        await inMountNamespace(
+          'mount --bind "$1" "$2"',
+          [source, bound],
+          inspectMoveAndRemove,
+          [root, trashEntry],
+        ),
+      );
+      expect(inspection).toEqual({
+        changed: false,
+        mountedPaths: [],
+        fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+      });
+      expect(moved).toBe(inspection.fingerprint);
+      expect(removal.status).toBe("retained");
+      expect(removal.mountedPaths.length).toBeGreaterThan(0);
+      await expect(
+        fs.readFile(path.join(source, "a.txt"), "utf8"),
+      ).resolves.toBe("keep\n");
+      await expect(
+        fs.readFile(path.join(source, "nested", "b.txt"), "utf8"),
+      ).resolves.toBe("keep too\n");
+      expect(existsSync(root)).toBe(false);
+      expect(
+        (await fs.lstat(path.join(trashEntry, "sub", "child"))).isDirectory(),
+      ).toBe(true);
+    },
+  );
+});
+
 describe.runIf(process.platform === "darwin")(
   "removing a tree on macOS",
   () => {
