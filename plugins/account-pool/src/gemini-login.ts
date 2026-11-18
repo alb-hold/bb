@@ -360,6 +360,11 @@ export class GeminiLogin {
     if (abort?.aborted) throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
   }
 
+  private unlessCancelled(session: Session): void {
+    if (session.cancelled !== null)
+      throw new GeminiLoginError(session.cancelled.reason, session.cancelled.message);
+  }
+
   private async unlessAborted<T>(work: Promise<T>, abort: AbortSignal): Promise<T> {
     let onAbort = () => {};
     const aborted = new Promise<never>((_, reject) => {
@@ -521,6 +526,7 @@ export class GeminiLogin {
       { mode: 0o700, flag: "wx" },
     );
     this.live();
+    this.unlessCancelled(session);
     const child = spawn(runtime.command, [...runtime.args], {
       cwd: session.dir,
       detached: true,

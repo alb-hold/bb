@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,17 @@ import {
   type GeminiLoginOptions,
   type GeminiLoginTarget,
 } from "./gemini-login.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
+function spawnsOf(script: string): number {
+  return vi
+    .mocked(spawn)
+    .mock.calls.filter((call) => Array.isArray(call[1]) && call[1].includes(script)).length;
+}
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const FAKE_RUNTIME = path.join(FIXTURES, "fake-antigravity-acp.mjs");
@@ -41,6 +53,7 @@ async function setup(
     timeoutMs?: number;
     importAccount?: GeminiLoginOptions["importAccount"];
     resolveRuntime?: GeminiLoginOptions["resolveRuntime"];
+    now?: () => number;
   } = {},
 ) {
   const base = await fs.mkdtemp(path.join(tmpdir(), "bb-gemini-login-"));
@@ -72,6 +85,7 @@ async function setup(
     browser: { command: process.execPath, args: [FAKE_CHROME, control] },
     importAccount,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
   logins.push(login);
   const root = path.join(dataDir, "gemini-login");
@@ -345,6 +359,41 @@ describe("GeminiLogin", () => {
     expect(existsSync(path.join(fixture.control, "env.json"))).toBe(false);
     expect(existsSync(path.join(fixture.control, "browser.json"))).toBe(false);
     expect(await fixture.leftovers()).toEqual([]);
+  });
+
+  it("never spawns the runtime when the caller aborts after the runtime is resolved but before it starts", async () => {
+    const abort = new AbortController();
+    let armed = false;
+    let abortedAfterSession = false;
+    let control = "";
+    const fixture = await setup({
+      resolveRuntime: async () => {
+        armed = true;
+        return { command: process.execPath, args: [FAKE_RUNTIME, control] };
+      },
+      now: () => {
+        if (armed && !abort.signal.aborted) {
+          abortedAfterSession = true;
+          abort.abort();
+        }
+        return Date.now();
+      },
+    });
+    control = fixture.control;
+    const runtimesBefore = spawnsOf(FAKE_RUNTIME);
+    const browsersBefore = spawnsOf(FAKE_CHROME);
+    const error = await fixture.login
+      .start({ label: null }, abort.signal)
+      .catch((e: unknown) => e);
+    expect(abortedAfterSession).toBe(true);
+    expect(spawnsOf(FAKE_RUNTIME)).toBe(runtimesBefore);
+    expect(spawnsOf(FAKE_CHROME)).toBe(browsersBefore);
+    expect(error).toBeInstanceOf(GeminiLoginError);
+    expect((error as GeminiLoginError).reason).toBe("sign_in_cancelled");
+    expect(existsSync(path.join(fixture.control, "env.json"))).toBe(false);
+    expect(existsSync(path.join(fixture.control, "browser.json"))).toBe(false);
+    expect(await fixture.leftovers()).toEqual([]);
+    expect(fixture.imports).toEqual([]);
   });
 
   it("resolves dispose only after a sign-in that is still opening is stopped and removed", async () => {
