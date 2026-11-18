@@ -788,6 +788,7 @@ function sendJson(args: ThreadSendArgs): SendMessageRequest {
     pluginSubmission: args.pluginSubmission,
     executionInputSources: args.executionInputSources,
     sendAt: args.sendAt,
+    deliverBy: args.deliverBy,
     compactFirst: args.compactFirst,
   };
 }

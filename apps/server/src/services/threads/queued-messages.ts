@@ -700,6 +700,9 @@ function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {
     case "workspace-busy":
       return `thread ${waitingOn.holderThreadId} is using the shared workspace`;
     case "time":
+      return waitingOn.inbox === true
+        ? "it is held for the thread's next turn"
+        : "the thread is already running a turn";
     case "thread-busy":
     case undefined:
       return "the thread is already running a turn";

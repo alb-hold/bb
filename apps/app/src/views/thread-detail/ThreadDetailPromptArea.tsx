@@ -15,6 +15,7 @@ import { createPortal } from "react-dom";
 import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
 import type { IconName } from "@bb/shared-ui/icon";
 import type { PromptMentionLinkResolver } from "@bb/client-core";
+import { describeHeldInboxCount } from "@/lib/queued-message-wait";
 import {
   getFollowUpPromptPlaceholder,
   getCompactFollowUpPromptPlaceholder,
@@ -2278,13 +2279,13 @@ export function ThreadDetailPromptArea({
           }}
           core={{
             parentThread: parentThreadSection,
-            queuedWorkspaceWait: (() => {
+            queuedWait: (() => {
               const waiting = queuedMessages.find(
                 (message) => message.waitingOn?.kind === "workspace-busy",
               )?.waitingOn;
               return waiting?.kind === "workspace-busy"
                 ? `Waiting for thread ${waiting.holderThreadId} to finish using the shared workspace`
-                : null;
+                : describeHeldInboxCount(queuedMessages);
             })(),
             workspaceSharingThreadCount,
           }}

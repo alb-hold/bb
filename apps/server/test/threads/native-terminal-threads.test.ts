@@ -1867,6 +1867,39 @@ describe("native terminal threads", () => {
     },
   );
 
+  it.each(["claude-code", "codex"])(
+    "rejects an inbox %s native message before terminal side effects",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(fixture, open.terminalId, composerScreen);
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("run the tests"),
+          mode: "inbox",
+        });
+        expect(response.status).toBe(400);
+        expect(apiErrorSchema.parse(await readJson(response))).toMatchObject({
+          code: "invalid_request",
+          message: "mode inbox is not supported for native terminal threads",
+        });
+        expect(cli.inputs()).toEqual([]);
+        expect(
+          fixture.harness.db
+            .select()
+            .from(queuedThreadMessages)
+            .where(eq(queuedThreadMessages.threadId, thread.id))
+            .all(),
+        ).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+  );
+
   it("pastes an image on its own so Codex attaches it before the message", async () => {
     const fixture = await createFixture();
     seedPrimaryHost(fixture.harness.deps, fixture.hostId);

@@ -34,7 +34,7 @@ function Banner({
   childThreadsSection,
   expandedSection,
   onToggleSection,
-  queuedWorkspaceWait,
+  queuedWait,
   workspaceSharingThreadCount,
 }: {
   gitSection: GitSegmentFixture | null;
@@ -45,7 +45,7 @@ function Banner({
   childThreadsSection: ThreadPromptChildThreadsSection | null;
   expandedSection: string | null;
   onToggleSection: (key: string) => void;
-  queuedWorkspaceWait?: string | null;
+  queuedWait?: string | null;
   workspaceSharingThreadCount?: number | null;
 }) {
   const isReadOnly =
@@ -62,7 +62,7 @@ function Banner({
         input={{ threadId: "thr_1", projectId: "proj_1", environment: null }}
         core={{
           parentThread: parentThreadSection,
-          queuedWorkspaceWait,
+          queuedWait,
           workspaceSharingThreadCount,
         }}
         archivedSection={archivedSection}
@@ -273,7 +273,7 @@ describe("ThreadPromptContextBanner", () => {
         parentThreadSection={null}
         childThreadsSection={null}
         expandedSection={null}
-        queuedWorkspaceWait="Waiting for thread thr_holder to finish using the shared workspace"
+        queuedWait="Waiting for thread thr_holder to finish using the shared workspace"
         onToggleSection={noop}
       />,
     );

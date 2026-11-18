@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QueuedMessageWaitingOn } from "@bb/domain";
 import {
+  describeHeldInboxCount,
   describeQueuedMessageWait,
   formatQueuedMessageCountdown,
   isQueuedMessageSendNowAllowed,
@@ -99,6 +100,33 @@ describe("describeQueuedMessageWait", () => {
     expect(label).toBe(`Scheduled for ${clockAt(NOW + 3 * HOUR)}`);
     expect(label).not.toMatch(/\bin \d/);
     expect(describeWait({ kind: "time" })).toBe("Scheduled");
+  });
+
+  it("labels an inbox hold as waiting for the next turn, with its deadline", () => {
+    expect(describeWait({ kind: "time", inbox: true })).toBe(
+      "Held until the next turn",
+    );
+    expect(
+      describeWait({ kind: "time", inbox: true }, { sendAt: NOW + 3 * HOUR }),
+    ).toBe(`Held until the next turn, or ${clockAt(NOW + 3 * HOUR)}`);
+  });
+
+  it("counts only inbox holds for the held banner", () => {
+    expect(describeHeldInboxCount([])).toBeNull();
+    expect(
+      describeHeldInboxCount([
+        { waitingOn: { kind: "time" } },
+        { waitingOn: { kind: "thread-busy" } },
+        { waitingOn: null },
+      ]),
+    ).toBeNull();
+    expect(
+      describeHeldInboxCount([
+        { waitingOn: { kind: "time", inbox: true } },
+        { waitingOn: { kind: "time", inbox: true } },
+        { waitingOn: { kind: "time" } },
+      ]),
+    ).toBe("2 held for your next turn");
   });
 
   it("leads a retry with why it is being retried, then when and which attempt", () => {

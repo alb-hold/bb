@@ -117,7 +117,7 @@ export { isThreadDisplayStatusBannerActive } from "./thread-banner-active-status
 
 export interface CoreThreadContext {
   parentThread: ThreadPromptParentThreadSection | null;
-  queuedWorkspaceWait?: string | null;
+  queuedWait?: string | null;
   workspaceSharingThreadCount?: number | null;
 }
 
@@ -1120,12 +1120,12 @@ function WritableContextBanner({
   input,
   expandedSegment,
   onToggleSegment,
-  queuedWorkspaceWait,
+  queuedWait,
 }: {
   input: ExperimentalThreadContextSegmentInput;
   expandedSegment: string | null;
   onToggleSegment: (key: string) => void;
-  queuedWorkspaceWait?: string | null;
+  queuedWait?: string | null;
 }) {
   const { workspaceSharingThreadCount: sharingThreadCount } =
     useCoreThreadContext();
@@ -1139,7 +1139,7 @@ function WritableContextBanner({
       key: threadContextSegmentKey(slot),
       pluginId: slot.pluginId,
     })),
-    ...(queuedWorkspaceWait
+    ...(queuedWait
       ? [
           {
             key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`,
@@ -1177,7 +1177,7 @@ function WritableContextBanner({
     <>
       {observers}
       {entries.length > 0 ||
-      queuedWorkspaceWait ||
+      queuedWait ||
       workspaceSharingThreadCount > 1 ? (
         <PromptStackCard
           ariaLabel="Thread context before sending"
@@ -1210,21 +1210,21 @@ function WritableContextBanner({
                 </span>
               </div>
             ) : null}
-            {queuedWorkspaceWait ? (
+            {queuedWait ? (
               <div
                 className={cn(
                   "flex min-w-0 items-center gap-1.5 text-xs",
                   PROMPT_STACK_INLAY_SEGMENT_CLASS,
                 )}
                 role="status"
-                aria-label={queuedWorkspaceWait}
+                aria-label={queuedWait}
               >
                 <Icon
                   name="TimeSchedule"
                   className="size-3.5 shrink-0"
                   aria-hidden="true"
                 />
-                <span className="truncate">{queuedWorkspaceWait}</span>
+                <span className="truncate">{queuedWait}</span>
               </div>
             ) : null}
             {entries.map((entry) => mount(entry, "action"))}
@@ -1294,7 +1294,7 @@ export function ThreadPromptContextBanner({
         input={input}
         expandedSegment={expandedSegment}
         onToggleSegment={onToggleSegment}
-        queuedWorkspaceWait={core.queuedWorkspaceWait}
+        queuedWait={core.queuedWait}
       />
     </CoreThreadContextContext.Provider>
   );

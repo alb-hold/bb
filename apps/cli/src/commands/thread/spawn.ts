@@ -697,6 +697,8 @@ function parentNotificationsPromise(
   switch (parentNotifications) {
     case "auto":
       return "You will be notified when this thread is done.";
+    case "inbox":
+      return "Finished turns wait in your inbox until your next turn; failures, interruptions, and blockers notify you at once.";
     case "stuck":
       return "You will be notified only if this thread fails, is interrupted, or is blocked.";
     case "off":

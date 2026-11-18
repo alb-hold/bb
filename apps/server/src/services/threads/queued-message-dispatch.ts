@@ -11,6 +11,7 @@ import {
   listQueuedThreadMessagePluginWaitRefs,
   listQueuedThreadMessagesByWaitHolder,
   listQueuedThreadMessagesWaitingOnKind,
+  releaseInboxQueuedThreadMessages,
   listRetryableFailedQueuedThreadMessages,
   listThreadIdsWithHostOfflineQueueWaits,
 } from "@bb/db";
@@ -335,7 +336,10 @@ async function runTurnStartedDispatch(
       threadId,
     });
   }
-  const rows = [...turnStartingRows, ...provisioningRows].sort(
+  const inboxRows = releaseInboxQueuedThreadMessages(deps.db, deps.hub, {
+    threadId,
+  });
+  const rows = [...turnStartingRows, ...provisioningRows, ...inboxRows].sort(
     (left, right) => {
       if (left.sortKey !== right.sortKey) {
         return left.sortKey < right.sortKey ? -1 : 1;

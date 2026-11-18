@@ -44,6 +44,13 @@ export async function acceptThreadSendRequest(
         "sendAt is not supported for native terminal threads",
       );
     }
+    if (args.payload.mode === "inbox") {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "mode inbox is not supported for native terminal threads",
+      );
+    }
     const input = await resolveNativeTerminalSendInput(deps, {
       thread: args.thread,
       input: args.payload.input,
@@ -117,6 +124,13 @@ export async function acceptThreadSendRequest(
   const { compactFirst, ...request } = args.payload;
   if (isStandaloneBuiltinClearCommand(request.input)) {
     if (compactFirst) throwInvalidCompactFirst("cannot clear the context");
+    if (request.mode === "inbox") {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "mode inbox cannot clear the context",
+      );
+    }
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,
     });

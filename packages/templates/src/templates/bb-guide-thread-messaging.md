@@ -16,12 +16,13 @@ Messaging:
                                            Read the message from a file; `-` reads stdin. Use this for
                                            multi-line or Markdown messages: inside double quotes the
                                            shell runs `backticks` and $(...) before bb sees them
-    --mode <mode>                          Message mode: steer (default), queue, or auto
+    --mode <mode>                          Message mode: steer (default), queue, auto, or inbox
     --model <model>                        Model override for this turn; a child thread
                                            accepts its persisted model or the provider's child model
     --reasoning-level <level>              Reasoning level override
     --plan                                 Send the message as the provider's /plan action
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
+    --deliver-by <when>                    With --mode inbox: latest delivery time (ISO 8601 or a duration, at most 6h)
     --compact-first                        Compact the idle thread's context, then send when compaction finishes
     --file <path>                          CLI-local absolute path, file: URL, or uploaded file path
     --image <path>                         CLI-local absolute path, file: URL, or uploaded image path
@@ -68,7 +69,7 @@ Ownership:
     --reasoning-level <level>              Set the sticky reasoning level (provider-dependent)
     --visibility <visibility>              Set visible or hidden
     --project <id-or-name>                 Move the thread to another project; use --self for the current thread
-    --parent-notifications <value>         Set auto, stuck, or off (applies to later outcomes)
+    --parent-notifications <value>         Set auto, inbox, stuck, or off (applies to later outcomes)
 
   Clearing a parent inherits the former parent's section unless --section or
   --clear-section is also supplied. Children released by environment archiving
@@ -217,6 +218,23 @@ Queued messages:
   spawn creates a `pending` thread and does no environment work (no
   worktree, no setup script) until it is due. The SDK takes `sendAt` in epoch
   milliseconds on `threads.spawn` and `threads.send`.
+
+  --mode inbox is for messages that must not wake an idle thread. To an idle
+  thread it stores the message (`waitingOn: {kind: "time", inbox: true}`, deadline in `sendAt`) and starts no turn; the
+  message is delivered, in send order and inside the usual
+  `[bb message from thread:...]` envelope, at the start of the thread's next
+  real turn, whatever starts that turn. To a thread with a live turn it behaves
+  like --mode queue and is delivered at the next steer point. A held message
+  is delivered as a normal queued message at --deliver-by, or after 6 hours if
+  that is sooner or --deliver-by is absent; a --deliver-by already in the past
+  means no hold. `bb thread show` lists the held messages, and the thread view
+  shows how many are held. An archived thread refuses the tell as it does
+  today. inbox cannot be combined with --send-at, --compact-first or a native
+  terminal thread. A thread's `parent_notifications` setting may be `inbox`
+  (`bb thread spawn --parent-notifications inbox`): finished turns wait in the
+  parent's inbox, while failures, interruptions and blockers notify at once.
+  The SDK takes `mode: "inbox"` and `deliverBy` (epoch milliseconds) on
+  `threads.send`.
 
 Application links in messages:
 

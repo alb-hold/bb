@@ -34,7 +34,7 @@ export const queuedMessageWaitReasonSchema = z
   .max(QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH);
 
 export const queuedMessageWaitingOnSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("time") }),
+  z.object({ kind: z.literal("time"), inbox: z.literal(true).optional() }),
   z.object({ kind: z.literal("thread-busy") }),
   z.object({ kind: z.literal("stopping") }),
   z.object({ kind: z.literal("turn-starting") }),

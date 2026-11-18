@@ -2103,6 +2103,43 @@ export function clearQueuedThreadMessageWaitingOn(
   return updated;
 }
 
+export function releaseInboxQueuedThreadMessages(
+  db: DbConnection,
+  notifier: DbNotifier,
+  args: { threadId: string },
+): QueuedThreadMessageRow[] {
+  const released = db.transaction(
+    (tx) => {
+      const now = Date.now();
+      const rows = listInboxQueuedThreadMessages(tx, args.threadId);
+      const updated: QueuedThreadMessageRow[] = [];
+      for (const row of rows) {
+        if (isQueuedThreadMessageClaimed(row)) continue;
+        const cleared = transitionQueuedMessage(tx, {
+          now,
+          row,
+          transition: { event: "wait.cleared" },
+        });
+        if (cleared === null) continue;
+        updated.push(
+          tx
+            .update(queuedThreadMessages)
+            .set({ deliveryMode: "steer" })
+            .where(eq(queuedThreadMessages.id, cleared.id))
+            .returning()
+            .get() ?? cleared,
+        );
+      }
+      return updated;
+    },
+    { behavior: "immediate" },
+  );
+  if (released.length > 0) {
+    notifier.notifyThread(args.threadId, ["queue-changed"]);
+  }
+  return released;
+}
+
 export function listDueScheduledQueuedThreadMessages(
   db: DbQueryConnection,
   now: number,
@@ -2197,6 +2234,25 @@ export function listQueuedThreadMessagesWaitingOnKind(
       and(
         eq(queuedThreadMessages.threadId, args.threadId),
         sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = ${args.kind}`,
+        automaticallyDrainableQueuedThreadMessage(),
+      ),
+    )
+    .orderBy(asc(queuedThreadMessages.sortKey), asc(queuedThreadMessages.id))
+    .all();
+}
+
+export function listInboxQueuedThreadMessages(
+  db: DbQueryConnection,
+  threadId: string,
+): QueuedThreadMessageRow[] {
+  return db
+    .select()
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        eq(queuedThreadMessages.threadId, threadId),
+        sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = 'time'`,
+        sql`json_extract(${queuedThreadMessages.waitingOn}, '$.inbox') = 1`,
         automaticallyDrainableQueuedThreadMessage(),
       ),
     )

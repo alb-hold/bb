@@ -34,6 +34,10 @@ import type {
   ThreadVisibility,
 } from "@bb/domain";
 import {
+  resolveParentNotificationsChoice,
+  splitParentNotificationsChoice,
+} from "@bb/domain/thread-parent-notifications-storage";
+import {
   evaluateThreadLifecycleEvent,
   effectiveDisplayStatus,
   threadSearchSourceKindSchema,
@@ -55,7 +59,9 @@ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
 import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
-import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
+import type {
+  ThreadListEnrichmentScope,
+} from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -352,7 +358,9 @@ export function createThread(
           originKind,
           originPluginId: input.originPluginId ?? null,
           visibility,
-          parentNotifications: input.parentNotifications ?? "auto",
+          ...splitParentNotificationsChoice(
+            input.parentNotifications ?? "auto",
+          ),
           lastReadAt: now,
           latestAttentionAt: now,
           createdAt: now,
@@ -1953,7 +1961,7 @@ export function updateThread(
   }
   if (
     "parentNotifications" in input &&
-    input.parentNotifications !== existing.parentNotifications
+    input.parentNotifications !== resolveParentNotificationsChoice(existing)
   ) {
     changes.push("title-changed");
   }
@@ -1988,8 +1996,8 @@ export function updateThread(
   }
   if ("parentThreadId" in input) set.parentThreadId = input.parentThreadId;
   if ("visibility" in input) set.visibility = input.visibility;
-  if ("parentNotifications" in input) {
-    set.parentNotifications = input.parentNotifications;
+  if (input.parentNotifications !== undefined) {
+    Object.assign(set, splitParentNotificationsChoice(input.parentNotifications));
   }
 
   const updated = db

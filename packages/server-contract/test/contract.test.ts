@@ -600,11 +600,13 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "sendAt is present only when the caller is scheduling the dispatch, and compactFirst only when it asks to compact before the message; omission means attempt the dispatch now, which allocates no queued row at all when nothing blocks it.",
+      "sendAt is present only when the caller is scheduling the dispatch, and compactFirst only when it asks to compact before the message, and deliverBy only on an inbox tell that sets its own hold deadline; a queued row's time wait carries inbox: true only while it is an inbox hold released by the receiver's next turn, and its absence is an ordinary scheduled wait; omission means attempt the dispatch now, which allocates no queued row at all when nothing blocks it.",
     fields: [
       "createThreadRequestSchema.sendAt",
       "sendMessageRequestSchema.sendAt",
       "sendMessageRequestSchema.compactFirst",
+      "sendMessageRequestSchema.deliverBy",
+      "sendQueuedMessageResponseSchema.queuedMessage.waitingOn.inbox",
     ],
   },
   {

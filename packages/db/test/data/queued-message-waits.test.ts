@@ -20,7 +20,9 @@ import {
   getQueuedThreadMessage,
   listDueScheduledQueuedThreadMessages,
   listQueuedThreadMessagesByWaitHolder,
+  listInboxQueuedThreadMessages,
   listQueuedThreadMessagesWaitingOnKind,
+  releaseInboxQueuedThreadMessages,
   setQueuedThreadMessageWaitingOn,
 } from "../../src/data/queued-thread-messages.js";
 import { createProject } from "../../src/data/projects.js";
@@ -394,5 +396,42 @@ describe("wait lookups", () => {
         listQueuedThreadMessagesWaitingOnKind(db, { kind, threadId: thread.id }),
       ).toEqual([]);
     }
+  });
+});
+
+describe("inbox release", () => {
+  it("lists and releases only inbox-held time rows, leaving a plain scheduled row untouched", () => {
+    const { db, thread } = setup();
+    const dueAt = Date.now() + 60 * 60 * 1000;
+    const create = (text: string, inbox: boolean) =>
+      createQueuedThreadMessage(db, noopNotifier, {
+        threadId: thread.id,
+        content: textInput(text),
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        waitingOn: inbox ? { kind: "time", inbox: true } : { kind: "time" },
+        sendAt: dueAt,
+        payload: { kind: "inline" },
+        systemNotice: null,
+      });
+    const plain = create("plain scheduled", false);
+    const held = create("held inbox", true);
+
+    expect(
+      listInboxQueuedThreadMessages(db, thread.id).map((row) => row.id),
+    ).toEqual([held.id]);
+
+    const released = releaseInboxQueuedThreadMessages(db, noopNotifier, {
+      threadId: thread.id,
+    });
+
+    expect(released.map((row) => row.id)).toEqual([held.id]);
+    expect(released[0]?.waitingOn).toBeNull();
+    const stillPlain = getQueuedThreadMessage(db, plain.id);
+    expect(stillPlain?.state).toBe("scheduled");
+    expect(stillPlain?.waitingOn).toBe(JSON.stringify({ kind: "time" }));
+    expect(stillPlain?.sendAt).toBe(dueAt);
   });
 });
