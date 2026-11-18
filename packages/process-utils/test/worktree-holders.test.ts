@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1795,5 +1795,308 @@ describe("final scan fd replacement", () => {
       status: "clear",
     });
     expect(links).toBe(1);
+  });
+});
+
+describe.skipIf(
+  process.platform !== "linux" ||
+    (typeof process.getuid === "function" && process.getuid() === 0),
+)("a real non-dumpable sshd-session", () => {
+  const python = spawnSync("python3", ["--version"]);
+  const parentPid = 4_194_305;
+  const uid = process.getuid?.() ?? 0;
+
+  async function start(name: string): Promise<number> {
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, ${JSON.stringify(name)}.encode(), 0, 0, 0)
+print("ready", flush=True)
+time.sleep(120)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(child);
+    if (child.stdout !== null) await once(child.stdout, "data");
+    return child.pid ?? 0;
+  }
+
+  async function nonDumpable(pid: number): Promise<boolean> {
+    try {
+      await readlink(`/proc/${pid}/ns/mnt`);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EACCES";
+    }
+  }
+
+  async function worktree(): Promise<string> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bb-sshd-session-"));
+    roots.push(root);
+    const directory = path.join(root, "wt");
+    await mkdir(directory);
+    return directory;
+  }
+
+  function reader(
+    pid: number,
+    options: {
+      parent?: { comm: string; uids: string } | null;
+      uids?: string;
+      fdOwner?: number;
+    },
+  ): ProcReader {
+    const parent =
+      options.parent === undefined
+        ? { comm: "sshd-session", uids: "0\t0\t0\t0" }
+        : options.parent;
+    return {
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc" ? ["self", String(pid)] : hostProc.readdir(target),
+      readFile: async (target) => {
+        if (target === `/proc/${pid}/status`) {
+          const text = (await hostProc.readFile(target)).replace(
+            /^PPid:.*$/mu,
+            `PPid:\t${parentPid}`,
+          );
+          return options.uids === undefined
+            ? text
+            : text.replace(/^Uid:.*$/mu, `Uid:\t${options.uids}`);
+        }
+        if (parent !== null && target === `/proc/${parentPid}/status`)
+          return `Name:\t${parent.comm}\nState:\tS (sleeping)\nPPid:\t1\nUid:\t${parent.uids}\n`;
+        if (parent !== null && target === `/proc/${parentPid}/comm`)
+          return `${parent.comm}\n`;
+        return hostProc.readFile(target);
+      },
+      statAccess: async (target) => {
+        const access = await hostProc.statAccess(target);
+        return options.fdOwner !== undefined && target === `/proc/${pid}/fd`
+          ? { ...access, uid: options.fdOwner }
+          : access;
+      },
+    };
+  }
+
+  it("clears one whose parent is a root-owned sshd-session", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const directory = await worktree();
+    const pid = await start("sshd-session");
+    skip(!(await nonDumpable(pid)), "the kernel lets this user read it");
+    expect(await scanLinux(directory, reader(pid, {}))).toMatchObject({
+      status: "clear",
+    });
+  });
+
+  it("keeps the worktree when its real parent is this test runner", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const directory = await worktree();
+    const pid = await start("sshd-session");
+    skip(!(await nonDumpable(pid)), "the kernel lets this user read it");
+    const only: ProcReader = {
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc" ? ["self", String(pid)] : hostProc.readdir(target),
+    };
+    expect(await scanLinux(directory, only)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        `process ${pid} (sshd-session) has an unreadable holder path`,
+      ),
+    });
+  });
+
+  it.for([
+    [
+      "its parent is owned by our uid",
+      "sshd-session",
+      {
+        parent: {
+          comm: "sshd-session",
+          uids: `${uid}\t${uid}\t${uid}\t${uid}`,
+        },
+      },
+    ],
+    [
+      "its parent is only partly root-owned",
+      "sshd-session",
+      { parent: { comm: "sshd-session", uids: `0\t0\t0\t${uid}` } },
+    ],
+    [
+      "its parent is not an sshd-session",
+      "sshd-session",
+      { parent: { comm: "bash", uids: "0\t0\t0\t0" } },
+    ],
+    [
+      "its parent's comm only starts with sshd-session",
+      "sshd-session",
+      { parent: { comm: "sshd-sessionx", uids: "0\t0\t0\t0" } },
+    ],
+    ["its parent cannot be read", "sshd-session", { parent: null }],
+    ["its comm only starts with sshd-session", "sshd-sessionx", {}],
+    ["its comm is a prefix of sshd-session", "sshd-sessio", {}],
+    [
+      "its saved uid is root",
+      "sshd-session",
+      { uids: `${uid}\t${uid}\t0\t${uid}` },
+    ],
+    [
+      "it is unreadable without being non-dumpable",
+      "sshd-session",
+      { fdOwner: uid },
+    ],
+  ] as const)(
+    "keeps the worktree when %s",
+    async ([, name, options], { skip }) => {
+      skip(python.status !== 0, "python3 is not available");
+      const directory = await worktree();
+      const pid = await start(name);
+      skip(!(await nonDumpable(pid)), "the kernel lets this user read it");
+      expect(await scanLinux(directory, reader(pid, options))).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(
+          `process ${pid} (${name}) has an unreadable holder path`,
+        ),
+      });
+    },
+  );
+
+  it("keeps the worktree when a renamed child of a same-user sshd-session holds it", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const directory = await worktree();
+    const parent = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, os, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, b"sshd-session", 0, 0, 0)
+child = os.fork()
+if child == 0:
+    libc.prctl(1, 9, 0, 0, 0)
+    os.chdir(${JSON.stringify(directory)})
+    held = open("held", "w")
+    libc.prctl(4, 0, 0, 0, 0)
+    libc.prctl(15, b"sshd-session", 0, 0, 0)
+    time.sleep(120)
+    os._exit(0)
+print(child, flush=True)
+time.sleep(120)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(parent);
+    const [line] =
+      parent.stdout === null ? [""] : await once(parent.stdout, "data");
+    const child = Number.parseInt(String(line), 10);
+    try {
+      skip(
+        !(await nonDumpable(parent.pid ?? 0)) || !(await nonDumpable(child)),
+        "the kernel lets this user read it",
+      );
+      const chain: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc"
+            ? ["self", String(parent.pid), String(child)]
+            : hostProc.readdir(target),
+      };
+      expect(await scanLinux(directory, chain)).toMatchObject({
+        status: "unknown",
+        blockingProcesses: expect.arrayContaining([
+          expect.objectContaining({ pid: child }),
+        ]),
+        reason: expect.stringContaining(
+          `process ${child} (sshd-session) has an unreadable holder path`,
+        ),
+      });
+    } finally {
+      process.kill(child, "SIGKILL");
+    }
+  });
+});
+
+describe("a faked non-dumpable sshd-session", () => {
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+
+  function sessionProc(options: {
+    aliasCwd?: string;
+    parentUids?: string;
+  }): ProcReader {
+    const base = mountAliasProc("/work/tree", "plain", 1000);
+    const own = (target: string) => target.startsWith("/proc/101/");
+    return {
+      ...base,
+      readlink: async (target) => {
+        if (options.aliasCwd !== undefined && target === "/proc/101/cwd")
+          return options.aliasCwd;
+        return own(target) ? denied() : base.readlink(target);
+      },
+      readdir: async (target) =>
+        own(target) ? denied() : base.readdir(target),
+      statId: async (target) => (own(target) ? denied() : base.statId(target)),
+      statAccess: async (target) =>
+        target === "/proc/101/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+      readFile: async (target) => {
+        if (target === "/proc/101/status")
+          return "Name:\tsshd-session\nState:\tS (sleeping)\nPPid:\t200\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+        if (target === "/proc/200/status")
+          return `Name:\tsshd-session\nState:\tS (sleeping)\nPPid:\t1\nUid:\t${options.parentUids ?? "0\t0\t0\t0"}\nGid:\t0\t0\t0\t0\n`;
+        if (target === "/proc/101/comm" || target === "/proc/200/comm")
+          return "sshd-session\n";
+        return own(target) ? denied() : base.readFile(target);
+      },
+    };
+  }
+
+  it("clears one whose parent is a root-owned sshd-session", async () => {
+    expect(await scanLinux("/work/tree", sessionProc({}), 4242)).toMatchObject({
+      status: "clear",
+    });
+  });
+
+  it("keeps the worktree when its parent is owned by our uid", async () => {
+    expect(
+      await scanLinux(
+        "/work/tree",
+        sessionProc({ parentUids: "1000\t1000\t1000\t1000" }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 101 }],
+      reason: expect.stringContaining(
+        "process 101 (sshd-session) has an unreadable holder path",
+      ),
+    });
+  });
+
+  it("reports it as held when the mount alias scan finds its working folder in the worktree", async () => {
+    expect(
+      await scanLinux(
+        "/work/tree",
+        sessionProc({ aliasCwd: "/work/tree" }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "held",
+      holders: [{ pid: 101, through: "working folder" }],
+    });
   });
 });

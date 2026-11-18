@@ -507,6 +507,7 @@ interface ScanContext {
   tree: TreeIdsReader;
   aliases: () => Promise<string[] | null>;
   ownMounts: () => Promise<OwnMounts>;
+  ownCapabilities: () => Promise<bigint | null>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -982,6 +983,7 @@ async function scanLinuxProcess(
   );
   if (safety !== null && "gone" in safety) return null;
   if (safety !== null && "pid" in safety) return safety;
+  if (result !== null && "sessionProcess" in result) return null;
   if (safety !== null && "uncertain" in safety) {
     if (result !== null && "uncertain" in result)
       return { uncertain: `${safety.uncertain}; ${result.uncertain}` };
@@ -1005,7 +1007,7 @@ async function scanLinuxPaths(
   mountNamespace: string,
   self: LinuxProcessIdentity,
   context: ScanContext,
-): Promise<ProcessResult> {
+): Promise<ProcessResult | { sessionProcess: true }> {
   const base = `/proc/${pid}`;
   const status = await readOptional(() => proc.readFile(`${base}/status`));
   if ("gone" in status) return null;
@@ -1239,6 +1241,12 @@ async function scanLinuxPaths(
       vouchable: false,
     };
   }
+  if (
+    (await unreadableCause(proc, pid, await context.ownCapabilities())) ===
+      "it is non-dumpable" &&
+    (await isSessionProcess(proc, pid, self.uid))
+  )
+    return { sessionProcess: true };
   return {
     unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
     vouchable: false,
@@ -1705,6 +1713,43 @@ async function unreadableCause(
   return null;
 }
 
+interface SessionFacts {
+  comm: string;
+  parent: number;
+  uids: number[];
+}
+
+async function sessionFacts(
+  proc: ProcReader,
+  pid: number,
+): Promise<SessionFacts | null> {
+  const status = await readOptional(() => proc.readFile(`/proc/${pid}/status`));
+  const comm = await readOptional(() => proc.readFile(`/proc/${pid}/comm`));
+  if (!("value" in status) || !("value" in comm)) return null;
+  const parent = parseStatusNumbers(status.value, "PPid")?.[0];
+  const uids = parseStatusNumbers(status.value, "Uid");
+  if (parent === undefined || uids === null || uids.length !== 4) return null;
+  return { comm: comm.value.replace(/\n$/u, ""), parent, uids };
+}
+
+function ownedBy(facts: SessionFacts, uid: number): boolean {
+  return facts.uids.every((value) => value === uid);
+}
+
+async function isSessionProcess(
+  proc: ProcReader,
+  pid: number,
+  uid: number,
+): Promise<boolean> {
+  const facts = await sessionFacts(proc, pid);
+  if (facts === null || facts.comm !== "sshd-session" || !ownedBy(facts, uid))
+    return false;
+  const parent = await sessionFacts(proc, facts.parent);
+  return (
+    parent !== null && parent.comm === "sshd-session" && ownedBy(parent, 0)
+  );
+}
+
 async function processName(proc: ProcReader, pid: number): Promise<string> {
   const comm = await readOptional(() => proc.readFile(`/proc/${pid}/comm`));
   if (!("value" in comm)) return "unknown";
@@ -1768,6 +1813,7 @@ export async function scanLinux(
   };
   let aliases: Promise<string[] | null> | null = null;
   let ownMounts: Promise<OwnMounts> | null = null;
+  let ownCapabilities: Promise<bigint | null> | null = null;
   const context: ScanContext = {
     final: limits.final === true,
     tree,
@@ -1778,6 +1824,14 @@ export async function scanLinux(
     ownMounts: () => {
       ownMounts ??= readOwnMounts(proc, directory);
       return ownMounts;
+    },
+    ownCapabilities: () => {
+      ownCapabilities ??= readOptional(() =>
+        proc.readFile("/proc/self/status"),
+      ).then((own) =>
+        "value" in own ? permittedCapabilities(own.value) : null,
+      );
+      return ownCapabilities;
     },
     acls: new Map(),
   };

@@ -2058,6 +2058,113 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
   );
 });
 
+describe("an unreadable same-user sshd-session", () => {
+  interface SessionOptions {
+    comm?: string;
+    uidValues?: [number, number, number, number];
+    fdOwner?: number;
+    parent?: { comm: string; uids: string } | null;
+    readable?: boolean;
+    aliasCwd?: string;
+  }
+
+  function sessionProc(options: SessionOptions): ProcReader {
+    const base = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          uidValues: options.uidValues,
+          denied: options.readable !== true,
+          cwd: options.readable === true ? "/work/tree" : undefined,
+          name: options.comm ?? "sshd-session",
+          comm: options.comm ?? "sshd-session",
+          argv0: "sshd-session: alex@notty",
+          parentPid: 200,
+        },
+      },
+    });
+    const parent =
+      options.parent === undefined
+        ? { comm: "sshd-session", uids: "0\t0\t0\t0" }
+        : options.parent;
+    return {
+      ...base,
+      readFile: async (target) => {
+        if (parent !== null && target === "/proc/200/status")
+          return `Name:\t${parent.comm}\nState:\tS (sleeping)\nPPid:\t100\nUid:\t${parent.uids}\nGid:\t0\t0\t0\t0\n`;
+        if (parent !== null && target === "/proc/200/comm")
+          return `${parent.comm}\n`;
+        return base.readFile(target);
+      },
+      readlink: async (target) =>
+        options.aliasCwd !== undefined && target === "/proc/300/cwd"
+          ? options.aliasCwd
+          : base.readlink(target),
+      statAccess: async (target) =>
+        target === "/proc/300/fd"
+          ? { uid: options.fdOwner ?? 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+    };
+  }
+
+  it("clears a non-dumpable sshd-session whose parent is a root-owned sshd-session", async () => {
+    expect(await scanLinux("/work/tree", sessionProc({}), 4242)).toMatchObject({
+      status: "clear",
+    });
+  });
+
+  it.each<[string, SessionOptions]>([
+    [
+      "its parent is owned by our uid",
+      { parent: { comm: "sshd-session", uids: "1000\t1000\t1000\t1000" } },
+    ],
+    [
+      "its parent is only partly root-owned",
+      { parent: { comm: "sshd-session", uids: "0\t0\t0\t1000" } },
+    ],
+    [
+      "its parent is not an sshd-session",
+      { parent: { comm: "bash", uids: "0\t0\t0\t0" } },
+    ],
+    [
+      "its parent's comm only starts with sshd-session",
+      { parent: { comm: "sshd-sessionx", uids: "0\t0\t0\t0" } },
+    ],
+    ["its parent cannot be read", { parent: null }],
+    ["its comm only starts with sshd-session", { comm: "sshd-sessionx" }],
+    ["its comm is a prefix of sshd-session", { comm: "sshd-sessio" }],
+    ["its comm is another session agent", { comm: "ssh-agent" }],
+    ["its saved uid is root", { uidValues: [1000, 1000, 0, 1000] }],
+    ["it is unreadable without being non-dumpable", { fdOwner: 1000 }],
+  ])("keeps the worktree when %s", async (_, options) => {
+    const scan = await scanLinux("/work/tree", sessionProc(options), 4242);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 300 }],
+    });
+    const reason = "reason" in scan ? scan.reason : "";
+    expect(reason).toContain(
+      `process 300 (${options.comm ?? "sshd-session"}) has an unreadable holder path`,
+    );
+    expect(reason).not.toContain("alex@notty");
+  });
+
+  it.each<[string, SessionOptions]>([
+    ["its working folder reads inside the worktree", { readable: true }],
+    [
+      "the mount alias scan finds its working folder in the worktree",
+      { aliasCwd: "/work/tree" },
+    ],
+  ])("reports a matching sshd-session as held when %s", async (_, options) => {
+    expect(
+      await scanLinux("/work/tree", sessionProc(options), 4242),
+    ).toMatchObject({
+      status: "held",
+      holders: [{ pid: 300, through: "working folder" }],
+    });
+  });
+});
+
 describe.skipIf(
   process.platform !== "linux" ||
     (typeof process.getuid === "function" && process.getuid() === 0),
@@ -2152,6 +2259,25 @@ time.sleep(120)`,
       status: "unknown",
       reason: expect.stringContaining(
         "(ssh-agent) has an unreadable holder path",
+      ),
+    });
+  });
+
+  it("keeps a real non-dumpable sshd-session whose parent is not a root-owned sshd-session", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const dir = await worktree();
+    const child = await start("sshd-session", "sshd-session");
+    skip(
+      !(await nonDumpable(child.pid ?? 0)),
+      "the kernel lets this user read it",
+    );
+    const scan = await scanOnly(dir, child.pid ?? 0);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        "(sshd-session) has an unreadable holder path",
       ),
     });
   });
