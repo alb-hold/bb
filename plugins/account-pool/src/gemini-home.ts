@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { GEMINI_HOME_KEY } from "./host-contract.js";
 
-// The runtime accepts any client for an authorized_user file; the hub ignores
-// it. A placeholder keeps every real client secret out of thread homes.
-const PLACEHOLDER_CLIENT = "bb-account-pool";
-const SETTINGS = `${JSON.stringify({ auth: { type: "oauth-personal" } })}\n`;
+// antigravity-acp 1.5.0 selects its "gateway" auth from settings.json
+// (`_auth_state_from_settings`) and reads the hub URL and thread token from
+// AGY_GATEWAY_URL / AGY_GATEWAY_API_KEY, so a home holds no credential at all.
+// A token file left by an older build would make the runtime sign in to Google
+// itself, so it is removed.
+const STALE_TOKEN_FILE = "acp_token.json";
 
 function homesRoot(dataDir: string): string {
   return path.join(dataDir, "gemini-homes");
@@ -33,16 +35,36 @@ async function writePrivateFile(file: string, contents: string): Promise<void> {
   }
 }
 
+async function gatewaySettings(file: string): Promise<string> {
+  let settings: Record<string, unknown> = {};
+  const stat = await fs.lstat(file).catch(() => null);
+  if (stat?.isFile() === true) {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
+        settings = parsed as Record<string, unknown>;
+    } catch {
+      settings = {};
+    }
+  }
+  const auth = settings.auth;
+  settings.auth = {
+    ...(typeof auth === "object" && auth !== null && !Array.isArray(auth)
+      ? auth
+      : {}),
+    type: "gateway",
+  };
+  return `${JSON.stringify(settings)}\n`;
+}
+
 /**
- * Writes the GEMINI_HOME an antigravity-acp thread runs under. Its token file
- * holds only the thread's hub token and the hub's token endpoint, so the
- * runtime's own refresh lands on the hub; no Google credential is written.
+ * Writes the GEMINI_HOME an antigravity-acp thread runs under: only a
+ * settings.json that selects the gateway auth. The hub URL and the thread's hub
+ * token reach the runtime through env, so no token is written to disk.
  */
 export async function writeGeminiHome(options: {
   dataDir: string;
   key: string;
-  refreshToken: string;
-  tokenUri: string;
 }): Promise<string> {
   if (!GEMINI_HOME_KEY.test(options.key))
     throw new Error("Refusing a Gemini home for an invalid thread id.");
@@ -51,19 +73,9 @@ export async function writeGeminiHome(options: {
   const runtimeDir = path.join(home, "antigravity-acp");
   await fs.mkdir(options.dataDir, { recursive: true, mode: 0o700 });
   for (const dir of [root, home, runtimeDir]) await ensurePrivateDir(dir);
-  await writePrivateFile(
-    path.join(runtimeDir, "acp_token.json"),
-    `${JSON.stringify({
-      type: "authorized_user",
-      client_id: PLACEHOLDER_CLIENT,
-      client_secret: PLACEHOLDER_CLIENT,
-      refresh_token: options.refreshToken,
-      token_uri: options.tokenUri,
-    })}\n`,
-  );
+  await fs.rm(path.join(runtimeDir, STALE_TOKEN_FILE), { force: true });
   const settings = path.join(runtimeDir, "settings.json");
-  const existing = await fs.lstat(settings).catch(() => null);
-  if (existing === null) await writePrivateFile(settings, SETTINGS);
+  await writePrivateFile(settings, await gatewaySettings(settings));
   return home;
 }
 

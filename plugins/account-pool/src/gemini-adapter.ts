@@ -10,9 +10,17 @@ import {
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
 import {
+  codeAssistModel,
+  geminiGatewayCall,
+  geminiRuntimeRefusal,
+  geminiUpstreamUserAgent,
+  modelListResponse,
+  unwrapSse,
+  unwrapUnary,
+} from "./gemini-gateway.js";
+import {
   OAuthRefreshError,
   TransientOAuthRefreshError,
-  filterRequestHeaders,
   oauthSecretDueForRefresh,
   parseOAuthRefreshResponse,
   type ProviderAdapter,
@@ -54,13 +62,6 @@ export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
-
-const ALLOWED_REQUEST_HEADERS = new Set([
-  "accept",
-  "content-type",
-  "user-agent",
-  "x-goog-api-client",
-]);
 
 const refreshResponseSchema = z
   .object({
@@ -176,7 +177,6 @@ export function geminiQuotaRejection(
   detail: string,
   now: number,
 ): { reason: string; resetAt: number; message: string } | null {
-  let message = detail;
   let status: unknown;
   let reason: string | null = null;
   let delayMs: number | null = null;
@@ -189,8 +189,6 @@ export function geminiQuotaRejection(
         : null;
     if (typeof error === "object" && error !== null) {
       status = "status" in error ? error.status : undefined;
-      if ("message" in error && typeof error.message === "string")
-        message = error.message;
       const details =
         "details" in error && Array.isArray(error.details) ? error.details : [];
       for (const entry of details as unknown[]) {
@@ -231,7 +229,9 @@ export function geminiQuotaRejection(
   return {
     reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
-    message,
+    // Google's own error, unchanged: the runtime renders its quota message
+    // and reset time from it.
+    message: detail,
   };
 }
 
@@ -424,46 +424,19 @@ async function googleEmail(
 // Code Assist attributes the call to the Antigravity client.
 const LOAD_CODE_ASSIST_BODY = { metadata: { ideType: "ANTIGRAVITY" } };
 
-function bodyWithProject(body: Uint8Array, project: string): Uint8Array {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(body));
-  } catch {
-    return body;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    return body;
-  const record = parsed as Record<string, unknown>;
-  if ("project" in record) record.project = project;
-  if ("cloudaicompanionProject" in record)
-    record.cloudaicompanionProject = project;
-  const metadata = record.metadata;
-  if (
-    typeof metadata === "object" &&
-    metadata !== null &&
-    !Array.isArray(metadata) &&
-    "duetProject" in metadata
-  )
-    (metadata as Record<string, unknown>).duetProject = project;
-  return new TextEncoder().encode(JSON.stringify(record));
-}
-
-function sessionId(body: Uint8Array): string | null {
+function genaiBody(body: Uint8Array): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
-    const request =
-      typeof parsed === "object" && parsed !== null && "request" in parsed
-        ? parsed.request
-        : null;
-    const id =
-      typeof request === "object" && request !== null && "session_id" in request
-        ? request.session_id
-        : null;
-    return typeof id === "string" && id !== "" ? id : null;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
 }
+
+const encodeJson = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value));
 
 export function createGeminiAdapter(options: {
   refreshUrl: string;
@@ -473,6 +446,8 @@ export function createGeminiAdapter(options: {
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Sees the model ids each served model list offers. */
+  onModels?: (ids: string[]) => void;
 }): ProviderAdapter {
   const bases = {
     prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
@@ -547,36 +522,78 @@ export function createGeminiAdapter(options: {
         },
       };
     },
-    parseRequest(body, headers) {
-      const rewritable = !headers.has("content-encoding");
+    parseRequest(body, _headers, url) {
+      const call = geminiGatewayCall(url);
+      if (call?.kind !== "generate") {
+        // The model list is the account's own: fetchAvailableModels for its
+        // project.
+        return {
+          family: "other",
+          affinityId: null,
+          parentAffinityId: null,
+          upstreamMethod: "POST",
+          forAccount: (account) => encodeJson({ project: account.geminiProject }),
+        };
+      }
+      const genai = genaiBody(body);
+      const { model, request } =
+        genai === null
+          ? { model: call.model, request: null }
+          : codeAssistModel(call.model, genai);
+      const session = genai?.sessionId;
       return {
         family: "other",
-        affinityId: rewritable ? sessionId(body) : null,
+        affinityId: typeof session === "string" && session !== "" ? session : null,
         parentAffinityId: null,
         forAccount: (account) =>
-          rewritable && account.geminiProject !== undefined
-            ? bodyWithProject(body, account.geminiProject)
-            : body,
+          encodeJson({ model, project: account.geminiProject, request }),
       };
     },
+    refuseClient: geminiRuntimeRefusal,
     upstreamUrl(request, _settings, account) {
-      const url = new URL(request.url);
-      // Every Code Assist call is `<mount>/v1internal:<method>`; anchor on the
-      // API segment so the mount prefix never leaks upstream.
-      const api = url.pathname.indexOf("/v1internal");
-      const rest = api < 0 ? url.pathname : url.pathname.slice(api);
-      return new URL(`${baseFor(account)}${rest}${url.search}`);
+      const call = geminiGatewayCall(new URL(request.url));
+      const method =
+        call === null || call.kind === "models"
+          ? "fetchAvailableModels"
+          : call.method;
+      return new URL(
+        `${baseFor(account)}/v1internal:${method}${method === "streamGenerateContent" ? "?alt=sse" : ""}`,
+      );
     },
     requestHeaders(inbound, _account, secret) {
       if (secret.kind !== "oauth")
         throw new Error("Gemini accounts require OAuth credentials.");
-      const headers = filterRequestHeaders(
-        inbound,
-        ALLOWED_REQUEST_HEADERS,
-        [],
-      );
-      headers.set("authorization", `Bearer ${secret.accessToken}`);
-      return headers;
+      // Exactly the three headers the runtime's own OAuth client sends.
+      return new Headers({
+        authorization: `Bearer ${secret.accessToken}`,
+        "content-type": "application/json",
+        "user-agent": geminiUpstreamUserAgent(inbound),
+      });
+    },
+    transformResponse(response, context) {
+      const call = geminiGatewayCall(context.url);
+      if (response.body === null) return response;
+      const transform =
+        call === null || call.kind === "models"
+          ? modelListResponse(call?.api ?? "v1beta", (ids) =>
+              options.onModels?.(ids),
+            )
+          : call.method === "generateContent"
+            ? unwrapUnary()
+            : unwrapSse((detail) => {
+                const rejection = geminiQuotaRejection(detail, clock());
+                if (rejection !== null) context.onQuotaRejection(rejection);
+              });
+      const headers = new Headers(response.headers);
+      headers.delete("content-length");
+      headers.delete("content-encoding");
+      if (call === null || call.kind !== "generate" || call.method === "generateContent")
+        headers.set("content-type", "application/json; charset=utf-8");
+      return new Response(response.body.pipeThrough(transform), {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
     },
     quotaFromHeaders(_accountId, _headers, previous) {
       return previous;
@@ -697,6 +714,20 @@ export function createGeminiAdapter(options: {
       context.quotas.put(quota);
     },
     errorResponse(status, message, headers) {
+      // Google's own error JSON goes back unchanged.
+      try {
+        const parsed: unknown = JSON.parse(message);
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "error" in parsed &&
+          typeof parsed.error === "object" &&
+          parsed.error !== null
+        )
+          return Response.json(parsed, { status, headers });
+      } catch {
+        // A plain message is wrapped below.
+      }
       return Response.json(
         {
           error: { code: status, message, status: googleStatusName(status) },

@@ -103,12 +103,33 @@ export interface ProviderAdapter {
   parseRequest(
     body: Uint8Array,
     headers: Headers,
+    url: URL,
   ): {
     family: ModelFamily;
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
+    /** The upstream method when it differs from the client's (default: same). */
+    upstreamMethod?: string;
   };
+  /**
+   * A reason this client cannot be routed (an unsupported runtime version),
+   * or null. A refused request never reaches the upstream.
+   */
+  refuseClient?(headers: Headers): string | null;
+  /**
+   * Rewrites a successful upstream response into the client's protocol.
+   * `onQuotaRejection` holds the serving account when the stream itself
+   * reports its quota is gone, so the next request fails over.
+   */
+  transformResponse?(
+    response: Response,
+    context: {
+      url: URL;
+      account: Account;
+      onQuotaRejection: (rejection: { reason: string; resetAt: number }) => void;
+    },
+  ): Response;
   upstreamUrl(
     request: Request,
     settings: AccountPoolConfig,

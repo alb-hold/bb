@@ -6,9 +6,6 @@ import { z } from "zod";
 export const GEMINI_HOME_KEY =
   /^(?:thr_[23456789abcdefghijkmnpqrstuvwxyz]{10}|catalog)$/u;
 
-/** The hub route antigravity-acp refreshes its thread token against. */
-export const GEMINI_TOKEN_ROUTE = "/gemini/oauth2/token";
-
 export const accountPoolHostContract = defineRpcContract({
   ensureProxy: {
     experimental_retryable: true,
@@ -35,7 +32,6 @@ export const accountPoolHostContract = defineRpcContract({
     input: z
       .object({
         key: z.string().regex(GEMINI_HOME_KEY),
-        refreshToken: z.string().min(1).max(4_096),
       })
       .strict(),
     output: z.object({ home: z.string().min(1) }).strict(),

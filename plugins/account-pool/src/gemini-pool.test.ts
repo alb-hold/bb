@@ -18,8 +18,13 @@ import {
   parseGeminiCredentials,
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
+import {
+  codeAssistModel,
+  geminiRuntimeRefusal,
+  geminiUpstreamUserAgent,
+  unwrapSse,
+} from "./gemini-gateway.js";
 import { pruneGeminiHomes, writeGeminiHome } from "./gemini-home.js";
-import { GEMINI_TOKEN_ROUTE } from "./host-contract.js";
 import { PARENT_TOKEN_ENV, PARENT_URL_ENV } from "./parent-pool.js";
 import { createAccountPoolPlugin } from "./server.js";
 import { createAccountPoolTestHost } from "./test-host.js";
@@ -109,54 +114,46 @@ describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
 });
 
 describe("Gemini homes the host worker writes", () => {
-  const tokenUri = `http://bb.test/api/v1/plugins/account-pool/http${GEMINI_TOKEN_ROUTE}`;
-
-  it("holds only the hub token and the hub's token endpoint, privately", async () => {
+  it("holds only settings that select the gateway sign-in, privately, and no token", async () => {
     const dataDir = await tempDir("bb-host-data-");
-    const home = await writeGeminiHome({
-      dataDir,
-      key: THREAD,
-      refreshToken: "hub-thread-token",
-      tokenUri,
-    });
+    const runtimeDir = path.join(dataDir, "gemini-homes", THREAD, "antigravity-acp");
+    // A token file and settings left by an older build or by the runtime.
+    await fs.mkdir(runtimeDir, { recursive: true });
+    await fs.writeFile(path.join(runtimeDir, "acp_token.json"), '{"refresh_token":"old"}');
+    await fs.writeFile(
+      path.join(runtimeDir, "settings.json"),
+      '{"auth":{"type":"oauth-personal","extra":true},"x":1}',
+    );
+    const home = await writeGeminiHome({ dataDir, key: THREAD });
     expect(home).toBe(path.join(dataDir, "gemini-homes", THREAD));
-    const tokenFile = path.join(home, "antigravity-acp", "acp_token.json");
-    expect(JSON.parse(await fs.readFile(tokenFile, "utf8"))).toEqual({
-      type: "authorized_user",
-      client_id: "bb-account-pool",
-      client_secret: "bb-account-pool",
-      refresh_token: "hub-thread-token",
-      token_uri: tokenUri,
-    });
-    expect((await fs.stat(tokenFile)).mode & 0o777).toBe(0o600);
-    for (const dir of [
-      path.join(dataDir, "gemini-homes"),
-      home,
-      path.join(home, "antigravity-acp"),
-    ])
-      expect((await fs.stat(dir)).mode & 0o777).toBe(0o700);
-    const settings = path.join(home, "antigravity-acp", "settings.json");
+    expect(await fs.readdir(runtimeDir)).toEqual(["settings.json"]);
+    const settings = path.join(runtimeDir, "settings.json");
     expect(JSON.parse(await fs.readFile(settings, "utf8"))).toEqual({
-      auth: { type: "oauth-personal" },
+      auth: { type: "gateway", extra: true },
+      x: 1,
     });
-    // A later write replaces the token but keeps settings the runtime changed.
-    await fs.writeFile(settings, '{"auth":{"type":"oauth-personal"},"x":1}');
-    await writeGeminiHome({ dataDir, key: THREAD, refreshToken: "next", tokenUri });
-    expect(JSON.parse(await fs.readFile(tokenFile, "utf8")).refresh_token).toBe("next");
-    expect(JSON.parse(await fs.readFile(settings, "utf8")).x).toBe(1);
+    expect((await fs.stat(settings)).mode & 0o777).toBe(0o600);
+    for (const dir of [path.join(dataDir, "gemini-homes"), home, runtimeDir])
+      expect((await fs.stat(dir)).mode & 0o777).toBe(0o700);
+    const fresh = await writeGeminiHome({ dataDir, key: "catalog" });
+    expect(
+      JSON.parse(
+        await fs.readFile(path.join(fresh, "antigravity-acp", "settings.json"), "utf8"),
+      ),
+    ).toEqual({ auth: { type: "gateway" } });
   });
 
   it("refuses a key that is not a thread id, and a home that is a symlink", async () => {
     const dataDir = await tempDir("bb-host-data-");
     for (const key of ["../escape", "thr_short", "thr_gemini2345/x", ""])
       await expect(
-        writeGeminiHome({ dataDir, key, refreshToken: "t", tokenUri }),
+        writeGeminiHome({ dataDir, key }),
       ).rejects.toThrow(/invalid thread id/u);
     const elsewhere = await tempDir("bb-elsewhere-");
     await fs.mkdir(path.join(dataDir, "gemini-homes"), { recursive: true });
     await fs.symlink(elsewhere, path.join(dataDir, "gemini-homes", THREAD));
     await expect(
-      writeGeminiHome({ dataDir, key: THREAD, refreshToken: "t", tokenUri }),
+      writeGeminiHome({ dataDir, key: THREAD }),
     ).rejects.toThrow(/not a directory/u);
     expect(await fs.readdir(elsewhere)).toEqual([]);
   });
@@ -164,7 +161,7 @@ describe("Gemini homes the host worker writes", () => {
   it("prunes homes of threads that lost their route, never the catalog's", async () => {
     const dataDir = await tempDir("bb-host-data-");
     for (const key of [THREAD, "thr_revoked234", "catalog"])
-      await writeGeminiHome({ dataDir, key, refreshToken: "t", tokenUri });
+      await writeGeminiHome({ dataDir, key });
     await expect(pruneGeminiHomes({ dataDir, keep: [THREAD] })).resolves.toBe(1);
     expect((await fs.readdir(path.join(dataDir, "gemini-homes"))).sort()).toEqual([
       "catalog",
@@ -200,7 +197,8 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection(body, 1_000)).toEqual({
       reason: "quota_exhausted",
       resetAt: 91_000,
-      message: "You have exhausted your capacity on this model.",
+      // Google's error JSON as is, so the runtime gets the genai error shape.
+      message: body,
     });
   });
 
@@ -328,6 +326,116 @@ describe("Gemini quota parsing", () => {
   });
 });
 
+const RUNTIME_UA =
+  "google-antigravity-sdk/0.0.0-dev python/3.12.9 antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64; auth_method=gateway; host_path=bb-probe/0; proxy_client=antigravity/sdk)";
+const UPSTREAM_UA =
+  "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64; host_path=bb-probe/0; proxy_client=antigravity/sdk)";
+
+async function piped(
+  transform: TransformStream<Uint8Array, Uint8Array>,
+  chunks: Uint8Array[],
+): Promise<string> {
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  return new Response(source.pipeThrough(transform)).text();
+}
+
+/** The `data:` payloads of an SSE body. */
+function sseData(text: string): unknown[] {
+  return text
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => JSON.parse(line.slice(5)) as unknown);
+}
+
+describe("Gemini gateway translation", () => {
+  it("unwraps each SSE event's response across any chunk boundary, keeping line endings", async () => {
+    const wire =
+      'data: {"response":{"candidates":[{"content":{"parts":[{"text":"h\u00e9"}]}}]},"traceId":"t"}\r\n\r\n' +
+      ": keep-alive\n\n" +
+      'data: {"response":{"usageMetadata":{"totalTokenCount":3}}}\n\n';
+    const bytes = new TextEncoder().encode(wire);
+    const errors: string[] = [];
+    const whole = await piped(unwrapSse((detail) => errors.push(detail)), [bytes]);
+    expect(whole).toBe(
+      'data: {"candidates":[{"content":{"parts":[{"text":"h\u00e9"}]}}]}\r\n\r\n' +
+        ": keep-alive\n\n" +
+        'data: {"usageMetadata":{"totalTokenCount":3}}\n\n',
+    );
+    // Every split point, including inside \r\n and inside a multi-byte char.
+    for (let cut = 1; cut < bytes.length; cut += 1)
+      expect(
+        await piped(unwrapSse(() => undefined), [bytes.slice(0, cut), bytes.slice(cut)]),
+      ).toBe(whole);
+    expect(errors).toEqual([]);
+  });
+
+  it("passes an in-stream error event on unchanged after reporting it", async () => {
+    const event = JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED" } });
+    const errors: string[] = [];
+    const out = await piped(unwrapSse((detail) => errors.push(detail)), [
+      new TextEncoder().encode(`data: ${event}\r\n\r\n`),
+    ]);
+    expect(out).toBe(`data: ${event}\r\n\r\n`);
+    expect(errors).toEqual([event]);
+  });
+
+  it("joins a mapped model id back the way the runtime's OAuth path names it", () => {
+    expect(
+      codeAssistModel("gemini-4-carbon", {
+        contents: [],
+        generationConfig: {
+          temperature: 1,
+          thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true },
+        },
+      }),
+    ).toEqual({
+      model: "gemini-4-carbon-high",
+      request: {
+        contents: [],
+        generationConfig: { temperature: 1, thinkingConfig: { includeThoughts: true } },
+      },
+    });
+    expect(
+      codeAssistModel("gemini-3.1-pro-preview", {
+        generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
+      }).model,
+    ).toBe("gemini-3.1-pro-low");
+    // A literal id, or a level the family does not have, is sent as is.
+    const literal = { contents: [], generationConfig: { thinkingConfig: { thinkingLevel: "low" } } };
+    expect(codeAssistModel("gemini-3-flash-preview", literal)).toEqual({
+      model: "gemini-3-flash-preview",
+      request: literal,
+    });
+    const minimal = { generationConfig: { thinkingConfig: { thinkingLevel: "minimal" } } };
+    expect(codeAssistModel("gemini-4-argon", minimal)).toEqual({
+      model: "gemini-4-argon",
+      request: minimal,
+    });
+    expect(codeAssistModel("gemini-3.1-flash-lite-image", { contents: [] }).model).toBe(
+      "gemini-3.1-flash-image",
+    );
+  });
+
+  it("serves only antigravity-acp 1.5.0, and names the reason otherwise", () => {
+    const ua = (value: string) => new Headers({ "user-agent": value });
+    expect(geminiRuntimeRefusal(ua(RUNTIME_UA))).toBeNull();
+    expect(geminiRuntimeRefusal(ua(RUNTIME_UA.replace("acp/1.5.0", "acp/1.6.0")))).toBe(
+      "Gemini routing is not available: antigravity-acp 1.6.0 is installed, and the Account Pooler supports only 1.5.0.",
+    );
+    expect(geminiRuntimeRefusal(ua("curl/8.7.1"))).toBe(
+      "Gemini routing is not available: the request is not from antigravity-acp.",
+    );
+    expect(geminiRuntimeRefusal(new Headers())).not.toBeNull();
+    // Upstream it is the runtime's own OAuth User-Agent: no gateway marker.
+    expect(geminiUpstreamUserAgent(ua(RUNTIME_UA))).toBe(UPSTREAM_UA);
+  });
+});
+
 interface UpstreamCall {
   method: string;
   bearer: string;
@@ -335,12 +443,17 @@ interface UpstreamCall {
   sessionId: unknown;
   endpoint?: "prod" | "daily";
   body?: unknown;
+  url?: string;
+  userAgent?: string;
+  headerNames?: string[];
 }
 
 type StreamBehavior = (bearer: string) => {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+  /** Raw SSE chunks for a 200 stream (default: one event holding `body`). */
+  sse?: string[];
 };
 
 /**
@@ -354,6 +467,7 @@ async function startGoogle(args: {
   gcpTos?: string[];
   quotaFraction: Record<string, number>;
   extraBuckets?: unknown[];
+  models?: unknown;
   stream: StreamBehavior;
 }): Promise<{ url: string; calls: UpstreamCall[]; close: () => Promise<void> }> {
   const calls: UpstreamCall[] = [];
@@ -408,7 +522,7 @@ async function startGoogle(args: {
           return;
         }
         const endpoint = mount[1] as "prod" | "daily";
-        const apiPath = mount[2] ?? "";
+        const apiPath = (mount[2] ?? "").replace(/\?.*$/u, "");
         const method = apiPath.replace(/^\/v1internal:/u, "");
         const body: Record<string, unknown> =
           raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
@@ -417,9 +531,12 @@ async function startGoogle(args: {
           method,
           bearer,
           project: body.project,
-          sessionId: inner.session_id,
+          sessionId: inner.sessionId,
           endpoint,
           body,
+          url: String(request.url),
+          userAgent: String(request.headers["user-agent"] ?? ""),
+          headerNames: Object.keys(request.headers).sort(),
         });
         if (!apiPath.startsWith("/v1internal:")) {
           send(200, { ok: true });
@@ -443,9 +560,21 @@ async function startGoogle(args: {
               },
             ],
           });
-        else if (method === "streamGenerateContent") {
+        else if (method === "fetchAvailableModels")
+          send(200, args.models ?? MODELS_PAYLOAD);
+        else if (method === "streamGenerateContent" || method === "generateContent") {
           const outcome = args.stream(bearer);
-          send(outcome.status, outcome.body, outcome.headers);
+          if (outcome.status !== 200 || method === "generateContent") {
+            send(outcome.status, outcome.body, outcome.headers);
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("content-type", "text/event-stream");
+          for (const chunk of outcome.sse ?? [
+            `data: ${JSON.stringify(outcome.body)}\r\n\r\n`,
+          ])
+            response.write(chunk);
+          response.end();
         } else send(404, { error: { status: "NOT_FOUND" } });
       });
     },
@@ -490,6 +619,39 @@ const CAPACITY_BODY = {
 
 const OK_BODY = { response: { candidates: [] } };
 
+// fetchAvailableModels for an account: Gemini and third-party models, in the
+// order agentModelSorts gives.
+const MODELS_PAYLOAD = {
+  models: {
+    "gemini-4-carbon-high": { displayName: "Gemini 4 Carbon (High)", maxTokens: 1048576 },
+    "gemini-3.8-flash": { displayName: "Gemini 3.8 Flash" },
+    "gemini-orchestrator": { displayName: "Gemini Orchestrator" },
+    "claude-opus-4-6": { displayName: "Claude Opus 4.6" },
+    "gemini-retired": { displayName: "Retired", disabled: true },
+    "gpt-oss-120b": { displayName: "GPT-OSS" },
+  },
+  agentModelSorts: [
+    {
+      groups: [
+        { modelIds: ["gemini-orchestrator", "claude-opus-4-6", "gemini-4-carbon-high"] },
+        { modelIds: ["gemini-retired", "gemini-3.8-flash", "gpt-oss-120b", "gemini-orchestrator"] },
+      ],
+    },
+  ],
+};
+
+// Headers any HTTP client adds; the rest must be exactly the runtime's three.
+const TRANSPORT_HEADERS = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "connection",
+  "content-length",
+  "host",
+  "sec-fetch-mode",
+  "transfer-encoding",
+]);
+
 async function createGeminiFixture(
   google: { url: string },
   homes: Record<string, ImportedGeminiCredentials>,
@@ -521,14 +683,9 @@ async function createGeminiFixture(
           throw new Error(`unknown host rpc method "${call.method}"`);
       }
       if (call.method === "writeGeminiHome") {
-        const input = call.input as { key: string; refreshToken: string };
+        const input = call.input as { key: string };
         return {
-          home: await writeGeminiHome({
-            dataDir: hostDataDir,
-            key: input.key,
-            refreshToken: input.refreshToken,
-            tokenUri: `http://bb.test/api/v1/plugins/account-pool/http${GEMINI_TOKEN_ROUTE}`,
-          }),
+          home: await writeGeminiHome({ dataDir: hostDataDir, key: input.key }),
         };
       }
       if (call.method === "pruneGeminiHomes") {
@@ -604,39 +761,37 @@ function resolveGeminiEnv(host: GeminiHost, threadId: string | null = THREAD) {
   });
 }
 
-function refreshAtHub(host: GeminiHost, form: Record<string, string>) {
-  return host.harness.behavior.fetchHttp("POST", GEMINI_TOKEN_ROUTE, {
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(form).toString(),
-  });
-}
+const GENERATE_ROUTE =
+  "/gemini/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent";
 
-/**
- * Resolves a thread's env the way bb launches antigravity-acp, then does what
- * the runtime does: read the token file in GEMINI_HOME and refresh it at its
- * token_uri (the hub) for the bearer it sends to Code Assist.
- */
+/** Resolves a thread's env the way bb launches antigravity-acp. */
 async function geminiEnv(host: GeminiHost, threadId = THREAD) {
   const entries = await resolveGeminiEnv(host, threadId);
   const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
   const home = byName.get("GEMINI_HOME");
-  if (typeof home !== "string") throw new Error("Gemini home missing.");
-  const tokenFile = path.join(home, "antigravity-acp", "acp_token.json");
-  const file = z
-    .object({ refresh_token: z.string(), token_uri: z.string() })
-    .passthrough()
-    .parse(JSON.parse(await fs.readFile(tokenFile, "utf8")));
-  const refreshed = await refreshAtHub(host, {
-    grant_type: "refresh_token",
-    refresh_token: file.refresh_token,
-    client_id: "bb-account-pool",
-    client_secret: "bb-account-pool",
+  const token = byName.get("AGY_GATEWAY_API_KEY");
+  if (typeof home !== "string" || typeof token !== "string")
+    throw new Error("Gemini env missing.");
+  return { token, home, byName, entries };
+}
+
+/** A request as antigravity-acp sends it on its gateway path. */
+function runtimeCall(
+  host: GeminiHost,
+  token: string,
+  options: { method?: "GET" | "POST"; path?: string; body?: unknown; userAgent?: string } = {},
+) {
+  const method = options.method ?? "POST";
+  return host.harness.behavior.fetchHttp(method, options.path ?? `${GENERATE_ROUTE}?alt=sse`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "user-agent": options.userAgent ?? RUNTIME_UA,
+    },
+    ...(method === "GET"
+      ? {}
+      : { body: JSON.stringify(options.body ?? { contents: [], sessionId: "s" }) }),
   });
-  expect(refreshed.status).toBe(200);
-  const { access_token: token } = z
-    .object({ access_token: z.string() })
-    .parse(await refreshed.json());
-  return { token, home, tokenFile, file, byName, entries };
 }
 
 async function addGemini(host: GeminiHost, home: string, priority: number) {
@@ -669,21 +824,7 @@ describe("Gemini account pool", () => {
     const b = await addGemini(fixture.host, "/homes/b", 100);
     const env = await geminiEnv(fixture.host);
     const post = (sessionId = "session-1", token = env.token) =>
-      fixture.host.harness.behavior.fetchHttp(
-        "POST",
-        "/gemini/v1internal:streamGenerateContent?alt=sse",
-        {
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "gemini-3-pro",
-            project: "client-side-project",
-            request: { contents: [], session_id: sessionId },
-          }),
-        },
-      );
+      runtimeCall(fixture.host, token, { body: { contents: [], sessionId } });
     return { google, fixture, env, post, ids: { a: a.id, b: b.id } };
   }
 
@@ -728,21 +869,9 @@ describe("Gemini account pool", () => {
     ] as const)
       await addGemini(fixture.host, home, priority);
     const env = await geminiEnv(fixture.host);
-    const response = await fixture.host.harness.behavior.fetchHttp(
-      "POST",
-      "/gemini/v1internal:streamGenerateContent?alt=sse",
-      {
-        headers: {
-          authorization: `Bearer ${env.token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gemini-3-pro",
-          project: "client-side-project",
-          request: { contents: [], session_id: "s3" },
-        }),
-      },
-    );
+    const response = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "s3" },
+    });
     expect(response.status).toBe(200);
     const stream = google.calls.filter((call) => call.method === "streamGenerateContent");
     expect(stream.map((call) => call.bearer)).toEqual(["tok-a", "tok-b", "tok-c"]);
@@ -782,20 +911,28 @@ describe("Gemini account pool", () => {
     expect(login.exitCode).not.toBe(0);
   });
 
-  it("points antigravity-acp at the hub through a home that holds no Google credential", async () => {
+  it("points antigravity-acp at the hub with env only, through a home that holds no credential", async () => {
     const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    expect(env.entries.map((entry) => entry.name).sort()).toEqual([
+      "AGY_ACP_ENABLE_GATEWAY_AUTH",
+      "AGY_ACP_FORCE_FILE_STORAGE",
+      "AGY_GATEWAY_API_KEY",
+      "AGY_GATEWAY_URL",
+      "GEMINI_HOME",
+    ]);
     expect(env.byName.get("AGY_ACP_FORCE_FILE_STORAGE")).toBe("1");
-    expect(env.byName.get("AGY_ACP_CCPA_BASE_URL")).toEqual({
+    expect(env.byName.get("AGY_ACP_ENABLE_GATEWAY_AUTH")).toBe("1");
+    expect(env.byName.get("AGY_GATEWAY_URL")).toEqual({
       serverPath: "/api/v1/plugins/account-pool/http/gemini",
     });
     expect(env.home).toBe(path.join(fixture.hostDataDir, "gemini-homes", THREAD));
-    expect(env.file.token_uri).toMatch(/\/api\/v1\/plugins\/account-pool\/http\/gemini\/oauth2\/token$/u);
-    const written = await fs.readFile(env.tokenFile, "utf8");
-    for (const secret of ["tok-a", "tok-b", "refresh-tok", CLIENT.clientSecret])
+    const runtimeDir = path.join(env.home, "antigravity-acp");
+    expect(await fs.readdir(runtimeDir)).toEqual(["settings.json"]);
+    const written = await fs.readFile(path.join(runtimeDir, "settings.json"), "utf8");
+    expect(JSON.parse(written)).toEqual({ auth: { type: "gateway" } });
+    for (const secret of ["tok-a", "tok-b", "refresh-tok", CLIENT.clientSecret, env.token])
       expect(written).not.toContain(secret);
-    expect(JSON.stringify(env.entries)).not.toContain(env.file.refresh_token);
-    // The hub hands the hub token back as the access token: no Google token leaves it.
-    expect(env.token).toBe(env.file.refresh_token);
+    expect(JSON.stringify(env.entries)).not.toMatch(/tok-a|tok-b|refresh-tok|agy-secret/u);
     await expect(
       fixture.host.harness.behavior.resolveProviderEnvHealth(GEMINI_PROVIDER_ID, {
         hostId: "host-one",
@@ -803,30 +940,221 @@ describe("Gemini account pool", () => {
     ).resolves.toMatchObject({ label: "Proxied" });
   });
 
-  it("refreshes only a live hub token at the hub's token endpoint", async () => {
-    const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
-    const good = await refreshAtHub(fixture.host, {
-      grant_type: "refresh_token",
-      refresh_token: env.file.refresh_token,
+  it("gives the runtime only the hub to call, and never sends the hub token to Google", async () => {
+    const { env, fixture, google, post } = await twoAccounts(() => ({
+      status: 200,
+      body: OK_BODY,
+    }));
+    for (const threadId of [THREAD, null]) {
+      const entries = await resolveGeminiEnv(fixture.host, threadId);
+      for (const entry of entries) {
+        if (typeof entry.value === "string")
+          expect(entry.value).not.toMatch(/^[a-z]+:\/\//iu);
+        else
+          expect(entry.value.serverPath).toMatch(
+            /^\/api\/v1\/plugins\/account-pool\/http\//u,
+          );
+      }
+    }
+    await (await post()).text();
+    await (
+      await runtimeCall(fixture.host, env.token, {
+        path: "/gemini/v1beta/models/gemini-3.1-pro-preview:generateContent",
+      })
+    ).text();
+    await (
+      await runtimeCall(fixture.host, env.token, { method: "GET", path: "/gemini/v1beta/models" })
+    ).text();
+    await (
+      await runtimeCall(fixture.host, env.token, { method: "GET", path: "/gemini/v1/models" })
+    ).text();
+    const served = google.calls.filter((call) => call.endpoint !== undefined);
+    expect(served.map((call) => call.method)).toEqual(
+      expect.arrayContaining(["streamGenerateContent", "generateContent", "fetchAvailableModels"]),
+    );
+    for (const call of google.calls) {
+      expect(call.bearer).not.toBe(env.token);
+      expect(JSON.stringify(call.body ?? null)).not.toContain(env.token);
+    }
+  });
+
+  it("sends a turn as the runtime's own Code Assist call and unwraps the stream", async () => {
+    const { google, post } = await twoAccounts(() => ({
+      status: 200,
+      body: OK_BODY,
+      sse: [
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]},"traceId":"t1"}\r\n\r\n',
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"totalTokenCount":3}}}\r\n\r\n',
+      ],
+    }));
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(sseData(await response.text())).toEqual([
+      { candidates: [{ content: { parts: [{ text: "Hel" }] } }] },
+      {
+        candidates: [{ content: { parts: [{ text: "lo" }] } }],
+        usageMetadata: { totalTokenCount: 3 },
+      },
+    ]);
+    const [call, ...rest] = google.calls.filter(
+      (entry) => entry.method === "streamGenerateContent",
+    );
+    expect(rest).toEqual([]);
+    expect(call?.url).toBe("/daily/v1internal:streamGenerateContent?alt=sse");
+    expect(call?.body).toEqual({
+      model: "gemini-3.1-pro-preview",
+      project: "proj-a",
+      request: { contents: [], sessionId: "session-1" },
     });
-    expect(good.status).toBe(200);
-    expect(good.headers.get("cache-control")).toBe("no-store");
-    expect(await good.json()).toMatchObject({
-      access_token: env.file.refresh_token,
-      token_type: "Bearer",
-      expires_in: 300,
+    expect(call?.userAgent).toBe(UPSTREAM_UA);
+    expect(call?.headerNames?.filter((name) => !TRANSPORT_HEADERS.has(name))).toEqual([
+      "authorization",
+      "content-type",
+      "user-agent",
+    ]);
+  });
+
+  it("joins a mapped model back and unwraps a unary reply", async () => {
+    const { google, fixture, env } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    const response = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-carbon:generateContent",
+      body: {
+        contents: [],
+        generationConfig: { thinkingConfig: { thinkingLevel: "high", includeThoughts: true } },
+      },
     });
-    const bogus = await refreshAtHub(fixture.host, {
-      grant_type: "refresh_token",
-      refresh_token: "refresh-tok-a",
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(OK_BODY.response);
+    const call = google.calls.find((entry) => entry.method === "generateContent");
+    expect(call?.url).toBe("/daily/v1internal:generateContent");
+    expect(call?.body).toEqual({
+      model: "gemini-4-carbon-high",
+      project: "proj-a",
+      request: {
+        contents: [],
+        generationConfig: { thinkingConfig: { includeThoughts: true } },
+      },
     });
-    expect(bogus.status).toBe(400);
-    expect(await bogus.json()).toEqual({ error: "invalid_grant" });
-    const wrongGrant = await refreshAtHub(fixture.host, {
-      grant_type: "authorization_code",
-      refresh_token: env.file.refresh_token,
+  });
+
+  it("lists the routed account's Gemini models in both shapes and routes each new id", async () => {
+    const { google, fixture, env } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    const newModel = "/gemini/v1beta/models/gemini-orchestrator:streamGenerateContent";
+    await expect(runtimeCall(fixture.host, env.token, { path: newModel })).rejects.toThrow(
+      /no http route/u,
+    );
+    const v1beta = await runtimeCall(fixture.host, env.token, {
+      method: "GET",
+      path: "/gemini/v1beta/models?pageSize=1000",
     });
-    expect(wrongGrant.status).toBe(400);
+    expect(v1beta.status).toBe(200);
+    expect(await v1beta.json()).toEqual({
+      models: [
+        {
+          name: "models/gemini-orchestrator",
+          displayName: "Gemini Orchestrator",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
+          name: "models/gemini-4-carbon-high",
+          displayName: "Gemini 4 Carbon (High)",
+          inputTokenLimit: 1048576,
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
+          name: "models/gemini-3.8-flash",
+          displayName: "Gemini 3.8 Flash",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+      ],
+    });
+    const v1 = await runtimeCall(fixture.host, env.token, {
+      method: "GET",
+      path: "/gemini/v1/models",
+    });
+    expect(await v1.json()).toEqual({
+      object: "list",
+      data: [
+        { id: "gemini-orchestrator", object: "model" },
+        { id: "gemini-4-carbon-high", object: "model" },
+        { id: "gemini-3.8-flash", object: "model" },
+      ],
+    });
+    const lists = google.calls.filter((call) => call.method === "fetchAvailableModels");
+    expect(lists.map((call) => [call.bearer, call.body])).toEqual([
+      ["tok-a", { project: "proj-a" }],
+      ["tok-a", { project: "proj-a" }],
+    ]);
+    const routed = await runtimeCall(fixture.host, env.token, {
+      path: `${newModel}?alt=sse`,
+    });
+    expect(routed.status).toBe(200);
+    await routed.text();
+  });
+
+  it("refuses an unsupported runtime by name, never forwarding it, and clears once 1.5.0 calls", async () => {
+    const { google, fixture, env } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
+    const health = () =>
+      fixture.host.harness.behavior.resolveProviderEnvHealth(GEMINI_PROVIDER_ID, {
+        hostId: "host-one",
+      });
+    const refused = await runtimeCall(fixture.host, env.token, {
+      userAgent: RUNTIME_UA.replace("acp/1.5.0", "acp/1.6.0"),
+    });
+    expect(refused.status).toBe(400);
+    const reason =
+      "Gemini routing is not available: antigravity-acp 1.6.0 is installed, and the Account Pooler supports only 1.5.0.";
+    expect(await refused.json()).toEqual({
+      error: { code: 400, message: reason, status: "INVALID_ARGUMENT" },
+    });
+    await expect(health()).resolves.toEqual(
+      expect.objectContaining({ label: "Not available", statusMessage: reason }),
+    );
+    const foreign = await runtimeCall(fixture.host, env.token, { userAgent: "curl/8.7.1" });
+    expect(foreign.status).toBe(400);
+    expect(google.calls.filter((call) => call.endpoint !== undefined && call.method !== "loadCodeAssist")).toEqual([]);
+    const accepted = await runtimeCall(fixture.host, env.token);
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    await expect(health()).resolves.toMatchObject({ label: "Proxied" });
+  });
+
+  it("holds an account whose stream reports QUOTA_EXHAUSTED and fails the next request over", async () => {
+    const { google, post, fixture } = await twoAccounts((bearer) =>
+      bearer === "tok-a"
+        ? {
+            status: 200,
+            body: null,
+            sse: [
+              'data: {"response":{"candidates":[{"content":{"parts":[{"text":"par"}]}}]}}\r\n\r\n',
+              `data: ${JSON.stringify({ error: QUOTA_BODY.error })}\r\n\r\n`,
+            ],
+          }
+        : { status: 200, body: OK_BODY },
+    );
+    const first = await post("session-mid");
+    expect(first.status).toBe(200);
+    expect(sseData(await first.text())).toEqual([
+      { candidates: [{ content: { parts: [{ text: "par" }] } }] },
+      { error: QUOTA_BODY.error },
+    ]);
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const a = status.accounts.find((account) => account.email === "a@example.com");
+    expect(a?.usageRestriction?.reason).toBe("quota_exhausted");
+    // The same conversation's next turn goes to the next account.
+    const second = await post("session-mid");
+    expect(sseData(await second.text())).toEqual([OK_BODY.response]);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => [call.bearer, call.project]),
+    ).toEqual([
+      ["tok-a", "proj-a"],
+      ["tok-b", "proj-b"],
+    ]);
   });
 
   it("serves from the first account with that account's project", async () => {
@@ -862,14 +1190,9 @@ describe("Gemini account pool", () => {
     for (const call of loads)
       expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     const env = await geminiEnv(fixture.host);
-    const response = await fixture.host.harness.behavior.fetchHttp(
-      "POST",
-      "/gemini/v1internal:streamGenerateContent?alt=sse",
-      {
-        headers: { authorization: `Bearer ${env.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ project: "x", request: { contents: [], session_id: "ep" } }),
-      },
-    );
+    const response = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "ep" },
+    });
     expect(response.status).toBe(200);
     // The consumer (Ultra) account goes to Prod Daily; the Enterprise one to Prod.
     expect(
@@ -907,7 +1230,7 @@ describe("Gemini account pool", () => {
     );
     const response = await post();
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(OK_BODY);
+    expect(sseData(await response.text())).toEqual([OK_BODY.response]);
     const stream = google.calls.filter((call) => call.method === "streamGenerateContent");
     expect(stream.map((call) => [call.bearer, call.project])).toEqual([
       ["tok-a", "proj-a"],
@@ -930,15 +1253,11 @@ describe("Gemini account pool", () => {
       data: { provider: "gemini", accountId: ids.b },
     });
     const env = await geminiEnv(fixture.host, pinned);
-    const response = await fixture.host.harness.behavior.fetchHttp(
-      "POST",
-      "/gemini/v1internal:streamGenerateContent?alt=sse",
-      {
-        headers: { authorization: `Bearer ${env.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ project: "x", request: { contents: [], session_id: "p1" } }),
-      },
-    );
+    const response = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "p1" },
+    });
     expect(response.status).toBe(429);
+    expect(await response.json()).toEqual(QUOTA_BODY);
     expect(
       google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
     ).toEqual(["tok-b"]);
@@ -982,7 +1301,17 @@ describe("Gemini account pool", () => {
     const { post } = await twoAccounts(() => ({ status: 429, body: QUOTA_BODY }));
     const response = await post();
     expect(response.status).toBe(429);
-    expect(JSON.stringify(await response.json())).toContain("RESOURCE_EXHAUSTED");
+    // Google's error in the genai shape the runtime parses.
+    expect(await response.json()).toEqual(QUOTA_BODY);
+    const unauthorized = await post("s-bad", "not-a-hub-token");
+    expect(unauthorized.status).toBe(401);
+    expect(await unauthorized.json()).toEqual({
+      error: {
+        code: 401,
+        message: "Invalid Account Pooler bearer token.",
+        status: "UNAUTHENTICATED",
+      },
+    });
   });
 
   it("reads usage per account from retrieveUserQuotaSummary", async () => {
@@ -1040,12 +1369,7 @@ describe("Gemini account pool", () => {
       recursive: true,
       force: true,
     });
-    await writeGeminiHome({
-      dataDir: fixture.hostDataDir,
-      key: "thr_stale23456",
-      refreshToken: "revoked",
-      tokenUri: "http://bb.test/x",
-    });
+    await writeGeminiHome({ dataDir: fixture.hostDataDir, key: "thr_stale23456" });
     // The reconcile pass a credential change schedules prunes the stale home.
     await fixture.host.harness.behavior.callRpc("account.add", {
       provider: "claude",
@@ -1094,7 +1418,8 @@ describe("Gemini on a host whose bb predates Gemini homes", () => {
     const { fixture } = await oldHost();
     const entries = await resolveGeminiEnv(fixture.host);
     expect(entries.map((entry) => entry.name)).not.toContain("GEMINI_HOME");
-    expect(entries.map((entry) => entry.name)).not.toContain("AGY_ACP_CCPA_BASE_URL");
+    expect(entries.map((entry) => entry.name)).not.toContain("AGY_GATEWAY_URL");
+    expect(entries.map((entry) => entry.name)).not.toContain("AGY_GATEWAY_API_KEY");
     await expect(
       fixture.host.harness.behavior.resolveProviderEnvHealth(GEMINI_PROVIDER_ID, {
         hostId: "host-one",
@@ -1217,21 +1542,9 @@ describe("Gemini rows and an older build", () => {
       });
     const env = await geminiEnv(fixture.host);
     // Real Gemini traffic with a forced failover, so the active account moves.
-    const response = await rpc.fetchHttp(
-      "POST",
-      "/gemini/v1internal:streamGenerateContent?alt=sse",
-      {
-        headers: {
-          authorization: `Bearer ${env.token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gemini-3-pro",
-          project: "x",
-          request: { contents: [], session_id: "s1" },
-        }),
-      },
-    );
+    const response = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "s1" },
+    });
     expect(response.status).toBe(200);
     return { fixture, claude, codex, google };
   }

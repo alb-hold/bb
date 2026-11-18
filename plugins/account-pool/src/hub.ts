@@ -79,8 +79,6 @@ const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
 const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
-// Short, so a revoked thread token stops working at the runtime's next refresh.
-const GEMINI_HUB_TOKEN_TTL_SECONDS = 300;
 const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
 // Google's RESOURCE_EXHAUSTED body carries ErrorInfo after a long message.
@@ -138,6 +136,15 @@ interface HubOptions {
     actorId: string;
   }) => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
+  /**
+   * Each `refuseClient` verdict for a host's runtime: the reason it cannot be
+   * routed, or null once a request from that host is accepted.
+   */
+  onClientRefused: (
+    provider: PoolProvider,
+    hostId: string,
+    reason: string | null,
+  ) => void;
   onOAuthRefresh: (
     provider: PoolProvider,
     accountId: string,
@@ -413,6 +420,11 @@ export class AccountPoolHub {
         503,
         "Account Pooler is not accepting requests.",
       );
+    if (adapter.refuseClient !== undefined) {
+      const refusal = adapter.refuseClient(request.headers);
+      this.options.onClientRefused(provider, hostId, refusal);
+      if (refusal !== null) return adapter.errorResponse(400, refusal);
+    }
     if (
       threadRoute !== null &&
       (actorRoute !== null ||
@@ -454,48 +466,6 @@ export class AccountPoolHub {
       hostId,
       threadRoute,
     );
-  }
-
-  /**
-   * antigravity-acp refreshes the token in its GEMINI_HOME against this route.
-   * That token is the thread's hub token, so the access token handed back is
-   * the same hub token while it still authenticates; the hub swaps it for the
-   * selected Google account's credential on each Code Assist call. The form
-   * body carries the token and is never logged.
-   */
-  async handleGeminiTokenRefresh(request: Request): Promise<Response> {
-    const json = (status: number, body: unknown): Response =>
-      new Response(JSON.stringify(body), {
-        status,
-        headers: {
-          "content-type": "application/json",
-          "cache-control": "no-store",
-        },
-      });
-    let refreshToken: string | null = null;
-    try {
-      const form = new URLSearchParams(await request.text());
-      if (form.get("grant_type") === "refresh_token")
-        refreshToken = form.get("refresh_token");
-    } catch {
-      refreshToken = null;
-    }
-    if (refreshToken === null || refreshToken === "")
-      return json(400, { error: "invalid_request" });
-    const { hostId } = await this.authenticateRoute(
-      new Request(request.url, {
-        method: "POST",
-        headers: { "x-bb-account-pool-token": refreshToken },
-      }),
-      "gemini",
-    );
-    if (hostId === null) return json(400, { error: "invalid_grant" });
-    if (!this.accepting) return json(503, { error: "temporarily_unavailable" });
-    return json(200, {
-      access_token: refreshToken,
-      expires_in: GEMINI_HUB_TOKEN_TTL_SECONDS,
-      token_type: "Bearer",
-    });
   }
 
   async handleOAuthProxy(request: Request): Promise<Response> {
@@ -1187,7 +1157,8 @@ export class AccountPoolHub {
       );
     }
     const candidateIds = new Set(accounts.map((account) => account.id));
-    const parsed = adapter.parseRequest(body, request.headers);
+    const requestUrl = new URL(request.url);
+    const parsed = adapter.parseRequest(body, request.headers, requestUrl);
     const family = parsed.family;
     const affinityKey =
       parsed.affinityId === null
@@ -1343,6 +1314,7 @@ export class AccountPoolHub {
               selected.account,
               secret,
               adapter,
+              parsed.upstreamMethod,
             );
           } catch (error) {
             if (pacing !== null) {
@@ -1530,6 +1502,21 @@ export class AccountPoolHub {
             break;
           }
           if (response.ok) selected.accept();
+          if (response.ok && adapter.transformResponse !== undefined) {
+            const accountId = selected.account.id;
+            upstream = {
+              ...upstream,
+              response: adapter.transformResponse(response, {
+                url: requestUrl,
+                account: selected.account,
+                onQuotaRejection: ({ reason, resetAt }) =>
+                  this.options.quotas.put({
+                    ...this.options.quotas.get(accountId),
+                    usageRestriction: { reason, resetAt },
+                  }),
+              }),
+            };
+          }
           return this.clientResponse(upstream);
         }
       }
@@ -2052,6 +2039,7 @@ export class AccountPoolHub {
     account: Account,
     secret: AccountSecret,
     adapter: ProviderAdapter,
+    method = request.method,
   ): Promise<UpstreamResult> {
     this.increment(account.id);
     const { controller, release } = this.trackRequest(request, () =>
@@ -2068,9 +2056,9 @@ export class AccountPoolHub {
       const headers = adapter.requestHeaders(request.headers, account, secret);
       const response = await this.options
         .fetch(url, {
-          method: request.method,
+          method,
           headers,
-          ...(request.method === "GET" || request.method === "HEAD"
+          ...(method === "GET" || method === "HEAD"
             ? {}
             : { body: upstreamBody }),
           signal: controller.signal,
@@ -2337,6 +2325,9 @@ export function createHub(options: {
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
+  onClientRefused?: HubOptions["onClientRefused"];
+  /** Model ids a Gemini model list offered, so their routes can be served. */
+  onGeminiModels?: (ids: readonly string[]) => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2366,6 +2357,7 @@ export function createHub(options: {
         upstreamBaseUrls:
           options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
         importCredentials: options.importGeminiCredentials,
+        onModels: options.onGeminiModels,
         fetch: options.fetch,
         now: options.now,
       }),
@@ -2393,6 +2385,7 @@ export function createHub(options: {
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
     onOAuthRelay: options.onOAuthRelay ?? (() => {}),
+    onClientRefused: options.onClientRefused ?? (() => {}),
   });
 }
 
