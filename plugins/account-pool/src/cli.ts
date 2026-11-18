@@ -68,7 +68,7 @@ const PROOF_OPTION = {
 
 const PROVIDER_OPTION = {
   type: "enum",
-  values: ["claude", "codex"],
+  values: ["claude", "codex", "gemini"],
   required: true,
   aliases: ["vendor"],
   description: "Provider this account belongs to",
@@ -338,7 +338,7 @@ export function registerPoolCli(
           description:
             "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
           unexpectedPositionalHint:
-            "the provider belongs in --provider <claude|codex>, not a bare argument",
+            "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
             provider: PROVIDER_OPTION,
             login: {
@@ -352,6 +352,12 @@ export function registerPoolCli(
               aliases: ["import-local", "local"],
               description:
                 "Import the provider's existing login from this bb server host",
+            },
+            home: {
+              type: "string",
+              placeholder: "dir",
+              description:
+                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account",
             },
             "api-key": {
               type: "string",
@@ -387,6 +393,12 @@ export function registerPoolCli(
             attempt(async () => {
               const provider = input.options.provider;
               if (input.options.login) {
+                if (provider === "gemini") {
+                  throw new PluginCliError(
+                    "Gemini sign-in is not run by this command. Sign in through bb's Antigravity (antigravity-acp) agent with GEMINI_HOME=<dir> and AGY_ACP_FORCE_FILE_STORAGE=1, then add it with --provider gemini --import --home <dir>.",
+                    { code: "invalid_value" },
+                  );
+                }
                 if (provider === "codex") {
                   const started = await codexLogin.start();
                   return {
@@ -431,7 +443,12 @@ export function registerPoolCli(
               const parsed = accountAddInputSchema.parse({
                 provider,
                 source: imported
-                  ? { kind: "import" }
+                  ? {
+                      kind: "import",
+                      ...(input.options.home === undefined
+                        ? {}
+                        : { home: input.options.home }),
+                    }
                   : { kind: "api-key", apiKey: input.options["api-key"] },
                 label: input.options.label ?? null,
                 priority: input.options.priority,

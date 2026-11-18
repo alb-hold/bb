@@ -46,7 +46,13 @@ import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
 } from "./credentials.js";
+import type { GeminiOAuthClient } from "./gemini-adapter.js";
+import type { ImportedGeminiCredentials } from "./gemini-credentials.js";
 import { createHub, waitForDelay } from "./hub.js";
+import {
+  GEMINI_MODEL_ID,
+  STATIC_GEMINI_MODEL_IDS,
+} from "./gemini-gateway.js";
 import { accountPoolHostContract } from "./host-contract.js";
 import { OAUTH_PROXY_ROUTE } from "./oauth-proxy-policy.js";
 import {
@@ -84,6 +90,10 @@ export interface AccountPoolPluginOptions {
   refreshUrl?: string;
   codexRefreshUrl?: string;
   codexUsageUrl?: string;
+  geminiRefreshUrl?: string;
+  geminiUserinfoUrl?: string;
+  geminiOAuthClient?: GeminiOAuthClient;
+  geminiUpstreamBaseUrls?: { prod: string; daily: string };
   usageUrl?: string;
   drainTimeoutMs?: number;
   mutationDrainTimeoutMs?: number;
@@ -95,6 +105,9 @@ export interface AccountPoolPluginOptions {
   disposeTimeoutMs?: number;
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
   importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
+  importGeminiCredentials?: (
+    home?: string,
+  ) => Promise<ImportedGeminiCredentials>;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -117,6 +130,14 @@ const HOST_PROXY_RETRY_MS = 2_000;
 const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
+const GEMINI_HOME_HOSTS_KEY = "gemini-home-hosts";
+const GEMINI_SERVED_MODELS_KEY = "gemini-served-models:v1";
+const geminiServedModelsSchema = z
+  .record(z.string(), z.array(z.string()))
+  .catch({});
+const GEMINI_HOME_UNAVAILABLE_MS = 60_000;
+const GEMINI_HOME_UNAVAILABLE_MESSAGE =
+  "Gemini through the Account Pooler is not available on this machine: its bb host worker could not prepare the thread's Gemini home. Update bb on this machine, or choose Automatic to start on the local login.";
 const ARTIFACT_PROXY_ENV = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "HTTPS_PROXY",
@@ -132,6 +153,8 @@ const OUTRANKING_CLAUDE_CREDENTIALS = [
   "ANTHROPIC_API_KEY",
 ] as const;
 
+const GEMINI_PROVIDER_ID = "acp-antigravity-acp";
+
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
   claude: [
     "ANTHROPIC_BASE_URL",
@@ -143,6 +166,13 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "NODE_EXTRA_CA_CERTS",
   ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
+  gemini: [
+    "GEMINI_HOME",
+    "AGY_ACP_FORCE_FILE_STORAGE",
+    "AGY_ACP_ENABLE_GATEWAY_AUTH",
+    "AGY_GATEWAY_URL",
+    "AGY_GATEWAY_API_KEY",
+  ],
 };
 
 interface PoolEnvEntry {
@@ -356,7 +386,92 @@ export function createAccountPoolPlugin(
         .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY));
       await Promise.all(hosts.map((hostId) => syncArtifactProxy(hostId)));
     };
+    const geminiQueues = new Map<string, Promise<unknown>>();
+    const geminiUnavailableUntil = new Map<string, number>();
+    let lastGeminiWarningAt = 0;
+    const onGeminiQueue = <T>(
+      hostId: string,
+      task: () => Promise<T>,
+    ): Promise<T> => {
+      const run = (geminiQueues.get(hostId) ?? Promise.resolve()).then(task);
+      geminiQueues.set(
+        hostId,
+        run.catch(() => undefined),
+      );
+      return run;
+    };
+    const geminiHomeUnavailable = (hostId: string): boolean => {
+      const until = geminiUnavailableUntil.get(hostId);
+      if (until === undefined) return false;
+      if (now() < until) return true;
+      geminiUnavailableUntil.delete(hostId);
+      return false;
+    };
+    const markGeminiHomeUnavailable = (hostId: string, error: unknown) => {
+      geminiUnavailableUntil.set(hostId, now() + GEMINI_HOME_UNAVAILABLE_MS);
+      const at = now();
+      if (at - lastGeminiWarningAt < HOST_PROXY_WARN_INTERVAL_MS) return;
+      lastGeminiWarningAt = at;
+      bb.log.warn(
+        `Account Pooler cannot write Gemini homes on host ${hostId}, so Gemini threads there are not routed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    };
+    const writeGeminiHomeOn = (
+      hostId: string,
+      key: string,
+    ): Promise<string | null> =>
+      geminiHomeUnavailable(hostId)
+        ? Promise.resolve(null)
+        : onGeminiQueue(hostId, async () => {
+            try {
+              const { home } = await hostProxy.call(
+                "writeGeminiHome",
+                { key },
+                { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
+              );
+              const known = new Set(
+                z
+                  .array(z.string())
+                  .catch([])
+                  .parse(await bb.storage.kv.get(GEMINI_HOME_HOSTS_KEY)),
+              );
+              if (!known.has(hostId)) {
+                known.add(hostId);
+                await bb.storage.kv.set(GEMINI_HOME_HOSTS_KEY, [...known]);
+              }
+              return home;
+            } catch (error) {
+              markGeminiHomeUnavailable(hostId, error);
+              return null;
+            }
+          });
+    const reconcileGeminiHomes = async (): Promise<void> => {
+      const hosts = z
+        .array(z.string())
+        .catch([])
+        .parse(await bb.storage.kv.get(GEMINI_HOME_HOSTS_KEY));
+      await Promise.all(
+        hosts
+          .filter((hostId) => !geminiHomeUnavailable(hostId))
+          .map((hostId) =>
+            onGeminiQueue(hostId, async () => {
+              await hostProxy.call(
+                "pruneGeminiHomes",
+                {
+                  keep: await threadTokens.activeThreadIds(hostId, "gemini"),
+                },
+                { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
+              );
+            }).catch((error: unknown) => {
+              bb.log.debug(
+                `Account Pooler Gemini home cleanup on host ${hostId} skipped: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }),
+          ),
+      );
+    };
     hostProxy.experimental_onWorkerExit(({ hostId }) => {
+      geminiUnavailableUntil.delete(hostId);
       void syncArtifactProxy(hostId);
     });
     let proxySyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -365,11 +480,13 @@ export function createAccountPoolPlugin(
       proxySyncTimer = setTimeout(() => {
         proxySyncTimer = null;
         void reconcileArtifactProxies().catch(() => undefined);
+        void reconcileGeminiHomes().catch(() => undefined);
       }, HOST_PROXY_SYNC_DEBOUNCE_MS);
       proxySyncTimer.unref();
     });
     const reconcileTimer = setInterval(() => {
       void reconcileArtifactProxies().catch(() => undefined);
+      void reconcileGeminiHomes().catch(() => undefined);
     }, HOST_PROXY_RECONCILE_INTERVAL_MS);
     reconcileTimer.unref();
     bb.onDispose(() => {
@@ -378,6 +495,27 @@ export function createAccountPoolPlugin(
       for (const timer of proxyRetryTimers) clearTimeout(timer);
     });
     void reconcileArtifactProxies().catch(() => undefined);
+    const geminiRefusals = new Map<string, string>();
+    const geminiModelRoutes = new Set<string>();
+    const routeGeminiModel = (id: string): void => {
+      if (!GEMINI_MODEL_ID.test(id) || geminiModelRoutes.has(id)) return;
+      geminiModelRoutes.add(id);
+      for (const api of ["v1beta", "v1"])
+        for (const method of ["streamGenerateContent", "generateContent"]) {
+          const route = `/gemini/${api}/models/${id}:${method}`;
+          bb.http.route(
+            "POST",
+            route,
+            (context) => hub.handle(context.req.raw, "gemini", route),
+            { auth: "none" },
+          );
+        }
+    };
+    let geminiServedModels = geminiServedModelsSchema.parse(
+      await bb.storage.kv.get(GEMINI_SERVED_MODELS_KEY),
+    );
+    let geminiServedModelsWrite: Promise<void> = Promise.resolve();
+    bb.onDispose(() => geminiServedModelsWrite);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);
     const quotas = new QuotaStore(db);
@@ -397,10 +535,15 @@ export function createAccountPoolPlugin(
       refreshUrl: options.refreshUrl,
       codexRefreshUrl: options.codexRefreshUrl,
       codexUsageUrl: options.codexUsageUrl,
+      geminiRefreshUrl: options.geminiRefreshUrl,
+      geminiUserinfoUrl: options.geminiUserinfoUrl,
+      geminiOAuthClient: options.geminiOAuthClient,
+      geminiUpstreamBaseUrls: options.geminiUpstreamBaseUrls,
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
       importClaudeCredentials: options.importCredentials,
       importCodexCredentials: options.importCodexCredentials,
+      importGeminiCredentials: options.importGeminiCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
       mutationDrainTimeoutMs: options.mutationDrainTimeoutMs,
       onPlanBackfillError: () =>
@@ -436,6 +579,32 @@ export function createAccountPoolPlugin(
         const message = `Account Pooler ${provider} account ${accountId} OAuth refresh ${outcome}: ${detail}`;
         if (outcome === "succeeded") bb.log.info(message);
         else bb.log.warn(message);
+      },
+      onClientRefused: (provider, hostId, reason) => {
+        if (provider !== "gemini") return;
+        if (reason === null) {
+          geminiRefusals.delete(hostId);
+          return;
+        }
+        if (geminiRefusals.get(hostId) !== reason)
+          bb.log.warn(`Account Pooler refused Gemini on host ${hostId}: ${reason}`);
+        geminiRefusals.set(hostId, reason);
+      },
+      onGeminiModels: (accountId, ids) => {
+        for (const id of ids) routeGeminiModel(id);
+        if (
+          JSON.stringify(geminiServedModels[accountId]) === JSON.stringify(ids)
+        )
+          return;
+        geminiServedModels = { ...geminiServedModels, [accountId]: [...ids] };
+        const snapshot = geminiServedModels;
+        geminiServedModelsWrite = geminiServedModelsWrite
+          .then(() => bb.storage.kv.set(GEMINI_SERVED_MODELS_KEY, snapshot))
+          .catch((error: unknown) => {
+            bb.log.warn(
+              `Account Pooler could not save the Gemini model ids: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
       },
     });
     if (transport !== null) {
@@ -503,7 +672,11 @@ export function createAccountPoolPlugin(
         const selection = draftSelectionSchema.parse(data);
         if (
           thread.providerId !==
-          (selection.provider === "claude" ? "claude-code" : "codex")
+          (selection.provider === "claude"
+            ? "claude-code"
+            : selection.provider === "gemini"
+              ? GEMINI_PROVIDER_ID
+              : "codex")
         ) {
           throw new Error(
             "The selected subscription belongs to another provider.",
@@ -611,7 +784,9 @@ export function createAccountPoolPlugin(
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
-        return (await availability.get())[provider];
+        return provider === "gemini"
+          ? false
+          : (await availability.get())[provider];
       }
       return operations.hasUsableEnabledAccount(provider);
     };
@@ -794,7 +969,7 @@ export function createAccountPoolPlugin(
           token: string,
           scope?: "thread" | "machine",
           context?: ExperimentalPluginProviderEnvContext,
-        ) => Promise<PoolEnvEntry[]>,
+        ) => Promise<PoolEnvEntry[] | null>,
       ) =>
       async (context: ExperimentalPluginProviderEnvContext) => {
         const lifetime =
@@ -817,7 +992,9 @@ export function createAccountPoolPlugin(
               )
               .map((account) => [account.id, account.priority]),
           ]);
-          return (await serving(token, "machine")).map((entry) =>
+          const served = await serving(token, "machine", context);
+          if (served === null) return unrouted();
+          return served.map((entry) =>
             typeof entry.value === "string" && entry.value === token
               ? {
                   ...entry,
@@ -859,13 +1036,17 @@ export function createAccountPoolPlugin(
             lifetime,
           );
           if (await revokeIfArchived(context.threadId)) return unrouted();
+          const served = await serving(token, "thread", context);
+          if (served === null) {
+            if (accountId !== null)
+              throw new Error(GEMINI_HOME_UNAVAILABLE_MESSAGE);
+            await bb.storage.kv.delete(`retry-route:${context.threadId}`);
+            return unrouted();
+          }
           if (provider === "claude") {
             await routing.recordRouted(context.threadId, context.hostId);
           }
-          return [
-            ...(await serving(token, "thread", context)),
-            ...markerEntries(nestedToken),
-          ];
+          return [...served, ...markerEntries(nestedToken)];
         }
         if (
           !bypassed &&
@@ -1013,6 +1194,56 @@ export function createAccountPoolPlugin(
     bb.providers.experimental_contributeEnvHealth("codex", () =>
       proxiedHealth("codex"),
     );
+    bb.providers.experimental_contributeEnv(
+      GEMINI_PROVIDER_ID,
+      contributeFor("gemini", async (token, scope, context) => {
+        if (context === undefined) return null;
+        const home = await writeGeminiHomeOn(
+          context.hostId,
+          context.threadId ?? "catalog",
+        );
+        if (home === null) return null;
+        return [
+          {
+            name: "GEMINI_HOME",
+            value: home,
+            reason: `Account Pooler home for this ${scope ?? "thread"}: its settings select the gateway sign-in, and it holds no credential`,
+          },
+          {
+            name: "AGY_ACP_FORCE_FILE_STORAGE",
+            value: "1",
+            reason:
+              "Makes antigravity-acp read its settings from GEMINI_HOME instead of this machine's keychain",
+          },
+          {
+            name: "AGY_ACP_ENABLE_GATEWAY_AUTH",
+            value: "1",
+            reason: "Enables antigravity-acp's gateway sign-in",
+          },
+          {
+            name: "AGY_GATEWAY_URL",
+            value: { serverPath: `${HUB_BASE_PATH}/gemini` },
+            reason: "Routed through the Account Pooler hub",
+          },
+          {
+            name: "AGY_GATEWAY_API_KEY",
+            value: token,
+            reason: `Account Pooler token scoped to this ${scope ?? "thread"}`,
+          },
+        ];
+      }),
+    );
+    bb.providers.experimental_contributeEnvHealth(
+      GEMINI_PROVIDER_ID,
+      async ({ hostId }) => {
+        const refused = geminiRefusals.get(hostId);
+        if (refused !== undefined)
+          return { label: "Not available", statusMessage: refused };
+        return geminiHomeUnavailable(hostId)
+          ? { label: "Not available", statusMessage: GEMINI_HOME_UNAVAILABLE_MESSAGE }
+          : proxiedHealth("gemini");
+      },
+    );
     bb.onDispose(async () => {
       codexLogin.dispose();
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1068,6 +1299,17 @@ export function createAccountPoolPlugin(
         { auth: "none" },
       );
     }
+    for (const route of ["/gemini/v1beta/models", "/gemini/v1/models"]) {
+      bb.http.route(
+        "GET",
+        route,
+        (context) => hub.handle(context.req.raw, "gemini", route),
+        { auth: "none" },
+      );
+    }
+    for (const id of STATIC_GEMINI_MODEL_IDS) routeGeminiModel(id);
+    for (const ids of Object.values(geminiServedModels))
+      for (const id of ids) routeGeminiModel(id);
     bb.http.route(
       "GET",
       "/v1/models",

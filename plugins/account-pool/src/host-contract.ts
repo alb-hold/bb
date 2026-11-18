@@ -1,6 +1,9 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+export const GEMINI_HOME_KEY =
+  /^(?:thr_[23456789abcdefghijkmnpqrstuvwxyz]{10}|catalog)$/u;
+
 export const accountPoolHostContract = defineRpcContract({
   ensureProxy: {
     experimental_retryable: true,
@@ -21,5 +24,23 @@ export const accountPoolHostContract = defineRpcContract({
         noProxy: z.string().min(1),
       })
       .strict(),
+  },
+  writeGeminiHome: {
+    experimental_retryable: true,
+    input: z
+      .object({
+        key: z.string().regex(GEMINI_HOME_KEY),
+      })
+      .strict(),
+    output: z.object({ home: z.string().min(1) }).strict(),
+  },
+  pruneGeminiHomes: {
+    experimental_retryable: true,
+    input: z
+      .object({
+        keep: z.array(z.string().regex(GEMINI_HOME_KEY)).max(65_536),
+      })
+      .strict(),
+    output: z.object({ removed: z.number().int().min(0) }).strict(),
   },
 });

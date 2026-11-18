@@ -85,6 +85,8 @@ export interface ImportedProviderAccount {
   accountUuid?: string;
   organizationUuid?: string;
   codexAccountId?: string;
+  geminiProject?: string;
+  geminiEndpoint?: "prod" | "daily";
   subscriptionType: string | null;
   rateLimitTier: string | null;
   secret: Extract<AccountSecret, { kind: "oauth" }>;
@@ -93,7 +95,7 @@ export interface ImportedProviderAccount {
 export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
-  importAccount(): Promise<ImportedProviderAccount>;
+  importAccount(options?: { home?: string }): Promise<ImportedProviderAccount>;
   localLogin(): Promise<{
     email: string | null;
     planLabel: string | null;
@@ -101,13 +103,28 @@ export interface ProviderAdapter {
   parseRequest(
     body: Uint8Array,
     headers: Headers,
+    url: URL,
   ): {
     family: ModelFamily;
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
+    upstreamMethod?: string;
   };
-  upstreamUrl(request: Request, settings: AccountPoolConfig): URL;
+  refuseClient?(headers: Headers): string | null;
+  transformResponse?(
+    response: Response,
+    context: {
+      url: URL;
+      account: Account;
+      onQuotaRejection: (rejection: { reason: string; resetAt: number }) => void;
+    },
+  ): Response;
+  upstreamUrl(
+    request: Request,
+    settings: AccountPoolConfig,
+    account: Account,
+  ): URL;
   requestHeaders(
     inbound: Headers,
     account: Account,
@@ -121,6 +138,10 @@ export interface ProviderAdapter {
     now: number,
   ): AccountQuota;
   isQuotaRejection(headers: Headers): boolean;
+  quotaRejectionFromBody?(
+    detail: string,
+    now: number,
+  ): { reason: string; resetAt: number; message: string } | null;
   refreshSecret(
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;

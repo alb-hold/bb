@@ -160,13 +160,16 @@ function parentBannerBody(parent: NonNullable<PoolStatus["parent"]>): string {
   if (parent.mode !== "proxy") {
     return `This server was started from a thread on ${host}. Turn this on to send Claude and Codex requests to its pool instead of using the accounts below.`;
   }
-  const served = PROVIDERS.filter(
+  const relayed = PROVIDERS.flatMap((provider) =>
+    provider.id === "gemini" ? [] : [{ ...provider, id: provider.id }],
+  );
+  const served = relayed.filter(
     (provider) => parent.availability[provider.id],
   ).map((provider) => provider.title);
   if (served.length === 0) {
     return `${host} has no accounts available right now, so nothing is being sent there. Requests fall back to each provider's own credentials.`;
   }
-  const missing = PROVIDERS.filter(
+  const missing = relayed.filter(
     (provider) => !parent.availability[provider.id],
   ).map((provider) => provider.title);
   const routed = `${served.join(" and ")} requests are sent to the pool on ${host}.`;

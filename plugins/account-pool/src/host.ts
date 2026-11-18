@@ -1,4 +1,5 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { pruneGeminiHomes, writeGeminiHome } from "./gemini-home.js";
 import { accountPoolHostContract } from "./host-contract.js";
 import { createHostProxy } from "./host-proxy.js";
 
@@ -42,6 +43,21 @@ export default experimental_defineHostEntry({
           process.env.NO_PROXY ?? process.env.no_proxy,
           serverUrl,
         ),
+      };
+    },
+    async writeGeminiHome(input, context) {
+      const home = await writeGeminiHome({
+        dataDir: context.experimental_paths.dataDir,
+        key: input.key,
+      });
+      return { home };
+    },
+    async pruneGeminiHomes(input, context) {
+      return {
+        removed: await pruneGeminiHomes({
+          dataDir: context.experimental_paths.dataDir,
+          keep: input.keep,
+        }),
       };
     },
   },

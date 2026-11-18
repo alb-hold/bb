@@ -123,7 +123,7 @@ function status(accounts: AccountSummary[] = [account()]): PoolStatus {
       { hostId: "host-one", hostName: "bee", mintedAt: 1, lastUsedAt: 2 },
     ],
     accounts,
-    routing: { claude: true, codex: true },
+    routing: { claude: true, codex: true, gemini: true },
     parent: null,
   };
 }
@@ -281,7 +281,7 @@ describe("Subscription picker", () => {
       if (inactiveMode === "routing-off") {
         currentStatus = {
           ...currentStatus,
-          routing: { claude: false, codex: true },
+          routing: { claude: false, codex: true, gemini: true },
         };
       } else {
         currentStatus = {
@@ -390,7 +390,7 @@ describe("Subscription picker", () => {
 
     const routingOffSlot = pinnedSlot({
       ...status(accounts),
-      routing: { claude: false, codex: true },
+      routing: { claude: false, codex: true, gemini: true },
     });
     expect(
       await routingOffSlot.findByText(

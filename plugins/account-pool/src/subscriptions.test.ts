@@ -195,6 +195,18 @@ describe("subscription folding", () => {
     expect(subscriptionMembers([named], "missing")).toEqual([]);
   });
 
+  it("never puts records of different providers in one subscription, even with one email", () => {
+    const accounts = [
+      record({ id: "claude" }),
+      record({ id: "gemini", provider: "gemini" }),
+      record({ id: "codex", provider: "codex" }),
+    ];
+    for (const { id } of accounts)
+      expect(subscriptionMembers(accounts, id).map((member) => member.id)).toEqual([
+        id,
+      ]);
+  });
+
   it("folds Codex records by email and ChatGPT workspace only", () => {
     expect(
       ids([

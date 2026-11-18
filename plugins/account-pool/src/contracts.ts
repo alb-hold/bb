@@ -74,7 +74,7 @@ export interface AccountPoolConfigController {
   set: (input: AccountPoolConfigSetInput) => Promise<AccountPoolConfig>;
 }
 
-export const providerSchema = z.enum(["claude", "codex"]);
+export const providerSchema = z.enum(["claude", "codex", "gemini"]);
 export type PoolProvider = z.infer<typeof providerSchema>;
 export const accountKindSchema = z.enum(["oauth", "api-key"]);
 export const modelFamilySchema = z.enum([
@@ -166,6 +166,8 @@ export const accountSchema = z
     email: z.string().email().nullable(),
     accountUuid: z.string().uuid().nullable().default(null),
     codexAccountId: z.string().min(1).optional(),
+    geminiProject: z.string().min(1).optional(),
+    geminiEndpoint: z.enum(["prod", "daily"]).optional(),
     subscriptionType: z.string().nullable(),
     rateLimitTier: z.string().nullable(),
     enabled: z.boolean(),
@@ -185,6 +187,13 @@ export const oauthSecretSchema = z
     refreshToken: z.string().min(1),
     expiresAt: z.number().int().positive().nullable(),
     idToken: z.string().min(1).optional(),
+    client: z
+      .object({
+        clientId: z.string().min(1),
+        clientSecret: z.string().min(1),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -354,7 +363,9 @@ export const statusSchema = z
     accepting: z.boolean(),
     hosts: z.array(hubTokenSummarySchema),
     accounts: z.array(accountSummarySchema),
-    routing: z.object({ claude: z.boolean(), codex: z.boolean() }).strict(),
+    routing: z
+      .object({ claude: z.boolean(), codex: z.boolean(), gemini: z.boolean() })
+      .strict(),
     parent: z
       .object({
         baseUrl: z.string(),
@@ -380,7 +391,9 @@ export const accountAddInputSchema = z
   .object({
     provider: providerSchema,
     source: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("import") }).strict(),
+      z
+        .object({ kind: z.literal("import"), home: z.string().min(1).optional() })
+        .strict(),
       z
         .object({ kind: z.literal("api-key"), apiKey: z.string().min(1) })
         .strict(),

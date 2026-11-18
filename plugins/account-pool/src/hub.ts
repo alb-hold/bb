@@ -26,6 +26,15 @@ import {
   DEFAULT_CODEX_REFRESH_URL,
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
+import {
+  createGeminiAdapter,
+  DEFAULT_GEMINI_REFRESH_URL,
+  DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
+  type GeminiUpstreamBaseUrls,
+  geminiOAuthClientFromEnv,
+  type GeminiOAuthClient,
+} from "./gemini-adapter.js";
+import type { ImportedGeminiCredentials } from "./gemini-credentials.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
   isSignInRejection,
@@ -72,6 +81,7 @@ const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
 const UPSTREAM_REJECTION_HOLD_MS = 60_000;
 const MAX_FAILURE_DETAIL_BYTES = 1_024;
+const MAX_BODY_REJECTION_BYTES = 16_384;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
 const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
 const MAX_AFFINITY_BINDINGS = 4_096;
@@ -125,6 +135,11 @@ interface HubOptions {
     actorId: string;
   }) => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
+  onClientRefused: (
+    provider: PoolProvider,
+    hostId: string,
+    reason: string | null,
+  ) => void;
   onOAuthRefresh: (
     provider: PoolProvider,
     accountId: string,
@@ -338,8 +353,9 @@ export class AccountPoolHub {
 
   async importAccount(
     provider: PoolProvider,
+    options?: { home?: string },
   ): Promise<ImportedProviderAccount> {
-    return this.adapter(provider).importAccount();
+    return this.adapter(provider).importAccount(options);
   }
 
   async replaceSecret(
@@ -399,6 +415,11 @@ export class AccountPoolHub {
         503,
         "Account Pooler is not accepting requests.",
       );
+    if (adapter.refuseClient !== undefined) {
+      const refusal = adapter.refuseClient(request.headers);
+      this.options.onClientRefused(provider, hostId, refusal);
+      if (refusal !== null) return adapter.errorResponse(400, refusal);
+    }
     if (
       threadRoute !== null &&
       (actorRoute !== null ||
@@ -1131,7 +1152,8 @@ export class AccountPoolHub {
       );
     }
     const candidateIds = new Set(accounts.map((account) => account.id));
-    const parsed = adapter.parseRequest(body, request.headers);
+    const requestUrl = new URL(request.url);
+    const parsed = adapter.parseRequest(body, request.headers, requestUrl);
     const family = parsed.family;
     const affinityKey =
       parsed.affinityId === null
@@ -1287,6 +1309,7 @@ export class AccountPoolHub {
               selected.account,
               secret,
               adapter,
+              parsed.upstreamMethod,
             );
           } catch (error) {
             if (pacing !== null) {
@@ -1323,6 +1346,35 @@ export class AccountPoolHub {
           if (response.status === 429) {
             if (adapter.isQuotaRejection(response.headers)) {
               await this.discardUpstream(upstream, false);
+              break;
+            }
+            if (adapter.quotaRejectionFromBody !== undefined) {
+              const detail = await this.discardUpstream(
+                upstream,
+                true,
+                MAX_BODY_REJECTION_BYTES,
+              );
+              signal.throwIfAborted();
+              const rejection = adapter.quotaRejectionFromBody(
+                detail,
+                this.options.now(),
+              );
+              if (rejection !== null) {
+                this.options.quotas.put({
+                  ...observed,
+                  usageRestriction: {
+                    reason: rejection.reason,
+                    resetAt: rejection.resetAt,
+                  },
+                });
+                failure = {
+                  status: 429,
+                  message: rejection.message,
+                  headers: {},
+                };
+              } else {
+                failure = { status: 429, message: detail, headers: {} };
+              }
               break;
             }
             const waitMs = retryAfterMilliseconds(
@@ -1443,6 +1495,21 @@ export class AccountPoolHub {
             break;
           }
           if (response.ok) selected.accept();
+          if (response.ok && adapter.transformResponse !== undefined) {
+            const accountId = selected.account.id;
+            upstream = {
+              ...upstream,
+              response: adapter.transformResponse(response, {
+                url: requestUrl,
+                account: selected.account,
+                onQuotaRejection: ({ reason, resetAt }) =>
+                  this.options.quotas.put({
+                    ...this.options.quotas.get(accountId),
+                    usageRestriction: { reason, resetAt },
+                  }),
+              }),
+            };
+          }
           return this.clientResponse(upstream);
         }
       }
@@ -1468,6 +1535,7 @@ export class AccountPoolHub {
   private async discardUpstream(
     upstream: UpstreamResult,
     readDetail: boolean,
+    maxBytes: number = MAX_FAILURE_DETAIL_BYTES,
   ): Promise<string> {
     const reader = upstream.response.body?.getReader();
     if (reader === undefined) {
@@ -1486,12 +1554,12 @@ export class AccountPoolHub {
         (async () => {
           const decoder = new TextDecoder();
           let bytes = 0;
-          while (bytes < MAX_FAILURE_DETAIL_BYTES) {
+          while (bytes < maxBytes) {
             const chunk = await reader.read();
             if (chunk.done) break;
             const part = chunk.value.subarray(
               0,
-              MAX_FAILURE_DETAIL_BYTES - bytes,
+              maxBytes - bytes,
             );
             bytes += part.byteLength;
             detail += decoder.decode(part, { stream: true });
@@ -1774,7 +1842,11 @@ export class AccountPoolHub {
           this.affinityBindings.set(affinityKey, accepted);
         }
         if (advance && this.activeAccounts.get(provider) === active) {
-          this.options.affinity.putActiveAccount(provider, selected.account.id);
+          if (provider !== "gemini")
+            this.options.affinity.putActiveAccount(
+              provider,
+              selected.account.id,
+            );
           this.activeAccounts.set(provider, { accountId: selected.account.id });
         }
       },
@@ -1958,6 +2030,7 @@ export class AccountPoolHub {
     account: Account,
     secret: AccountSecret,
     adapter: ProviderAdapter,
+    method = request.method,
   ): Promise<UpstreamResult> {
     this.increment(account.id);
     const { controller, release } = this.trackRequest(request, () =>
@@ -1966,13 +2039,17 @@ export class AccountPoolHub {
     try {
       const upstreamBody = new ArrayBuffer(body.byteLength);
       new Uint8Array(upstreamBody).set(body);
-      const url = adapter.upstreamUrl(request, this.options.getSettings());
+      const url = adapter.upstreamUrl(
+        request,
+        this.options.getSettings(),
+        account,
+      );
       const headers = adapter.requestHeaders(request.headers, account, secret);
       const response = await this.options
         .fetch(url, {
-          method: request.method,
+          method,
           headers,
-          ...(request.method === "GET" || request.method === "HEAD"
+          ...(method === "GET" || method === "HEAD"
             ? {}
             : { body: upstreamBody }),
           signal: controller.signal,
@@ -2217,6 +2294,13 @@ export function createHub(options: {
   refreshUrl?: string;
   codexRefreshUrl?: string;
   codexUsageUrl?: string;
+  geminiRefreshUrl?: string;
+  geminiUserinfoUrl?: string;
+  geminiOAuthClient?: GeminiOAuthClient;
+  geminiUpstreamBaseUrls?: GeminiUpstreamBaseUrls;
+  importGeminiCredentials?: (
+    home?: string,
+  ) => Promise<ImportedGeminiCredentials>;
   importClaudeCredentials?: () => Promise<ImportedClaudeCredentials>;
   importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
   usageUrl?: string;
@@ -2232,6 +2316,8 @@ export function createHub(options: {
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
+  onClientRefused?: HubOptions["onClientRefused"];
+  onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2249,6 +2335,21 @@ export function createHub(options: {
         refreshUrl: options.codexRefreshUrl ?? DEFAULT_CODEX_REFRESH_URL,
         importCredentials: options.importCodexCredentials,
         usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
+      }),
+    ],
+    [
+      "gemini",
+      createGeminiAdapter({
+        refreshUrl: options.geminiRefreshUrl ?? DEFAULT_GEMINI_REFRESH_URL,
+        userinfoUrl: options.geminiUserinfoUrl,
+        oauthClient:
+          options.geminiOAuthClient ?? geminiOAuthClientFromEnv(process.env),
+        upstreamBaseUrls:
+          options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
+        importCredentials: options.importGeminiCredentials,
+        onModels: options.onGeminiModels,
+        fetch: options.fetch,
+        now: options.now,
       }),
     ],
   ]);
@@ -2274,6 +2375,7 @@ export function createHub(options: {
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
     onOAuthRelay: options.onOAuthRelay ?? (() => {}),
+    onClientRefused: options.onClientRefused ?? (() => {}),
   });
 }
 

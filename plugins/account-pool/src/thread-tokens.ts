@@ -313,6 +313,19 @@ export class ThreadTokenStore {
     return [...digests];
   }
 
+  async activeThreadIds(
+    hostId: string,
+    provider: ThreadRoute["provider"],
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    for (const record of this.routes.values()) {
+      if (record.hostId !== hostId || record.provider !== provider) continue;
+      if (await this.isArchived(record.threadId)) continue;
+      ids.add(record.threadId);
+    }
+    return [...ids];
+  }
+
   async initialize(hostIds: readonly string[]): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     await fs.chmod(this.directory, 0o700);

@@ -40,6 +40,7 @@ const ROUTED_WINDOW_MS = 24 * 60 * 60 * 1_000;
 function poolProviderFor(providerId: string): PoolProvider | null {
   if (providerId === "claude-code") return "claude";
   if (providerId === "codex") return "codex";
+  if (providerId === "acp-antigravity-acp") return "gemini";
   return null;
 }
 
@@ -82,7 +83,11 @@ function requireSameLogin(
 }
 
 function providerName(provider: PoolProvider): string {
-  return provider === "claude" ? "Claude" : "Codex";
+  return provider === "claude"
+    ? "Claude"
+    : provider === "gemini"
+      ? "Gemini"
+      : "Codex";
 }
 
 export class PoolOperations {
@@ -118,7 +123,9 @@ export class PoolOperations {
       input.priority ?? (await this.nextPriority(input.provider));
     if (input.source.kind === "api-key") {
       if (input.provider !== "claude") {
-        throw new Error("Codex accounts can only be added with --import.");
+        throw new Error(
+          `${providerName(input.provider)} accounts can only be added with --import.`,
+        );
       }
       const account = await this.accounts.add(
         {
@@ -138,7 +145,12 @@ export class PoolOperations {
       await this.onAccountEnabled(account.id);
       return account;
     }
-    const imported = await this.hub.importAccount(input.provider);
+    const imported = await this.hub.importAccount(
+      input.provider,
+      input.source.kind === "import" && input.source.home !== undefined
+        ? { home: input.source.home }
+        : undefined,
+    );
     const existing = await this.accounts.list();
     const duplicate = existing.some(
       (account) =>
@@ -146,8 +158,11 @@ export class PoolOperations {
         (input.provider === "claude"
           ? imported.accountUuid !== null &&
             account.accountUuid === imported.accountUuid
-          : imported.codexAccountId !== undefined &&
-            account.codexAccountId === imported.codexAccountId),
+          : input.provider === "gemini"
+            ? imported.email !== null &&
+              account.email?.toLowerCase() === imported.email.toLowerCase()
+            : imported.codexAccountId !== undefined &&
+              account.codexAccountId === imported.codexAccountId),
     );
     if (duplicate) {
       throw new Error("This current login is already in the account pool.");
@@ -162,6 +177,12 @@ export class PoolOperations {
         ...(imported.codexAccountId === undefined
           ? {}
           : { codexAccountId: imported.codexAccountId }),
+        ...(imported.geminiProject === undefined
+          ? {}
+          : { geminiProject: imported.geminiProject }),
+        ...(imported.geminiEndpoint === undefined
+          ? {}
+          : { geminiEndpoint: imported.geminiEndpoint }),
         subscriptionType: imported.subscriptionType,
         rateLimitTier: imported.rateLimitTier,
         enabled: true,
@@ -624,9 +645,10 @@ export class PoolOperations {
     await this.hubTokens.prune(hosts.map((host) => host.id));
     const status = await this.hub.status();
     const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, gemini] = await Promise.all([
       this.routing.isProviderEnabled("claude"),
       this.routing.isProviderEnabled("codex"),
+      this.routing.isProviderEnabled("gemini"),
     ]);
     return {
       ...status,
@@ -641,7 +663,7 @@ export class PoolOperations {
             ? null
             : (hostNames.get(account.lastUsedHostId) ?? null),
       })),
-      routing: { claude, codex },
+      routing: { claude, codex, gemini },
       parent: await this.parentStatus(),
     };
   }

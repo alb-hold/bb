@@ -25,7 +25,17 @@ export function usageWindowLabel(
 export { displayPlanLabel as usagePlanLabel } from "./display.js";
 import { displayPlanLabel, modelWeeklyRows } from "./display.js";
 
+function usageProviderId(provider: AccountSummary["provider"]): string {
+  return provider === "claude"
+    ? "claude-code"
+    : provider === "gemini"
+      ? "acp-antigravity-acp"
+      : "codex";
+}
+
 function accountKey(account: AccountSummary): string | null {
+  if (account.provider === "gemini")
+    return account.email ? `google:gemini:${account.email.toLowerCase()}` : null;
   return account.provider === "codex"
     ? account.codexAccountId
       ? `openai:chatgpt:${account.codexAccountId}`
@@ -62,7 +72,7 @@ export function registerUsageSource(
           resources: accounts.map((account) => ({
             id: account.id,
             accountKey: accountKey(account),
-            providerId: account.provider === "claude" ? "claude-code" : "codex",
+            providerId: usageProviderId(account.provider),
             label: account.label,
             scope: { kind: "shared" as const },
             accountPool: {
@@ -208,8 +218,7 @@ export function registerUsageSource(
             return {
               id: account.id,
               accountKey: accountKey(account),
-              providerId:
-                account.provider === "claude" ? "claude-code" : "codex",
+              providerId: usageProviderId(account.provider),
               label: account.label,
               scope: { kind: "shared" },
               observedAt: account.observedAt,
