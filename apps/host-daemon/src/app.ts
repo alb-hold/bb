@@ -53,12 +53,10 @@ import {
 } from "./server-connection.js";
 import { runtimeErrorLogFields, summarizeError } from "./error-utils.js";
 import { ensureThreadStorageRoot } from "./thread-storage-root.js";
-import { removeDirectoryAfterHolderRecheck } from "./command-handlers/remove-held-directory.js";
-import { readDiskFreeBytes } from "./server-move/host-probes.js";
 import {
-  directoryTreeBytes,
-  resolveWorktreeTrashRoot,
+  nodeIntervalTimer,
   startWorktreeTrashSweep,
+  worktreeTrashSweepDeps,
 } from "./worktree-trash-sweep.js";
 import {
   createRuntimeShellEnvCache,
@@ -788,33 +786,12 @@ export async function createHostDaemonApp(
   const worktreeTrashSweep =
     process.platform === "darwin"
       ? startWorktreeTrashSweep({
-          deps: {
-            trashRoot: resolveWorktreeTrashRoot(options.dataDir),
+          deps: worktreeTrashSweepDeps({
+            daemonDataDir: options.dataDir,
             logger: options.logger,
-            now: Date.now,
-            freeBytes: readDiskFreeBytes,
-            treeBytes: directoryTreeBytes,
-            remove: (entry) =>
-              removeDirectoryAfterHolderRecheck({
-                directory: entry,
-                action: "delete worktree trash entry",
-                recursive: true,
-                ...(options.testWorktreeHolderScan === undefined
-                  ? {}
-                  : { testWorktreeHolderScan: options.testWorktreeHolderScan }),
-              }),
-          },
-          setIntervalFn: (callback, intervalMs) => {
-            const timer = setInterval(callback, intervalMs);
-            return {
-              clear() {
-                clearInterval(timer);
-              },
-              unref() {
-                timer.unref();
-              },
-            };
-          },
+            testWorktreeHolderScan: options.testWorktreeHolderScan,
+          }),
+          setIntervalFn: nodeIntervalTimer,
         })
       : null;
   const terminalManager: TerminalManager = new TerminalManager({

@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pluginProcessDataDir } from "@bb/process-utils";
+import { pluginProcessDataDir, type WorktreeHolderScan } from "@bb/process-utils";
 import {
   WORKTREE_TRASH_DIR_NAME,
   worktreeTrashEntryTrashedAt,
 } from "bb-environment-provider-host/worktree-trash";
+import { removeDirectoryAfterHolderRecheck } from "./command-handlers/remove-held-directory.js";
 import type { HostDaemonLogger } from "./logger.js";
+import { readDiskFreeBytes } from "./server-move/host-probes.js";
 
 export const WORKTREE_PLUGIN_ID = "environment-git-worktree";
 export const WORKTREE_TRASH_SWEEP_INTERVAL_MS = 60 * 60_000;
@@ -41,6 +43,28 @@ export function resolveWorktreeTrashRoot(daemonDataDir: string): string {
   );
 }
 
+export function worktreeTrashSweepDeps(args: {
+  daemonDataDir: string;
+  logger: Pick<HostDaemonLogger, "info" | "warn">;
+  testWorktreeHolderScan?: WorktreeHolderScan | undefined;
+}): Omit<WorktreeTrashSweepDeps, "keptLogged"> {
+  const scan = args.testWorktreeHolderScan;
+  return {
+    trashRoot: resolveWorktreeTrashRoot(args.daemonDataDir),
+    logger: args.logger,
+    now: Date.now,
+    freeBytes: readDiskFreeBytes,
+    treeBytes: directoryTreeBytes,
+    remove: (entry) =>
+      removeDirectoryAfterHolderRecheck({
+        directory: entry,
+        action: "delete worktree trash entry",
+        recursive: true,
+        ...(scan === undefined ? {} : { testWorktreeHolderScan: scan }),
+      }),
+  };
+}
+
 export async function sweepWorktreeTrash(
   deps: WorktreeTrashSweepDeps,
 ): Promise<void> {
@@ -69,10 +93,10 @@ export async function sweepWorktreeTrash(
           ];
     })
     .sort((left, right) => right.ageMs - left.ageMs);
+  const remaining = new Set(entries);
   for (const entry of entries) {
-    if (entry.ageMs >= WORKTREE_TRASH_RETENTION_MS) {
-      await removeEntry(deps, entry, null);
-    }
+    if (entry.ageMs < WORKTREE_TRASH_RETENTION_MS) continue;
+    if (await removeEntry(deps, entry, null)) remaining.delete(entry);
   }
   for (const entry of entries) {
     if (
@@ -81,20 +105,22 @@ export async function sweepWorktreeTrash(
     ) {
       continue;
     }
-    const reason = await earlyDeleteReason(deps);
+    const reason = await earlyDeleteReason(deps, remaining);
     if (reason === null) return;
-    await removeEntry(deps, entry, reason);
+    if (await removeEntry(deps, entry, reason)) remaining.delete(entry);
   }
 }
 
 async function earlyDeleteReason(
   deps: WorktreeTrashSweepDeps,
+  remaining: ReadonlySet<TrashEntry>,
 ): Promise<string | null> {
   const free = await deps.freeBytes(deps.trashRoot);
   if (free !== null && free < WORKTREE_TRASH_FREE_DISK_FLOOR_BYTES) {
     return `free disk is ${free} bytes, under the ${WORKTREE_TRASH_FREE_DISK_FLOOR_BYTES}-byte floor`;
   }
-  const size = await deps.treeBytes(deps.trashRoot);
+  let size = 0;
+  for (const entry of remaining) size += await deps.treeBytes(entry.entry);
   if (size > WORKTREE_TRASH_BUDGET_BYTES) {
     return `the trash holds ${size} bytes, over the ${WORKTREE_TRASH_BUDGET_BYTES}-byte budget`;
   }
@@ -105,11 +131,11 @@ async function removeEntry(
   deps: WorktreeTrashSweepDeps,
   entry: TrashEntry,
   earlyReason: string | null,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.remove(entry.entry);
   } catch (error) {
-    if (deps.keptLogged.has(entry.name)) return;
+    if (deps.keptLogged.has(entry.name)) return false;
     deps.keptLogged.add(entry.name);
     deps.logger.warn(
       {
@@ -119,7 +145,7 @@ async function removeEntry(
       },
       "Kept worktree trash entry",
     );
-    return;
+    return false;
   }
   deps.keptLogged.delete(entry.name);
   if (earlyReason === null) {
@@ -127,12 +153,13 @@ async function removeEntry(
       { entry: entry.entry, ageMs: entry.ageMs },
       "Deleted worktree trash entry",
     );
-    return;
+  } else {
+    deps.logger.info(
+      { entry: entry.entry, ageMs: entry.ageMs, reason: earlyReason },
+      "Deleted worktree trash entry early",
+    );
   }
-  deps.logger.info(
-    { entry: entry.entry, ageMs: entry.ageMs, reason: earlyReason },
-    "Deleted worktree trash entry early",
-  );
+  return true;
 }
 
 export async function directoryTreeBytes(directory: string): Promise<number> {
@@ -167,6 +194,26 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
+export type WorktreeTrashSweepTimer = (
+  callback: () => void,
+  intervalMs: number,
+) => { clear(): void; unref(): void };
+
+export const nodeIntervalTimer: WorktreeTrashSweepTimer = (
+  callback,
+  intervalMs,
+) => {
+  const timer = setInterval(callback, intervalMs);
+  return {
+    clear() {
+      clearInterval(timer);
+    },
+    unref() {
+      timer.unref();
+    },
+  };
+};
+
 export interface WorktreeTrashSweep {
   stop(): void;
   idle(): Promise<void>;
@@ -174,10 +221,7 @@ export interface WorktreeTrashSweep {
 
 export function startWorktreeTrashSweep(args: {
   deps: Omit<WorktreeTrashSweepDeps, "keptLogged">;
-  setIntervalFn: (
-    callback: () => void,
-    intervalMs: number,
-  ) => { clear(): void; unref(): void };
+  setIntervalFn: WorktreeTrashSweepTimer;
 }): WorktreeTrashSweep {
   const deps: WorktreeTrashSweepDeps = { ...args.deps, keptLogged: new Set() };
   let running: Promise<void> | null = null;
