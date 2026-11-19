@@ -1640,7 +1640,7 @@ describe("acp bridge", () => {
       expect(response.result).toBeUndefined();
       const message = response.error?.message ?? "";
       expect(message).toBe(
-        "No saved Google sign-in was found on this machine, and bb does not open a browser while it lists models. Add a Google account with `bb pool account add --provider gemini --login`, or sign this agent in with Google on the machine that hosts the thread, then try again.",
+        "bb could not use a saved Google sign-in on this machine, and it does not open a browser while it lists models. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.",
       );
       expect(message).not.toContain("{");
       expect(message).not.toContain("Authentication required");

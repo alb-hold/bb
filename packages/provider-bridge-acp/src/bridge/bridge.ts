@@ -622,7 +622,7 @@ const AUTH_REQUIRED_MODEL_LIST_ERROR_MESSAGE =
 const OAUTH_PERSONAL_AUTH_METHOD_ID = "oauth-personal";
 const NO_AUTH_METHOD_SELECTED_MESSAGE = "No authentication method selected";
 const GOOGLE_SIGN_IN_NEEDED_MESSAGE =
-  "No saved Google sign-in was found on this machine, and bb does not open a browser while it lists models. Add a Google account with `bb pool account add --provider gemini --login`, or sign this agent in with Google on the machine that hosts the thread, then try again.";
+  "bb could not use a saved Google sign-in on this machine, and it does not open a browser while it lists models. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.";
 
 function reasoningSupportFromCli(
   reasoningCli:
