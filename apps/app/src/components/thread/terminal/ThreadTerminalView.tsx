@@ -2225,7 +2225,7 @@ export function ThreadTerminalView({
     let terminalInteractions: ReturnType<
       typeof attachTerminalInteractions
     > | null = null;
-    let resizeObserver: ResizeObserver | null = null;
+    let unobserveContainerResize: (() => void) | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let lateImeInputDisposable: { dispose: () => void } | null = null;
     let terminalRenderSubscription: { dispose: () => void } | null = null;
@@ -3329,9 +3329,13 @@ export function ThreadTerminalView({
         });
       }
       scheduleFitRef.current = scheduleFit;
-      resizeObserver = new ResizeObserver((entries) => {
+      unobserveContainerResize = observeSharedResize(containerElement, {
+        read: (entry) => {
+          const entries = entry === undefined ? [] : [entry];
+          return hasVisibleTerminalSize({ containerElement, entries });
+        },
+        write: (hasSize) => {
         updateGridVisibility();
-        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
         if (hasSize !== containerHasSize) {
           containerHasSize = hasSize;
           reportDocumentVisibility();
@@ -3340,8 +3344,8 @@ export function ThreadTerminalView({
           return;
         }
         scheduleFit();
+        },
       });
-      resizeObserver.observe(containerElement);
       const currentActiveElement = document.activeElement;
       if (
         !terminalSearchOpenRef.current &&
@@ -4410,7 +4414,7 @@ export function ThreadTerminalView({
         clearTimeout(retainedReplayTimeout);
       }
       setConnectionNotice(null);
-      resizeObserver?.disconnect();
+      unobserveContainerResize?.();
       replayPreview?.dispose();
       replayPreview = null;
       detachPointerCoordinates?.();

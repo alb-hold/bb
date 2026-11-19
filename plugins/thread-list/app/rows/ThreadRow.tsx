@@ -75,6 +75,7 @@ import {
   type PluginThreadStatus,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { useThreadListPullRequest } from "./pull-request-query.js";
 import {
   NO_THREAD_IDS,
@@ -658,19 +659,17 @@ function ThreadRowComponent({
     },
     [startEditingFromDoubleClick],
   );
-  const miniMap = useThreadSplitMiniMap(thread.id);
-  const { startedAt: automationStartedAt, elapsedMinutes } =
-    useAutomationWokeAt(
-      thread.id,
-      miniMap === null && thread.archivedAt === null,
-    );
-  const isOpenInSplit = miniMap !== null;
   const split = experimental_useSidebarThreadSplit(
     thread.id,
     multiSelection === null ? undefined : { dragThreadIds: multiSelection },
   );
   const miniMap = split.layout?.panes ?? null;
   const isOpenInSplit = miniMap !== null;
+  const { startedAt: automationStartedAt, elapsedMinutes } =
+    useAutomationWokeAt(
+      thread.id,
+      miniMap === null && thread.archivedAt === null,
+    );
   const onSplitDragPointerDown = split.splitProps.onPointerDown;
   const splitAvailable = split.isAvailable;
   const openInSplit = useCallback(() => {
@@ -834,11 +833,12 @@ function ThreadRowComponent({
       reportRowStateHeight.report(stickyRowReporterId, value);
     };
     report();
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
-    observer?.observe(element);
+    const unobserve = observeSharedResize(element, {
+      read: () => undefined,
+      write: report,
+    });
     return () => {
-      observer?.disconnect();
+      unobserve();
       reportRowStateHeight.remove(stickyRowReporterId);
     };
   }, [rowElement, reportsRowState, reportRowStateHeight, stickyRowReporterId]);

@@ -21,6 +21,7 @@ import type {
 } from "@/components/plugin/plugin-composer-host";
 
 export const promptAreaMocks = {
+  clearThreadGoalMutate: vi.fn(),
   unknownReasoning: false,
   cancelThreadPlanMutateAsync: vi.fn(),
   createThreadMutateAsync: vi.fn(),
@@ -720,6 +721,10 @@ vi.mock("@/hooks/mutations/project-mutations", () => ({
 }));
 
 vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
+  useClearThreadGoal: () => ({
+    isPending: false,
+    mutate: promptAreaMocks.clearThreadGoalMutate,
+  }),
   useCancelThreadPlan: () => ({
     isPending: false,
     mutateAsync: promptAreaMocks.cancelThreadPlanMutateAsync,

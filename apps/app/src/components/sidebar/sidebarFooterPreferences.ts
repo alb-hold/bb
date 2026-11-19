@@ -38,10 +38,10 @@ export function useMeasureSidebarFooterCapacity(
       const frame = requestAnimationFrame(measure);
       return () => cancelAnimationFrame(frame);
     }
-    const observer = new ResizeObserver(measure);
-    observer.observe(row);
-    observer.observe(more);
-    return () => observer.disconnect();
+    return observeSharedResize([row, more], {
+      read: () => undefined,
+      write: measure,
+    });
   }, [rowRef, moreRef, setCapacity]);
 }
 

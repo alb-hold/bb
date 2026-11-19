@@ -69,7 +69,7 @@ interface StatusOptions {
 export type DiffResult = ThreadGitDiffResponse;
 
 export interface DiffFilesArgs {
-  freshness: ReadFreshness;
+  freshness: GitReadFreshness;
   target: WorkspaceDiffTarget;
   maxFiles: number;
   ignoreWhitespace: boolean;
@@ -88,12 +88,6 @@ interface DiffPatchArgs {
   paths: string[];
   maxBytesPerFile: number;
   ignoreWhitespace: boolean;
-}
-
-export interface DiffPatchEntry {
-  path: string;
-  patch: string;
-  truncated: boolean;
 }
 
 type TruncatedOutput = {
@@ -1969,32 +1963,9 @@ export class WorkspaceReads {
         options,
         args.recordFormat,
         args.maxRecords,
-      );
-    }
-
-    const headArgs = buildArgs(["HEAD"]);
-    const headResult = await this.runGitWithNullRecordLimit(
-      headArgs,
-      { cwd: this.path, allowFailure: true },
-      args.recordFormat,
-      args.maxRecords,
-    );
-    if (headResult.exitCode === 0) {
-      return headResult;
-    }
-    if (!isMissingHeadRevisionError(headResult.stderr)) {
-      const detail = headResult.stderr.trim();
-      throw new WorkspaceError(
-        "git_command_failed",
-        `git ${headArgs.join(" ")} failed${detail ? `: ${detail}` : ""}`,
-      );
-    }
-
-    const emptyTreeSha = await readEmptyTreeSha(this.path, (gitArgs, options) =>
-      this.runGit(gitArgs, options),
-    );
-    return this.runGitWithNullRecordLimit(
-      buildArgs([emptyTreeSha]),
+      ),
+    )(
+      (rangeArgs) => [...args.range.baseArgs, ...args.outputArgs, ...rangeArgs],
       { cwd: this.path },
     );
   }
@@ -2440,6 +2411,22 @@ function joinDiffArtifactLines(parts: string[]): string {
     .map((value) => value.trimEnd())
     .filter((value) => value.length > 0)
     .join("\n");
+}
+
+async function lstatFileOrSymlink(filePath: string): Promise<Stats | null> {
+  try {
+    return await fs.lstat(filePath);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function assertPositiveInteger(value: number, field: string): void {

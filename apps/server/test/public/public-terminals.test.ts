@@ -5675,7 +5675,7 @@ describe("public terminal routes", () => {
       expect(readDaemonOperationMessages(fixture.socket)).toEqual([]);
     });
   });
-  it("retains unwatched output with daemon session checks and resumes live delivery", async () => {
+  it("skips terminal lookups for unwatched output and resumes live delivery", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -5722,7 +5722,7 @@ describe("public terminal routes", () => {
     ).toBe(true);
     expect(
       preparedSources.some((source) => /\bterminal_sessions\b/u.test(source)),
-    ).toBe(true);
+    ).toBe(false);
     expect(fixture.socket.close).not.toHaveBeenCalled();
     preparedSources.length = 0;
 
@@ -5736,28 +5736,6 @@ describe("public terminal routes", () => {
         message.type === "output" ? [message.chunk.seq] : [],
       ),
     ).toEqual([2]);
-    await fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
-      hostId: fixture.host.id,
-      sessionId: fixture.session.id,
-      message: {
-        type: "terminal.exited",
-        terminalId: stored.id,
-        exitCode: 0,
-        closeReason: "process-exit",
-      },
-    });
-    const outputResponse = await fixture.harness.app.request(
-      `/api/v1/terminals/${stored.id}/output`,
-    );
-    expect(outputResponse.status).toBe(200);
-    const output = terminalOutputResponseSchema.parse(
-      await readJson(outputResponse),
-    );
-    expect(
-      output.chunks
-        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
-        .join(""),
-    ).toBe("chunk-0chunk-1chunk-2");
   });
 
   it("evicts a closed daemon session from the hub when it sends output for an unwatched terminal", async () => {

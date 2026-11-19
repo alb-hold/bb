@@ -396,21 +396,6 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     );
   }, [currentContent, setLayout]);
 
-  const layout = useMemo(() => {
-    if (currentContent === null) return storedLayout;
-    if (storedLayout === null)
-      return reconcileLayoutForContent(null, currentContent);
-    const focusedContent = findPane(
-      storedLayout.root,
-      storedLayout.focusedPaneId,
-    )?.content;
-    return currentContent.kind === "thread" &&
-      focusedContent?.kind === "thread" &&
-      currentContent.threadId === focusedContent.threadId &&
-      currentContent.projectId !== focusedContent.projectId
-      ? reconcileLayoutForContent(storedLayout, currentContent)
-      : storedLayout;
-  }, [storedLayout, currentContent]);
   useTerminalMountGate(
     "terminal-split-layout",
     "workspace",

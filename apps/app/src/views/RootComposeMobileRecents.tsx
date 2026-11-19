@@ -44,6 +44,9 @@ import { useThreadListEntryStatus } from "@/hooks/useThreadListEntryStatus";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
+export const MOBILE_RECENT_ROW_HEIGHT_PX = 52;
+export const MOBILE_RECENT_LABEL_HEIGHT_PX = 24;
+
 const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-13";
 
 interface MobileRecentThreadRowProps {

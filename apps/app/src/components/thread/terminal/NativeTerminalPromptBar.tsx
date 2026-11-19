@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { Button } from "@bb/shared-ui/button";
 import {
   COMPOSER_SHELL_CLASS,
@@ -519,13 +520,15 @@ export function NativeTerminalPromptBar({
     );
     if (!shell) return;
     let previousWidth = shell.clientWidth;
-    const observer = new ResizeObserver(() => {
+    const updateWidth = () => {
       if (shell.clientWidth === previousWidth) return;
       previousWidth = shell.clientWidth;
       measureInput();
+    };
+    return observeSharedResize(shell, {
+      read: () => undefined,
+      write: updateWidth,
     });
-    observer.observe(shell);
-    return () => observer.disconnect();
   }, [measureInput]);
 
   const isCompactViewport = useIsCompactViewport();

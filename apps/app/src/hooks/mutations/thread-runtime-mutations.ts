@@ -28,6 +28,7 @@ import {
   applyQueuedMessageSendResult,
   applyQueuedMessageUpdateResult,
   applySendThreadMessageSuccess,
+  applyThreadGoalClearResult,
   applyThreadPlanCancellationResult,
   beginCreateThreadTransaction,
   beginRemoveQueuedMessageTransaction,
@@ -521,4 +522,22 @@ export function cancelThreadPlanMutationOptions(queryClient: QueryClient) {
 export function useCancelThreadPlan() {
   const queryClient = useQueryClient();
   return useMutation(cancelThreadPlanMutationOptions(queryClient));
+}
+
+export function clearThreadGoalMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
+    meta: { errorMessage: "Failed to clear Goal." },
+    mutationFn: async (threadId: string) => {
+      await sdk.threads.clearGoal({ threadId });
+    },
+    onSuccess: (_data, threadId) => {
+      applyThreadGoalClearResult({ queryClient, threadId });
+      invalidateThreadBannerQueries({ queryClient, threadId });
+    },
+  });
+}
+
+export function useClearThreadGoal() {
+  const queryClient = useQueryClient();
+  return useMutation(clearThreadGoalMutationOptions(queryClient));
 }

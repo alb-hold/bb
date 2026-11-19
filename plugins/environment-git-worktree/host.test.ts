@@ -1400,6 +1400,39 @@ describe("worktree host entry", () => {
       expect(restored.ownsBranch).toBe(false);
       await harness.experimental_dispose();
     });
+
+    it("abandons failed setup for an existing workspace without deleting its unowned branch", async ({
+      onTestFinished,
+    }) => {
+      const { sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await git(sourcePath, "branch", "my-feature");
+      const harness = createHarness(dataDir);
+      const input = {
+        ...createInput({
+          operationId: "reuse-failed-setup",
+          sourcePath,
+          pathKey: "user-branch",
+          branchName: "my-feature",
+        }),
+        branchMode: "reuse-existing" as const,
+      };
+      const created = await harness.experimental_call("create", input);
+      if (created.status !== "created") throw new Error(created.message);
+      expect(created.ownsBranch).toBe(false);
+      await rm(`${created.path}.completed`);
+      await mkdir(`${created.path}.completed`);
+
+      const failed = await harness.experimental_call("create", {
+        ...input,
+        operationId: "reuse-failed-setup-retry",
+      });
+
+      expect(failed.status).toBe("failed");
+      expect(existsSync(created.path)).toBe(false);
+      expect(await branchExists(sourcePath, "my-feature")).toBe(true);
+      await harness.experimental_dispose();
+    });
   });
 });
 

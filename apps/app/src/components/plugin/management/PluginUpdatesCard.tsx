@@ -8,7 +8,6 @@ import { appToast } from "@/components/ui/app-toast";
 import { applyPluginUpdateJob } from "@/hooks/cache-owners/plugin-cache-owner";
 import { startPluginUpdate } from "@/hooks/queries/plugin-update-job-queries";
 import {
-  pluginHasUpdateSurfaces,
   type PluginListItem,
 } from "@/hooks/queries/plugin-settings-queries";
 import { pluginAdminErrorMessage } from "@/lib/plugin-admin-error";

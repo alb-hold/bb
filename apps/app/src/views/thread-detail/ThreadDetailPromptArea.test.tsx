@@ -10,6 +10,7 @@ import type {
   PromptTextMention,
   ThreadQueuedMessage,
   ThreadTimelineActivePromptMode,
+  ThreadTimelineGoal,
   ThreadTimelineModelFallback,
   ThreadWithRuntime,
 } from "@bb/domain";
@@ -52,7 +53,7 @@ import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueued
 
 import { workflowRow } from "@/test/fixtures/thread-timeline-rows";
 
-import type { PromptDraftAttachment } from "@bb/client-core";
+import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 
 import {
   getPromptDraftAccessor,
@@ -123,6 +124,16 @@ const activePlan = {
   prompt: "Plan the work",
 } satisfies ThreadTimelineActivePromptMode;
 
+const activeGoal = {
+  sourceSeq: 1,
+  updatedAt: 100,
+  objective: "Finish the work",
+  status: "active",
+  tokenBudget: null,
+  tokensUsed: 100,
+  timeUsedSeconds: 10,
+} satisfies ThreadTimelineGoal;
+
 
 
 function makePendingInteraction(): PendingInteraction {
@@ -163,6 +174,7 @@ function makePendingInteraction(): PendingInteraction {
 interface RenderPromptAreaOptions {
   executionOptionsPending?: boolean;
   activePromptMode?: ThreadTimelineActivePromptMode | null;
+  goal?: ThreadTimelineGoal | null;
   activeWorkflows?: TimelineWorkflowWorkRow[];
   childThreadsSection?: ComponentProps<
     typeof ThreadDetailPromptArea
@@ -192,6 +204,7 @@ let testQueryClient: QueryClient;
 
 function buildPromptAreaElement({
   activePromptMode = null,
+  goal = null,
   activeWorkflows = [],
   childThreadsSection = null,
   modelFallback = null,
@@ -213,6 +226,7 @@ function buildPromptAreaElement({
       <ThreadDetailPromptArea
         activeBackgroundCommands={[]}
         activePromptMode={activePromptMode}
+        goal={goal}
         activeWorkflows={activeWorkflows}
         childThreadsSection={childThreadsSection}
         composerFocusRequestKey={0}
@@ -414,6 +428,7 @@ describe("shared draft submission ownership", () => {
 
 
 beforeEach(() => {
+  mocks.clearThreadGoalMutate.mockClear();
   const draftListeners = new Set<() => void>();
   mocks.promptDraft.subscribe.mockImplementation((listener: () => void) => {
     draftListeners.add(listener);
@@ -2207,6 +2222,30 @@ describe("ThreadDetailPromptArea", () => {
         .getAllByTestId("composer-stack-item")
         .map((item) => item.textContent),
     ).toEqual(["Plan banner", "Pending interaction"]);
+  });
+
+  it("keeps Goal above a pending interaction", () => {
+    renderPromptArea({
+      goal: activeGoal,
+      pendingInteractions: [makePendingInteraction()],
+    });
+
+    expect(
+      screen
+        .getAllByTestId("composer-stack-item")
+        .map((item) => item.textContent),
+    ).toEqual(["Goal banner", "Pending interaction"]);
+  });
+
+  it("wires Goal clear to the current thread", () => {
+    renderPromptArea({
+      goal: activeGoal,
+      thread: makeThread({ id: "thr_goal" }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear active Goal" }));
+
+    expect(mocks.clearThreadGoalMutate).toHaveBeenCalledWith("thr_goal");
   });
 
 

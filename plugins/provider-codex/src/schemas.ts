@@ -581,16 +581,7 @@ const codexErrorInfoSchema = z.union([
 ]);
 export type CodexErrorInfo = z.output<typeof codexErrorInfoSchema>;
 
-const unrecognizedCodexErrorInfoSchema = z
-  .union([z.string(), z.record(z.string(), z.unknown())])
-  .transform((raw) => ({
-    unrecognized:
-      typeof raw === "string" ? raw : (Object.keys(raw)[0] ?? "unknown"),
-  }));
-const tolerantCodexErrorInfoSchema = z.union([
-  codexErrorInfoSchema,
-  unrecognizedCodexErrorInfoSchema,
-]);
+const tolerantCodexErrorInfoSchema = codexErrorInfoSchema;
 export type CodexParsedErrorInfo = z.infer<typeof tolerantCodexErrorInfoSchema>;
 
 const codexTurnErrorSchema = z

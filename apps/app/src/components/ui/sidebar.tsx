@@ -1786,16 +1786,17 @@ const SidebarContent = React.forwardRef<
   const composedRef = useComposedRefs(ref, contentRef);
   React.useLayoutEffect(() => {
     const element = contentRef.current;
-    if (!element || typeof ResizeObserver === "undefined") {
+    if (!element) {
       return;
     }
     const readScrollbarLane = () => element.offsetWidth - element.clientWidth;
     const publishScrollbarLane = (lane: number) => {
       element.style.setProperty("--bb-sidebar-scrollbar-lane", `${lane}px`);
     };
-    const observer = new ResizeObserver(publishScrollbarLane);
-    observer.observe(element);
-    return () => observer.disconnect();
+    return observeSharedResize(element, {
+      read: () => readScrollbarLane(),
+      write: publishScrollbarLane,
+    });
   }, []);
   return (
     <div

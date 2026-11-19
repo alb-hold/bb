@@ -213,6 +213,11 @@ export function RootComposeHome({
             isCompact ? "absolute inset-x-0 bottom-0 z-10" : undefined
           }
         >
+          {!isCompact ? (
+            <p className="mb-6 text-center text-xl font-medium text-foreground">
+              Start a new thread
+            </p>
+          ) : null}
           <div ref={composerFadeRef} data-testid="root-compose-compact-fade">
             {isCompact ? (
               <OverflowFade placement="above" tone="background" size="lg" />

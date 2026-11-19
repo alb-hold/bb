@@ -135,6 +135,7 @@ function buildPromptArea({
         executionOptionsPending={false}
         activeBackgroundCommands={[]}
         activePromptMode={null}
+        goal={null}
         activeWorkflows={[]}
         childThreadsSection={null}
         composerFocusRequestKey={0}

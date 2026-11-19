@@ -12,6 +12,7 @@ import type {
   PromptHistoryEntry,
   ResolvedThreadExecutionOptions,
   ThreadQueuedMessage,
+  ThreadListEntry,
   ThreadWithRuntime,
 } from "@bb/domain";
 import type {
@@ -757,6 +758,27 @@ export function applyThreadPlanCancellationResult({
     patchThreadEntity(queryClient, threadId, {
       activity: { ...activity, activePlanModeCount: 0 },
     });
+}
+
+export function applyThreadGoalClearResult({
+  queryClient,
+  threadId,
+}: ThreadIdCacheArgs): void {
+  for (const [queryKey, timeline] of queryClient.getQueriesData<ThreadTimelineResponse>(
+    { queryKey: threadTimelineQueryKeyPrefix(threadId) },
+  )) {
+    if (!timeline) continue;
+    queryClient.setQueryData<ThreadTimelineResponse>(queryKey, {
+      ...timeline,
+      goal: null,
+    });
+  }
+  const activity = getThreadEntity(queryClient, threadId)?.list?.activity;
+  if (activity !== undefined) {
+    patchThreadEntity(queryClient, threadId, {
+      activity: { ...activity, activeGoalCount: 0 } satisfies ThreadListEntry["activity"],
+    });
+  }
 }
 
 export async function beginCreateThreadTransaction({

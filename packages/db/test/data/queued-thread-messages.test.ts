@@ -829,6 +829,70 @@ describe("queued thread messages", () => {
     }
   });
 
+  it("releases stale null-token claims without releasing protected claims", () => {
+    const { db, thread } = setup();
+    const nowSpy = vi.spyOn(Date, "now");
+    try {
+      nowSpy.mockReturnValue(1_000);
+      const unownedMessage = createQueuedThreadMessage(db, noopNotifier, {
+        threadId: thread.id,
+        content: defaultInput,
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        waitingOn: null,
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: null,
+      });
+      const protectedMessage = createQueuedThreadMessage(db, noopNotifier, {
+        threadId: thread.id,
+        content: altInput,
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        waitingOn: null,
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: null,
+      });
+      const unownedClaim = claimQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        unownedMessage.id,
+        { kind: "explicit-send" },
+      )?.[0];
+      const protectedClaim = claimQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        protectedMessage.id,
+        { kind: "explicit-send" },
+      )?.[0];
+      if (!unownedClaim || !protectedClaim) {
+        throw new Error("Expected queued message claims");
+      }
+      db.$client
+        .prepare("UPDATE queued_thread_messages SET claim_token = NULL WHERE id = ?")
+        .run(unownedMessage.id);
+
+      nowSpy.mockReturnValue(10_000);
+      expect(
+        releaseStaleQueuedMessageClaims(db, noopNotifier, {
+          claimedBefore: 5_000,
+          protectedClaimTokens: [protectedClaim.claimToken],
+        }),
+      ).toBe(1);
+      expect(getQueuedThreadMessage(db, unownedMessage.id)?.claimToken).toBeNull();
+      expect(getQueuedThreadMessage(db, protectedMessage.id)?.claimToken).toBe(
+        protectedClaim.claimToken,
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it("claims the oldest queued message first", () => {
     const { db, thread } = setup();
     const nowSpy = vi.spyOn(Date, "now");

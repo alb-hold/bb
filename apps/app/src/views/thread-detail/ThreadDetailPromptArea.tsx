@@ -31,6 +31,7 @@ import type {
   PromptInput,
   ThreadQueuedMessage,
   ThreadTimelineActivePromptMode,
+  ThreadTimelineGoal,
   ThreadTimelineModelFallback,
   ThreadTimelinePendingTodos,
   ThreadWithRuntime,
@@ -60,6 +61,7 @@ import {
 } from "@/components/thread/pending-interactions/PendingInteractionsQueryBanner";
 import {
   type PluginComposerHost,
+  type ComposerDraftStore,
   useComposerHostDraftNotifier,
   useComposerHostSelection,
   usePublishPluginComposerHost,
@@ -71,6 +73,7 @@ import {
   type ThreadPromptChildThreadsSection,
 } from "@/components/promptbox/banner/ThreadPromptContextBanner";
 import { ThreadTodoCard } from "@/components/promptbox/banner/ThreadTodoCard";
+import { ThreadGoalCard } from "@/components/promptbox/banner/ThreadGoalCard";
 import { ThreadPromptModeCard } from "@/components/promptbox/banner/ThreadPromptModeCard";
 import { ThreadWorkflowStack } from "@/components/promptbox/banner/ThreadWorkflowStack";
 import { ThreadBackgroundCommandsCard } from "@/components/promptbox/banner/ThreadBackgroundCommandsCard";
@@ -114,6 +117,7 @@ import {
 import {
   useCreateThread,
   useCancelThreadPlan,
+  useClearThreadGoal,
   useStopThread,
 } from "@/hooks/mutations/thread-runtime-mutations";
 import {
@@ -220,6 +224,7 @@ interface ThreadDetailPromptAreaProps {
   workspaceSharingThreadCount?: number | null;
   pendingTodos: ThreadTimelinePendingTodos | null;
   activePromptMode: ThreadTimelineActivePromptMode | null;
+  goal: ThreadTimelineGoal | null;
   providerCommands: readonly ProviderCommand[] | null;
   executionOptionsPending: boolean;
   sessionOptions: readonly ThreadTimelineSessionOption[] | null;
@@ -514,6 +519,7 @@ export function ThreadDetailPromptArea({
   resolveMentionLink,
   pendingTodos,
   activePromptMode,
+  goal,
   providerCommands,
   sessionOptions,
   executionOptionsPending,
@@ -602,6 +608,7 @@ export function ThreadDetailPromptArea({
   );
   const stopThread = useStopThread();
   const cancelThreadPlan = useCancelThreadPlan();
+  const clearThreadGoal = useClearThreadGoal();
   const unarchiveThread = useUnarchiveThread();
   const updateThread = useUpdateThread();
   const restoreThreadEnvironment = useRestoreThreadEnvironment();
@@ -699,6 +706,7 @@ export function ThreadDetailPromptArea({
     string | null
   >(null);
   const [isChildThreadsExpanded, setIsChildThreadsExpanded] = useState(false);
+  const [isGoalExpanded, setIsGoalExpanded] = useState(false);
   const [isTodoExpanded, setIsTodoExpanded] = useState(false);
   const [expandedWorkflowIds, setExpandedWorkflowIds] = useState<
     ReadonlySet<string>
@@ -1162,6 +1170,9 @@ export function ThreadDetailPromptArea({
     stopThread.mutate(thread.id);
   }, [stopThread, thread.id]);
   const { mutateAsync: cancelThreadPlanAsync } = cancelThreadPlan;
+  const handleClearGoal = useCallback(() => {
+    clearThreadGoal.mutate(thread.id);
+  }, [clearThreadGoal, thread.id]);
   const handleExitPlanMode = useCallback(async () => {
     await cancelThreadPlanAsync(thread.id);
   }, [cancelThreadPlanAsync, thread.id]);
@@ -1759,6 +1770,7 @@ export function ThreadDetailPromptArea({
         options: serviceTierOptions,
       },
       reasoning: {
+        isLoading: false,
         value: reasoningLevel,
         options: reasoningOptions,
         onChange: handleReasoningLevelChange,
@@ -2000,6 +2012,18 @@ export function ThreadDetailPromptArea({
       />
     ),
     [activePromptMode, handleExitPlanMode],
+  );
+  const activeGoalCard = useMemo(
+    () => (
+      <ThreadGoalCard
+        goal={goal}
+        isClearPending={clearThreadGoal.isPending}
+        isExpanded={isGoalExpanded}
+        onClearGoal={handleClearGoal}
+        onToggle={() => setIsGoalExpanded((value) => !value)}
+      />
+    ),
+    [clearThreadGoal.isPending, goal, handleClearGoal, isGoalExpanded],
   );
   const inlineEditSessionId = inlineEditingQueuedMessage?.editSessionId ?? null;
   const inlineEditQueuedMessageId =
@@ -2507,11 +2531,14 @@ export function ThreadDetailPromptArea({
           autoExpandDisabled={expandedBannerSegment !== null}
         />
         {activePromptMode ? activePromptModeCard : null}
+        {goal ? activeGoalCard : null}
       </>
     ),
     [
       activePromptMode,
       activePromptModeCard,
+      activeGoalCard,
+      goal,
       childThreadsBannerKey,
       childThreadsSection,
       expandedBannerSegment,

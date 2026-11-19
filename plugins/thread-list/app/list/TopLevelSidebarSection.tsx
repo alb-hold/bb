@@ -41,6 +41,7 @@ import {
 } from "./groupRollups.js";
 import { SplitPaneMiniMap } from "@/components/ui/split-pane-mini-map";
 import { COARSE_POINTER_ROW_ACTION_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 function updateContentScrollCue(element: HTMLDivElement) {
   element.toggleAttribute(
@@ -108,19 +109,18 @@ export function TopLevelSidebarSection({
     const content = contentRef.current;
     if (!content || !contentClassName) return;
     const measure = () => updateContentScrollCue(content);
+    const targets = [content, ...content.children];
+    const unobserve = observeSharedResize(targets, {
+      read: () => undefined,
+      write: measure,
+    });
     const frame =
       typeof ResizeObserver === "undefined"
         ? requestAnimationFrame(measure)
         : null;
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(measure);
-    observer?.observe(content);
-    for (const child of content.children) observer?.observe(child);
     return () => {
       if (frame !== null) cancelAnimationFrame(frame);
-      observer?.disconnect();
+      unobserve();
     };
   }, [children, contentClassName, collapseControl?.isCollapsed]);
   const threadDropState = useSectionDropTargetState(dropParentKey);

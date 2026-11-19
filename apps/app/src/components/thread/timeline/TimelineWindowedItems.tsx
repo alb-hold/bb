@@ -473,39 +473,12 @@ export function TimelineWindowedItems({
     [measurements],
   );
 
-  const observerRef = useRef<ResizeObserver | null>(null);
+  const unobserveByNodeRef = useRef(new Map<Element, () => void>());
   const observedWidthRef = useRef<number | null>(null);
-  const getObserver = useCallback((): ResizeObserver | null => {
-    if (observerRef.current !== null) return observerRef.current;
-    if (typeof ResizeObserver === "undefined") return null;
-    observerRef.current = new ResizeObserver((entries) => {
-      const width = containerRef.current?.clientWidth ?? null;
-      const widthChanged =
-        observedWidthRef.current !== null && width !== observedWidthRef.current;
-      observedWidthRef.current = width;
-      let changed = false;
-      for (const entry of entries) {
-        const key = entry.target.getAttribute(WINDOW_KEY_ATTRIBUTE);
-        if (key === null) continue;
-        const height =
-          entry.borderBoxSize?.[0]?.blockSize ??
-          entry.target.getBoundingClientRect().height;
-        if (record(key, height)) changed = true;
-      }
-      if (changed && widthChanged) {
-        snapHeight?.();
-        positionKeeper?.remeasure();
-      } else if (changed) {
-        positionKeeper?.reconcile();
-      }
-    });
-    return observerRef.current;
-  }, [positionKeeper, record, snapHeight]);
-
   useLayoutEffect(
     () => () => {
-      observerRef.current?.disconnect();
-      observerRef.current = null;
+      for (const unobserve of unobserveByNodeRef.current.values()) unobserve();
+      unobserveByNodeRef.current.clear();
     },
     [],
   );
@@ -518,14 +491,37 @@ export function TimelineWindowedItems({
         nodesRef.current.set(key, node);
         record(key, node.getBoundingClientRect().height);
       }
-      const observer = getObserver();
-      observer?.observe(node);
+      const unobserve = observeSharedResize(node, {
+        read: (entry) => {
+          const width = containerRef.current?.clientWidth ?? null;
+          const widthChanged =
+            observedWidthRef.current !== null &&
+            width !== observedWidthRef.current;
+          observedWidthRef.current = width;
+          const key = node.getAttribute(WINDOW_KEY_ATTRIBUTE);
+          const height =
+            entry?.borderBoxSize?.[0]?.blockSize ??
+            node.getBoundingClientRect().height;
+          return { key, height, widthChanged };
+        },
+        write: ({ key, height, widthChanged }) => {
+          if (key === null || !record(key, height)) return;
+          if (widthChanged) {
+            snapHeight?.();
+            positionKeeper?.remeasure();
+          } else {
+            positionKeeper?.reconcile();
+          }
+        },
+      });
+      unobserveByNodeRef.current.set(node, unobserve);
       return () => {
-        observer?.unobserve(node);
+        unobserveByNodeRef.current.delete(node);
+        unobserve();
         if (key !== null) nodesRef.current.delete(key);
       };
     },
-    [positionKeeper, record],
+    [positionKeeper, record, snapHeight],
   );
 
   const frameUpdatesRef = useRef({ count: 0, frame: null as number | null });

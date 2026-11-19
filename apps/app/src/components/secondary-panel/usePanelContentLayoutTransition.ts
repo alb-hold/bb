@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 export function usePanelContentLayoutTransition(
   open: boolean,
@@ -83,10 +84,12 @@ export function usePanelContentLayoutTransition(
       for (const [element, left] of nextPositions) positions.set(element, left);
     };
     measure.current = update;
-    const observer = new ResizeObserver(update);
-    observer.observe(root);
+    const unobserve = observeSharedResize(root, {
+      read: () => undefined,
+      write: update,
+    });
     return () => {
-      observer.disconnect();
+      unobserve();
       measure.current = null;
       pending.current = false;
       for (const animation of animations) animation.cancel();

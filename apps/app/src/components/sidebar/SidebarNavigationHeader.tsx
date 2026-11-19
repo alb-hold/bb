@@ -13,6 +13,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
 import { useSidebarHeaderControlAxisClass } from "./SidebarChrome";
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 const SIDEBAR_HEADER_SLOT_KIND = "sidebarHeader";
 const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
@@ -103,10 +104,14 @@ function PluginNavigationHeader({
           : next,
       );
     };
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      if (entry) measure(Math.floor(entry.contentRect.width));
+    const unobserve = observeSharedResize(element, {
+      read: (entry) =>
+        entry === undefined ? null : Math.floor(entry.contentRect.width),
+      write: (width) => {
+        apply(width === null ? null : measure(width));
+      },
     });
+    return unobserve;
   }, [isCompactViewport]);
 
   const props = {

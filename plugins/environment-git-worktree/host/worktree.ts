@@ -725,6 +725,25 @@ async function removeCreateTarget(
   });
 }
 
+async function abandonCreateTarget(
+  args: CreateWorktreeArgs,
+  ownsBranch: boolean,
+): Promise<void> {
+  await removeCreateTarget(args);
+  if (!ownsBranch) return;
+  try {
+    await deleteOwnedBranch({
+      repositoryPath: args.sourcePath,
+      branchName: args.branchName,
+      baseBranch: args.baseBranch?.ref ?? null,
+      onProgress: args.onProgress,
+      signal: args.signal,
+    });
+  } catch {
+    return;
+  }
+}
+
 async function refuseExistingCreateTarget(
   args: CreateWorktreeArgs,
 ): Promise<void> {
@@ -806,8 +825,13 @@ export async function createWorktree(
     if ((await readCompletedBranch(args.completionPath)) === args.branchName) {
       return existing;
     }
-    await finishWorktreeSetup(args);
-    return existing;
+    try {
+      await finishWorktreeSetup(args);
+      return existing;
+    } catch (error) {
+      await abandonCreateTarget(args, existing.ownsBranch);
+      throw error;
+    }
   }
 
   await refuseExistingCreateTarget(args);

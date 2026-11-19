@@ -218,22 +218,17 @@ export function SidebarWindowedItems({
       );
     };
 
-    let resizeObserver: ResizeObserver | null = null;
+    let unobserveResize: (() => void) | null = null;
     let frame: number | null = null;
     if (promoteAll) {
       promoteVisible();
     } else if (scrollElement && typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver((entries) => {
-        if (
-          entries.some(
-            (entry) =>
-              entry.target === scrollElement && entry.contentRect.height > 0,
-          )
-        ) {
-          promoteVisible();
-        }
+      unobserveResize = observeSharedResize(scrollElement, {
+        read: (entry) => entry !== undefined && entry.contentRect.height > 0,
+        write: (hasSize) => {
+          if (hasSize) promoteVisible();
+        },
       });
-      resizeObserver.observe(scrollElement);
     } else {
       frame = requestAnimationFrame(() => {
         if (!scrollElement || scrollElement.clientHeight > 0) {
@@ -249,7 +244,7 @@ export function SidebarWindowedItems({
       }
     }
     return () => {
-      resizeObserver?.disconnect();
+      unobserveResize?.();
       if (frame !== null) cancelAnimationFrame(frame);
     };
     // oxlint-disable-next-line react/exhaustive-deps

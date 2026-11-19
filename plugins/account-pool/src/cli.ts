@@ -49,7 +49,7 @@ import { GeminiLoginError, type GeminiLogin } from "./gemini-login.js";
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
   "Conversation affinity stays on its account until that account becomes ineligible; explicit thread selections remain pinned.",
-  "switchThreshold is a preference, not a cutoff: new conversations go to accounts below it first, existing conversations keep their account past it, and accounts at or above it keep serving until the provider refuses them. Status shows exhausted only for an account the provider refused.",
+  "switchThreshold is the quota cutoff for routing: accounts past it are exhausted and ineligible for new conversations unless provider-enabled extra usage is available. Existing conversations stay with their account only while it remains eligible. Status reports provider refusal separately.",
   "When this bb server runs inside another bb server's thread, parent proxy routes its pooled traffic through that parent; isolate neutralises the inherited routing.",
   "Reorder changes account priority, which breaks ties after quota headroom and reset recovery; existing conversations stay pinned.",
 ].join("\n");

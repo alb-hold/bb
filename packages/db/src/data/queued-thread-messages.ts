@@ -1871,10 +1871,6 @@ export function releaseStaleQueuedMessageClaims(
               : [lt(queuedThreadMessages.claimedAt, args.claimedBefore)]),
             ...(protectedClaimTokens.length > 0
               ? [
-                  notInArray(
-                    queuedThreadMessages.claimToken,
-                    protectedClaimTokens,
-                  ),
                   or(
                     isNull(queuedThreadMessages.claimToken),
                     notInArray(
@@ -1882,7 +1878,6 @@ export function releaseStaleQueuedMessageClaims(
                       protectedClaimTokens,
                     ),
                   )!,
-
                 ]
               : []),
           ),

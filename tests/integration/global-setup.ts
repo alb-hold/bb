@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setupMigratedConnectionTemplate } from "@bb/db/testing";
+import { readProcessIdentity } from "@bb/process-utils";
 import { readPositivePidFile } from "@bb/test-helpers";
 import { removePathWithRetry } from "./helpers/remove-path.js";
 import {
@@ -8,7 +9,6 @@ import {
   integrationTmpBase,
 } from "./helpers/tmp-base.js";
 import {
-  isProcessAlive,
   killProcessesHoldingFilesUnder,
 } from "./helpers/tmp-root-processes.js";
 import { setupBuiltinHostBuildRecords } from "./helpers/builtin-plugin-fixture.js";
