@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -1704,6 +1705,49 @@ describe("acp bridge", () => {
       });
       expect(authenticateMethods(requestLog)).toEqual([]);
       expect(launchedPids(launchLog)).toHaveLength(1);
+    });
+
+    it("gives the short sign-in message without trying a sign-in, and stops the agent, when bb cannot place a browser script", async () => {
+      const noScriptDir = join(workspaceDir, "no:script");
+      mkdirSync(noScriptDir);
+      const previousTmpdir = process.env["TMPDIR"];
+      process.env["TMPDIR"] = noScriptDir;
+      try {
+        const envVars = (name: string) => ({
+          FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+          FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+          FAKE_ACP_MODEL_CONFIG: "1",
+          FAKE_ACP_LAUNCH_LOG: join(workspaceDir, `${name}-launches.txt`),
+          FAKE_ACP_REQUEST_LOG: join(workspaceDir, `${name}-requests.jsonl`),
+        });
+        const listed = await waitForResponse(
+          sendModelList({ envVars: envVars("no-script-list") }),
+        );
+        const started = await startThreadResponse(envVars("no-script-thread"));
+
+        for (const [name, response] of [
+          ["no-script-list", listed],
+          ["no-script-thread", started],
+        ] as const) {
+          expect(response.error?.message).toBe(
+            "bb could not use a saved Google sign-in on this machine, and it does not open a browser to sign in. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.",
+          );
+          expect(
+            authenticateMethods(join(workspaceDir, `${name}-requests.jsonl`)),
+          ).toEqual([]);
+          const pids = launchedPids(join(workspaceDir, `${name}-launches.txt`));
+          expect(pids).toHaveLength(1);
+          await vi.waitFor(() => {
+            expect(pids.filter(isAlive)).toEqual([]);
+          });
+        }
+      } finally {
+        if (previousTmpdir === undefined) {
+          delete process.env["TMPDIR"];
+        } else {
+          process.env["TMPDIR"] = previousTmpdir;
+        }
+      }
     });
 
     it("reports the agent's own error when it rejects the Google sign-in without opening a browser", async () => {

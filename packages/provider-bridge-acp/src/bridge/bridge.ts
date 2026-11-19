@@ -900,6 +900,7 @@ async function switchToGoogleSignIn(args: {
 }> {
   const sentinel = await createBrowserSentinel();
   if (sentinel === null) {
+    await args.previous.kill();
     throw new AcpGoogleSignInNeededError();
   }
   try {
