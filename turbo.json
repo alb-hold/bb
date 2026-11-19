@@ -489,6 +489,8 @@
         "src/remove-tree-child.ts",
         "src/remove-tree-protocol.ts",
         "src/remove-directory-tree-core.ts",
+        "src/remove-tree-io.ts",
+        "src/remove-tree-sync-io.ts",
         "scripts/generate-remove-tree-child.mjs",
         "$TURBO_ROOT$/package.json",
         "$TURBO_ROOT$/pnpm-lock.yaml"

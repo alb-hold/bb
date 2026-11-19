@@ -24,6 +24,7 @@ import {
   removeDirectoryTreeInChild,
   RetainedRecoveryError,
   keptTreeReasons,
+  removalChildExited,
   stuckRemovalProcess,
   stuckRemovalReason,
   untrustedTimestampFilesystem,
@@ -122,11 +123,30 @@ export interface RemovalDeadline {
   ms: number;
 }
 
+interface RemovalChild {
+  pid: number;
+  exited: Promise<void>;
+}
+
 interface TreeWalkBounds {
   signal: AbortSignal | undefined;
   deadline: RemovalDeadline | undefined;
   target: string;
   stage: { current: string };
+  unexitedChildren: RemovalChild[];
+  childControls: Pick<
+    ChildRemovalControls,
+    "graceMs" | "exitWaitMs" | "killSignal"
+  >;
+}
+
+async function liveRemovalChild(
+  bounds: TreeWalkBounds,
+): Promise<RemovalChild | null> {
+  for (const child of bounds.unexitedChildren)
+    if (!(await removalChildExited(child.exited, bounds.deadline?.signal)))
+      return child;
+  return null;
 }
 
 interface RemoveWorktreeArgs {
@@ -188,6 +208,10 @@ interface RemoveWorktreeArgs {
         beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
         createPinSuffix?: () => string;
         onRemovalHeartbeat?: (heartbeat: RemovalHeartbeat) => void;
+        removalChild?: Pick<
+          ChildRemovalControls,
+          "graceMs" | "exitWaitMs" | "killSignal"
+        >;
       }
     | undefined;
 }
@@ -982,11 +1006,14 @@ async function removeTree(
     signal: bounds.signal,
     deadline: bounds.deadline?.signal,
     target: bounds.target,
+    ...bounds.childControls,
   };
   const removal = await removeDirectoryTreeInChild(root, {
     ...options,
     ...controls,
   });
+  if (removal.exit === null)
+    bounds.unexitedChildren.push({ pid: removal.pid, exited: removal.exited });
   return {
     result: removal.result,
     killed:
@@ -1025,7 +1052,13 @@ async function inspectTree(
     signal: bounds.signal,
     deadline: bounds.deadline?.signal,
     target: bounds.target,
+    ...bounds.childControls,
   });
+  if (inspection.exit === null)
+    bounds.unexitedChildren.push({
+      pid: inspection.pid,
+      exited: inspection.exited,
+    });
   return {
     outcome: inspection.outcome,
     killed:
@@ -1393,6 +1426,12 @@ async function removeRegisteredWorktree(
       return { retained };
     } catch (error) {
       if (!workspaceRemoved) {
+        const live = await liveRemovalChild(bounds);
+        if (live !== null)
+          throw worktreePreservedError(identity.path, [
+            `the removal process ${live.pid} has not exited, so its directory stays at ${quarantinedPath}${metadataSevered ? ` and its Git metadata at ${severedGitDir}` : ""} until it does (${error instanceof Error ? error.message : String(error)})`,
+            ...keptNote,
+          ]);
         if (metadataSevered) {
           try {
             await fs.writeFile(
@@ -1552,6 +1591,8 @@ export async function removeWorktree(
     deadline: args.deadline,
     target: workspacePath,
     stage: { current: "starting" },
+    unexitedChildren: [],
+    childControls: args.testHooks?.removalChild ?? {},
   };
   const signal = boundedSignal(args.signal, args.deadline);
   const boundedArgs: RemoveWorktreeArgs = { ...args, signal };

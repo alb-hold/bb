@@ -22,6 +22,7 @@ import {
   removeDirectoryTreeInChild,
   stuckRemovalProcess,
   stuckRemovalReason,
+  treeSnapshot,
   type ChildRemoval,
   type RemovalHeartbeat,
 } from "../src/remove-directory-tree.js";
@@ -269,6 +270,36 @@ it("keeps the whole tree when an entry changed after the removal started", async
   await expect(fs.readFile(late, "utf8")).resolves.toBe("late\n");
 });
 
+it.each([
+  ["removes", "matches", "removed"],
+  ["keeps", "no longer matches", "retained"],
+] as const)(
+  "%s a tree changed after the removal started when it %s the snapshot taken before the move",
+  async (_verb, _relation, status) => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "bb-remove-child-"));
+    roots.push(root);
+    const startedAt = Date.now() - 5_000;
+    const late = path.join(root, "late.txt");
+    await fs.writeFile(late, "late\n");
+    const rootMetadata = await fs.lstat(root);
+    const snapshot = await treeSnapshot(root);
+    if (snapshot === null) throw new Error("the snapshot could not be read");
+    if (status === "retained") await fs.writeFile(late, "later\n");
+
+    const removal = await removeDirectoryTreeInChild(root, {
+      startedAt,
+      rootMetadataBaseline: {
+        ctimeMs: rootMetadata.ctimeMs,
+        mtimeMs: rootMetadata.mtimeMs,
+      },
+      expectedEntries: snapshot.entries,
+    });
+
+    expect(removal.result.status).toBe(status);
+    expect(existsSync(late)).toBe(status === "retained");
+  },
+);
+
 it("carries the root baseline, own writes and quarantined root into the other process", async () => {
   const tree = await quarantinedTree();
 
@@ -307,13 +338,17 @@ it.each([
   },
 );
 
-it("encodes own writes so they survive a JSON round trip unchanged", async () => {
+it("encodes own writes and expected entries so they survive a JSON round trip unchanged", async () => {
   const tree = await quarantinedTree();
   const options = {
     startedAt: tree.startedAt,
     allowQuarantinedRoot: true as const,
     rootMetadataBaseline: tree.rootMetadataBaseline,
     ownWrites: tree.ownWrites,
+    expectedEntries: new Map([
+      ["", "root-record"],
+      ["sub/file", "file-record"],
+    ]),
   };
 
   const decoded = decodeChildRemovalOptions(

@@ -5,11 +5,18 @@ import type { WorktreeHolderScan } from "@bb/process-utils";
 import {
   FILE_TIMESTAMP_LAG_MS,
   keptForChangedData,
-  removeDirectoryTree,
   keptTreeReasons,
+  removalChildExited,
+  removeDirectoryTreeInChild,
+  stuckRemovalProcess,
+  stuckRemovalReason,
   treeSnapshot,
   type RemoveDirectoryTreeResult,
 } from "bb-environment-provider-host/remove-directory-tree";
+import {
+  REMOVE_DEADLINE_MS,
+  removalDeadlineReason,
+} from "bb-environment-provider-host/remove-timeout";
 import {
   directoryIdentity,
   forgetHolderRefusal,
@@ -23,6 +30,22 @@ import {
   KeyedRefusalError,
 } from "../command-dispatch-support.js";
 
+interface TestRemovalBounds {
+  deadlineMs: number;
+  stallMs: number;
+  graceMs?: number;
+  exitWaitMs?: number;
+  killSignal?: NodeJS.Signals;
+}
+
+let testRemovalBounds: TestRemovalBounds | undefined;
+
+export function setTestRemovalBounds(
+  bounds: TestRemovalBounds | undefined,
+): void {
+  testRemovalBounds = bounds;
+}
+
 export async function removeDirectoryAfterHolderRecheck(args: {
   directory: string;
   action: string;
@@ -35,6 +58,14 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   earlyDeleteGuard?: { changesSince: number; fingerprint: string };
   testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
+  const deadlineMs = testRemovalBounds?.deadlineMs ?? REMOVE_DEADLINE_MS;
+  const deadline = AbortSignal.timeout(deadlineMs);
+  const stuck = stuckRemovalProcess(args.directory);
+  if (stuck !== null)
+    throw new CommandDispatchError(
+      "path_in_use",
+      `Refusing to ${args.action} ${args.directory}: ${stuckRemovalReason(stuck)}. Nothing was stopped.`,
+    );
   const previousQuarantine = await findPreviousQuarantine(args.directory);
   if (previousQuarantine !== null) {
     throw await priorRemovalRefusal(args, previousQuarantine);
@@ -52,6 +83,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     );
   }
   let doubted = false;
+  let unexited: { pid: number; exited: Promise<void> } | null = null;
   const quarantine = path.join(
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
@@ -115,24 +147,48 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       await args.afterFingerprint?.(quarantine);
     }
     if (args.recursive === true) {
-      const removal = await removeDirectoryTree(quarantine, {
+      const child = await removeDirectoryTreeInChild(quarantine, {
         startedAt,
         rootMetadataBaseline: {
           ctimeMs: rootInfo.ctimeMs,
           mtimeMs: rootInfo.mtimeMs,
         },
         ...(expectedEntries === undefined ? {} : { expectedEntries }),
+        deadline,
+        target: args.directory,
+        ...(testRemovalBounds === undefined
+          ? {}
+          : {
+              stallMs: testRemovalBounds.stallMs,
+              graceMs: testRemovalBounds.graceMs,
+              exitWaitMs: testRemovalBounds.exitWaitMs,
+              killSignal: testRemovalBounds.killSignal,
+            }),
       });
+      if (child.exit === null)
+        unexited = { pid: child.pid, exited: child.exited };
+      const removal = child.result;
       if (removal.status !== "removed") {
         const shown = (entry: string) =>
           path.join(args.directory, path.relative(quarantine, entry));
-        const reasons = keptTreeReasons(
-          removal,
-          shown,
-          "new or changed data was found during removal",
-        );
+        const killedDuring = child.stop?.killedDuring ?? null;
+        const reasons = [
+          ...keptTreeReasons(
+            removal,
+            shown,
+            "new or changed data was found during removal",
+            child.stop?.cause === "deadline"
+              ? removalDeadlineReason(deadlineMs)
+              : undefined,
+          ),
+          ...(killedDuring === null
+            ? []
+            : [
+                `the removal process ${child.pid} was killed during ${shown(killedDuring)}; a partly removed entry may remain at ${path.join(shown(path.dirname(killedDuring)), ".bb-removing-*")}`,
+              ]),
+        ];
         const preservedPaths = removal.retainedPaths.map(shown);
-        const message = `Refusing to ${args.action} ${args.directory}: ${reasons.join("; ")}.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`;
+        const message = `Refusing to ${args.action} ${args.directory}: ${reasons.join("; ")}.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} ${killedDuring === null ? "Nothing was stopped." : "No other process was stopped."}`;
         throw identity === null
           ? new CommandDispatchError("path_in_use", message)
           : new KeyedRefusalError(
@@ -147,6 +203,14 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     forgetHolderRefusal(args.directory);
   } catch (error) {
     if (!doubted) forgetHolderRefusal(args.directory);
+    if (
+      unexited !== null &&
+      !(await removalChildExited(unexited.exited, deadline))
+    )
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to ${args.action} ${args.directory}: removal stopped after ${error instanceof Error ? error.message : String(error)}. The removal process ${unexited.pid} has not exited, so recoverable data stays at ${quarantine} until it does; the original path ${args.directory} was not replaced.`,
+      );
     try {
       await fs.mkdir(args.directory);
       await fs.rename(quarantine, args.directory);
@@ -164,6 +228,8 @@ function keptTreeRefusalClass(removal: RemoveDirectoryTreeResult): string {
   return [
     ...(removal.unanchoredPaths.length > 0 ? ["unanchored"] : []),
     ...(removal.mountedPaths.length > 0 ? ["mounted"] : []),
+    ...(removal.notRespondingPaths.length > 0 ? ["not-responding"] : []),
+    ...(removal.stoppedPaths.length > 0 ? ["stopped"] : []),
     ...(keptForChangedData(removal) ? ["changed-data"] : []),
   ].join("+");
 }

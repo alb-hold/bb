@@ -8,6 +8,7 @@ export interface ChildRemovalOptions {
   startedAt: number;
   rootMetadataBaseline?: { ctimeMs: number; mtimeMs: number };
   ownWrites?: ReadonlyMap<string, OwnWrite>;
+  expectedEntries?: ReadonlyMap<string, string>;
   allowQuarantinedRoot?: true;
 }
 
@@ -29,6 +30,7 @@ export interface EncodedChildRemovalOptions {
   startedAt: number;
   rootMetadataBaseline: { ctimeMs: number; mtimeMs: number } | null;
   ownWrites: [string, EncodedOwnWrite][];
+  expectedEntries: [string, string][] | null;
   allowQuarantinedRoot: boolean;
 }
 
@@ -84,6 +86,10 @@ export function encodeChildRemovalOptions(
         },
       ],
     ),
+    expectedEntries:
+      options.expectedEntries === undefined
+        ? null
+        : [...options.expectedEntries],
     allowQuarantinedRoot: options.allowQuarantinedRoot === true,
   };
 }
@@ -113,6 +119,9 @@ export function decodeChildRemovalOptions(
             ]),
           ),
         }),
+    ...(encoded.expectedEntries === null
+      ? {}
+      : { expectedEntries: new Map(encoded.expectedEntries) }),
     ...(encoded.allowQuarantinedRoot ? { allowQuarantinedRoot: true } : {}),
   };
 }

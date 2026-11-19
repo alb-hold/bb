@@ -8,6 +8,10 @@ import {
   type ChildMessage,
   type ParentMessage,
 } from "./remove-tree-protocol.js";
+import { installRemoveTreeIo } from "./remove-tree-io.js";
+import { syncRemoveTreeIo } from "./remove-tree-sync-io.js";
+
+installRemoveTreeIo(syncRemoveTreeIo);
 
 const HEARTBEAT_INTERVAL_MS = 10;
 const parentPid = process.ppid;

@@ -92,6 +92,7 @@ export interface ChildRemoval {
   voluntaryContextSwitches: number;
   stop: RemovalStop | null;
   exit: { code: number | null; signal: NodeJS.Signals | null } | null;
+  exited: Promise<void>;
 }
 
 export interface ChildRemovalControls {
@@ -113,6 +114,27 @@ export function stuckRemovalProcess(target: string): number | null {
 
 export function stuckRemovalReason(pid: number): string {
   return `an earlier removal of this path is still stuck (process ${pid})`;
+}
+
+export async function removalChildExited(
+  exited: Promise<void>,
+  deadline: AbortSignal | undefined,
+): Promise<boolean> {
+  let release = () => {};
+  const expired = new Promise<boolean>((resolve) => {
+    if (deadline === undefined || deadline.aborted) {
+      setImmediate(() => resolve(false));
+      return;
+    }
+    const onAbort = () => resolve(false);
+    deadline.addEventListener("abort", onAbort, { once: true });
+    release = () => deadline.removeEventListener("abort", onAbort);
+  });
+  try {
+    return await Promise.race([exited.then(() => true), expired]);
+  } finally {
+    release();
+  }
 }
 
 export function removalChildEnvironment(
@@ -142,6 +164,7 @@ interface TreeChildRun<T> {
   voluntaryContextSwitches: number;
   stop: RemovalStop | null;
   exit: { code: number | null; signal: NodeJS.Signals | null } | null;
+  exited: Promise<void>;
 }
 
 function runTreeChild<T>(
@@ -167,6 +190,9 @@ function runTreeChild<T>(
       ),
       serialization: "json",
       windowsHide: true,
+    });
+    const exited = new Promise<void>((resolveExit) => {
+      child.once("exit", () => resolveExit());
     });
     let stderr = "";
     let startSent = false;
@@ -216,6 +242,7 @@ function runTreeChild<T>(
           voluntaryContextSwitches: outcome.voluntaryContextSwitches,
           stop,
           exit,
+          exited,
         });
         return;
       }
@@ -227,6 +254,7 @@ function runTreeChild<T>(
           voluntaryContextSwitches: 0,
           stop,
           exit,
+          exited,
         });
         return;
       }
@@ -392,6 +420,8 @@ export interface ChildInspection {
   outcome: ChildInspectionOutcome;
   pid: number;
   stop: RemovalStop | null;
+  exit: { code: number | null; signal: NodeJS.Signals | null } | null;
+  exited: Promise<void>;
 }
 
 function stoppedInspection(
@@ -438,5 +468,11 @@ export async function inspectTreeBeforeMoveInChild(
         ? stoppedInspection([], [killedDuring])
         : stoppedInspection([notResponding], []),
   );
-  return { outcome: run.value, pid: run.pid, stop: run.stop };
+  return {
+    outcome: run.value,
+    pid: run.pid,
+    stop: run.stop,
+    exit: run.exit,
+    exited: run.exited,
+  };
 }

@@ -23,6 +23,7 @@ import { removeWorktree } from "./worktree.js";
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
 const mounts: ChildProcess[] = [];
+const strays: number[] = [];
 
 function hasCommand(name: string): boolean {
   return spawnSync("sh", ["-c", `command -v ${name}`]).status === 0;
@@ -46,8 +47,22 @@ async function mountedUnder(base: string): Promise<string[]> {
     );
 }
 
+async function killAndAwaitExit(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return;
+  }
+  const until = performance.now() + 10_000;
+  while (performance.now() < until) {
+    if (!existsSync(`/proc/${pid}`)) return;
+    await delay(20);
+  }
+}
+
 afterEach(async () => {
   setTestWorktreeHolderScan(undefined);
+  for (const pid of strays.splice(0)) await killAndAwaitExit(pid);
   for (const fuse of mounts.splice(0)) fuse.kill("SIGCONT");
   for (const root of roots) {
     for (const mountPoint of await mountedUnder(root)) {
@@ -238,6 +253,62 @@ describe("bounding the macOS inspection before a worktree moves to the trash", (
       expect(
         (await fs.readdir(path.join(worktree.path, "sub"))).sort(),
       ).toEqual(["deeper", "mnt"]);
+    },
+    60_000,
+  );
+
+  it.runIf(fuseAvailable)(
+    "leaves the worktree in the trash staging path while the stopped inspection process has not exited",
+    async () => {
+      const worktree = await managedWorktree();
+      setTestWorktreeHolderScan({ status: "clear" });
+      let quarantined = "";
+      const remove = () =>
+        removeWorktree({
+          path: worktree.path,
+          rootPath: worktree.root,
+          trashRoot: worktree.trashRoot,
+          deadline: { signal: AbortSignal.timeout(6_000), ms: 6_000 },
+          testHooks: {
+            platform: "darwin",
+            removalChild: {
+              graceMs: 300,
+              exitWaitMs: 300,
+              killSignal: "SIGCONT",
+            },
+            afterFinalCheck: async (quarantinedPath) => {
+              quarantined = quarantinedPath;
+              const mountPoint = path.join(quarantinedPath, "sub", "mnt");
+              await fs.mkdir(mountPoint);
+              await stopFuseMount(worktree.base, mountPoint);
+            },
+          },
+        }).then(
+          () => null,
+          (failure: unknown) => failure,
+        );
+
+      const failure = await remove();
+      const message = failure instanceof Error ? failure.message : "";
+      const live = /the removal process (\d+) has not exited/u.exec(message);
+      if (live !== null) strays.push(Number(live[1]));
+
+      expect(isWorktreePreservedError(failure)).toBe(true);
+      expect(live).not.toBeNull();
+      expect(message).toContain(
+        `has not exited, so its directory stays at ${quarantined}`,
+      );
+      expect(existsSync(`/proc/${live?.[1]}`)).toBe(true);
+      expect(existsSync(worktree.path)).toBe(false);
+      await expect(
+        fs.readFile(path.join(quarantined, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+      const retried = await remove();
+      expect(isWorktreePreservedError(retried)).toBe(true);
+      expect((retried as Error).message).toContain(
+        `an earlier removal of this path is still stuck (process ${live?.[1]})`,
+      );
+      expect(existsSync(worktree.path)).toBe(false);
     },
     60_000,
   );

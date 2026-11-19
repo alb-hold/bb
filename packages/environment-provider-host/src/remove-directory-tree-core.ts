@@ -1,28 +1,7 @@
-import {
-  closeSync,
-  constants,
-  fchmodSync,
-  fstatSync,
-  linkSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  readSync,
-  readdirSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  rmdirSync,
-  statSync,
-  symlinkSync,
-  unlinkSync,
-  writeSync,
-  type BigIntStats,
-  type Stats,
-} from "node:fs";
-import * as fsPromises from "node:fs/promises";
+import { constants, type BigIntStats, type Stats } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { removeTreeIo } from "./remove-tree-io.js";
 
 function closedHandleError(syscall: string): NodeJS.ErrnoException {
   const error: NodeJS.ErrnoException = new Error(
@@ -51,12 +30,12 @@ export class RemoveTreeFileHandle {
   async stat(options?: { bigint?: boolean }): Promise<Stats | BigIntStats> {
     const fd = this.openDescriptor("fstat");
     return options?.bigint === true
-      ? fstatSync(fd, { bigint: true })
-      : fstatSync(fd);
+      ? await removeTreeIo().fstatBigint(fd)
+      : await removeTreeIo().fstat(fd);
   }
 
   async chmod(mode: number): Promise<void> {
-    fchmodSync(this.openDescriptor("fchmod"), mode);
+    await removeTreeIo().fchmod(this.openDescriptor("fchmod"), mode);
   }
 
   async read(
@@ -65,7 +44,7 @@ export class RemoveTreeFileHandle {
     length: number,
     position: number,
   ): Promise<{ bytesRead: number; buffer: Buffer }> {
-    const bytesRead = readSync(
+    const bytesRead = await removeTreeIo().read(
       this.openDescriptor("read"),
       buffer,
       offset,
@@ -81,7 +60,7 @@ export class RemoveTreeFileHandle {
     length: number,
     position: number,
   ): Promise<{ bytesWritten: number; buffer: Buffer }> {
-    const bytesWritten = writeSync(
+    const bytesWritten = await removeTreeIo().write(
       this.openDescriptor("write"),
       buffer,
       offset,
@@ -95,7 +74,7 @@ export class RemoveTreeFileHandle {
     if (this.fd === -1) return;
     const fd = this.fd;
     this.fd = -1;
-    closeSync(fd);
+    await removeTreeIo().close(fd);
   }
 }
 
@@ -104,7 +83,9 @@ async function open(
   flags: string | number,
   mode?: number,
 ): Promise<RemoveTreeFileHandle> {
-  return new RemoveTreeFileHandle(openSync(target, flags, mode));
+  return new RemoveTreeFileHandle(
+    await removeTreeIo().open(target, flags, mode),
+  );
 }
 
 function lstat(target: string, options: { bigint: true }): Promise<BigIntStats>;
@@ -114,48 +95,52 @@ async function lstat(
   options?: { bigint?: boolean },
 ): Promise<Stats | BigIntStats> {
   return options?.bigint === true
-    ? lstatSync(target, { bigint: true })
-    : lstatSync(target);
+    ? await removeTreeIo().lstatBigint(target)
+    : await removeTreeIo().lstat(target);
 }
 
 async function stat(target: string): Promise<Stats> {
-  return statSync(target);
+  return await removeTreeIo().stat(target);
 }
 
-async function readFile(target: string, encoding: "utf8"): Promise<string> {
-  return readFileSync(target, encoding);
+async function statfs(target: string): Promise<{ type: number }> {
+  return await removeTreeIo().statfs(target);
+}
+
+async function readUtf8File(target: string): Promise<string> {
+  return await removeTreeIo().readFile(target);
 }
 
 async function readdir(target: string): Promise<string[]> {
-  return readdirSync(target);
+  return await removeTreeIo().readdir(target);
 }
 
 async function readlink(target: string): Promise<string> {
-  return readlinkSync(target);
+  return await removeTreeIo().readlink(target);
 }
 
 async function realpath(target: string): Promise<string> {
-  return realpathSync.native(target);
+  return await removeTreeIo().realpath(target);
 }
 
 async function link(existing: string, created: string): Promise<void> {
-  linkSync(existing, created);
+  await removeTreeIo().link(existing, created);
 }
 
 async function symlink(target: string, created: string): Promise<void> {
-  symlinkSync(target, created);
+  await removeTreeIo().symlink(target, created);
 }
 
 async function rename(source: string, destination: string): Promise<void> {
-  renameSync(source, destination);
+  await removeTreeIo().rename(source, destination);
 }
 
 async function unlink(target: string): Promise<void> {
-  unlinkSync(target);
+  await removeTreeIo().unlink(target);
 }
 
 async function rmdir(target: string): Promise<void> {
-  rmdirSync(target);
+  await removeTreeIo().rmdir(target);
 }
 
 export interface RemoveDirectoryTreeHooks {
@@ -820,8 +805,7 @@ export async function untrustedTimestampFilesystem(
   probe: TimestampFilesystemProbe = {},
 ): Promise<string | null> {
   const platform = probe.platform ?? process.platform;
-  const readType =
-    probe.statfs ?? ((candidate: string) => fsPromises.statfs(candidate));
+  const readType = probe.statfs ?? ((candidate: string) => statfs(candidate));
   try {
     const type = (await readType(target)).type;
     if (platform === "linux")
@@ -857,7 +841,7 @@ export async function recordOwnWrite(
   file: string,
   contents: string,
 ): Promise<OwnWrite> {
-  const info = await fsPromises.lstat(file, { bigint: true });
+  const info = await lstat(file, { bigint: true });
   return {
     dev: info.dev,
     ino: info.ino,
@@ -901,17 +885,14 @@ export async function directoryTreeChangedSince(
     const ownWrite = baseline.ownWrites?.get(entry);
     if (ownWrite !== undefined) {
       try {
-        return !matchesOwnWrite(
-          await fsPromises.lstat(entry, { bigint: true }),
-          ownWrite,
-        );
+        return !matchesOwnWrite(await lstat(entry, { bigint: true }), ownWrite);
       } catch {
         return true;
       }
     }
     let info;
     try {
-      info = await fsPromises.lstat(entry);
+      info = await lstat(entry);
     } catch {
       return true;
     }
@@ -926,7 +907,7 @@ export async function directoryTreeChangedSince(
     if (!info.isDirectory()) return false;
     let listed: string[];
     try {
-      listed = await fsPromises.readdir(entry);
+      listed = await readdir(entry);
     } catch {
       return true;
     }
@@ -935,7 +916,7 @@ export async function directoryTreeChangedSince(
     }
     let after: string[];
     try {
-      after = await fsPromises.readdir(entry);
+      after = await readdir(entry);
     } catch {
       return true;
     }
@@ -971,7 +952,7 @@ export async function inspectTreeBeforeMove(
   let changed = false;
   let rootDevice: number;
   try {
-    rootDevice = Number((await fsPromises.lstat(root, { bigint: true })).dev);
+    rootDevice = Number((await lstat(root, { bigint: true })).dev);
   } catch {
     return {
       changed: true,
@@ -986,7 +967,7 @@ export async function inspectTreeBeforeMove(
     const entry = relative === "" ? root : path.join(root, relative);
     let info: BigIntStats;
     try {
-      info = await fsPromises.lstat(entry, { bigint: true });
+      info = await lstat(entry, { bigint: true });
     } catch {
       changed = true;
       continue;
@@ -1019,7 +1000,7 @@ export async function inspectTreeBeforeMove(
     if (!info.isDirectory()) continue;
     let listed: string[];
     try {
-      listed = (await fsPromises.readdir(entry)).sort();
+      listed = (await readdir(entry)).sort();
     } catch {
       changed = true;
       continue;
@@ -1054,8 +1035,8 @@ export async function treeSnapshot(root: string): Promise<TreeSnapshot | null> {
     let info: BigIntStats;
     let listed: string[] = [];
     try {
-      info = await fsPromises.lstat(entry, { bigint: true });
-      if (info.isDirectory()) listed = (await fsPromises.readdir(entry)).sort();
+      info = await lstat(entry, { bigint: true });
+      if (info.isDirectory()) listed = (await readdir(entry)).sort();
     } catch {
       return null;
     }
@@ -1231,7 +1212,7 @@ export async function removeDirectoryTree(
   ): Promise<number | null> => {
     try {
       const info = await (hooks.readDescriptorInfo?.(entry, fd) ??
-        readFile(`/proc/self/fdinfo/${fd}`, "utf8"));
+        readUtf8File(`/proc/self/fdinfo/${fd}`));
       return mountIdFromDescriptorInfo(info);
     } catch {
       return null;
@@ -1265,7 +1246,7 @@ export async function removeDirectoryTree(
       realRoot === null
         ? null
         : await (
-            hooks.readMountTable?.() ?? readFile("/proc/self/mountinfo", "utf8")
+            hooks.readMountTable?.() ?? readUtf8File("/proc/self/mountinfo")
           ).catch(() => null);
     mountsInside =
       realRoot === null ||
