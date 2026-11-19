@@ -182,6 +182,7 @@ interface RemoveWorktreeArgs {
           worktreePath: string,
           gitDir: string,
         ) => Promise<void>;
+        trashRename?: (from: string, to: string) => Promise<void>;
         afterDirectoryListed?: (
           directory: string,
           entries: readonly string[],
@@ -1068,6 +1069,12 @@ async function inspectTree(
   };
 }
 
+function removalStopped(bounds: TreeWalkBounds): boolean {
+  return (
+    bounds.signal?.aborted === true || bounds.deadline?.signal.aborted === true
+  );
+}
+
 function stoppedTreeReason(bounds: TreeWalkBounds): string {
   return bounds.deadline?.signal.aborted === true &&
     bounds.signal?.aborted !== true
@@ -1206,6 +1213,7 @@ async function removeRegisteredWorktree(
     await fs.rename(identity.path, quarantinedPath);
     let metadataSevered = false;
     let workspaceRemoved = false;
+    let keptInTrash: string | null = null;
     try {
       try {
         await fs.rename(identity.gitDir, severedGitDir);
@@ -1342,11 +1350,27 @@ async function removeRegisteredWorktree(
             inspected.fingerprint,
           ),
         );
+        const renameIntoTrash = args.testHooks?.trashRename ?? fs.rename;
         try {
-          await fs.rename(quarantinedPath, trashEntry);
+          await renameIntoTrash(quarantinedPath, trashEntry);
         } catch (error) {
           throw worktreePreservedError(identity.path, [
             `could not move it to the trash at ${trashEntry} (${error instanceof Error ? error.message : String(error)})`,
+            ...keptNote,
+          ]);
+        }
+        if (removalStopped(bounds)) {
+          try {
+            await renameIntoTrash(trashEntry, quarantinedPath);
+          } catch (error) {
+            keptInTrash = trashEntry;
+            throw worktreePreservedError(identity.path, [
+              `${stoppedTreeReason(bounds)} (it stopped while ${identity.path} moved to the trash, and could not move it back: ${error instanceof Error ? error.message : String(error)}); its directory is kept at ${trashEntry}`,
+              ...keptNote,
+            ]);
+          }
+          throw worktreePreservedError(identity.path, [
+            `${stoppedTreeReason(bounds)} (it stopped while ${identity.path} moved to the trash, so it was moved back)`,
             ...keptNote,
           ]);
         }
@@ -1455,6 +1479,7 @@ async function removeRegisteredWorktree(
             ]);
           }
         }
+        if (keptInTrash !== null) throw error;
         try {
           await fs.rename(quarantinedPath, identity.path);
         } catch (restoreError) {

@@ -253,6 +253,119 @@ describe("bounding the macOS inspection before a worktree moves to the trash", (
     );
   });
 
+  it.each(["deadline", "cancel"] as const)(
+    "moves the worktree back and keeps it registered when the %s fires while it moves to the trash",
+    async (stop) => {
+      const worktree = await managedWorktree();
+      setTestWorktreeHolderScan({ status: "clear" });
+      const deadline = new AbortController();
+      const cancel = new AbortController();
+      const renames: string[] = [];
+
+      const error = await removeWorktree({
+        path: worktree.path,
+        rootPath: worktree.root,
+        trashRoot: worktree.trashRoot,
+        signal: cancel.signal,
+        deadline: { signal: deadline.signal, ms: 120_000 },
+        testHooks: {
+          platform: "darwin",
+          trashRename: async (from, to) => {
+            renames.push(to);
+            await fs.rename(from, to);
+            if (renames.length === 1)
+              (stop === "deadline" ? deadline : cancel).abort();
+          },
+        },
+      }).then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+
+      const reason =
+        stop === "deadline"
+          ? removalDeadlineReason(120_000)
+          : "the removal was cancelled";
+      expect(isWorktreePreservedError(error)).toBe(true);
+      expect(renames).toHaveLength(2);
+      expect(path.dirname(renames[0] ?? "")).toBe(worktree.trashRoot);
+      expect((error as Error).message).toContain(
+        `${reason} (it stopped while ${worktree.path} moved to the trash, so it was moved back)`,
+      );
+      expect((error as Error).message).not.toContain("Git metadata");
+      expect(await trashEntries(worktree.trashRoot)).toEqual([]);
+      expect(
+        await fs.readFile(
+          path.join(worktree.path, "sub", "deeper", "kept.txt"),
+          "utf8",
+        ),
+      ).toBe("x\n");
+      const listed = await git(
+        worktree.source,
+        "worktree",
+        "list",
+        "--porcelain",
+      );
+      expect(listed).toContain(`worktree ${await fs.realpath(worktree.path)}`);
+      expect(listed).not.toContain("prunable");
+      expect(
+        await git(worktree.path, "rev-parse", "--abbrev-ref", "HEAD"),
+      ).toBe("feature\n");
+    },
+  );
+
+  it("keeps the trash entry and the Git registration when the worktree cannot move back from the trash", async () => {
+    const worktree = await managedWorktree();
+    setTestWorktreeHolderScan({ status: "clear" });
+    const deadline = new AbortController();
+    let calls = 0;
+
+    const error = await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot: worktree.trashRoot,
+      deadline: { signal: deadline.signal, ms: 120_000 },
+      testHooks: {
+        platform: "darwin",
+        trashRename: async (from, to) => {
+          calls += 1;
+          if (calls > 1) throw new Error("the trash is read-only");
+          await fs.rename(from, to);
+          deadline.abort();
+        },
+      },
+    }).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+
+    const entries = await trashEntries(worktree.trashRoot);
+    expect(isWorktreePreservedError(error)).toBe(true);
+    expect(calls).toBe(2);
+    expect(entries).toHaveLength(1);
+    const kept = path.join(worktree.trashRoot, entries[0] ?? "");
+    expect((error as Error).message).toContain(
+      `could not move it back: the trash is read-only); its directory is kept at ${kept}`,
+    );
+    expect((error as Error).message).not.toContain("Git metadata");
+    expect(
+      await fs.readFile(path.join(kept, "sub", "deeper", "kept.txt"), "utf8"),
+    ).toBe("x\n");
+    expect(existsSync(worktree.path)).toBe(false);
+    const gitDir = (
+      await git(worktree.source, "rev-parse", "--git-common-dir")
+    ).trim();
+    const admin = await fs.readdir(
+      path.resolve(worktree.source, gitDir, "worktrees"),
+    );
+    expect(admin.filter((name) => name.startsWith(".bb-removing-"))).toEqual(
+      [],
+    );
+    expect(await git(worktree.source, "worktree", "list")).toContain(
+      worktree.path,
+    );
+  });
+
   it.runIf(fuseAvailable)(
     "keeps the worktree within the deadline when a filesystem inside it stops answering during the inspection",
     async () => {
