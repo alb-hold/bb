@@ -30,6 +30,108 @@ const worktreeModule = "plugins/environment-git-worktree/host/worktree.ts";
 const testHookCondition =
   "Object.values(walkHooks).some((hook) => hook !== undefined)";
 const walkNames = ["removeDirectoryTree", "inspectTreeBeforeMove"];
+const opaqueLoaderAllowlist: { file: string; count: number; reason: string }[] =
+  [
+    {
+      file: "apps/app/scripts/terminal-search-color.browser.mjs",
+      count: 1,
+      reason:
+        "build or packaging script; never runs in the daemon or the server",
+    },
+    {
+      file: "apps/app/src/lib/plugin-frontend.ts",
+      count: 1,
+      reason:
+        "browser code importing a served asset URL; it has no file system access",
+    },
+    {
+      file: "apps/app/src/lib/split-prefetch.ts",
+      count: 1,
+      reason:
+        "browser code importing a served asset URL; it has no file system access",
+    },
+    {
+      file: "apps/desktop/scripts/smoke-packaged-npm.mjs",
+      count: 2,
+      reason:
+        "build or packaging script; never runs in the daemon or the server",
+    },
+    {
+      file: "apps/host-daemon/src/plugin-host-worker.ts",
+      count: 1,
+      reason:
+        "loads a built plugin or provider artifact by path at run time; the artifact is bundled from scanned sources",
+    },
+    {
+      file: "apps/server/src/services/plugins/plugin-runtime.ts",
+      count: 1,
+      reason:
+        "loads a built plugin or provider artifact by path at run time; the artifact is bundled from scanned sources",
+    },
+    {
+      file: "packages/plugin-build/scripts/generate-runtime-export-manifest.mjs",
+      count: 1,
+      reason:
+        "build or packaging script; never runs in the daemon or the server",
+    },
+    {
+      file: "packages/plugin-build/src/build-plugin-app.ts",
+      count: 5,
+      reason:
+        "loads the plugin facade module it is building and the build toolchain packages (esbuild, tailwind)",
+    },
+    {
+      file: "packages/plugin-build/src/build-plugin-host.ts",
+      count: 1,
+      reason:
+        "loads a build toolchain package (esbuild, tailwind) located at build time",
+    },
+    {
+      file: "packages/plugin-build/src/build-plugin-server.ts",
+      count: 1,
+      reason:
+        "loads a build toolchain package (esbuild, tailwind) located at build time",
+    },
+    {
+      file: "packages/plugin-build/src/prepare-plugin-runtime.ts",
+      count: 1,
+      reason: "runs a plugin's own stage-assets build script",
+    },
+    {
+      file: "packages/provider-bridge-protocol/src/bridge-worker-entry.ts",
+      count: 1,
+      reason:
+        "loads a built plugin or provider artifact by path at run time; the artifact is bundled from scanned sources",
+    },
+    {
+      file: "packages/provider-parity/src/leg.ts",
+      count: 1,
+      reason: "parity harness loading a module from a recorded checkout",
+    },
+    {
+      file: "plugins/monaco-editor/lib/monaco-loader.ts",
+      count: 1,
+      reason:
+        "browser code importing a served asset URL; it has no file system access",
+    },
+    {
+      file: "plugins/monaco-editor/scripts/stage-assets.mjs",
+      count: 1,
+      reason:
+        "build or packaging script; never runs in the daemon or the server",
+    },
+    {
+      file: "plugins/monaco-editor/server.ts",
+      count: 1,
+      reason: "runs the plugin's own stage-assets build script on first use",
+    },
+    {
+      file: "plugins/provider-pi/src/bridge/fake-pi-rpc.mjs",
+      count: 1,
+      reason:
+        "fake pi binary for provider tests loading the pi module under test",
+    },
+  ];
 
 function productionSources(directory: string): string[] {
   const found: string[] = [];
@@ -40,7 +142,7 @@ function productionSources(directory: string): string[] {
       if (!skippedDirectories.has(entry.name))
         found.push(...productionSources(full));
     } else if (
-      /\.(ts|tsx|mts|cts|js|mjs)$/u.test(entry.name) &&
+      /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/u.test(entry.name) &&
       !/\.d\.[cm]?ts$/u.test(entry.name) &&
       !/\.(test|spec|test-d)\.[cm]?[jt]sx?$/u.test(entry.name)
     ) {
@@ -133,6 +235,7 @@ interface ModuleRecord {
   file: string;
   sourceFile: ts.SourceFile;
   edges: ModuleEdge[];
+  opaqueLoads: number[];
   localExports: { local: string; exported: string }[];
 }
 
@@ -151,6 +254,7 @@ function readModule(full: string): ModuleRecord {
     true,
   );
   const edges: ModuleEdge[] = [];
+  const opaqueLoads: number[] = [];
   const localExports: { local: string; exported: string }[] = [];
   const add = (
     node: ts.Node,
@@ -231,16 +335,17 @@ function readModule(full: string): ModuleRecord {
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (ts.isIdentifier(node.expression) &&
-          node.expression.text === "require")) &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteralLike(node.arguments[0]!)
+          node.expression.text === "require"))
     ) {
-      add(node, node.arguments[0].text, true, false, []);
+      const specifier = node.arguments[0];
+      if (specifier !== undefined && ts.isStringLiteralLike(specifier))
+        add(node, specifier.text, true, false, []);
+      else opaqueLoads.push(lineOf(sourceFile, node));
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return { file, sourceFile, edges, localExports };
+  return { file, sourceFile, edges, opaqueLoads, localExports };
 }
 
 function walkExports(modules: Map<string, ModuleRecord>) {
@@ -463,6 +568,24 @@ it("keeps the synchronous tree walk reachable only from the removal child and th
     };
     visit(sourceFile);
   }
+
+  const allowance = new Map(
+    opaqueLoaderAllowlist.map((entry) => [entry.file, entry.count]),
+  );
+  const opaqueFiles = new Set<string>();
+  for (const record of modules.values()) {
+    if (record.opaqueLoads.length === 0) continue;
+    opaqueFiles.add(record.file);
+    if (record.opaqueLoads.length !== allowance.get(record.file))
+      violations.push(
+        `${record.file}:${record.opaqueLoads.join(",")} loads a module through a non-literal specifier (${record.opaqueLoads.length} found, ${allowance.get(record.file) ?? 0} allowed)`,
+      );
+  }
+  expect(
+    opaqueLoaderAllowlist
+      .filter((entry) => !opaqueFiles.has(entry.file))
+      .map((entry) => entry.file),
+  ).toEqual([]);
 
   expect(violations).toEqual([]);
   expect(allowedCalls.sort()).toEqual([
