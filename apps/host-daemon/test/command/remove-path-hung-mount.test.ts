@@ -148,7 +148,7 @@ async function removalChildren(): Promise<number[]> {
     const parent = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1];
     if (
       parent === String(process.pid) &&
-      commandLine.includes("remove-tree-child")
+      commandLine === `${process.execPath}\0-\0`
     )
       found.push(Number(name));
   }
@@ -276,6 +276,8 @@ describe.runIf(fuseAvailable)(
       await expect(
         fs.readFile(path.join(root, quarantines[0] ?? "", "data.txt"), "utf8"),
       ).resolves.toBe("keep");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "new.txt"), "new");
       const retried = await removePath(router, target, "remove-retry");
       expect(retried).toMatchObject({
         ok: false,
@@ -284,7 +286,9 @@ describe.runIf(fuseAvailable)(
           `an earlier removal of this path is still stuck (process ${live?.[1]})`,
         ),
       });
-      expect(existsSync(target)).toBe(false);
+      await expect(
+        fs.readFile(path.join(target, "new.txt"), "utf8"),
+      ).resolves.toBe("new");
     }, 90_000);
 
     it("puts the directory back once the stopped removal process exits before the deadline", async () => {

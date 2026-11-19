@@ -1,6 +1,7 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(
@@ -26,19 +27,21 @@ const syncIoModule =
 const coreModule =
   "packages/environment-provider-host/src/remove-directory-tree-core.ts";
 const worktreeModule = "plugins/environment-git-worktree/host/worktree.ts";
-const testHookBranch =
-  "if (Object.values(walkHooks).some((hook) => hook !== undefined))";
+const testHookCondition =
+  "Object.values(walkHooks).some((hook) => hook !== undefined)";
+const walkNames = ["removeDirectoryTree", "inspectTreeBeforeMove"];
 
-async function productionSources(directory: string): Promise<string[]> {
+function productionSources(directory: string): string[] {
   const found: string[] = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue;
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (!skippedDirectories.has(entry.name))
-        found.push(...(await productionSources(full)));
+        found.push(...productionSources(full));
     } else if (
       /\.(ts|tsx|mts|cts|js|mjs)$/u.test(entry.name) &&
+      !/\.d\.[cm]?ts$/u.test(entry.name) &&
       !/\.(test|spec|test-d)\.[cm]?[jt]sx?$/u.test(entry.name)
     ) {
       found.push(full);
@@ -47,96 +50,425 @@ async function productionSources(directory: string): Promise<string[]> {
   return found;
 }
 
-interface Reference {
-  file: string;
+function repositoryPath(full: string): string {
+  return path.relative(repositoryRoot, full).split(path.sep).join("/");
+}
+
+interface Resolver {
+  options: ts.CompilerOptions;
+  cache: ts.ModuleResolutionCache;
+}
+
+const resolvers = new Map<string, Resolver>();
+
+function resolverFor(file: string): Resolver {
+  let directory = path.dirname(file);
+  while (
+    !fs.existsSync(path.join(directory, "tsconfig.json")) &&
+    directory !== repositoryRoot
+  )
+    directory = path.dirname(directory);
+  const cached = resolvers.get(directory);
+  if (cached !== undefined) return cached;
+  const configPath = path.join(directory, "tsconfig.json");
+  const config = fs.existsSync(configPath)
+    ? ts.readConfigFile(configPath, ts.sys.readFile).config
+    : {};
+  const options = {
+    ...ts.parseJsonConfigFileContent(config, ts.sys, directory).options,
+    allowJs: true,
+  };
+  const resolver = {
+    options,
+    cache: ts.createModuleResolutionCache(directory, (name) => name, options),
+  };
+  resolvers.set(directory, resolver);
+  return resolver;
+}
+
+function resolveSpecifier(specifier: string, file: string): string | undefined {
+  const { options, cache } = resolverFor(file);
+  const resolved = ts.resolveModuleName(
+    specifier,
+    file,
+    options,
+    ts.sys,
+    cache,
+  ).resolvedModule;
+  if (resolved === undefined) return undefined;
+  const real = fs.realpathSync(resolved.resolvedFileName);
+  const relative = repositoryPath(real);
+  if (relative.startsWith("..") || relative.includes("node_modules/"))
+    return undefined;
+  return relative;
+}
+
+function namesSourceModule(file: string, specifier: string): boolean {
+  if (specifier.includes("?")) return false;
+  const name = path.posix.basename(specifier);
+  if (/\.[a-z0-9]+$/iu.test(name) && !/\.[cm]?[jt]sx?$/u.test(name))
+    return false;
+  if (!specifier.startsWith(".")) return true;
+  const target = path.resolve(repositoryRoot, path.dirname(file), specifier);
+  return !repositoryPath(target)
+    .split("/")
+    .some((segment) => skippedDirectories.has(segment));
+}
+
+type Binding =
+  | { kind: "named"; imported: string; local: string }
+  | { kind: "namespace"; local: string }
+  | { kind: "all" };
+
+interface ModuleEdge {
+  specifier: string;
+  target: string | undefined;
+  dynamic: boolean;
+  reexport: boolean;
+  bindings: Binding[];
   line: number;
-  text: string;
-  call: boolean;
 }
 
-function references(file: string, source: string, name: RegExp): Reference[] {
-  const lines = source.split("\n");
-  const found: Reference[] = [];
-  for (const match of source.matchAll(name)) {
-    const offset = match.index;
-    const line = source.slice(0, offset).split("\n").length;
-    const after = source.slice(offset + match[0].length);
-    found.push({
-      file,
-      line,
-      text: lines[line - 1]!.trim(),
-      call: /^\s*\(/u.test(after),
+interface ModuleRecord {
+  file: string;
+  sourceFile: ts.SourceFile;
+  edges: ModuleEdge[];
+  localExports: { local: string; exported: string }[];
+}
+
+function lineOf(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return (
+    sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+  );
+}
+
+function readModule(full: string): ModuleRecord {
+  const file = repositoryPath(full);
+  const sourceFile = ts.createSourceFile(
+    full,
+    fs.readFileSync(full, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const edges: ModuleEdge[] = [];
+  const localExports: { local: string; exported: string }[] = [];
+  const add = (
+    node: ts.Node,
+    specifier: string,
+    dynamic: boolean,
+    reexport: boolean,
+    bindings: Binding[],
+  ) =>
+    edges.push({
+      specifier,
+      target: resolveSpecifier(specifier, full),
+      dynamic,
+      reexport,
+      bindings,
+      line: lineOf(sourceFile, node),
     });
-  }
-  return found;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      const clause = node.importClause;
+      if (clause?.isTypeOnly !== true) {
+        const bindings: Binding[] = [];
+        if (clause?.name !== undefined)
+          bindings.push({
+            kind: "named",
+            imported: "default",
+            local: clause.name.text,
+          });
+        const named = clause?.namedBindings;
+        if (named !== undefined && ts.isNamespaceImport(named))
+          bindings.push({ kind: "namespace", local: named.name.text });
+        if (named !== undefined && ts.isNamedImports(named))
+          for (const element of named.elements)
+            if (!element.isTypeOnly)
+              bindings.push({
+                kind: "named",
+                imported: (element.propertyName ?? element.name).text,
+                local: element.name.text,
+              });
+        add(node, node.moduleSpecifier.text, false, false, bindings);
+      }
+    } else if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
+      const clause = node.exportClause;
+      if (
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        const bindings: Binding[] = [];
+        if (clause === undefined) bindings.push({ kind: "all" });
+        else if (ts.isNamespaceExport(clause))
+          bindings.push({ kind: "namespace", local: clause.name.text });
+        else
+          for (const element of clause.elements)
+            if (!element.isTypeOnly)
+              bindings.push({
+                kind: "named",
+                imported: (element.propertyName ?? element.name).text,
+                local: element.name.text,
+              });
+        add(node, node.moduleSpecifier.text, false, true, bindings);
+      } else if (clause !== undefined && ts.isNamedExports(clause)) {
+        for (const element of clause.elements)
+          if (!element.isTypeOnly)
+            localExports.push({
+              local: (element.propertyName ?? element.name).text,
+              exported: element.name.text,
+            });
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      add(node, node.moduleReference.expression.text, true, false, []);
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) &&
+          node.expression.text === "require")) &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteralLike(node.arguments[0]!)
+    ) {
+      add(node, node.arguments[0].text, true, false, []);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { file, sourceFile, edges, localExports };
 }
 
-function insideTestHookBranch(source: string, line: number): boolean {
-  const lines = source.split("\n");
-  for (let index = line - 2; index >= Math.max(0, line - 7); index -= 1)
-    if (lines[index]!.trim() === testHookBranch) return true;
+function walkExports(modules: Map<string, ModuleRecord>) {
+  const exports = new Map<string, Map<string, string>>([
+    [coreModule, new Map(walkNames.map((name) => [name, name]))],
+  ]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const record of modules.values()) {
+      if (record.file === coreModule) continue;
+      const found = new Map(exports.get(record.file) ?? []);
+      const imported = new Map<string, string>();
+      for (const edge of record.edges) {
+        const source =
+          edge.target === undefined ? undefined : exports.get(edge.target);
+        if (source === undefined || edge.dynamic) continue;
+        for (const binding of edge.bindings) {
+          if (binding.kind === "all" && edge.reexport)
+            for (const [name, walk] of source) found.set(name, walk);
+          if (binding.kind === "named" && source.has(binding.imported)) {
+            if (edge.reexport)
+              found.set(binding.local, source.get(binding.imported)!);
+            else imported.set(binding.local, source.get(binding.imported)!);
+          }
+        }
+      }
+      for (const { local, exported } of record.localExports)
+        if (imported.has(local)) found.set(exported, imported.get(local)!);
+      if (found.size !== (exports.get(record.file)?.size ?? 0)) {
+        exports.set(record.file, found);
+        changed = true;
+      }
+    }
+  }
+  return exports;
+}
+
+function insideTestHookBranch(node: ts.Node, sourceFile: ts.SourceFile) {
+  for (
+    let current = node.parent;
+    current !== undefined;
+    current = current.parent
+  )
+    if (
+      ts.isIfStatement(current) &&
+      current.expression.getText(sourceFile) === testHookCondition
+    )
+      return true;
   return false;
 }
 
-it("keeps the synchronous tree walk reachable only from the removal child and the worktree test hooks", async () => {
-  const files = (
-    await Promise.all(
-      ["apps", "packages", "plugins"].map((top) =>
-        productionSources(path.join(repositoryRoot, top)),
-      ),
+function partOfModuleSyntax(node: ts.Node): boolean {
+  for (
+    let current = node.parent;
+    current !== undefined;
+    current = current.parent
+  )
+    if (
+      ts.isImportDeclaration(current) ||
+      ts.isExportDeclaration(current) ||
+      ts.isExportSpecifier(current)
     )
-  ).flat();
+      return true;
+  return false;
+}
+
+it("keeps the synchronous tree walk reachable only from the removal child and the worktree test hooks", () => {
+  const files = ["apps", "packages", "plugins"].flatMap((top) =>
+    productionSources(path.join(repositoryRoot, top)),
+  );
   expect(files.length).toBeGreaterThan(100);
+  const modules = new Map(
+    files.map((full) => {
+      const record = readModule(full);
+      return [record.file, record] as const;
+    }),
+  );
   const violations: string[] = [];
-  const allowedCalls: Reference[] = [];
-  for (const full of files) {
-    const file = path.relative(repositoryRoot, full).split(path.sep).join("/");
-    const source = await fs.readFile(full, "utf8");
-    if (file !== childEntry && file !== syncIoModule) {
-      for (const reference of [
-        ...references(file, source, /remove-tree-sync-io/gu),
-        ...references(file, source, /\bsyncRemoveTreeIo\b/gu),
-      ])
+
+  const unresolvedWorkspace = [...modules.values()].flatMap((record) =>
+    record.edges
+      .filter(
+        (edge) =>
+          edge.target === undefined &&
+          /^(\.|bb-environment-provider-host(\/|$))/u.test(edge.specifier) &&
+          namesSourceModule(record.file, edge.specifier),
+      )
+      .map((edge) => `${record.file}:${edge.line} ${edge.specifier}`),
+  );
+  expect(unresolvedWorkspace).toEqual([]);
+  expect(
+    modules
+      .get(childEntry)!
+      .edges.some((edge) => edge.target === syncIoModule && !edge.dynamic),
+  ).toBe(true);
+  expect(
+    modules
+      .get(worktreeModule)!
+      .edges.some(
+        (edge) =>
+          edge.specifier ===
+            "bb-environment-provider-host/remove-directory-tree" &&
+          edge.target ===
+            "packages/environment-provider-host/src/remove-directory-tree.ts",
+      ),
+  ).toBe(true);
+
+  const importers = new Map<string, Set<string>>();
+  for (const record of modules.values())
+    for (const edge of record.edges)
+      if (edge.target !== undefined) {
+        const set = importers.get(edge.target) ?? new Set<string>();
+        set.add(record.file);
+        importers.set(edge.target, set);
+      }
+  const reachers = new Set<string>();
+  const pending = [syncIoModule];
+  while (pending.length > 0)
+    for (const importer of importers.get(pending.pop()!) ?? [])
+      if (!reachers.has(importer)) {
+        reachers.add(importer);
+        pending.push(importer);
+      }
+  for (const reacher of [...reachers].sort())
+    if (reacher !== childEntry)
+      violations.push(`${reacher} reaches the synchronous backend`);
+
+  for (const record of modules.values()) {
+    if (record.file === childEntry) continue;
+    for (const edge of record.edges) {
+      if (
+        edge.dynamic &&
+        (edge.target === syncIoModule || edge.target === coreModule)
+      )
         violations.push(
-          `${file}:${reference.line} reaches the synchronous backend: ${reference.text}`,
+          `${record.file}:${edge.line} loads ${edge.target} dynamically`,
         );
-    }
-    if (file !== childEntry && file !== ioModule) {
-      for (const reference of references(
-        file,
-        source,
-        /\binstallRemoveTreeIo\b/gu,
-      ))
+      if (
+        edge.target === ioModule &&
+        record.file !== coreModule &&
+        record.file !== syncIoModule &&
+        (edge.dynamic ||
+          edge.bindings.some(
+            (binding) =>
+              binding.kind !== "named" ||
+              binding.imported === "installRemoveTreeIo",
+          ))
+      )
         violations.push(
-          `${file}:${reference.line} replaces the tree backend: ${reference.text}`,
-        );
-    }
-    if (file === coreModule) continue;
-    for (const reference of references(
-      file,
-      source,
-      /\b(removeDirectoryTree|inspectTreeBeforeMove)\b/gu,
-    )) {
-      const importSpecifier =
-        /^(removeDirectoryTree|inspectTreeBeforeMove),?$/u.test(reference.text);
-      if (importSpecifier) continue;
-      const allowed =
-        reference.call &&
-        (file === childEntry ||
-          (file === worktreeModule &&
-            insideTestHookBranch(source, reference.line)));
-      if (allowed) allowedCalls.push(reference);
-      else
-        violations.push(
-          `${file}:${reference.line} walks the tree in the calling process: ${reference.text}`,
+          `${record.file}:${edge.line} can replace the tree backend`,
         );
     }
   }
+
+  const exports = walkExports(modules);
+  const allowedCalls: string[] = [];
+  for (const record of modules.values()) {
+    if (record.file === coreModule) continue;
+    const named = new Map<string, string>();
+    const namespaces = new Map<string, Map<string, string>>();
+    for (const edge of record.edges) {
+      const source =
+        edge.target === undefined ? undefined : exports.get(edge.target);
+      if (source === undefined || edge.reexport) continue;
+      if (edge.dynamic && record.file !== childEntry) {
+        violations.push(
+          `${record.file}:${edge.line} loads the tree walk dynamically from ${edge.target}`,
+        );
+        continue;
+      }
+      for (const binding of edge.bindings) {
+        if (binding.kind === "named" && source.has(binding.imported))
+          named.set(binding.local, source.get(binding.imported)!);
+        if (binding.kind === "namespace") namespaces.set(binding.local, source);
+      }
+    }
+    if (named.size === 0 && namespaces.size === 0) continue;
+    const sourceFile = record.sourceFile;
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && !partOfModuleSyntax(node)) {
+        const parent = node.parent;
+        let reference: ts.Expression | undefined;
+        if (
+          named.has(node.text) &&
+          !(ts.isPropertyAccessExpression(parent) && parent.name === node)
+        )
+          reference = node;
+        if (namespaces.has(node.text)) {
+          if (
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === node
+          ) {
+            if (namespaces.get(node.text)!.has(parent.name.text))
+              reference = parent;
+          } else {
+            violations.push(
+              `${record.file}:${lineOf(sourceFile, node)} passes on a module that holds the tree walk`,
+            );
+          }
+        }
+        if (reference !== undefined) {
+          const call =
+            ts.isCallExpression(reference.parent) &&
+            reference.parent.expression === reference;
+          const allowed =
+            call &&
+            (record.file === childEntry ||
+              (record.file === worktreeModule &&
+                insideTestHookBranch(reference, sourceFile)));
+          const where = `${record.file}:${lineOf(sourceFile, reference)}`;
+          if (allowed) allowedCalls.push(record.file);
+          else
+            violations.push(
+              `${where} walks the tree in the calling process: ${reference.getText(sourceFile)}`,
+            );
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
   expect(violations).toEqual([]);
-  expect(allowedCalls.map((reference) => reference.file).sort()).toEqual([
+  expect(allowedCalls.sort()).toEqual([
     childEntry,
     childEntry,
     worktreeModule,
     worktreeModule,
   ]);
-});
+}, 120_000);
