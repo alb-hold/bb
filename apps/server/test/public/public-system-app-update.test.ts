@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SystemAppUpdateStatus } from "@bb/server-contract";
+import type { AppUpdateServiceStatus } from "../../src/services/system/app-update.js";
 import { readJson } from "../helpers/json.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
@@ -19,6 +20,7 @@ describe("/api/v1/system/app-update", () => {
       });
       expect(body.activity).toEqual({ phase: "idle" });
       expect(body.runningThreadCount).toBe(0);
+      expect(body.scheduled).toBeNull();
     }));
 
   it("refuses to apply an update the launcher cannot perform", () =>
@@ -46,6 +48,38 @@ describe("/api/v1/system/app-update", () => {
       expect(response.status).toBe(400);
     }));
 
+  it("saves the automatic update setting", () =>
+    withTestHarness({ isDevelopment: false }, async (harness) => {
+      const setAuto = (enabled: boolean) =>
+        harness.app.request(`${API}/auto`, {
+          body: JSON.stringify({ enabled }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+
+      const turnedOn = await setAuto(true);
+      expect(turnedOn.status).toBe(200);
+      expect(
+        ((await readJson(turnedOn)) as SystemAppUpdateStatus).autoUpdate,
+      ).toBe(true);
+      const status = (await readJson(
+        await harness.app.request(API),
+      )) as SystemAppUpdateStatus;
+      expect(status.autoUpdate).toBe(true);
+    }));
+
+  it("refuses to schedule an update the launcher cannot perform", () =>
+    withTestHarness({ isDevelopment: false }, async (harness) => {
+      const response = await harness.app.request(`${API}/schedule`, {
+        method: "POST",
+      });
+
+      expect(response.status).toBe(409);
+      expect(await readJson(response)).toMatchObject({
+        code: "app_update_unsupported",
+      });
+    }));
+
   it("does not let machine credentials update or dismiss results", () =>
     withTestHarness(async (harness) => {
       const responses = await Promise.all([
@@ -59,6 +93,19 @@ describe("/api/v1/system/app-update", () => {
           headers: { ...MACHINE_HEADERS, "content-type": "application/json" },
           method: "POST",
         }),
+        harness.app.request(`${API}/schedule`, {
+          headers: MACHINE_HEADERS,
+          method: "POST",
+        }),
+        harness.app.request(`${API}/schedule/cancel`, {
+          headers: MACHINE_HEADERS,
+          method: "POST",
+        }),
+        harness.app.request(`${API}/auto`, {
+          body: JSON.stringify({ enabled: true }),
+          headers: { ...MACHINE_HEADERS, "content-type": "application/json" },
+          method: "POST",
+        }),
       ]);
 
       for (const response of responses) {
@@ -68,7 +115,7 @@ describe("/api/v1/system/app-update", () => {
 
   it("does not let machine credentials force launcher checks", async () => {
     const forced: boolean[] = [];
-    const status: SystemAppUpdateStatus = {
+    const status: AppUpdateServiceStatus = {
       activity: { phase: "idle" },
       available: null,
       blocked: null,

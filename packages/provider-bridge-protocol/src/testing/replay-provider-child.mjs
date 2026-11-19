@@ -33,8 +33,8 @@
  * STALL_MS is answered with a generic success, and a child past the end of its
  * segment answers everything generically. Both are logged on stderr.
  */
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmdirSync } from "node:fs";
-import { Socket } from "node:net";
+import { existsSync, mkdirSync, readFileSync, rmdirSync } from "node:fs";
+import { connect } from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import { join } from "node:path";
 
@@ -159,15 +159,15 @@ const DIALECTS = {
    * `pi --mode rpc`: commands carry `{ id, type }`, responses are
    * `{ id, type: "response", command, success }`, and every other line is a
    * raw AgentSessionEvent (or an `extension_ui_request`). The bb extension's
-   * channel (fd 3 child → bridge, fd 4 bridge → child) is recorded on the
-   * same lanes wrapped as `{ bbChannel: <message> }`; this dialect routes
-   * those back onto the channel fds.
+   * channel (the socket the bridge names in `BB_PI_BRIDGE_CHANNEL`) is
+   * recorded on the same lanes wrapped as `{ bbChannel: <message> }`; this
+   * dialect routes those back onto that socket.
    */
   "pi-rpc": {
     channel: {
       key: "bbChannel",
-      childToBridgeFd: 3,
-      bridgeToChildFd: 4,
+      addressEnv: "BB_PI_BRIDGE_CHANNEL",
+      tokenEnv: "BB_PI_BRIDGE_CHANNEL_TOKEN",
     },
     classify(message) {
       const channel = message.bbChannel;
@@ -353,6 +353,14 @@ function readNewlineDelimitedLines(input, onLine) {
   });
 }
 
+function connectChannel(channel) {
+  const socket = connect(process.env[channel.addressEnv]);
+  socket.on("error", () => {});
+  socket.unref();
+  socket.write(`${process.env[channel.tokenEnv]}\n`);
+  return socket;
+}
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------
@@ -381,14 +389,11 @@ function servePiCatalog(entries) {
       }
     }
   }
-  const channelOut = createWriteStream(null, { fd: 3 });
-  const channelIn = new Socket({ fd: 4, readable: true, writable: false });
-  channelIn.on("error", () => {});
-  channelIn.unref();
-  readNewlineDelimitedLines(channelIn, (line) => {
+  const channel = connectChannel(DIALECTS["pi-rpc"].channel);
+  readNewlineDelimitedLines(channel, (line) => {
     const message = parseLine(line);
     if (message?.kind !== "request" || message.method !== "model-scope") return;
-    channelOut.write(
+    channel.write(
       `${JSON.stringify({
         kind: "reply",
         id: message.id,
@@ -426,6 +431,15 @@ function main() {
   // command; answer like a CLI instead of claiming a segment and waiting.
   if (process.argv.includes("--version")) {
     process.stdout.write("0.0.0-replay\n");
+    return;
+  }
+  const apiIndex = process.argv.indexOf("api");
+  if (apiIndex !== -1) {
+    process.stdout.write(
+      process.argv[apiIndex + 1] === "GET"
+        ? `${JSON.stringify({ data: { permissions: [] } })}\n`
+        : "{}\n",
+    );
     return;
   }
   const args = parseArgs(process.argv.slice(2));
@@ -469,12 +483,15 @@ function main() {
   let stallTimer = null;
   let lookaheadTimer = null;
   let emitTimer = null;
+  let piState = null;
+  let piStreaming = false;
+  let piPromptProbePending = false;
 
   const channel = dialect.channel ?? null;
-  const channelOut = channel ? createWriteStream(null, { fd: channel.childToBridgeFd }) : null;
+  const channelSocket = channel ? connectChannel(channel) : null;
   function emit(message) {
     if (channel && typeof message[channel.key] === "object" && message[channel.key] !== null) {
-      channelOut.write(`${JSON.stringify(message[channel.key])}\n`);
+      channelSocket.write(`${JSON.stringify(message[channel.key])}\n`);
       return;
     }
     process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -482,6 +499,22 @@ function main() {
 
   function emitRecorded(step) {
     const { message, classified } = step;
+    if (args.dialect === "pi-rpc") {
+      if (
+        message.type === "response" &&
+        message.command === "get_state" &&
+        message.success === true &&
+        typeof message.data === "object" &&
+        message.data !== null
+      ) {
+        piState = message.data;
+        piStreaming = piState?.isStreaming === true;
+      } else if (message.type === "agent_start") {
+        piStreaming = true;
+      } else if (message.type === "agent_end") {
+        piStreaming = false;
+      }
+    }
     if (classified.kind === "response") {
       const liveId = liveIdByRecordedId.get(String(classified.id));
       emit(dialect.withResponseId(message, liveId === undefined ? classified.id : liveId));
@@ -579,6 +612,27 @@ function main() {
       if (live === null) {
         return;
       }
+      if (args.dialect === "pi-rpc" && step.classified.key === "get_state") {
+        piPromptProbePending = false;
+      }
+      if (args.dialect === "pi-rpc" && step.classified.key === "prompt") {
+        piPromptProbePending = live.message.streamingBehavior !== "steer";
+        for (let index = position + 1; index < script.length; index += 1) {
+          const next = script[index];
+          if (
+            next.dir === "bridge→provider" &&
+            next.classified.key === "prompt"
+          )
+            break;
+          if (
+            next.dir === "provider→bridge" &&
+            next.message?.type === "agent_start"
+          ) {
+            piStreaming = true;
+            break;
+          }
+        }
+      }
       if (step.classified.kind === "request") {
         liveIdByRecordedId.set(String(step.classified.id), live.classified.id);
         if (dialect.isInitialize(step.classified) && args.dialect === "claude-cli") {
@@ -597,6 +651,10 @@ function main() {
    */
   function lookAhead() {
     lookaheadTimer = null;
+    if (emitTimer !== null) {
+      lookaheadTimer = setTimeout(lookAhead, CURSOR_POLL_MS);
+      return;
+    }
     for (const live of pendingLive) {
       for (let index = position + 1; index < script.length; index += 1) {
         const step = script[index];
@@ -607,6 +665,16 @@ function main() {
             ? String(step.classified.id) === String(live.classified.id)
             : step.classified.key === live.classified.key);
         if (!same) continue;
+        const cursor = readCursor(args.state);
+        const gated = script.slice(position, index).some((between) =>
+          between.dir === "provider→bridge" &&
+          between.classified.kind !== "response" &&
+          !cursorAllows(cursor, between),
+        );
+        if (gated) {
+          lookaheadTimer = setTimeout(lookAhead, CURSOR_POLL_MS);
+          return;
+        }
         const skipped = [];
         for (let cursor = position; cursor < index; cursor += 1) {
           const between = script[cursor];
@@ -691,6 +759,25 @@ function main() {
         releaseSegment(live);
       }
     }
+    if (
+      args.dialect === "pi-rpc" &&
+      live.classified.kind === "request" &&
+      live.classified.key === "get_state" &&
+      piPromptProbePending &&
+      piState !== null &&
+      script.slice(position).find((step) => step.dir === "bridge→provider")
+        ?.classified.key !== "get_state"
+    ) {
+      piPromptProbePending = false;
+      emit({
+        id: live.classified.id,
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: { ...piState, isStreaming: piStreaming },
+      });
+      return;
+    }
     if (position >= script.length) {
       answerGenerically(live, "past end of segment");
       return;
@@ -710,13 +797,7 @@ function main() {
     process.exit(0);
   });
   if (channel) {
-    // The bridge's channel writes (tool results, fork requests) arrive on
-    // their own fd; wrap them the way the recorder did so they match. A
-    // net.Socket reads the pipe non-blockingly, as the real extension does.
-    const channelIn = new Socket({ fd: channel.bridgeToChildFd, readable: true, writable: false });
-    channelIn.on("error", () => {});
-    channelIn.unref();
-    readNewlineDelimitedLines(channelIn, (line) => {
+    readNewlineDelimitedLines(channelSocket, (line) => {
       const message = parseLine(line);
       if (message !== null) onLiveMessage({ [channel.key]: message });
     });

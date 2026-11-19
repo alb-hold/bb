@@ -5,9 +5,10 @@ import { createConnection } from "../../src/connection.js";
 import { noopNotifier } from "../../src/notifier.js";
 import type { DbNotifier } from "../../src/notifier.js";
 import { threads } from "../../src/schema.js";
+import { writeThreadLifecycleStateInTransaction } from "../../src/data/thread-run-state.js";
+import type { ThreadStatus } from "@bb/domain";
 import {
   createThread,
-  countLiveThreadsInEnvironment,
   countNonDeletedAssignedChildThreads,
   getThread,
   getThreadExecutionOverride,
@@ -27,8 +28,6 @@ import {
   reorderPinnedThread,
   unpinThread,
   unarchiveThread,
-  applyThreadLifecycleEvent,
-  requireThreadLifecycleEventApplied,
 } from "../../src/data/threads.js";
 import { createPendingInteraction } from "../../src/data/pending-interactions.js";
 import {
@@ -39,8 +38,30 @@ import {
 } from "../../src/data/thread-sections.js";
 import { createProject, markProjectDeleted } from "../../src/data/projects.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import { createEnvironment } from "../../src/data/environments.js";
+import {
+  createEnvironment,
+  environmentHasLiveThreads,
+} from "../../src/data/environments.js";
 import { createMigratedConnection } from "../../src/testing.js";
+
+function moveThreadStatus(
+  db: ReturnType<typeof createMigratedConnection>,
+  threadId: string,
+  from: ThreadStatus,
+  to: ThreadStatus,
+) {
+  const empty = { heldCompletion: null, requests: [], stop: null };
+  const result = db.transaction((tx) =>
+    writeThreadLifecycleStateInTransaction(tx, {
+      expectedStatus: from,
+      next: { ...empty, status: to },
+      previous: empty,
+      threadId,
+    }),
+  );
+  if (result.kind !== "written") throw new Error("status move conflicted");
+  return result.thread;
+}
 
 function setup() {
   const db = createMigratedConnection();
@@ -702,7 +723,7 @@ describe("threads", () => {
     expect(rootThreads.map((thread) => thread.id)).toContain(parent.id);
   });
 
-  it("paginates archived threads ordered by archive recency", async () => {
+  it("paginates archived threads ordered by archive recency", () => {
     const { db, project } = setup();
     const created: { id: string }[] = [];
     for (let index = 0; index < 5; index += 1) {
@@ -712,32 +733,39 @@ describe("threads", () => {
       });
       created.push(thread);
     }
-    for (const thread of created) {
-      archiveThread(db, noopNotifier, thread.id);
-      await new Promise((resolve) => setTimeout(resolve, 2));
+    const archivedAt = Date.now();
+    const now = vi.spyOn(Date, "now");
+    try {
+      for (const [index, thread] of created.entries()) {
+        now.mockReturnValue(archivedAt + index);
+        archiveThread(db, noopNotifier, thread.id);
+      }
+
+      const archivedFirstPage = listThreadsWithPendingInteractionState(db, {
+        projectId: project.id,
+        archived: true,
+        limit: 3,
+      });
+      expect(archivedFirstPage.map((thread) => thread.id)).toEqual([
+        created[4]?.id,
+        created[3]?.id,
+        created[2]?.id,
+      ]);
+
+      const archivedSecondPage = listThreadsWithPendingInteractionState(db, {
+        projectId: project.id,
+        archived: true,
+        limit: 3,
+        offset: 3,
+      });
+      expect(archivedSecondPage.map((thread) => thread.id)).toEqual([
+        created[1]?.id,
+        created[0]?.id,
+      ]);
+    } finally {
+      now.mockRestore();
+      db.$client.close();
     }
-
-    const archivedFirstPage = listThreadsWithPendingInteractionState(db, {
-      projectId: project.id,
-      archived: true,
-      limit: 3,
-    });
-    expect(archivedFirstPage.map((thread) => thread.id)).toEqual([
-      created[4]?.id,
-      created[3]?.id,
-      created[2]?.id,
-    ]);
-
-    const archivedSecondPage = listThreadsWithPendingInteractionState(db, {
-      projectId: project.id,
-      archived: true,
-      limit: 3,
-      offset: 3,
-    });
-    expect(archivedSecondPage.map((thread) => thread.id)).toEqual([
-      created[1]?.id,
-      created[0]?.id,
-    ]);
   });
 
   it("counts archived assigned child threads", () => {
@@ -1221,7 +1249,7 @@ describe("threads", () => {
     expect(unarchived?.latestAttentionAt).toBe(thread.latestAttentionAt);
   });
 
-  it("counts only non-archived, non-deleted threads as live", () => {
+  it("counts unarchived threads and archived threads that still run as live", () => {
     const { db, project, host } = setup();
     const environment = createEnvironment(db, noopNotifier, {
       providerOwnsPath: false,
@@ -1230,37 +1258,28 @@ describe("threads", () => {
       path: "/tmp/thread-live-count",
       status: "ready",
     });
-    const liveThread = createThread(db, noopNotifier, {
+    const thread = createThread(db, noopNotifier, {
       projectId: project.id,
       environmentId: environment.id,
       providerId: "codex",
       status: "idle",
     });
-    const archivedThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-      status: "idle",
-    });
-    const deletedThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-      status: "idle",
-    });
+    expect(environmentHasLiveThreads(db, environment.id)).toBe(true);
 
-    archiveThread(db, noopNotifier, archivedThread.id);
-    markThreadDeleted(db, noopNotifier, { threadId: deletedThread.id });
+    archiveThread(db, noopNotifier, thread.id);
+    expect(environmentHasLiveThreads(db, environment.id)).toBe(false);
 
-    expect(
-      countLiveThreadsInEnvironment(db, { environmentId: environment.id }),
-    ).toBe(1);
-    expect(
-      countLiveThreadsInEnvironment(db, {
-        environmentId: environment.id,
-        excludeThreadId: liveThread.id,
-      }),
-    ).toBe(0);
+    const setStatus = (status: "active" | "stopping" | "idle") =>
+      db.update(threads).set({ status }).where(eq(threads.id, thread.id)).run();
+    for (const status of ["active", "stopping"] as const) {
+      setStatus(status);
+      expect(environmentHasLiveThreads(db, environment.id)).toBe(true);
+    }
+
+    setStatus("idle");
+    unarchiveThread(db, noopNotifier, thread.id);
+    markThreadDeleted(db, noopNotifier, { threadId: thread.id });
+    expect(environmentHasLiveThreads(db, environment.id)).toBe(false);
   });
 
   it("lists canonical thread environments for a host", () => {
@@ -1340,12 +1359,10 @@ describe("threads", () => {
       environmentId: otherEnvironment.id,
       providerId: "codex",
     });
-    requireThreadLifecycleEventApplied(
-      applyThreadLifecycleEvent(db, {
-        event: { type: "stop.requested" },
-        threadId: stoppingThread.id,
-      }),
-    );
+    db.update(threads)
+      .set({ status: "stopping" })
+      .where(eq(threads.id, stoppingThread.id))
+      .run();
     expect(getThread(db, stoppingThread.id)?.status).toBe("stopping");
 
     expect(listHostThreadIds(db, { hostId: host.id })).toEqual([
@@ -1420,12 +1437,7 @@ describe("thread lifecycle transitions and read state", () => {
       });
 
       vi.setSystemTime(2_000);
-      const idleThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.succeeded" },
-          threadId: activeThread.id,
-        }),
-      );
+      const idleThread = moveThreadStatus(db, activeThread.id, "active", "idle");
       expect(idleThread.status).toBe("idle");
       expect(idleThread.updatedAt).toBe(2_000);
       expect(idleThread.latestAttentionAt).toBe(2_000);
@@ -1435,12 +1447,7 @@ describe("thread lifecycle transitions and read state", () => {
         lastReadAt: idleThread.latestAttentionAt,
       });
       vi.setSystemTime(3_000);
-      const activeAgainThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.started" },
-          threadId: activeThread.id,
-        }),
-      );
+      const activeAgainThread = moveThreadStatus(db, activeThread.id, "idle", "active");
       expect(activeAgainThread.status).toBe("active");
       expect(activeAgainThread.updatedAt).toBe(3_000);
       expect(activeAgainThread.latestAttentionAt).toBe(2_000);
@@ -1465,12 +1472,7 @@ describe("thread lifecycle transitions and read state", () => {
       });
 
       vi.setSystemTime(2_000);
-      const erroredThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.failed" },
-          threadId: stoppingThread.id,
-        }),
-      );
+      const erroredThread = moveThreadStatus(db, stoppingThread.id, "stopping", "error");
       expect(erroredThread.status).toBe("error");
       expect(erroredThread.updatedAt).toBe(2_000);
       expect(erroredThread.latestAttentionAt).toBe(1_000);

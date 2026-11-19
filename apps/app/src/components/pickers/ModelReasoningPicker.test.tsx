@@ -21,11 +21,12 @@ import type {
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
 import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { expectNonmodalPicker } from "@/test/nonmodal-picker";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import {
@@ -259,13 +260,13 @@ function renderPicker({
         onModelChange={onModelChange}
         reasoningValue={reasoningValue}
         reasoningOptions={pickerReasoningOptions}
+        reasoningIsLoading={reasoningIsLoading}
         onReasoningChange={onReasoningChange}
         serviceTierValue={serviceTierValue}
         serviceTierOptions={serviceTierOptions}
         onServiceTierChange={onServiceTierChange}
         serviceTierSupportByProvider={serviceTierSupportByProvider}
         muted={muted}
-        modal={false}
         handoff={handoff}
         agentSections={agentSections}
         onAgentOptionChange={onAgentOptionChange}
@@ -302,11 +303,12 @@ function renderPicker({
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  document.body.replaceChildren();
   commandHandlers.clear();
   vi.clearAllMocks();
 });
 
-describe("ModelReasoningPicker", () => {
   it.each([
     ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol", "GPT-6.1-Sol"],
     [
@@ -418,6 +420,7 @@ describe("ModelReasoningPicker", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+describe("ModelReasoningPicker", () => {
   it.each([
     ["ArrowRight", "medium", "high"],
     ["ArrowLeft", "high", "medium"],
@@ -971,7 +974,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Handoff to new thread" }),
+      screen.getByRole("button", { name: "Hand off to new thread" }),
     );
     expect(onStart).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
@@ -1007,7 +1010,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Handoff to new thread" }),
+      screen.getByRole("button", { name: "Hand off to new thread" }),
     );
     fireEvent.click(screen.getByTitle("Claude Code"));
 
@@ -1057,7 +1060,7 @@ describe("ModelReasoningPicker", () => {
         screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
-        screen.getByRole("button", { name: "Handoff to new thread" }),
+        screen.getByRole("button", { name: "Hand off to new thread" }),
       );
       fireEvent.click(screen.getByTitle("Claude Code"));
       await screen.findByText("Opus 4.7");
@@ -1106,7 +1109,7 @@ describe("ModelReasoningPicker", () => {
         screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
-        screen.getByRole("button", { name: "Handoff to new thread" }),
+        screen.getByRole("button", { name: "Hand off to new thread" }),
       );
       fireEvent.click(screen.getByTitle("Claude Code"));
       await screen.findByText("Opus 4.7");

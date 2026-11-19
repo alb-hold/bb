@@ -8,11 +8,17 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+
 import { randomUUID } from "node:crypto";
+
 import { tmpdir } from "node:os";
+
 import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { z } from "zod";
+
 import type {
   CanUseTool,
   McpServerConfig,
@@ -20,6 +26,7 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+
 import {
   BRIDGE_INBOUND_REQUEST_METHODS,
   BRIDGE_JSON_RPC_ERRORS,
@@ -28,17 +35,21 @@ import {
   type RuntimePermissionScope,
 } from "@get-bb/plugin-sdk/provider-bridge";
 
-const { forkSessionMock, queryMock, openMock, nativeOpenRef, contextQueryMock } = vi.hoisted(
-  () => ({
-    forkSessionMock: vi.fn(),
-    queryMock: vi.fn(),
-    openMock: vi.fn(),
-    contextQueryMock: vi.fn(),
-    nativeOpenRef: {
-      current: null as null | typeof import("node:fs/promises").open,
-    },
-  }),
-);
+const {
+  forkSessionMock,
+  queryMock,
+  openMock,
+  nativeOpenRef,
+  contextQueryMock,
+} = vi.hoisted(() => ({
+  forkSessionMock: vi.fn(),
+  queryMock: vi.fn(),
+  openMock: vi.fn(),
+  contextQueryMock: vi.fn(),
+  nativeOpenRef: {
+    current: null as null | typeof import("node:fs/promises").open,
+  },
+}));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (args: {
@@ -47,7 +58,6 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
     args.options?.persistSession === false && args.options.forkSession === true
       ? contextQueryMock(args)
       : queryMock(args),
-  forkSession: forkSessionMock,
   createSdkMcpServer: vi.fn(() => ({})),
   tool: vi.fn((_name, _desc, _schema, handler) => handler),
 }));
@@ -63,28 +73,38 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import { handleLine } from "../bridge.js";
+
 import { buildSessionOptions } from "../session-options.js";
+
 import {
   type ClaudePermissionMode,
   type ClaudeUserQuestionInput,
 } from "../../interactive-contract.js";
+
 import { listClaudeCodeBridgeModels } from "../model-list.js";
+
 import {
   experimental_assembleCapturedThreadEvents as assembleCapturedThreadEvents,
   experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
 } from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 import type {
   BridgeJsonRpcOutputMessage,
   ThreadEvent,
 } from "@get-bb/plugin-sdk/provider-bridge/testing";
 
 type BridgeSessionOptions = ReturnType<typeof buildSessionOptions>;
+
 type BridgeSessionHooks = NonNullable<BridgeSessionOptions["hooks"]>;
+
 type BridgePreToolUseHooks = NonNullable<BridgeSessionHooks["PreToolUse"]>;
+
 type BridgePreToolUseHook = BridgePreToolUseHooks[number]["hooks"][number];
+
 type BridgeJsonRpcTestHarness = ReturnType<
   typeof createBridgeJsonRpcTestHarness
 >;
+
 type SdkResultUsage = Extract<SDKMessage, { type: "result" }>["usage"];
 
 interface AssistantToolUseMessageArgs {
@@ -178,8 +198,11 @@ type ControlledClaudeQueryResult =
   | ControlledClaudeQueryErrorResult;
 
 const tempDirs: string[] = [];
+
 let previousHome: string | undefined;
+
 let previousClaudeConfigDir: string | undefined;
+
 const CLAUDE_EXECUTABLE_NAME =
   process.platform === "win32" ? "claude.exe" : "claude";
 
@@ -560,6 +583,26 @@ function createAuthenticationErrorMessage(sessionId: string): SDKMessage {
   };
 }
 
+function createSystemInitMessage(sessionId: string): SDKMessage {
+  return {
+    type: "system",
+    subtype: "init",
+    apiKeySource: "none",
+    claude_code_version: "2.1.322",
+    cwd: "/tmp/worktree",
+    tools: [],
+    mcp_servers: [],
+    model: "claude-opus-5-5",
+    permissionMode: "default",
+    slash_commands: [],
+    output_style: "default",
+    skills: [],
+    plugins: [],
+    uuid: "00000000-0000-4000-8000-000000000003",
+    session_id: sessionId,
+  };
+}
+
 function createSuccessfulResultMessage(sessionId: string): SDKMessage {
   return {
     type: "result",
@@ -819,10 +862,10 @@ describe("bridge", () => {
     tempDirs.push(hermeticConfigDir);
     process.env.CLAUDE_CONFIG_DIR = hermeticConfigDir;
     vi.clearAllMocks();
+    contextQueryMock.mockImplementation(() => createControlledClaudeQuery());
     if (nativeOpenRef.current) {
       openMock.mockImplementation(nativeOpenRef.current);
     }
-    forkSessionMock.mockResolvedValue({ sessionId: "forked-session-1" });
     queryMock.mockReturnValue({
       initializationResult: vi.fn().mockResolvedValue({
         account: {},
@@ -4371,6 +4414,7 @@ describe("bridge", () => {
       );
       await readNextPrompt(getLatestQueryCall());
       await bridge.waitForResponse(2);
+      live.emit(createSystemInitMessage(threadId));
       live.emit(createSuccessfulResultMessage(threadId));
       await bridge.flushWork();
       expect(reports).toHaveLength(1);
@@ -4407,8 +4451,8 @@ describe("bridge", () => {
 
       live.emit(createSuccessfulResultMessage(threadId));
       await bridge.flushWork();
-      expect(reports[0].close).toHaveBeenCalledOnce();
-      expect(reports).toHaveLength(2);
+      expect(reports[1].close).toHaveBeenCalledOnce();
+      expect(reports).toHaveLength(3);
       expect(
         assembleCapturedThreadEvents(bridge.messages, "claude-code").filter(
           (event) => event.type === "turn/completed",
@@ -4632,11 +4676,52 @@ describe("bridge", () => {
     }
   });
 
+  it("lists models with each request's contributed environment", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    queryMock.mockImplementation(() => ({
+      initializationResult: vi.fn().mockResolvedValue({
+        models: [
+          {
+            value: "sonnet",
+            resolvedModel: "claude-sonnet-5",
+            displayName: "Sonnet",
+            description: "Sonnet 5",
+          },
+        ],
+      }),
+      close: vi.fn(),
+    }));
+    const pooled = {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:1/model-list-env-test",
+      ANTHROPIC_AUTH_TOKEN: "pool-token",
+    };
+
+    try {
+      bridge.sendRequest(1, "model/list", { envVars: pooled });
+      expect((await bridge.waitForResponse(1)).error).toBeUndefined();
+      bridge.sendRequest(2, "model/list", { envVars: pooled });
+      expect((await bridge.waitForResponse(2)).error).toBeUndefined();
+      bridge.sendRequest(3, "model/list", {
+        envVars: { ...pooled, ANTHROPIC_AUTH_TOKEN: "other-token" },
+      });
+      expect((await bridge.waitForResponse(3)).error).toBeUndefined();
+
+      const probeEnvs = queryMock.mock.calls.map(
+        (call) => call[0]?.options.env,
+      );
+      expect(probeEnvs).toEqual([
+        expect.objectContaining(pooled),
+        expect.objectContaining({
+          ...pooled,
+          ANTHROPIC_AUTH_TOKEN: "other-token",
+        }),
+      ]);
+    } finally {
+      bridge.restore();
+    }
+  });
+
   it("forks a Claude session from the session config directory through the requested checkpoint", async () => {
-    const actualSdk = await vi.importActual<
-      typeof import("@anthropic-ai/claude-agent-sdk")
-    >("@anthropic-ai/claude-agent-sdk");
-    forkSessionMock.mockImplementation(actualSdk.forkSession);
     const root = mkdtempSync(join(tmpdir(), "bb-claude-fork-"));
     tempDirs.push(root);
     const hostConfigDir = join(root, "host-config");
@@ -5213,6 +5298,21 @@ describe("bridge", () => {
         input: {
           command: "echo hi",
           dangerouslyDisableSandbox: true,
+          description: "Permission boundary test",
+        },
+        expected: {
+          behavior: "deny",
+          messageIncludes: "bb's workspace sandbox allows work inside",
+        },
+      },
+      {
+        id: "hook-ask-empty-reason",
+        name: "auto-deny with an empty hook reason keeps a non-empty message",
+        policy: WORKSPACE_AUTO_DENY_POLICY,
+        toolName: "Bash",
+        decisionReason: "",
+        input: {
+          command: "echo hi",
           description: "Permission boundary test",
         },
         expected: {
@@ -6574,7 +6674,7 @@ describe("bridge", () => {
           mentions: [skillMention(4, "$", "review")],
         },
       ],
-      expected: "/review Use  but keep $PATH and $review",
+      expected: "/review Use review but keep $PATH and $review",
     },
     {
       name: "an embedded slash skill",
@@ -6585,7 +6685,18 @@ describe("bridge", () => {
           mentions: [skillMention(11, "/", "review")],
         },
       ],
-      expected: "/review Please use  on this",
+      expected: "/review Please use review on this",
+    },
+    {
+      name: "a trailing dollar skill",
+      input: [
+        {
+          type: "text",
+          text: "use the $review",
+          mentions: [skillMention(8, "$", "review")],
+        },
+      ],
+      expected: "/review use the review",
     },
     {
       name: "a leading dollar skill",
@@ -6608,7 +6719,7 @@ describe("bridge", () => {
           mentions: [skillMention(0, "$", "review")],
         },
       ],
-      expected: "/review Inspect this fixture.\n",
+      expected: "/review Inspect this fixture.\nreview",
     },
     {
       name: "several selected skills",
@@ -7290,7 +7401,7 @@ describe("bridge", () => {
       close,
     });
 
-    await expect(listClaudeCodeBridgeModels()).rejects.toThrow(
+    await expect(listClaudeCodeBridgeModels(process.env)).rejects.toThrow(
       "Claude Code reported no models.",
     );
     expect(close).toHaveBeenCalledOnce();
@@ -7386,7 +7497,7 @@ describe("bridge", () => {
       close,
     });
 
-    await expect(listClaudeCodeBridgeModels()).rejects.toThrow(
+    await expect(listClaudeCodeBridgeModels(process.env)).rejects.toThrow(
       "temporary discovery failure",
     );
     expect(queryMock).toHaveBeenCalledOnce();
@@ -7913,6 +8024,70 @@ describe("bridge", () => {
     }
   });
 
+  it("keeps the resumed session id when Claude fails before announcing a session", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+    const threadId = "thread-failed-startup";
+    const savedSessionId = "saved-session";
+    try {
+      sendResumeThread({
+        bridge,
+        requestId: 1,
+        threadId,
+        providerThreadId: savedSessionId,
+      });
+      await bridge.waitForResponse(1);
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          providerThreadId: savedSessionId,
+          input: [{ type: "text", text: "first" }],
+        }),
+      );
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(2);
+      queries[0]?.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        duration_ms: 0,
+        duration_api_ms: 0,
+        is_error: true,
+        num_turns: 0,
+        stop_reason: null,
+        total_cost_usd: 0,
+        usage: createResultUsage(),
+        modelUsage: {},
+        permission_denials: [],
+        errors: ["organization settings unavailable"],
+        uuid: "00000000-0000-4000-8000-000000000005",
+        session_id: "unsaved-session",
+      });
+      await bridge.flushWork();
+      expect(
+        bridge.messages.filter(
+          (message) => message.method === "thread/identity",
+        ),
+      ).not.toContainEqual(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            providerThreadId: "unsaved-session",
+          }),
+        }),
+      );
+      expect(contextQueryMock).not.toHaveBeenCalled();
+    } finally {
+      queries.forEach((query) => query.finish());
+      bridge.restore();
+    }
+  });
+
   it.each(["chromeEnabled", "disable1MContext", "artifactsEnabled"])(
     "restarts the Claude process before the next turn when %s changes",
     async (setting) => {
@@ -7966,6 +8141,7 @@ describe("bridge", () => {
         await readNextPrompt(getLatestQueryCall());
         await bridge.waitForResponse(2);
         expect(queries).toHaveLength(1);
+        queries[0]?.emit(createSystemInitMessage(threadId));
         queries[0]?.emit(createSuccessfulResultMessage(threadId));
         await bridge.flushWork();
 
@@ -8717,6 +8893,7 @@ describe("bridge", () => {
             if (hookEnabled) expect(outputs).not.toContainEqual(denial);
             else expect(outputs).toContainEqual(denial);
           }
+          queries[index]?.emit(createSystemInitMessage(providerThreadId));
           queries[index]?.emit(createSuccessfulResultMessage(providerThreadId));
           await bridge.flushWork();
         }
@@ -9206,6 +9383,110 @@ describe("bridge", () => {
       });
       await bridge.flushWork();
       queries[1]?.finish();
+      await bridge.waitForResponse(3);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("settles a background command when the Claude SDK stream ends under it", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+
+    try {
+      const threadId = "thread-sdk-ended-background-command";
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: {
+          permissionMode: "accept-edits",
+          permissionScope: "workspace",
+          approvalReviewer: "user",
+          permissionEscalation: "ask",
+          instructions: "test",
+          providerOptions: {
+            workflowsEnabled: false,
+          },
+        },
+      });
+      const providerThreadId = getProviderThreadIdFromResult(
+        await bridge.waitForResponse(1),
+      );
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          providerThreadId,
+          input: [{ type: "text", text: "Watch CI in the background" }],
+        }),
+      );
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(2);
+      queries[0]?.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "b55rxfnlv",
+        description: "Watch CI, Build & Push and the deploy run in sequence",
+        task_type: "local_bash",
+        uuid: "00000000-0000-4000-8000-000000000002",
+        session_id: providerThreadId,
+      });
+      queries[0]?.emit(createSuccessfulResultMessage(providerThreadId));
+      await bridge.flushWork();
+
+      queries[0]?.fail(
+        new Error("Claude Code process terminated by signal SIGKILL"),
+      );
+      await bridge.flushWork();
+
+      expect(
+        assembleCapturedThreadEvents(bridge.messages, "claude-code").flatMap(
+          (event) => {
+            const item =
+              event.type === "item/started" ||
+              event.type === "item/backgroundTask/completed"
+                ? event.item
+                : null;
+            return item?.type === "backgroundTask"
+              ? [
+                  {
+                    type: event.type,
+                    familyId: item.familyId,
+                    status: item.status,
+                    taskStatus: item.taskStatus,
+                  },
+                ]
+              : [];
+          },
+        ),
+      ).toEqual([
+        {
+          type: "item/started",
+          familyId: "b55rxfnlv",
+          status: "pending",
+          taskStatus: "running",
+        },
+        {
+          type: "item/backgroundTask/completed",
+          familyId: "b55rxfnlv",
+          status: "interrupted",
+          taskStatus: "stopped",
+        },
+      ]);
+
+      bridge.sendRequest(3, "thread/stop", {
+        threadId,
+        providerThreadId,
+        intent: "interrupt",
+        activeTurnId: null,
+      });
       await bridge.waitForResponse(3);
     } finally {
       bridge.restore();
@@ -9716,6 +9997,279 @@ describe("bridge", () => {
       }
     },
   );
+
+  describe("a steer the SDK has not consumed when its SDK turn ends", () => {
+    function replayOf(prompt: SDKUserMessage): SDKMessage {
+      if (prompt.uuid === undefined) {
+        throw new Error("Expected the bridge to stamp prompt uuids");
+      }
+      return {
+        ...prompt,
+        uuid: prompt.uuid,
+        session_id: "session-1",
+        isReplay: true,
+      };
+    }
+
+    function assistantText(text: string): SDKMessage {
+      return {
+        type: "assistant",
+        message: {
+          id: `message-${text}`,
+          type: "message",
+          role: "assistant",
+          container: null,
+          content: [{ type: "text", text, citations: null }],
+          context_management: null,
+          model: "claude-sonnet-5",
+          stop_details: null,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: createResultUsage(),
+        },
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: "session-1",
+      };
+    }
+
+    function resultFor(prompts: SDKUserMessage[]): SDKMessage {
+      const result = createSuccessfulResultMessage("session-1");
+      if (result.type !== "result") {
+        throw new Error("Expected a result message");
+      }
+      return {
+        ...result,
+        user_message_uuids: prompts.flatMap((prompt) =>
+          prompt.uuid === undefined ? [] : [prompt.uuid],
+        ),
+      };
+    }
+
+    async function startTurnAndSteer(threadId: string) {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const query = createControlledClaudeQuery();
+      queryMock.mockImplementation(() => query);
+      await startBridgeThread({ bridge, threadId });
+      const call = getLatestQueryCall();
+
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          input: [{ type: "text", text: "Reply one", mentions: [] }],
+        }),
+      );
+      const first = await readNextPrompt(call);
+      await bridge.waitForResponse(2);
+      query.emit(replayOf(first));
+      query.emit(assistantText("one"));
+
+      bridge.sendRequest(3, "turn/steer", {
+        ...canonicalTurnParams({
+          threadId,
+          expectedTurnId: "turn-1",
+          input: [{ type: "text", text: "Reply two", mentions: [] }],
+        }),
+        clientRequestId: "creq_abcdefghjm",
+      });
+      const steer = await readNextPrompt(call);
+      await bridge.waitForResponse(3);
+      return { bridge, first, query, steer };
+    }
+
+    function turnEvents(bridge: BridgeJsonRpcTestHarness) {
+      const events = assembleCapturedThreadEvents(
+        bridge.messages,
+        "claude-code",
+      );
+      return {
+        completed: events.filter((event) => event.type === "turn/completed"),
+        events,
+        started: events.filter((event) => event.type === "turn/started"),
+      };
+    }
+
+    it("keeps the turn open through the SDK turn that answers the steer", async () => {
+      const threadId = "thread-steer-runs-as-next-sdk-turn";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(resultFor([first]));
+        await bridge.flushWork();
+        expect(turnEvents(bridge).completed).toEqual([]);
+
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([steer]));
+        await bridge.flushWork();
+
+        const { completed, events, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+        expect(
+          events.flatMap((event) =>
+            event.type === "item/completed" &&
+            event.item.type === "agentMessage"
+              ? [{ scope: event.scope, text: event.item.text }]
+              : [],
+          ),
+        ).toEqual([
+          { scope: started[0]?.scope, text: "one" },
+          { scope: started[0]?.scope, text: "two" },
+        ]);
+
+        bridge.sendRequest(
+          4,
+          "turn/start",
+          canonicalTurnParams({
+            threadId,
+            input: [{ type: "text", text: "Reply three", mentions: [] }],
+          }),
+        );
+        const next = await readNextPrompt(getLatestQueryCall());
+        await bridge.waitForResponse(4);
+        query.emit(replayOf(next));
+        query.emit(assistantText("three"));
+        query.emit(resultFor([next]));
+        await bridge.flushWork();
+
+        const after = turnEvents(bridge);
+        expect(after.started).toHaveLength(2);
+        expect(after.completed.map((event) => event.scope)).toEqual(
+          after.started.map((event) => event.scope),
+        );
+        expect(after.events).toContainEqual(
+          expect.objectContaining({
+            type: "item/completed",
+            scope: after.started[1]?.scope,
+            item: expect.objectContaining({ text: "three" }),
+          }),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("completes the turn on the first result from a CLI that reports no consumed prompts", async () => {
+      const threadId = "thread-steer-without-consumption-reports";
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const query = createControlledClaudeQuery();
+      queryMock.mockImplementation(() => query);
+      try {
+        await startBridgeThread({ bridge, threadId });
+        const call = getLatestQueryCall();
+        bridge.sendRequest(
+          2,
+          "turn/start",
+          canonicalTurnParams({
+            threadId,
+            input: [{ type: "text", text: "Reply one", mentions: [] }],
+          }),
+        );
+        await readNextPrompt(call);
+        await bridge.waitForResponse(2);
+        query.emit(assistantText("one"));
+        bridge.sendRequest(3, "turn/steer", {
+          ...canonicalTurnParams({
+            threadId,
+            expectedTurnId: "turn-1",
+            input: [{ type: "text", text: "Reply two", mentions: [] }],
+          }),
+          clientRequestId: "creq_abcdefghjm",
+        });
+        await readNextPrompt(call);
+        await bridge.waitForResponse(3);
+        query.emit(assistantText("two"));
+        query.emit(createSuccessfulResultMessage("session-1"));
+        await bridge.flushWork();
+
+        const { completed, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("completes the turn on the one result when the SDK folds the steer into the running turn", async () => {
+      const threadId = "thread-steer-folded-into-sdk-turn";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([first, steer]));
+        await bridge.flushWork();
+
+        const { completed, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("keeps the turn open through a task-notification result that lands before the steer runs", async () => {
+      const threadId = "thread-steer-behind-task-notification";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(resultFor([first]));
+        const notificationResult = createSuccessfulResultMessage("session-1");
+        if (notificationResult.type !== "result") {
+          throw new Error("Expected a result message");
+        }
+        query.emit(assistantText("background task finished"));
+        query.emit({
+          ...notificationResult,
+          origin: { kind: "task-notification" },
+        });
+        await bridge.flushWork();
+        expect(turnEvents(bridge).completed).toEqual([]);
+
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([steer]));
+        await bridge.flushWork();
+
+        const { completed, events, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "item/completed",
+            scope: started[0]?.scope,
+            item: expect.objectContaining({ text: "two" }),
+          }),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+  });
 
   it.each([
     { method: "turn/start", name: "turn start" },

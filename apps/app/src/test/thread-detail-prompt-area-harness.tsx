@@ -6,7 +6,6 @@ import type {
   ResolvedThreadExecutionOptions,
   ThreadQueuedMessage,
   ThreadTimelineActivePromptMode,
-  ThreadTimelineGoal,
 } from "@bb/domain";
 import type {
   ExistingThreadExecutionInputSources,
@@ -14,14 +13,16 @@ import type {
 } from "@bb/server-contract";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
-import type { PromptDraftAttachment } from "@bb/client-core";
+import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 import type { TypeaheadConfig } from "@/components/promptbox/ComposerBox";
-import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import type {
+  ComposerDraftStore,
+  PluginComposerHost,
+} from "@/components/plugin/plugin-composer-host";
 
 export const promptAreaMocks = {
   unknownReasoning: false,
-  cancelThreadPlanMutate: vi.fn(),
-  clearThreadGoalMutate: vi.fn(),
+  cancelThreadPlanMutateAsync: vi.fn(),
   createThreadMutateAsync: vi.fn(),
   defaultExecutionOptions: null as
     | ResolvedThreadExecutionOptions
@@ -52,7 +53,7 @@ export const promptAreaMocks = {
     setDraft: vi.fn(),
     setTextAndMentions: vi.fn(),
     storageKey: "bb.promptbox.contents-proj_1-thr_1-3",
-    subscribe: vi.fn(() => () => {}),
+    subscribe: vi.fn((_listener: () => void) => () => {}),
     text: "",
   },
   queuedMessages: [] as ThreadQueuedMessage[] | undefined,
@@ -100,6 +101,36 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
   const { ComposerBannersSlot } = await vi.importActual<
     typeof import("@/components/plugin/PluginComposerBanners")
   >("@/components/plugin/PluginComposerBanners");
+  const { PluginComposerViewProvider, useComposerDraftSelector } =
+    await vi.importActual<
+      typeof import("@/components/plugin/plugin-composer-host")
+    >("@/components/plugin/plugin-composer-host");
+  const selectText = (draft: PromptDraftState) => draft.text;
+  const selectAttachmentCount = (draft: PromptDraftState) =>
+    draft.attachments.length;
+  function MockComposerInput({ draft }: { draft: ComposerDraftStore }) {
+    const text = useComposerDraftSelector(draft, selectText);
+    return (
+      <input
+        aria-label="Composer message"
+        value={text}
+        onChange={(event) =>
+          draft.setDraft({
+            ...draft.getCurrent(),
+            text: event.currentTarget.value,
+            mentions: [],
+          })
+        }
+      />
+    );
+  }
+  function MockAttachmentCount({ draft }: { draft: ComposerDraftStore }) {
+    return (
+      <div data-testid="attachment-count">
+        {useComposerDraftSelector(draft, selectAttachmentCount)}
+      </div>
+    );
+  }
   return {
     FollowUpPromptBox: ({
       activePromptMode,
@@ -122,13 +153,11 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       activePromptMode?: ThreadTimelineActivePromptMode | null;
       typeahead: TypeaheadConfig;
       attachments: {
-        items: readonly unknown[];
         onAttachFiles: (files: File[]) => void | Promise<void>;
       };
       composer: {
         canModifierSubmit: boolean;
-        message: string;
-        onChangeMessage: (message: string, mentions: []) => void;
+        draft: ComposerDraftStore;
         onEscape?: () => void;
         onModifierSubmit: (
           extras?: ComposerSubmitExtras,
@@ -191,16 +220,16 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         {environmentSummary}
         <div data-testid="prompt-stack">
           {pluginComposerHost ? (
-            <ComposerBannersSlot
+            <PluginComposerViewProvider
               view={{
                 scope: pluginComposerHost.scope,
                 layout: "expanded",
-                draft: { text: "", isEmpty: true, attachmentCount: 0 },
                 run: { isRunning: false, isSubmitting: false },
               }}
+              draft={pluginComposerHost}
             >
-              {stack}
-            </ComposerBannersSlot>
+              <ComposerBannersSlot>{stack}</ComposerBannersSlot>
+            </PluginComposerViewProvider>
           ) : (
             stack
           )}
@@ -284,7 +313,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         <div data-testid="permission-read-only">
           {permissionReadOnly ? "true" : "false"}
         </div>
-        <div data-testid="attachment-count">{attachments.items.length}</div>
+        {composer ? <MockAttachmentCount draft={composer.draft} /> : null}
         <div data-testid="composer-text-effect">
           {textEffects && textEffects.length > 0
             ? textEffects.map(({ effect }) => effect.className).join(",")
@@ -348,18 +377,15 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         ) : null}
         {composer ? (
           <>
-            <input
-              aria-label="Composer message"
-              value={composer.message}
-              onChange={(event) =>
-                composer.onChangeMessage(event.currentTarget.value, [])
-              }
-            />
-            <button type="button" onClick={() => composer.onSubmit()}>
+            <MockComposerInput draft={composer.draft} />
+            <button type="button" onClick={() => void composer.onSubmit()}>
               Submit composer
             </button>
             {composer.canModifierSubmit ? (
-              <button type="button" onClick={() => composer.onModifierSubmit()}>
+              <button
+                type="button"
+                onClick={() => void composer.onModifierSubmit()}
+              >
                 Modifier submit
               </button>
             ) : null}
@@ -510,28 +536,6 @@ vi.mock("@/components/promptbox/banner/ThreadBackgroundCommandsCard", () => ({
   ThreadBackgroundCommandsCard: () => null,
 }));
 
-vi.mock("@/components/promptbox/banner/ThreadGoalCard", () => ({
-  ThreadGoalCard: ({
-    goal,
-    onClearGoal,
-  }: {
-    goal: ThreadTimelineGoal | null;
-    onClearGoal?: () => void;
-  }) =>
-    goal ? (
-      <div data-testid="composer-stack-item">
-        Goal banner
-        {onClearGoal ? (
-          <button
-            type="button"
-            aria-label="Clear active Goal"
-            onClick={onClearGoal}
-          />
-        ) : null}
-      </div>
-    ) : null,
-}));
-
 vi.mock(
   "@/components/promptbox/banner/ThreadPromptContextBanner",
   async (importOriginal) => {
@@ -567,7 +571,7 @@ vi.mock("@/components/promptbox/banner/ThreadPromptModeCard", () => ({
     onExitPlanMode,
   }: {
     activePromptMode: ThreadTimelineActivePromptMode | null;
-    onExitPlanMode?: () => void;
+    onExitPlanMode?: () => Promise<void>;
   }) =>
     activePromptMode ? (
       <div data-testid="composer-stack-item">
@@ -576,7 +580,7 @@ vi.mock("@/components/promptbox/banner/ThreadPromptModeCard", () => ({
           <button
             type="button"
             aria-label="Exit plan mode"
-            onClick={onExitPlanMode}
+            onClick={() => void onExitPlanMode()}
           />
         ) : null}
       </div>
@@ -718,11 +722,7 @@ vi.mock("@/hooks/mutations/project-mutations", () => ({
 vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
   useCancelThreadPlan: () => ({
     isPending: false,
-    mutate: promptAreaMocks.cancelThreadPlanMutate,
-  }),
-  useClearThreadGoal: () => ({
-    isPending: false,
-    mutate: promptAreaMocks.clearThreadGoalMutate,
+    mutateAsync: promptAreaMocks.cancelThreadPlanMutateAsync,
   }),
   useCreateThread: () => ({
     isPending: false,

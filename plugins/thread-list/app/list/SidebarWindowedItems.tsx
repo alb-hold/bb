@@ -17,6 +17,7 @@ import {
   SIDEBAR_WINDOWED_NAV_ATTRIBUTE,
   type SidebarWindowedNavigationEntry,
 } from "./sidebarThreadShortcuts.js";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 const WINDOW_VIEWPORT_MARGIN_PX = 240;
 const DEFAULT_ROW_HEIGHT_PX = 30;

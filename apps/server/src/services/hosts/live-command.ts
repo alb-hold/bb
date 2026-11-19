@@ -6,7 +6,7 @@ import {
   type HostDaemonCommandResult,
   type HostDaemonSettledCommandType,
 } from "@bb/host-daemon-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, HostConnectionLostApiError } from "../../errors.js";
 import {
   buildCommandResultSettlementDeps,
   type CommandResultPostCommitAction,
@@ -109,7 +109,19 @@ interface LiveHostCommandBaseLogFields {
 
 const EXPECTED_LIVE_HOST_COMMAND_ERROR_CODES = new Set(["provision_cancelled"]);
 
+export const HOST_CONNECTION_LOST_ERROR_CODE = "host_connection_lost";
+
+export function isHostUnavailableReportCode(errorCode: string): boolean {
+  return (
+    errorCode === "host_unavailable" ||
+    errorCode === HOST_CONNECTION_LOST_ERROR_CODE
+  );
+}
+
 function commandFailureCode(error: Error): string {
+  if (error instanceof HostConnectionLostApiError) {
+    return HOST_CONNECTION_LOST_ERROR_CODE;
+  }
   if (error instanceof ApiError) {
     return error.body.code;
   }
@@ -320,8 +332,10 @@ export function startLiveHostCommand<
 ): void {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  void runLiveHostCommand(deps, { ...args, execution })
-    .catch((error) => {
+  void (async () => {
+    try {
+      await runLiveHostCommand(deps, { ...args, execution });
+    } catch (error) {
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       const handlerArgs: LiveHostCommandErrorHandlerArgs<TType> = {
@@ -343,8 +357,7 @@ export function startLiveHostCommand<
         return;
       }
       args.onError?.(handlerArgs);
-    })
-    .finally(async () => {
+    } finally {
       try {
         await args.onSettled?.();
       } catch (error) {
@@ -353,5 +366,6 @@ export function startLiveHostCommand<
           "Live command settled callback failed",
         );
       }
-    });
+    }
+  })();
 }

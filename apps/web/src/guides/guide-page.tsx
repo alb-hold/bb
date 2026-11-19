@@ -78,7 +78,7 @@ function CopyForAgent({
       type="button"
       className={`btn gd-copy ${className}`}
       onClick={() => {
-        copy();
+        void copy();
         trackLandingEvent({
           name: "guide_prompt_copied",
           properties: { guide, placement },
@@ -226,7 +226,7 @@ export function GuidePage({ guide }: { guide: Guide }) {
           <GuideHero guide={guide} />
 
           <section className="gd-plan">
-            {guide.steps.length > 0 ? (
+            {guide.steps.length > 2 ? (
               <div className="gd-plan-grid">
                 <AgentHandoff guide={guide} />
                 <div>

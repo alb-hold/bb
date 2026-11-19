@@ -111,6 +111,22 @@ browser—chooses the environment and working directory, serializes
 installations, supervises the process, streams output, and asks the bridge
 for fresh status to verify success.
 
+Full discovery starts several npm and CLI processes per provider and takes
+seconds, so the server caches each provider's status per machine for
+`GET /hosts/:id/provider-clis/status`. For 30 seconds the cached status is
+served as is. After that, a request still gets the cached status while the
+server probes again in the background; when the new status differs, the
+server sends a `provider-cli-status-changed` host change so open clients
+refetch. A failed refresh keeps the previous status. Machine reconnects keep
+the cache. When an active, non-ephemeral machine connects, the server probes
+in the background the providers that have no cached status yet, so the first
+read after a server restart is already cached; a reconnect with every status
+cached sends no probe. An install or update through bb drops the machine's cached
+statuses before and after it runs, so the next read waits for a fresh probe.
+`?refresh=true` (`hosts.providerCliStatus({ refresh: true })`) always waits
+for a fresh probe; Settings → Updates uses it when it checks for updates, as
+do `bb machine provider-cli status` and `bb updates`.
+
 Every handshake capability gates a request method, which is why the set holds
 no compaction fact: there is no compact request method. Compaction is a
 standalone builtin `/compact` prompt travelling the normal turn pipeline,
@@ -557,7 +573,11 @@ content.
    sub-agent as a `delegation` (codex does), re-open it when the agent works
    again, and settle it — as failed — when your provider child dies, or the
    runtime keeps refusing to reap a thread that no longer exists on your
-   side. There is no side channel for this.
+   side. There is no side channel for this. When the bridge process itself
+   exits, or the runtime shuts down, the runtime settles every
+   `backgroundTask` still pending on the bridge's threads as `interrupted`
+   with `taskStatus: "stopped"`; a bridge that outlives its provider child
+   still settles that child's work itself.
 
 ## Ordering guarantees
 
@@ -655,3 +675,80 @@ public dependencies, so `packages/provider-parity` replays their committed
 cells instead. Its self-suite applies the recorded conformance checks to the
 same replay used for event and timeline parity, so each cell launches its
 bridge only once.
+
+Scenario recordings live apart from the matrix cells, under
+`recordings/scenarios/<provider>/<cell>`, and are checked only against rules
+that hold for every bridge, never against a snapshot of the recorded output,
+so a legitimate bridge change does not need a re-recording.
+`packages/provider-parity/src/scenarios.self.test.ts` replays each one
+through the current bridge with `replayScenarioCell`, which puts
+`provider-probe-child.mjs` between the bridge and the replay child to log the
+argv, environment and stdin each provider process received, and to kill the
+provider where the recorded one died (`providerExit` in the manifest).
+`checkRecordedScenarioReplay` then reports `scenario/<cell>/<rule>`:
+
+- `settings-follow-up`: a model, reasoning level, env var or permission mode
+  changed with a follow-up turn reaches the provider before it receives that
+  prompt.
+- `settings-steer`: a permission mode changed with a steer reaches the
+  provider before it receives the steer. A model, reasoning level or env var
+  changed with a steer is deliberately not required to apply mid-turn (a
+  bridge may apply it, as ACP does, or leave it for the next turn).
+- Permission is read from the
+  provider's own vocabulary for Codex and Claude Code. ACP bridges enforce it
+  themselves, so for ACP agents the rule checks that every command the agent
+  ran or asked to run after the change to a stricter mode went through the
+  user's approval.
+- every cell: each message is accepted exactly once, every turn carries the
+  message that started it, every turn settles, and a steer whose turn already
+  ended is rejected as stale.
+- `steer-race`: a steer sent as its turn ends.
+- `provider-exit`: after the provider process dies mid-command, the next
+  message runs in a replacement process that resumes the same conversation,
+  or the bridge announces lost context.
+
+When a bridge no longer talks to the provider the way the recording did (the
+replay stalls, or the replay child skips or runs out of recorded lines), the
+rules that depend on replayed provider output (accepted once, turns carry
+input, every turn settles) are reported as skipped with a re-record note
+instead of failing; rules about what the bridge itself sent or answered are
+still judged. A rule a bridge breaks on main is listed in
+`recordings/scenarios/known-gaps.json` with its reason. The suite fails on a
+new failure and on a listed gap that passes, so a fix removes its entry.
+
+To re-record a scenario cell (the suite prints `<provider>/<cell> needs
+re-recording` when a replay drifts), sign in to the provider CLI and run, once
+per cell:
+
+```sh
+node scripts/provider-recordings/record-scenario-cell.mjs \
+  --provider codex --cell steer-race --raw ~/.bb/provider-recordings/scenarios \
+  [--models <first>,<second>]
+node scripts/provider-recordings/package-scenario-cells.mjs \
+  --raw ~/.bb/provider-recordings/scenarios \
+  --versions '{"codex":"codex-cli 0.169.0"}'
+```
+
+The first drives the real runtime and this checkout's bridge against the real
+CLI (`packages/agent-runtime/src/integration.record-scenario-cells.test.ts`,
+which runs only when invoked this way). `--models` picks the two models the
+settings cells switch between; it defaults to the provider's default and its
+next listed model. The second redacts the raw recordings through
+`package-cells.mjs`, applies the normalizations each manifest notes, marks
+where the provider died in `provider-exit`, and replaces those cells under
+`recordings/scenarios`. Check that the new cell keeps every rule, and update
+`known-gaps.json` if the bridge's behaviour changed.
+
+The recorder keeps each CLI's own config and state out of the user's real
+directories (`scripts/provider-recordings/isolate-agent-state.mjs`). Codex runs
+with `CODEX_HOME`, Pi with `PI_CODING_AGENT_DIR`, Cursor with
+`CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR`, and OpenCode with all four `XDG_*`
+directories pointed at a temporary directory seeded with copies of the files
+the CLI needs to sign in and pick models (OpenCode also gets its own service
+port and a copy of its active credentials); a refreshed `auth.json` is copied
+back. Claude Code keeps its sign-in in the macOS keychain under its config
+directory, so it cannot be moved: the recorder instead deletes the directories
+the run created under `~/.claude` (the run workspace's `projects` entry and that
+session's `session-env`, `file-history`, `todos` and `debug` entries). It never
+rewrites `~/.claude.json`, which other Claude Code sessions write concurrently,
+so the run workspace's project key stays there; it is harmless.

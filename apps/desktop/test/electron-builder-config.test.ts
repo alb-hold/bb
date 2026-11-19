@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+
 import {
   access,
   chmod,
@@ -10,18 +11,27 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+
 import { createRequire } from "node:module";
+
 import { tmpdir } from "node:os";
+
 import { dirname, resolve } from "node:path";
+
 import { z } from "zod";
+
 import { describe, expect, it } from "vitest";
+
 import {
   createDesktopReleaseInfo,
   DESKTOP_AUTO_UPDATE_FEED_CONFIG,
 } from "../src/desktop-update-provider.js";
 
+
 const desktopPackageRoot = process.cwd();
+
 const require = createRequire(resolve(desktopPackageRoot, "package.json"));
+
 const nativeModulesScript: {
   parseStandaloneArguments(argv: string[]): {
     appOutDir: string | undefined;
@@ -37,6 +47,7 @@ const nativeModulesScript: {
     platform: string;
   }): string[];
 } = require("./scripts/prepare-native-modules.cjs");
+
 
 const macConfigSchema = z
   .object({
@@ -64,6 +75,7 @@ const macConfigSchema = z
   })
   .passthrough();
 
+
 const linuxConfigSchema = z
   .object({
     category: z.literal("Development"),
@@ -80,6 +92,7 @@ const linuxConfigSchema = z
   })
   .passthrough();
 
+
 const electronBuilderFileSetSchema = z
   .object({
     filter: z.array(z.string().min(1)),
@@ -88,10 +101,12 @@ const electronBuilderFileSetSchema = z
   })
   .passthrough();
 
+
 const electronBuilderFilePatternSchema = z.union([
   z.string().min(1),
   electronBuilderFileSetSchema,
 ]);
+
 
 const electronBuilderConfigSchema = z
   .object({
@@ -124,6 +139,7 @@ const electronBuilderConfigSchema = z
   })
   .passthrough();
 
+
 const desktopPackageJsonSchema = z
   .object({
     main: z.literal("dist/main.js"),
@@ -131,6 +147,7 @@ const desktopPackageJsonSchema = z
     type: z.never().optional(),
   })
   .passthrough();
+
 
 const workspacePackageJsonSchema = z
   .object({
@@ -143,6 +160,7 @@ const workspacePackageJsonSchema = z
   })
   .passthrough();
 
+
 const signingEnvironmentKeys = [
   "APPLE_APP_SPECIFIC_PASSWORD",
   "APPLE_ID",
@@ -152,32 +170,42 @@ const signingEnvironmentKeys = [
   "CSC_LINK",
   "CSC_NAME",
 ];
+
 const audioInputEntitlementPattern =
   /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\s*\/>/u;
 
+
 type ElectronBuilderConfig = z.infer<typeof electronBuilderConfigSchema>;
+
 type EnvironmentOverrides = Record<string, string | undefined>;
+
 type ScriptRunResult = {
   exitCode: number | null;
   stderr: string;
   stdout: string;
 };
+
 type ReadResolvedConfigResult = {
   config: ElectronBuilderConfig;
 };
+
 type CreateScriptEnvironment = (
   overrides: EnvironmentOverrides,
 ) => NodeJS.ProcessEnv;
+
 type RunConfigScript = (
   overrides: EnvironmentOverrides,
 ) => Promise<ScriptRunResult>;
+
 type ReadResolvedConfig = (
   overrides: EnvironmentOverrides,
 ) => Promise<ReadResolvedConfigResult>;
+
 type RunNativePrepScript = (
   appOutDir: string,
   args?: string[],
 ) => Promise<ScriptRunResult>;
+
 
 const createScriptEnvironment: CreateScriptEnvironment = (overrides) => {
   const env = { ...process.env };
@@ -196,6 +224,7 @@ const createScriptEnvironment: CreateScriptEnvironment = (overrides) => {
 
   return env;
 };
+
 
 const runConfigScript: RunConfigScript = async (overrides) => {
   const child = spawn(
@@ -226,6 +255,7 @@ const runConfigScript: RunConfigScript = async (overrides) => {
     stdout: stdoutChunks.join(""),
   };
 };
+
 
 const runNativePrepScript: RunNativePrepScript = async (
   appOutDir,
@@ -259,6 +289,7 @@ const runNativePrepScript: RunNativePrepScript = async (
   };
 };
 
+
 async function readStaticConfig(): Promise<ElectronBuilderConfig> {
   const configText = await readFile(
     resolve(desktopPackageRoot, "electron-builder.config.json"),
@@ -266,6 +297,7 @@ async function readStaticConfig(): Promise<ElectronBuilderConfig> {
   );
   return electronBuilderConfigSchema.parse(JSON.parse(configText));
 }
+
 
 const readResolvedConfig: ReadResolvedConfig = async (overrides) => {
   const result = await runConfigScript(overrides);
@@ -275,6 +307,7 @@ const readResolvedConfig: ReadResolvedConfig = async (overrides) => {
     config: electronBuilderConfigSchema.parse(JSON.parse(result.stdout)),
   };
 };
+
 
 describe("electron-builder signing config", () => {
   it("keeps package metadata compatible with electron universal's CJS entry asar", async () => {
@@ -290,6 +323,7 @@ describe("electron-builder signing config", () => {
     expect(packageJson).not.toHaveProperty("type");
   });
 
+
   it("ships no plugin build toolchain binaries", async () => {
     const packageJsonText = await readFile(
       resolve(desktopPackageRoot, "package.json"),
@@ -304,12 +338,14 @@ describe("electron-builder signing config", () => {
     );
   });
 
+
   it("unpacks the ESM bb-app bridge with an explicit module extension", async () => {
     const config = await readStaticConfig();
 
     expect(config.asarUnpack).toContain("dist/bb-app-bridge.mjs");
     expect(config.asarUnpack).not.toContain("dist/bb-app-bridge.js");
   });
+
 
   it("runs a native module preparation hook after packaging", async () => {
     const config = await readStaticConfig();
@@ -320,6 +356,7 @@ describe("electron-builder signing config", () => {
       access(resolve(desktopPackageRoot, hookPath)),
     ).resolves.toBeUndefined();
   });
+
 
   it("passes the standalone platform through to better-sqlite3 prebuild-install", () => {
     const { options } = nativeModulesScript.parseStandaloneArguments([
@@ -347,6 +384,7 @@ describe("electron-builder signing config", () => {
     ]);
   });
 
+
   it("preserves the macOS better-sqlite3 prebuild-install arguments", () => {
     expect(
       nativeModulesScript.resolveBetterSqlite3PrebuildArguments({
@@ -361,6 +399,7 @@ describe("electron-builder signing config", () => {
       "--platform=darwin",
     ]);
   });
+
 
   it("installs native plugin build packages for arm64 and x64", async () => {
     const packageJsonText = await readFile(
@@ -377,17 +416,20 @@ describe("electron-builder signing config", () => {
     });
   });
 
+
   it("disables in-place native rebuilds so the shared pnpm store is not mutated", async () => {
     const config = await readStaticConfig();
 
     expect(config.npmRebuild).toBe(false);
   });
 
+
   it("excludes source maps from packaged app files", async () => {
     const config = await readStaticConfig();
 
     expect(config.files).toContain("!**/*.map");
   });
+
 
   it("copies the app scaffold template as a dedicated file set", async () => {
     const config = await readStaticConfig();
@@ -398,6 +440,7 @@ describe("electron-builder signing config", () => {
       to: "node_modules/bb-app/server/dist/app-scaffold-template",
     });
   });
+
 
   it("patches packaged node-pty helper path handling", async () => {
     const appOutDir = await mkdtemp(
@@ -457,6 +500,7 @@ describe("electron-builder signing config", () => {
     }
   });
 
+
   it("validates bundled N-API SQLite without using the legacy prebuild installer", async () => {
     const appOutDir = await mkdtemp(resolve(tmpdir(), "bb-desktop-napi-"));
     const nodeModules = resolve(appOutDir, "node_modules");
@@ -477,7 +521,7 @@ describe("electron-builder signing config", () => {
       );
       await mkdir(resolve(nodeModules, "@parcel/watcher"), { recursive: true });
       const result = await runNativePrepScript(appOutDir, [
-        "--electron-version=44.9.3",
+        "--electron-version=44.10.2",
       ]);
       expect(result.stderr).toBe("");
       expect(result.exitCode).toBe(0);
@@ -488,7 +532,7 @@ describe("electron-builder signing config", () => {
       );
       await writeFile(binaryPath, "invalid native binary");
       const invalidResult = await runNativePrepScript(appOutDir, [
-        "--electron-version=44.9.3",
+        "--electron-version=44.10.2",
       ]);
       expect(invalidResult.exitCode).not.toBe(0);
       expect(invalidResult.stderr).toContain(binaryPath);
@@ -497,6 +541,7 @@ describe("electron-builder signing config", () => {
       await rm(appOutDir, { recursive: true, force: true });
     }
   }, 60_000);
+
 
   it("points mac signing entitlements at checked-in plist files", async () => {
     const config = await readStaticConfig();
@@ -514,6 +559,7 @@ describe("electron-builder signing config", () => {
     ).resolves.toBeUndefined();
   });
 
+
   it("packages macOS artifacts for arm64 only", async () => {
     const config = await readStaticConfig();
 
@@ -522,6 +568,7 @@ describe("electron-builder signing config", () => {
       { arch: ["arm64"], target: "zip" },
     ]);
   });
+
 
   it("packages a Linux AppImage for x64", async () => {
     const config = await readStaticConfig();
@@ -536,6 +583,7 @@ describe("electron-builder signing config", () => {
       access(resolve(desktopPackageRoot, config.linux.icon)),
     ).resolves.toBeUndefined();
   });
+
 
   it("grants audio input to the signed app and helper processes", async () => {
     const config = await readStaticConfig();
@@ -553,6 +601,29 @@ describe("electron-builder signing config", () => {
       expect(entitlements).toMatch(audioInputEntitlementPattern);
     }
   });
+
+
+  it("permits computer-use cleanup Apple Events from the signed app", async () => {
+    const config = await readStaticConfig();
+    const entitlements = await readFile(
+      resolve(desktopPackageRoot, config.mac.entitlements),
+      "utf8",
+    );
+
+    expect(entitlements).toMatch(
+      /<key>com\.apple\.security\.automation\.apple-events<\/key>\s*<true\s*\/>/u,
+    );
+  });
+
+
+  it("includes the usage description required for macOS Automation permission", async () => {
+    const config = await readStaticConfig();
+
+    z.object({ NSAppleEventsUsageDescription: z.string().trim().min(1) }).parse(
+      config.mac.extendInfo,
+    );
+  });
+
 
   it("explains every macOS permission prompt bb can raise", async () => {
     const configText = await readFile(
@@ -587,6 +658,7 @@ describe("electron-builder signing config", () => {
     );
   });
 
+
   it("keeps the updater provider pointed at desktop-latest release assets", async () => {
     const config = await readStaticConfig();
 
@@ -595,6 +667,7 @@ describe("electron-builder signing config", () => {
       "https://github.com/albrand/bb/releases/download/desktop-latest/",
     );
   });
+
 
   it("creates a separate nightly app identity and update feed", async () => {
     const { config } = await readResolvedConfig({
@@ -621,6 +694,7 @@ describe("electron-builder signing config", () => {
     });
   });
 
+
   it("rejects unknown desktop release channels", async () => {
     const result = await runConfigScript({
       BB_DESKTOP_RELEASE_CHANNEL: "canary",
@@ -632,6 +706,7 @@ describe("electron-builder signing config", () => {
     );
   });
 
+
   it("signs local builds via keychain auto-discovery when signing secrets are absent", async () => {
     const { config } = await readResolvedConfig({});
 
@@ -639,6 +714,7 @@ describe("electron-builder signing config", () => {
     expect(config.mac.notarize).toBe(false);
     expect(config.dmg.sign).toBe(false);
   });
+
 
   it("keeps builds unsigned when keychain auto-discovery is explicitly disabled", async () => {
     const { config } = await readResolvedConfig({
@@ -648,6 +724,7 @@ describe("electron-builder signing config", () => {
     expect(config.mac.identity).toBeNull();
     expect(config.mac.notarize).toBe(false);
   });
+
 
   it("rejects partial signing secret sets", async () => {
     const partialAppleCredentials = await runConfigScript({
@@ -667,6 +744,7 @@ describe("electron-builder signing config", () => {
       "Missing: APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID.",
     );
   });
+
 
   it("enables app signing and notarization when signing and Apple credentials are complete", async () => {
     const completeAppleCredentials = await readResolvedConfig({

@@ -57,7 +57,9 @@ function Empty() {
 }
 
 function Inset() {
-  return <output aria-label="Inset">{useThreadContextCardContentInset()}</output>;
+  return (
+    <output aria-label="Inset">{useThreadContextCardContentInset()}</output>
+  );
 }
 
 function Crashes(): never {
@@ -141,8 +143,8 @@ describe("resolveThreadContextCardLayout", () => {
     [1384, "gutter"],
     [1383, "shift"],
     [1072, "shift"],
-    [1071, "overlay"],
-    [390, "overlay"],
+    [1071, "banner"],
+    [390, "banner"],
   ] as const)("lays out a %ipx pane as %s", (width, layout) => {
     expect(resolveThreadContextCardLayout(width)).toBe(layout);
   });
@@ -291,6 +293,41 @@ describe("thread context card", () => {
     ).toContain("Branch for thr_1");
   });
 
+  it("lays out the card and the transcript inset in the same frame as a resize", () => {
+    const resize: Array<(entries: ResizeObserverEntry[]) => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: (entries: ResizeObserverEntry[]) => void) {
+          resize.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get");
+    renderPane({ paneWidth: 1600 });
+    const resizeTo = (paneWidth: number) => {
+      width.mockReturnValue(paneWidth);
+      for (const callback of resize) callback([]);
+    };
+    const card = () => screen.queryByRole("group", { name: "Thread context" });
+    const inset = () => screen.getByLabelText("Inset").textContent;
+
+    resizeTo(1200);
+    expect(card()).toBeTruthy();
+    expect(inset()).toBe("312");
+
+    resizeTo(900);
+    expect(card()).toBeNull();
+    expect(inset()).toBe("0");
+
+    resizeTo(1200);
+    expect(card()).toBeTruthy();
+    expect(inset()).toBe("312");
+    vi.unstubAllGlobals();
+  });
+
   it("opens the card from the header in a narrow pane and closes it when a row runs", () => {
     setPluginSlotRegistrations(
       "first",
@@ -321,7 +358,10 @@ describe("useThreadContextKind", () => {
     }).result.current;
   }
 
-  function pane(enabled: boolean, children: ReactNode) {
+  function pane(enabled: boolean, paneWidth: number, children: ReactNode) {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(
+      paneWidth,
+    );
     return (
       <ThreadContextCardProvider
         enabled={enabled}
@@ -331,18 +371,38 @@ describe("useThreadContextKind", () => {
         projectId="proj_1"
         environment={null}
       >
+        <div data-scroll-overlay="">
+          <ThreadContextCard />
+        </div>
         {children}
       </ThreadContextCardProvider>
     );
   }
 
   it.each([
-    ["a pane with the card", (c: ReactNode) => pane(true, c), "card"],
-    ["a pane with the card off", (c: ReactNode) => pane(false, c), "banner"],
+    [
+      "a wide pane with the card",
+      (c: ReactNode) => pane(true, 1600, c),
+      "card",
+    ],
+    [
+      "a pane too narrow for the card",
+      (c: ReactNode) => pane(true, 900, c),
+      "banner",
+    ],
+    [
+      "a pane with the card off",
+      (c: ReactNode) => pane(false, 1600, c),
+      "banner",
+    ],
     [
       "a thread nested in a card pane's panel",
       (c: ReactNode) =>
-        pane(true, <WithoutThreadContextCard>{c}</WithoutThreadContextCard>),
+        pane(
+          true,
+          1600,
+          <WithoutThreadContextCard>{c}</WithoutThreadContextCard>,
+        ),
       "banner",
     ],
     ["no thread pane", (c: ReactNode) => c, "banner"],

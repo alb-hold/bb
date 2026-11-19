@@ -32,7 +32,6 @@ import {
   threadSearchSourceKindSchema,
   threadStatusSchema,
   threadTimelineActivePromptModeSchema,
-  threadTimelineGoalSchema,
   threadTimelineModelFallbackSchema,
   threadTimelinePendingTodosSchema,
   threadExecutionReportSchema,
@@ -515,7 +514,17 @@ export type SetQueuedMessageGroupBoundaryRequest = z.infer<
   typeof setQueuedMessageGroupBoundaryRequestSchema
 >;
 
-export const sendQueuedMessageResponseSchema = sendMessageResponseSchema;
+export const sendQueuedMessageResponseSchema = z.discriminatedUnion(
+  "delivery",
+  [
+    z.object({ ok: z.literal(true), delivery: z.literal("sent") }),
+    z.object({
+      ok: z.literal(true),
+      delivery: z.literal("queued"),
+      queuedMessage: threadQueuedMessageSchema,
+    }),
+  ],
+);
 export type SendQueuedMessageResponse = z.infer<
   typeof sendQueuedMessageResponseSchema
 >;
@@ -1173,7 +1182,6 @@ export const threadTimelineQuerySchema = z
     segmentLimit: z.string().regex(/^\d+$/),
     beforeAnchorSeq: z.string().regex(/^(0|[1-9]\d*)$/),
     beforeAnchorId: z.string().min(1),
-    summaryOnly: z.enum(["true", "false"]),
     afterTag: z.string().min(1),
     deferContent: z.enum(["true", "false"]),
   })
@@ -1339,7 +1347,7 @@ const threadTimelineWindowFieldsShape = {
   activeWorkflows: z.array(timelineWorkflowWorkRowSchema),
   activeBackgroundCommands: z.array(timelineWorkflowWorkRowSchema),
   pendingTodos: threadTimelinePendingTodosSchema.nullable(),
-  goal: threadTimelineGoalSchema.nullable(),
+  extensionStates: z.record(z.string(), jsonValueSchema),
   providerCommands: z
     .array(providerCommandSchema.omit({ pluginId: true }))
     .nullable(),
@@ -1349,6 +1357,7 @@ const threadTimelineWindowFieldsShape = {
 };
 
 export { THREAD_TIMELINE_WINDOW_FIELD_KEYS } from "./thread-timeline-fields.js";
+
 
 const threadTimelineTagSchema = z.string().min(1);
 
@@ -1387,9 +1396,29 @@ export const timelineDeltaFieldsSchema = z
   .partial();
 export type TimelineDeltaFields = z.infer<typeof timelineDeltaFieldsSchema>;
 
+const timelineRowPatchPathSchema = z
+  .array(z.union([z.string(), z.number().int().nonnegative()]))
+  .min(1);
+
+export const timelineRowPatchOperationSchema = z.union([
+  z.tuple([z.literal("append"), timelineRowPatchPathSchema, z.string()]),
+  z.tuple([z.literal("set"), timelineRowPatchPathSchema, z.unknown()]),
+  z.tuple([z.literal("delete"), timelineRowPatchPathSchema]),
+]);
+export type TimelineRowPatchOperation = z.infer<
+  typeof timelineRowPatchOperationSchema
+>;
+
+export const timelineRowPatchSchema = z.object({
+  id: z.string().min(1),
+  ops: z.array(timelineRowPatchOperationSchema).min(1),
+});
+export type TimelineRowPatch = z.infer<typeof timelineRowPatchSchema>;
+
 export const timelineDeltaSchema = z.object({
   afterTag: threadTimelineTagSchema,
   upsertRows: z.array(timelineRowSchema),
+  patchRows: z.array(timelineRowPatchSchema).optional(),
   rowOrder: timelineRowOrderSchema.optional(),
   fields: timelineDeltaFieldsSchema,
 });
@@ -1410,6 +1439,19 @@ export const threadTimelineReadResponseSchema = z.union([
 ]);
 export type ThreadTimelineReadResponse = z.infer<
   typeof threadTimelineReadResponseSchema
+>;
+
+export const threadHeadStateResponseSchema = z.object({
+  activePromptMode: threadTimelineWindowFieldsShape.activePromptMode,
+  contextWindowUsage: threadContextWindowUsageSchema.nullable(),
+  extensionStates: threadTimelineWindowFieldsShape.extensionStates,
+  modelFallback: threadTimelineWindowFieldsShape.modelFallback,
+  pendingTodos: threadTimelineWindowFieldsShape.pendingTodos,
+  providerCommands: threadTimelineWindowFieldsShape.providerCommands,
+  sessionOptions: threadTimelineWindowFieldsShape.sessionOptions,
+});
+export type ThreadHeadStateResponse = z.infer<
+  typeof threadHeadStateResponseSchema
 >;
 
 export const threadTimelineSignalSchema = z

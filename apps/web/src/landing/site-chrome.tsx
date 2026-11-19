@@ -18,14 +18,11 @@ import {
   guideMenu,
   type ContentLink,
 } from "./content-links";
-import {
-  DesktopDownloadButton,
-  DiscordLink,
-  DownloadLink,
-  GitHubLink,
-  XLink,
-} from "./cta";
+import { DiscordLink, DownloadLink, GitHubLink, XLink } from "./cta";
 import { useDesktopPlatform } from "./desktop-platform";
+import { DOWNLOAD_PAGE_PATH, GITHUB_STARS, formatStarCount } from "./site";
+
+const NAV_DOWNLOAD_CLASS = "btn btn-primary btn-sm nav-download";
 
 type SiteNavPage = "blog" | "changelog" | "plugins" | "plugin-guide" | "guides";
 
@@ -189,6 +186,21 @@ function GuidesMenu({
   );
 }
 
+export function GitHubStarsLink({ stars }: { stars: number }) {
+  return (
+    <GitHubLink
+      placement="nav"
+      className="nav-icon-button nav-github-stars"
+      aria-label={`GitHub, ${stars.toLocaleString("en")} stars`}
+    >
+      <HugeiconsIcon icon={GithubIcon} />
+      <span className="nav-star-count" aria-hidden="true">
+        {formatStarCount(stars)}
+      </span>
+    </GitHubLink>
+  );
+}
+
 export function SiteNav({
   current,
   path,
@@ -196,10 +208,8 @@ export function SiteNav({
   current?: SiteNavPage;
   path?: string;
 }) {
-  const platform = useDesktopPlatform();
   return (
-    <nav className="nav">
-      {}
+    <nav className="nav nav-sticky nav-centered">
       <a className="logo" href="/" aria-label="bb">
         <span className="bb-mark logo-mark" />
       </a>
@@ -221,18 +231,12 @@ export function SiteNav({
           Changelog
         </a>
         <a href={DASHBOARD_PATH}>Sign in</a>
-        <GitHubLink
-          placement="nav"
-          className="nav-icon-button"
-          aria-label="GitHub"
-        >
-          <HugeiconsIcon icon={GithubIcon} />
-        </GitHubLink>
-        <DesktopDownloadButton
-          placement="nav"
-          platform={platform}
-          className="btn btn-primary btn-sm nav-download"
-        />
+      </div>
+      <div className="nav-actions">
+        <GitHubStarsLink stars={GITHUB_STARS} />
+        <a className={NAV_DOWNLOAD_CLASS} href={DOWNLOAD_PAGE_PATH}>
+          Download
+        </a>
       </div>
     </nav>
   );

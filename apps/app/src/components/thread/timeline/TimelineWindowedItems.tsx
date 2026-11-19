@@ -14,6 +14,12 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
+import {
+  observeSharedResize,
+  observedBorderBoxBlockSize,
+  settleAfterSharedResizeWrites,
+} from "@bb/shared-ui/lib/shared-resize-observer";
+import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 import { AutoHeightSnapContext } from "@/components/ui/height-transition";
 
@@ -47,6 +53,14 @@ export interface TimelineWindowingScrollRoot {
 export const TimelineWindowingScrollRootContext =
   createContext<TimelineWindowingScrollRoot | null>(null);
 
+export function useTimelinePositionKeeper(): ScrollPositionKeeper | null {
+  const detailScrollRoot = useContext(TimelineWindowingScrollRootContext);
+  const bottomAnchor = useBottomAnchoredScroll();
+  return (
+    detailScrollRoot?.positionKeeper ?? bottomAnchor?.positionKeeper ?? null
+  );
+}
+
 export const TimelineWindowingMeasurementsContext = createContext<Map<
   string,
   number
@@ -77,6 +91,16 @@ export interface TimelineWindowedItemsProps {
   pinnedToEnd: boolean;
 }
 
+const measurementRevisions = new WeakMap<ReadonlyMap<string, number>, number>();
+
+function measurementRevision(measurements: ReadonlyMap<string, number>) {
+  return measurementRevisions.get(measurements) ?? 0;
+}
+
+function bumpMeasurementRevision(measurements: ReadonlyMap<string, number>) {
+  measurementRevisions.set(measurements, measurementRevision(measurements) + 1);
+}
+
 interface LayoutModel {
   heights: number[];
   offsets: number[];
@@ -88,9 +112,21 @@ interface IndexRange {
   end: number;
 }
 
+interface WindowRange {
+  first: string;
+  last: string;
+  throughEnd: boolean;
+}
+
 interface WindowState {
   keys: ReadonlySet<string>;
+  range: WindowRange | null;
   heights: ReadonlyMap<string, number>;
+}
+
+interface IndexWindow {
+  keys: Set<string>;
+  range: WindowRange | null;
 }
 
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
@@ -163,19 +199,59 @@ function reachesListTop(
   );
 }
 
-function windowKeysAround(
+function indexWindow(
   itemKeys: readonly string[],
-  visible: IndexRange,
-  mountToTop: boolean,
-): Set<string> {
+  start: number,
+  end: number,
+): IndexWindow {
   const keys = new Set<string>();
-  const start = mountToTop ? 0 : Math.max(0, visible.start - OVERSCAN_ITEMS);
-  const end = Math.min(itemKeys.length - 1, visible.end + OVERSCAN_ITEMS);
   for (let index = start; index <= end; index += 1) {
     const key = itemKeys[index];
     if (key !== undefined) keys.add(key);
   }
-  return keys;
+  const first = itemKeys[start];
+  const last = itemKeys[end];
+  return {
+    keys,
+    range:
+      first === undefined || last === undefined
+        ? null
+        : { first, last, throughEnd: end === itemKeys.length - 1 },
+  };
+}
+
+function windowAround(
+  itemKeys: readonly string[],
+  visible: IndexRange,
+  mountToTop: boolean,
+): IndexWindow {
+  return indexWindow(
+    itemKeys,
+    mountToTop ? 0 : Math.max(0, visible.start - OVERSCAN_ITEMS),
+    Math.min(itemKeys.length - 1, visible.end + OVERSCAN_ITEMS),
+  );
+}
+
+function rangeWindowKeys(
+  state: WindowState,
+  itemKeys: readonly string[],
+  indexByKey: ReadonlyMap<string, number>,
+): ReadonlySet<string> {
+  const range = state.range;
+  if (range === null) return state.keys;
+  const start = indexByKey.get(range.first);
+  const end = range.throughEnd
+    ? itemKeys.length - 1
+    : indexByKey.get(range.last);
+  if (start === undefined || end === undefined) return state.keys;
+  let keys: Set<string> | null = null;
+  for (let index = start; index <= end; index += 1) {
+    const key = itemKeys[index];
+    if (key === undefined || state.keys.has(key)) continue;
+    keys ??= new Set(state.keys);
+    keys.add(key);
+  }
+  return keys ?? state.keys;
 }
 
 function heldKeyOf(positionKeeper: ScrollPositionKeeper): string | null {
@@ -256,7 +332,7 @@ export function TimelineWindowedItems({
   const [windowState, setWindowState] = useState<WindowState>(() => {
     const heights = new Map(measurements);
     if (itemKeys.length < DEFAULT_WINDOWING_MIN_ITEM_COUNT) {
-      return { keys: new Set(itemKeys), heights };
+      return { ...indexWindow(itemKeys, 0, itemKeys.length - 1), heights };
     }
     const model = buildModel(itemKeys, heights, estimateItemHeight, gap);
     const viewportHeight =
@@ -273,7 +349,7 @@ export function TimelineWindowedItems({
           : 0;
     const visible = visibleRange(model, localTop, viewportHeight);
     return {
-      keys: windowKeysAround(
+      ...windowAround(
         itemKeys,
         visible,
         reachesListTop(model, visible, viewportHeight),
@@ -287,6 +363,10 @@ export function TimelineWindowedItems({
     () => new Map(itemKeys.map((key, index) => [key, index])),
     [itemKeys],
   );
+  const windowKeys = useMemo(
+    () => rangeWindowKeys(windowState, itemKeys, indexByKey),
+    [indexByKey, itemKeys, windowState],
+  );
   const renderModel = useMemo(
     () => buildModel(itemKeys, windowState.heights, estimateItemHeight, gap),
     [estimateItemHeight, gap, itemKeys, windowState.heights],
@@ -298,7 +378,7 @@ export function TimelineWindowedItems({
       const index = indexByKey.get(key);
       if (index !== undefined) indexes.add(index);
     };
-    for (const key of windowState.keys) add(key);
+    for (const key of windowKeys) add(key);
     for (const key of alwaysMountedKeys) add(key);
     for (const key of interactionPins) add(key);
     return [...indexes].sort((left, right) => left - right);
@@ -307,7 +387,7 @@ export function TimelineWindowedItems({
     indexByKey,
     interactionPins,
     itemKeys,
-    windowState.keys,
+    windowKeys,
     windowingEnabled,
   ]);
 
@@ -319,7 +399,7 @@ export function TimelineWindowedItems({
     mountedIndexes,
     renderedHeights: windowState.heights,
     scrollRootUsable,
-    windowKeys: windowState.keys,
+    windowKeys,
     windowingEnabled,
   });
   useLayoutEffect(() => {
@@ -331,7 +411,7 @@ export function TimelineWindowedItems({
       mountedIndexes,
       renderedHeights: windowState.heights,
       scrollRootUsable,
-      windowKeys: windowState.keys,
+      windowKeys,
       windowingEnabled,
     };
   });
@@ -345,7 +425,6 @@ export function TimelineWindowedItems({
     estimateItemHeight: (index: number) => number;
     model: LayoutModel;
   } | null>(null);
-  const measurementRevisionRef = useRef(0);
   const renderedModel = useCallback((): LayoutModel => {
     const live = liveRef.current;
     const cached = modelCacheRef.current;
@@ -388,7 +467,7 @@ export function TimelineWindowedItems({
     (key: string, height: number): boolean => {
       if (height <= 0 || measurements.get(key) === height) return false;
       recordTimelineMeasurement(measurements, key, height);
-      measurementRevisionRef.current += 1;
+      bumpMeasurementRevision(measurements);
       return true;
     },
     [measurements],
@@ -446,10 +525,14 @@ export function TimelineWindowedItems({
         if (key !== null) nodesRef.current.delete(key);
       };
     },
-    [getObserver, record],
+    [positionKeeper, record],
   );
 
   const frameUpdatesRef = useRef({ count: 0, frame: null as number | null });
+  const frameCommitRef = useRef<{
+    frame: number | null;
+    state: WindowState | null;
+  }>({ frame: null, state: null });
   const takeFrameUpdate = useCallback((): boolean => {
     const budget = frameUpdatesRef.current;
     if (budget.frame === null) {
@@ -465,6 +548,9 @@ export function TimelineWindowedItems({
     () => () => {
       const frame = frameUpdatesRef.current.frame;
       if (frame !== null) cancelAnimationFrame(frame);
+      const commitFrame = frameCommitRef.current.frame;
+      if (commitFrame !== null) cancelAnimationFrame(commitFrame);
+      frameCommitRef.current = { frame: null, state: null };
     },
     [],
   );
@@ -479,6 +565,7 @@ export function TimelineWindowedItems({
           if (usable && live.scrollRootUsable === false) {
             setWindowState((current) => ({
               keys: current.keys,
+              range: current.range,
               heights: knownHeights(
                 live.itemKeys,
                 measurements,
@@ -572,6 +659,7 @@ export function TimelineWindowedItems({
       } else {
         apply();
       }
+      setWindowState(next);
     },
     [measurements, positionKeeper, renderedModel, takeFrameUpdate],
   );
@@ -607,15 +695,14 @@ export function TimelineWindowedItems({
     }
     setWindowState((current) => ({
       keys: new Set([...current.keys, heldKey]),
+      range: current.range,
       heights: current.heights,
     }));
     return true;
   }, [positionKeeper]);
 
   useLayoutEffect(() => {
-    if (positionKeeper === null || mountHeldKey()) return;
-    positionKeeper.reconcile(false);
-    syncWindow(false);
+    mountHeldKey();
   });
 
   const retainInteractedItem = useCallback(

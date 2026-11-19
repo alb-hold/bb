@@ -1,4 +1,22 @@
+import { LAST_KNOWN_GITHUB_STARS } from "../server/github-stars";
+
 export const GITHUB_URL = "https://github.com/get-bb/bb";
+
+declare const __GITHUB_STARS__: number | undefined;
+export const GITHUB_STARS: number =
+  typeof __GITHUB_STARS__ === "number"
+    ? __GITHUB_STARS__
+    : LAST_KNOWN_GITHUB_STARS;
+
+export function formatStarCount(count: number): string {
+  return new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  })
+    .format(count)
+    .toLowerCase();
+}
+
 export const DISCORD_URL = "https://discord.gg/kvBU6tJhcJ";
 export const X_URL = "https://x.com/get_bb_app";
 export const DOWNLOAD_FALLBACK_URL =
@@ -11,9 +29,7 @@ export type DesktopPlatform = "macos" | "linux" | "windows";
 export const DEFAULT_DESKTOP_PLATFORM: DesktopPlatform = "macos";
 
 export type DesktopDownload = {
-  label: string;
   buttonLabel: string;
-  note: string;
   installerExtension: string;
   versionFeedUrl: string;
   redirectPath: string;
@@ -21,25 +37,19 @@ export type DesktopDownload = {
 
 export const DESKTOP_DOWNLOADS: Record<DesktopPlatform, DesktopDownload> = {
   macos: {
-    label: "macOS",
     buttonLabel: "Download for macOS",
-    note: "Apple Silicon",
     installerExtension: ".dmg",
     versionFeedUrl: `${DOWNLOAD_RELEASE_ASSET_BASE_URL}/desktop-version.json`,
     redirectPath: "/download/macos",
   },
   linux: {
-    label: "Linux (Alpha)",
     buttonLabel: "Download for Linux",
-    note: "x64 AppImage, alpha",
     installerExtension: ".AppImage",
     versionFeedUrl: `${DOWNLOAD_RELEASE_ASSET_BASE_URL}/desktop-version-linux.json`,
     redirectPath: "/download/linux",
   },
   windows: {
-    label: "Windows (Alpha)",
     buttonLabel: "Download for Windows",
-    note: "x64 · alpha",
     installerExtension: ".exe",
     versionFeedUrl: `${DOWNLOAD_RELEASE_ASSET_BASE_URL}/desktop-version-windows.json`,
     redirectPath: "/download/windows",
@@ -48,8 +58,16 @@ export const DESKTOP_DOWNLOADS: Record<DesktopPlatform, DesktopDownload> = {
 export const SUBSCRIBE_PATH = "/api/subscribe";
 export const CLI_COMMAND = "npx bb-app@latest";
 export const WINDOWS_DOWNLOAD_URL = "/download/windows";
+export const DOWNLOAD_PAGE_PATH = "/download";
 
-export type CtaPlacement = "nav" | "hero" | "local" | "closer" | "footer";
+export type CtaPlacement =
+  | "nav"
+  | "hero"
+  | "local"
+  | "customize"
+  | "closer"
+  | "footer"
+  | "download_page";
 
 export const UTM_PARAM_NAMES = [
   "utm_source",

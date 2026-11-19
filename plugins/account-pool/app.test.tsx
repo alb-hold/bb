@@ -6,22 +6,31 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import { useEffect } from "react";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+
 import { useComposer } from "@get-bb/plugin-sdk/app";
+
 import type { PluginComposerApi } from "@get-bb/plugin-sdk";
+
 import type {
   AccountPoolConfig,
   AccountSummary,
+  LimitWindow,
   PoolStatus,
 } from "./src/contracts.js";
+
 import {
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./src/realtime.js";
 
 const app = await loadPluginApp(() => import("./app"));
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -30,6 +39,23 @@ afterEach(() => {
 });
 
 const STATUS_CACHE_KEY = "account-pool:status";
+
+function claudeWindow(
+  slot: LimitWindow["slot"],
+  utilization: number,
+  overrides: Partial<LimitWindow> = {},
+): LimitWindow {
+  return {
+    slot,
+    windowMinutes: slot === "primary" ? 300 : 10_080,
+    utilization,
+    resetAt: null,
+    status: null,
+    observedAt: 1,
+    source: "usage",
+    ...overrides,
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -78,12 +104,6 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     lastUsedAt: 2,
     lastUsedHostId: "host-one",
     lastUsedHostName: "bee",
-    fiveHourUtilization: 0.21,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
-    sevenDayUtilization: null,
-    sevenDayResetAt: null,
-    sevenDayStatus: null,
     representativeClaim: null,
     familyWeekly: {
       fable: null,
@@ -99,7 +119,7 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
       windows: [],
     },
     lastAutomaticChoice: null,
-    limitWindows: [],
+    limitWindows: [claudeWindow("primary", 0.21)],
     extraUsage: null,
     usageRestriction: null,
     observedAt: 1,
@@ -170,14 +190,34 @@ describe("Subscription picker", () => {
     account({
       label: "Max 20x",
       rateLimitTier: "default_claude_max_20x",
-      sevenDayUtilization: 0.98,
       organizationUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      limitWindows: [
+        {
+          slot: "secondary",
+          windowMinutes: 10080,
+          utilization: 0.98,
+          resetAt: null,
+          status: null,
+          observedAt: 0,
+          source: "usage",
+        },
+      ],
     }),
     account({
       id: "22222222-2222-4222-8222-222222222222",
       label: "Max 5x",
-      sevenDayUtilization: 0.05,
       organizationUuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      limitWindows: [
+        {
+          slot: "secondary",
+          windowMinutes: 10080,
+          utilization: 0.05,
+          resetAt: null,
+          status: null,
+          observedAt: 0,
+          source: "usage",
+        },
+      ],
     }),
     account({
       id: "33333333-3333-4333-8333-333333333333",
@@ -682,7 +722,17 @@ describe("Account Pool settings", () => {
         label: "Used up Claude",
         email: "used-up@example.com",
         status: "exhausted",
-        sevenDayUtilization: 1,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 1,
+            resetAt: null,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       }),
       account({
         id: "88888888-8888-4888-8888-888888888888",
@@ -800,6 +850,93 @@ describe("Account Pool settings", () => {
     );
   });
 
+  it("renders only the windows a Claude account reports and an unobserved Fable slot as an em dash", async () => {
+    const slot = render([
+      account({ limitWindows: [claudeWindow("secondary", 0.3)] }),
+    ]);
+    expect(await slot.findByText("person@example.com")).toBeTruthy();
+
+    expect(slot.queryByText("5H")).toBeNull();
+
+    expect(
+      slot.getByText("Hub accepting · 2 in flight · used by bee"),
+    ).toBeTruthy();
+    await openActions(slot, "person@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("7 day")).toBeTruthy();
+    expect(slot.getByText(/^30% ·/)).toBeTruthy();
+    expect(slot.queryByText("Weekly")).toBeNull();
+    expect(slot.queryByText("5 hour")).toBeNull();
+  });
+
+  it("renders a Claude account with no observed windows as empty 5H and 7D slots", async () => {
+    const slot = render([account({ limitWindows: [] })]);
+    expect(await slot.findByText("person@example.com")).toBeTruthy();
+
+    expect(slot.queryByText("LIMIT")).toBeNull();
+
+    await openActions(slot, "person@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("5 hour")).toBeTruthy();
+    expect(slot.getByText("7 day")).toBeTruthy();
+    expect(slot.queryByText("No usage limits observed yet.")).toBeNull();
+  });
+
+  it("dates an exhausted account by the latest threshold-exhausted or refused window", async () => {
+    const slot = render([
+      account({
+        status: "exhausted",
+        limitWindows: [
+          claudeWindow("primary", 1, {
+            status: "rejected",
+            resetAt: Date.now() + 2 * 60 * 60 * 1_000,
+          }),
+          claudeWindow("secondary", 0.99, {
+            status: "allowed",
+            resetAt: Date.now() + 6 * 24 * 60 * 60 * 1_000,
+          }),
+        ],
+      }),
+    ]);
+    expect(await slot.findByText("Used up")).toBeTruthy();
+    expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
+  });
+
+  it("renders only the windows a Codex account reports and no Fable slot", async () => {
+    const blockingResetAt = Date.now() + 6 * 24 * 60 * 60 * 1_000;
+    const slot = render([
+      account({
+        id: "22222222-2222-4222-8222-222222222222",
+        provider: "codex",
+        label: "pro@example.com",
+        codexAccountId: "chatgpt-account",
+        status: "exhausted",
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 10_080,
+            utilization: 1,
+            resetAt: blockingResetAt,
+            status: "rejected",
+            observedAt: 1,
+            source: "usage",
+          },
+        ],
+      }),
+    ]);
+    expect(await slot.findByText("pro@example.com")).toBeTruthy();
+
+    expect(slot.queryByText("5H")).toBeNull();
+    expect(slot.queryByText("FABLE")).toBeNull();
+    expect(slot.getByText("Used up")).toBeTruthy();
+    expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
+    await openActions(slot, "pro@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("Weekly")).toBeTruthy();
+    expect(slot.queryByText("5 hour")).toBeNull();
+    expect(slot.queryByText("7 day")).toBeNull();
+  });
+
   function openActions(slot: ReturnType<typeof render>, label: string) {
     return slot
       .findByRole("button", { name: `${label} actions` })
@@ -807,7 +944,9 @@ describe("Account Pool settings", () => {
   }
 
   const GMAIL_ID = "44444444-4444-4444-8444-444444444444";
+
   const PREVIOUS_ID = "55555555-5555-4555-8555-555555555555";
+
   const ICLOUD_ID = "66666666-6666-4666-8666-666666666666";
 
   function parallelLogins() {
@@ -924,8 +1063,17 @@ describe("Account Pool settings", () => {
           label: "Used up one",
           email: "b@example.com",
           status: "exhausted",
-          sevenDayUtilization: 1,
-          sevenDayResetAt: now + (2 * 24 * 60 + 5) * 60_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 1,
+              resetAt: now + (2 * 24 * 60 + 5) * 60_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         }),
         account({
           id: "88888888-8888-4888-8888-888888888888",
@@ -1669,9 +1817,19 @@ describe("Account Pool settings", () => {
           email: gmail,
           rateLimitTier: "default_claude_max_20x",
           status: "exhausted",
-          sevenDayUtilization: 1,
           priority: 1,
           lastUsedAt: 5,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 1,
+              resetAt: null,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         }),
         account({
           id: "6b45fa7d-0000-4000-8000-000000000000",
@@ -2268,6 +2426,7 @@ describe("Account Pool settings", () => {
     fireEvent.click(await slot.findByRole("button", { name: "Try again" }));
     await waitFor(() => expect(starts).toBe(2));
   });
+
   it.each(["claude", "codex"] as const)(
     "reorders %s accounts with the keyboard and persists the displayed order",
     async (provider) => {

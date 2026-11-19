@@ -58,17 +58,14 @@ import {
   type ThreadConversationOutlineRole,
   type ThreadTimelineTurnSummaryDetailsQueryIdentity,
 } from "./query-keys";
-import {
-  COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT,
-  isThreadTimelinePushEnabled,
-} from "../cache-owners/thread-timeline-push-owner";
-import { systemConfigQueryOptions } from "./system-queries";
+import { COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT } from "../cache-owners/thread-timeline-push-owner";
 import {
   THREAD_OPEN_CACHE_GC_MS,
   touchThreadOpenCache,
 } from "../cache-owners/thread-open-cache-owner";
 
 import { fetchThreadTimeline, type QueryOptions } from "./thread-queries";
+import { hasThreadProvisioningFailure } from "@/lib/thread-provisioning-failure";
 interface ThreadTimelineQueryOptions extends QueryOptions {
   notifyOnChangeProps?: NotifyOnChangeProps;
 }
@@ -314,15 +311,10 @@ export function useThreadTimeline(
   const queryClient = useQueryClient();
   const enabled = (options?.enabled ?? true) && Boolean(id);
   const compactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
-  const pushEnabled = useQuery({
-    ...systemConfigQueryOptions(),
-    enabled: false,
-    select: isThreadTimelinePushEnabled,
-  }).data;
   useThreadDetailRealtimeSubscription(id, { enabled });
   useThreadTimelineRealtimeSubscription(id, {
     deferContent: true,
-    enabled: enabled && pushEnabled === true,
+    enabled,
     segmentLimit: compactViewport
       ? COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT
       : null,
@@ -333,6 +325,37 @@ export function useThreadTimeline(
     }
   }, [enabled, id, queryClient]);
   return useQuery(threadTimelineQueryOptions(queryClient, id, options));
+}
+
+const NO_TIMELINE_RESULT_PROPS: NotifyOnChangeProps = [];
+
+export function useThreadTimelineSubscription(
+  id: string,
+  options: { enabled: boolean },
+): void {
+  useThreadTimeline(id, {
+    enabled: options.enabled,
+    notifyOnChangeProps: NO_TIMELINE_RESULT_PROPS,
+  });
+}
+
+const selectThreadTimelineProvisioningFailure = (
+  timeline: ThreadTimelineResponse,
+) => hasThreadProvisioningFailure(timeline.rows);
+const selectNoThreadTimelineProvisioningFailure = () => false;
+
+export function useThreadTimelineProvisioningFailure(
+  id: string,
+  check: boolean,
+): boolean {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    ...threadTimelineQueryOptions(queryClient, id, { enabled: false }),
+    select: check
+      ? selectThreadTimelineProvisioningFailure
+      : selectNoThreadTimelineProvisioningFailure,
+  });
+  return query.data ?? false;
 }
 
 export function useThreadConversationOutline(

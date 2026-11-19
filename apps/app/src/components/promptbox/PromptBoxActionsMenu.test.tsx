@@ -2,7 +2,6 @@
 
 import type {
   ComposerSelection,
-  ComposerView,
   PluginComposerApi,
   PluginComposerScope,
 } from "@get-bb/plugin-sdk";
@@ -33,6 +32,7 @@ import { MemoryRouter } from "react-router-dom";
 import {
   PluginComposerHostProvider,
   PluginComposerViewProvider,
+  type PluginComposerStaticView,
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import type { PluginComposerPlusMenuContribution } from "@/components/plugin/PluginComposerActions";
@@ -68,13 +68,12 @@ function composerHost(
   scope: PluginComposerScope,
   selection: () => ComposerSelection,
   subscribeSelection: PluginComposerHost["subscribeSelection"] = () => () => {},
-): { host: PluginComposerHost; view: ComposerView } {
+): { host: PluginComposerHost; view: PluginComposerStaticView } {
   const draft = { ...emptyPromptDraftState(), text: "Draft" };
   return {
     view: {
       scope,
       layout: "expanded",
-      draft: { text: "Draft", isEmpty: false, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
     },
     host: {
@@ -135,7 +134,7 @@ describe("PromptBoxActionsMenu", () => {
       render(
         <MemoryRouter>
           <PluginComposerHostProvider value={host}>
-            <PluginComposerViewProvider value={view}>
+            <PluginComposerViewProvider view={view} draft={host}>
               <ComposerRendererTestHost>
                 <ComposerPlusMenuSlot
                   actions={[
@@ -203,7 +202,7 @@ describe("PromptBoxActionsMenu", () => {
       render(
         <MemoryRouter>
           <PluginComposerHostProvider value={host}>
-            <PluginComposerViewProvider value={view}>
+            <PluginComposerViewProvider view={view} draft={host}>
               <ComposerRendererTestHost>
                 {menu === "plus" ? (
                   <ComposerPlusMenuSlot onAction={() => {}} />
@@ -248,10 +247,9 @@ describe("PromptBoxActionsMenu", () => {
   );
 
   it("restores composer focus after an update-only plugin item in the compact drawer", async () => {
-    const view: ComposerView = {
+    const view: PluginComposerStaticView = {
       scope: { kind: "new-thread", projectId: null },
       layout: "expanded",
-      draft: { text: "draft", isEmpty: false, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
     };
     const draft = { ...emptyPromptDraftState(), text: "draft" };
@@ -282,7 +280,7 @@ describe("PromptBoxActionsMenu", () => {
       <CompactViewportOverrideProvider isCompactViewport>
         <MemoryRouter>
           <PluginComposerHostProvider value={host}>
-            <PluginComposerViewProvider value={view}>
+            <PluginComposerViewProvider view={view} draft={host}>
               <input id="composer-focus-target" aria-label="Composer" />
               <PromptBoxActionsMenu
                 onAction={() => {}}
@@ -312,10 +310,9 @@ describe("PromptBoxActionsMenu", () => {
 
   it("renders plugin rows without a header and preserves focus deliberately moved by a plugin", async () => {
     const focusedByPlugin = vi.fn();
-    const view: ComposerView = {
+    const view: PluginComposerStaticView = {
       scope: { kind: "new-thread", projectId: null },
       layout: "expanded",
-      draft: { text: "draft", isEmpty: false, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
     };
     const draft = emptyPromptDraftState();
@@ -384,7 +381,7 @@ describe("PromptBoxActionsMenu", () => {
     render(
       <MemoryRouter>
         <PluginComposerHostProvider value={host}>
-          <PluginComposerViewProvider value={view}>
+          <PluginComposerViewProvider view={view} draft={host}>
             <input id="composer-focus-target" aria-label="Composer" />
             <button id="plugin-focus-target">Plugin focus target</button>
             <PromptBoxActionsMenu

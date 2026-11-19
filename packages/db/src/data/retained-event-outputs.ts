@@ -51,10 +51,9 @@ interface InsertPreparedRetainedEventOutputArgs {
   output: PreparedRetainedEventOutput;
 }
 
-interface CopyRetainedEventOutputArgs {
+interface CopyRetainedEventOutputsArgs {
   copiedAt: number;
-  sourceEventId: string;
-  targetEventId: string;
+  events: readonly { sourceEventId: string; targetEventId: string }[];
 }
 
 interface HydratableStoredEventRow {
@@ -270,20 +269,25 @@ export function insertPreparedRetainedEventOutput(
     .run();
 }
 
-export function copyRetainedEventOutput(
+export function copyRetainedEventOutputs(
   db: DbQueryConnection,
-  args: CopyRetainedEventOutputArgs,
+  args: CopyRetainedEventOutputsArgs,
 ): number {
+  if (args.events.length === 0) {
+    return 0;
+  }
   const copied = db.all<{ valueBytes: number }>(sql`INSERT INTO retained_event_outputs
     (event_id, output_path, value, expires_at)
     SELECT
-      ${args.targetEventId},
-      output_path,
-      value,
-      expires_at
-    FROM retained_event_outputs
-    WHERE event_id = ${args.sourceEventId}
-      AND expires_at > ${args.copiedAt}
+      copied.value ->> '$.targetEventId',
+      source.output_path,
+      source.value,
+      source.expires_at
+    FROM json_each(${JSON.stringify(args.events)}) AS copied
+    JOIN retained_event_outputs AS source
+      ON source.event_id = copied.value ->> '$.sourceEventId'
+    WHERE source.expires_at > ${args.copiedAt}
+    ORDER BY copied.key
     RETURNING length(CAST(value AS BLOB)) AS valueBytes`);
   return copied.reduce((total, row) => total + row.valueBytes, 0);
 }

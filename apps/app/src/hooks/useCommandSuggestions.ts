@@ -16,6 +16,7 @@ interface UseCommandSuggestionsArgs {
   activeTrigger: PromptMentionCommandTrigger | null;
   promptActions?: readonly CommandSuggestionPromptAction[];
   threadProviderCommands?: readonly ProviderCommand[] | null;
+  builtinCommands?: readonly ProviderCommandSuggestion[];
   environmentId: string | null;
   hostId?: string | null;
   query: string | null;
@@ -27,7 +28,6 @@ export type CommandSuggestionSource = Omit<
 >;
 
 interface UseCommandSuggestionsResult {
-  triggers: readonly PromptMentionCommandTrigger[];
   suggestions: ProviderCommandSuggestion[];
   isLoading: boolean;
   isRefreshing: boolean;
@@ -182,6 +182,14 @@ export function useCommandSuggestions(
     [args.promptActions, isActive, trigger, trimmedQuery],
   );
 
+  const builtinSuggestions = useMemo(
+    () =>
+      isActive && trigger === "/"
+        ? filterCommandSuggestions(args.builtinCommands ?? [], trimmedQuery)
+        : [],
+    [args.builtinCommands, isActive, trigger, trimmedQuery],
+  );
+
   const commandsQuery = useProjectCommands(
     {
       projectId: args.projectId,
@@ -204,7 +212,7 @@ export function useCommandSuggestions(
     });
     return mergeCommandSuggestions(
       mergeCommandSuggestions(
-        promptActionSuggestions,
+        [...builtinSuggestions, ...promptActionSuggestions],
         threadProviderCommandSuggestions({
           commands: args.threadProviderCommands,
           catalog,
@@ -216,6 +224,7 @@ export function useCommandSuggestions(
     );
   }, [
     args.threadProviderCommands,
+    builtinSuggestions,
     commandsQuery.data?.commands,
     args.commandScope,
     trigger,
@@ -234,7 +243,6 @@ export function useCommandSuggestions(
   const isError = isActive && commandsQuery.isError;
 
   return {
-    triggers: args.skillsTriggers,
     suggestions,
     isLoading,
     isRefreshing,

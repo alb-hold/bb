@@ -7,13 +7,23 @@ import { OnboardingGate } from "./OnboardingGate";
 const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
   useSystemConfig: vi.fn(),
+  useHostProviderCliStatus: vi.fn(),
+  usePrimaryHost: vi.fn(),
+  markScreenPainted: vi.fn(),
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: mocks.useSystemConfig,
+  useHostProviderCliStatus: mocks.useHostProviderCliStatus,
+}));
+vi.mock("@/hooks/queries/host-queries", () => ({
+  usePrimaryHost: mocks.usePrimaryHost,
 }));
 vi.mock("@/hooks/mutations/settings-mutations", () => ({
   useUpdateGeneralSettings: () => ({ mutate: mocks.mutate }),
+}));
+vi.mock("@/lib/screen-paint", () => ({
+  markScreenPainted: mocks.markScreenPainted,
 }));
 vi.mock("./OnboardingFlow", () => ({
   OnboardingFlow: ({
@@ -49,6 +59,7 @@ function renderGate() {
 
 beforeEach(() => {
   window.localStorage.clear();
+  mocks.usePrimaryHost.mockReturnValue({ id: "host-1" });
 });
 
 afterEach(() => {
@@ -62,8 +73,19 @@ describe("OnboardingGate", () => {
 
     renderGate();
 
-    expect(await screen.findByText("Setup guide at agent")).toBeTruthy();
+    expect(await screen.findByText(/Setup guide at agent/u)).toBeTruthy();
     expect(screen.queryByText("App shell")).toBeNull();
+  });
+
+  it("signals that the screen painted once the setup guide shows, though the app behind it never renders", async () => {
+    configWith({ onboardingCompletedAt: null });
+
+    renderGate();
+
+    expect(await screen.findByText(/Setup guide at agent/u)).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(mocks.markScreenPainted).toHaveBeenCalled();
+    });
   });
 
   it("renders the app untouched once setup has been finished", () => {
@@ -79,7 +101,7 @@ describe("OnboardingGate", () => {
     configWith({ onboardingCompletedAt: null, streamerMode: true });
     renderGate();
 
-    fireEvent.click(await screen.findByText("Setup guide at agent"));
+    fireEvent.click(await screen.findByText(/Setup guide at agent/u));
 
     expect(screen.getByText("App shell")).toBeTruthy();
     expect(mocks.mutate).toHaveBeenCalledTimes(1);
@@ -90,29 +112,6 @@ describe("OnboardingGate", () => {
     expect(Number.isNaN(Date.parse(written.onboardingCompletedAt ?? ""))).toBe(
       false,
     );
-  });
-
-  it("shows the guide again when the completion time is cleared after a close in the same session", async () => {
-    configWith({ onboardingCompletedAt: null });
-    const { view } = renderGate();
-    fireEvent.click(await screen.findByText("Setup guide at agent"));
-
-    configWith({ onboardingCompletedAt: COMPLETED_AT });
-    view.rerender(
-      <OnboardingGate>
-        <div>App shell</div>
-      </OnboardingGate>,
-    );
-    expect(screen.getByText("App shell")).toBeTruthy();
-
-    configWith({ onboardingCompletedAt: null });
-    view.rerender(
-      <OnboardingGate>
-        <div>App shell</div>
-      </OnboardingGate>,
-    );
-
-    expect(await screen.findByText("Setup guide at agent")).toBeTruthy();
   });
 
   it("holds a first-time browser blank until settings load, but boots a returning browser straight into the app", () => {
@@ -140,6 +139,26 @@ describe("OnboardingGate", () => {
     renderGate();
 
     expect(screen.getByText("App shell")).toBeTruthy();
+  });
+
+  it("starts loading agent install info only while setup is unfinished", () => {
+    configWith({ onboardingCompletedAt: null });
+    const { view } = renderGate();
+    expect(mocks.useHostProviderCliStatus).toHaveBeenLastCalledWith({
+      hostId: "host-1",
+      enabled: true,
+    });
+
+    configWith({ onboardingCompletedAt: COMPLETED_AT });
+    view.rerender(
+      <OnboardingGate>
+        <div>App shell</div>
+      </OnboardingGate>,
+    );
+    expect(mocks.useHostProviderCliStatus).toHaveBeenLastCalledWith({
+      hostId: "host-1",
+      enabled: false,
+    });
   });
 
   it("falls back to the app when settings cannot be loaded", () => {

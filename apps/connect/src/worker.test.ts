@@ -155,6 +155,7 @@ vi.mock("./servers.js", () => ({
 
 vi.mock("./desktop-session.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./desktop-session.js")>()),
+  recordDesktopSessionUse: vi.fn(async () => {}),
   verifyDesktopSessionCookie: vi.fn(),
 }));
 
@@ -178,11 +179,21 @@ vi.mock("./cache.js", async () => {
   };
 });
 
-vi.mock("drizzle-orm/d1", () => ({
-  drizzle: vi.fn(() => ({})),
+vi.mock("@bb/connect-db-pg", () => ({
+  openConnectDb: vi.fn(() => ({
+    db: {},
+    close: async () => {},
+  })),
 }));
 
-import { drizzle } from "drizzle-orm/d1";
+import { openConnectDb } from "@bb/connect-db-pg";
+
+function mockConnectDb(db: unknown): void {
+  vi.mocked(openConnectDb).mockReturnValue({
+    db,
+    close: async () => {},
+  } as never);
+}
 
 import {
   invalidateSessionCookie,
@@ -198,7 +209,10 @@ import {
   handleDisconnectServer,
   handleListAccountServers,
 } from "./servers.js";
-import { verifyDesktopSessionCookie } from "./desktop-session.js";
+import {
+  recordDesktopSessionUse,
+  verifyDesktopSessionCookie,
+} from "./desktop-session.js";
 import { SECURE_DESKTOP_SESSION_COOKIE as DESKTOP_SESSION_COOKIE } from "./cloud-dev.js";
 import { handleAssignMachineLabel } from "./machine-label.js";
 import { serveWithCache } from "./cache.js";
@@ -226,6 +240,7 @@ const mockHandleListAccountServers = vi.mocked(handleListAccountServers);
 const mockHandleCreateDesktopSession = vi.mocked(handleCreateDesktopSession);
 const mockHandleDisconnectServer = vi.mocked(handleDisconnectServer);
 const mockVerifyDesktopSession = vi.mocked(verifyDesktopSessionCookie);
+const mockRecordDesktopSessionUse = vi.mocked(recordDesktopSessionUse);
 const mockHandleAssignMachineLabel = vi.mocked(handleAssignMachineLabel);
 
 function sessionDetails(userId = OWNER, needsRefresh = false) {
@@ -294,7 +309,7 @@ function makeEnv(doFetch: (req: Request) => Promise<Response> | Response) {
       },
       get: () => stub,
     },
-    DB: {} as D1Database,
+    HYPERDRIVE: {} as Hyperdrive,
     BASE_DOMAIN: BASE,
     BETTER_AUTH_SECRET: "test-secret",
     GATE_EVENTS: { writeDataPoint: vi.fn() },
@@ -528,7 +543,7 @@ describe("gate tunnel authentication", () => {
     expect(dialEnv.captured).toHaveLength(1);
   });
 
-  it("fresh-resolves from the outset after a cached negative and refuses revoked machines", async () => {
+  it("fresh-resolves a dial, refuses one for an address that no longer exists, and refuses revoked machines", async () => {
     const credential = "bbcm_stale";
     const hash = await sha256Hex(credential);
     mockResolveLabel.mockResolvedValueOnce(null);
@@ -540,7 +555,7 @@ describe("gate tunnel authentication", () => {
       firstEnv.env as never,
       firstEnv.ctx,
     );
-    expect(stale.status).toBe(404);
+    expect(stale.status).toBe(403);
     expect(mockResolveLabel).toHaveBeenCalledWith(
       "sawyer-air",
       expect.anything(),
@@ -2018,13 +2033,15 @@ describe("gate worker share hosts", () => {
     expect(mockRefreshAccountSession).not.toHaveBeenCalled();
   });
 
-  it("accepts the desktop cookie for the owning account", async () => {
+  it("accepts the desktop cookie for the owning account and records the device's use", async () => {
     mockParseCookie.mockImplementation((_header, name) =>
       name === DESKTOP_SESSION_COOKIE ? "desktop-token" : null,
     );
+    const grant = { kind: "machine" as const, credentialHash: "hash-a" };
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: null,
+      unrecordedUse: grant,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -2040,6 +2057,10 @@ describe("gate worker share hosts", () => {
     );
     expect(captured).toHaveLength(1);
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(mockRecordDesktopSessionUse).toHaveBeenCalledWith(
+      grant,
+      expect.anything(),
+    );
   });
 
   it("rolls a day-old desktop cookie forward seven days for the same grant", async () => {
@@ -2050,6 +2071,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: grant,
+      unrecordedUse: null,
     });
     const { env, ctx } = makeEnv(() => new Response("ok"));
     const before = Date.now();
@@ -2075,6 +2097,7 @@ describe("gate worker share hosts", () => {
       ).toString(),
     );
     expect(payload).toMatchObject({ userId: OWNER, grant });
+    expect(mockRecordDesktopSessionUse).not.toHaveBeenCalled();
   });
 
   it("does not roll a desktop cookie that belongs to another account", async () => {
@@ -2085,6 +2108,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OTHER,
       refreshGrant: { kind: "machine", credentialHash: "hash-other" },
+      unrecordedUse: null,
     });
     const { env, ctx } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -2104,6 +2128,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: null,
+      unrecordedUse: null,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -2430,7 +2455,7 @@ function mockDoState(initialStorage: Record<string, unknown> = {}): MockState {
 function makeDoEnv() {
   return {
     TUNNEL_DO: {} as DurableObjectNamespace,
-    DB: {} as D1Database,
+    HYPERDRIVE: {} as Hyperdrive,
     BASE_DOMAIN: BASE,
     BETTER_AUTH_SECRET: "s",
     GATE_EVENTS: { writeDataPoint: vi.fn() },
@@ -2464,11 +2489,10 @@ describe("TunnelDO machine presence", () => {
   });
 
   it("bumps machine.lastSeenAt when a machine-label tunnel is connected", async () => {
-    const run = vi.fn(async () => {});
-    const where = vi.fn(() => ({ run }));
+    const where = vi.fn(async () => {});
     const set = vi.fn(() => ({ where }));
     const update = vi.fn(() => ({ set }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
+    mockConnectDb({ update });
     const state = mockDoState({ machineId: "machine-air", protocolVersion: 1 });
     const dob = new TunnelDO(state.api, makeDoEnv());
     await state.restore;
@@ -2478,15 +2502,15 @@ describe("TunnelDO machine presence", () => {
 
     expect(update).toHaveBeenCalledWith(machine);
     expect(set).toHaveBeenCalledWith({ lastSeenAt: expect.any(Date) });
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
   });
 
-  it("schedules the next presence alarm before a slow D1 write settles", async () => {
-    const run = vi.fn(() => new Promise<void>(() => {}));
+  it("schedules the next presence alarm before a slow database write settles", async () => {
+    const write = vi.fn(() => new Promise<void>(() => {}));
     const update = vi.fn(() => ({
-      set: () => ({ where: () => ({ run }) }),
+      set: () => ({ where: write }),
     }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
+    mockConnectDb({ update });
     const state = mockDoState({ serverId: "srv", protocolVersion: 1 });
     const setAlarm = vi.fn(async (_at: number) => {});
     state.api.storage.setAlarm = setAlarm;
@@ -2496,7 +2520,7 @@ describe("TunnelDO machine presence", () => {
 
     const before = Date.now();
     void dob.alarm();
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
 
     expect(setAlarm).toHaveBeenCalledTimes(1);
     const at = setAlarm.mock.calls[0]![0];
@@ -2505,11 +2529,11 @@ describe("TunnelDO machine presence", () => {
   });
 
   it("spreads presence alarms across the interval instead of a fixed period", async () => {
-    vi.mocked(drizzle).mockReturnValue({
+    mockConnectDb({
       update: () => ({
-        set: () => ({ where: () => ({ run: async () => {} }) }),
+        set: () => ({ where: async () => {} }),
       }),
-    } as never);
+    });
     const offsets: number[] = [];
     for (const roll of [0, 0.5, 0.999]) {
       const random = vi.spyOn(Math, "random").mockReturnValue(roll);
@@ -3451,7 +3475,7 @@ describe("gate error response", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveLabel.mockRejectedValue(
-      new Error("D1_ERROR: D1 DB is overloaded. Requests queued for too long."),
+      new Error("Connection terminated unexpectedly"),
     );
   });
 
@@ -3473,8 +3497,7 @@ describe("gate error response", () => {
       expect.objectContaining({
         method: "GET",
         path: "/api/v1/threads/thr_x/child-summary",
-        error:
-          "Error: D1_ERROR: D1 DB is overloaded. Requests queued for too long.",
+        error: "Error: Connection terminated unexpectedly",
       }),
     );
     logged.mockRestore();
@@ -3719,11 +3742,11 @@ describe("TunnelDO worker-held relay", () => {
 
 describe("TunnelDO status and on-change presence", () => {
   function presenceDb() {
-    const run = vi.fn(async () => {});
-    const set = vi.fn(() => ({ where: () => ({ run }) }));
+    const write = vi.fn(async () => {});
+    const set = vi.fn(() => ({ where: write }));
     const update = vi.fn(() => ({ set }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
-    return { run, set, update };
+    mockConnectDb({ update });
+    return { write, set, update };
   }
 
   it("reports whether a tunnel socket is connected without touching the tunnel", async () => {
@@ -3778,7 +3801,7 @@ describe("TunnelDO status and on-change presence", () => {
   });
 
   it("writes last-seen when the tunnel closes and spaces the alarm to half an hour in on-change mode", async () => {
-    const { run } = presenceDb();
+    const { write } = presenceDb();
     const state = mockDoState({ protocolVersion: 1, serverId: "srv" });
     const setAlarm = vi.fn(async (_at: number) => {});
     state.api.storage.setAlarm = setAlarm;
@@ -3795,15 +3818,15 @@ describe("TunnelDO status and on-change presence", () => {
     const delayMs = setAlarm.mock.calls[0]![0] - before;
     expect(delayMs).toBeGreaterThanOrEqual(25 * 60_000);
     expect(delayMs).toBeLessThan(35 * 60_000 + 1_000);
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
 
     (tunnel as unknown as { readyState: number }).readyState = 3;
     dob.webSocketClose(tunnel, 1006, "");
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
   });
 
   it("leaves last-seen to the periodic alarm when on-change mode is off", async () => {
-    const { run } = presenceDb();
+    const { write } = presenceDb();
     const state = mockDoState({ protocolVersion: 1, serverId: "srv" });
     const dob = new TunnelDO(state.api, makeDoEnv());
     await state.restore;
@@ -3813,7 +3836,7 @@ describe("TunnelDO status and on-change presence", () => {
     (tunnel as unknown as { readyState: number }).readyState = 3;
     dob.webSocketClose(tunnel, 1006, "");
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(run).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
   });
 });
 

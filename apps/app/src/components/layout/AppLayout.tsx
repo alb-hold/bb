@@ -52,14 +52,13 @@ import {
 import { AppBreadcrumbs } from "./AppBreadcrumbs";
 import { PageTitleHeader } from "./PageTitleHeader";
 import {
-  PageTitleHookHost,
+  PageTitleProvider,
   usePageTitleValue,
   focusedPageTitleAtom,
 } from "./page-title";
 import { AppPageHeader, HEADER_ICON_BUTTON_CLASS } from "./AppPageHeader";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
-import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 import {
   didThreadDetailBootstrapRefreshAfterMount,
   useThread,
@@ -72,7 +71,7 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
 import {
   COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS,
-  usePanelShelfState,
+  useFixedChromePanelShelfState,
 } from "@/components/ui/secondary-panel-shelf-visibility";
 
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
@@ -121,6 +120,7 @@ import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
 import { IframeDragGuardOverlay } from "@/lib/iframe-drag-guard";
 import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import { useFaviconBadge } from "@/lib/favicon-color-preference";
+import { shellSetBadge } from "@/lib/native-shell";
 import {
   desktopAttentionThreads,
   shouldShowFaviconAttentionDot,
@@ -300,7 +300,7 @@ function SidebarTriggerOverlay({
   const isCompactViewport = useIsCompactViewport();
   const { openMobile } = useSidebar();
   const isFramed = useIsSidebarFramed();
-  const panelShelfState = usePanelShelfState({
+  const panelShelfState = useFixedChromePanelShelfState({
     isCompactViewport,
     isSidebarDrawerOpen: openMobile,
   });
@@ -454,7 +454,11 @@ function AppHeader({
       />
     </div>
   ) : pluginPanelChrome ? (
-    <PluginPanelHeaderCenter chrome={pluginPanelChrome} />
+    <PluginPanelHeaderCenter
+      chrome={pluginPanelChrome}
+      panel={pluginPanel}
+      subPath={pluginPanelSubPath ?? ""}
+    />
   ) : hasCenterContent ? (
     <div className="min-w-0 flex-1">
       {headerTitle ? (
@@ -501,13 +505,13 @@ interface AppLayoutProps {
 
 export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
+  const pageTitle = useCorePageTitle({
+    subPath: location.pathname + location.search,
+  });
   return (
-    <PageTitleHookHost
-      usePageTitle={useCorePageTitle}
-      subPath={location.pathname + location.search}
-    >
+    <PageTitleProvider value={pageTitle}>
       <AppLayoutContent>{children}</AppLayoutContent>
-    </PageTitleHookHost>
+    </PageTitleProvider>
   );
 }
 
@@ -815,11 +819,17 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     ? "unread"
     : "none";
   useFaviconBadge(faviconBadge);
+  const attentionThreads = useMemo(
+    () => desktopAttentionThreads(sidebarThreads),
+    [sidebarThreads],
+  );
+  const pendingThreadCount = attentionThreads.pendingThreadIds.length;
   useEffect(() => {
-    window.bbDesktop?.setAttentionThreads?.(
-      desktopAttentionThreads(sidebarThreads),
-    );
-  }, [sidebarThreads]);
+    window.bbDesktop?.setAttentionThreads?.(attentionThreads);
+  }, [attentionThreads]);
+  useEffect(() => {
+    shellSetBadge(pendingThreadCount);
+  }, [pendingThreadCount]);
   useEffect(
     () => () =>
       window.bbDesktop?.setAttentionThreads?.({

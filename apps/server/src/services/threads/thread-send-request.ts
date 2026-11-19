@@ -140,12 +140,16 @@ export async function acceptThreadSendRequest(
       source: { kind: "operation", environment },
       queuePayload: { kind: "inline" },
       pluginSubmission: null,
+      systemNotice: null,
       origin: null,
       originPluginId: null,
       startedOnBehalfOf: null,
       trigger: "user",
     });
-    return { ok: true, delivery: "sent" };
+    return {
+      ok: true,
+      delivery: "sent",
+    };
   }
 
   if (compactFirst) {
@@ -173,6 +177,7 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
+        systemNotice: null,
         origin: payload.originPluginId === undefined ? null : "plugin",
         originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,

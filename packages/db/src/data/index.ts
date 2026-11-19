@@ -1,3 +1,6 @@
+export * from "./app-settings.js";
+export * from "./app-theme.js";
+export * from "./environments.js";
 export {
   createProject,
   ensurePersonalProject,
@@ -354,6 +357,7 @@ export {
   listDuePluginSchedules,
   listPluginSchedules,
   prunePluginSchedules,
+  pluginScheduleKey,
   recordPluginScheduleResult,
   upsertPluginSchedule,
 } from "./plugin-schedules.js";
@@ -363,6 +367,7 @@ export {
   getPluginStateSnapshot,
   listExpiredPluginStateSnapshots,
   listGarbageCollectablePluginArtifacts,
+  listDiscardablePluginStateSnapshots,
   listIncompletePluginRollbackSnapshots,
   listPluginStateSnapshots,
   replacePluginSnapshotState,
@@ -439,7 +444,11 @@ export {
   isStoredTurnMainRunIdle,
   isStoredTurnProviderCompactionRunning,
   hasRootStoredTurnStarted,
+  hasStoredCancelledThreadProvisioning,
   hasStoredSpawnAgentToolCall,
+  isStoredTurnContextCompactionOnly,
+  isTurnAimedAtByEarlierStop,
+  findLatestUnresolvedClientTurnRequestIdAfterSequence,
   hasStoredTerminalClientTurnRequestEvent,
   hasStoredTurnStarted,
   classifyStoredProviderThreadClaim,
@@ -473,6 +482,23 @@ export {
   getTimelineGroupingContextChangesInRange,
   listStoredEventRowsInSequenceRange,
   listTimelineOrderingContext,
+  advanceTimelineWindowBudgetFloorSequence,
+  listAppendedEventRows,
+  selectAppendedTimelineWindowRows,
+  listStoredStandaloneThreadTimelineRows,
+  listStoredThreadInteractionLifecycleRows,
+  listStoredThreadNoticeAndInteractionRows,
+  hasStoredTurnCompleted,
+  hasStoredThreadInterruptedSince,
+  hasStoredProviderTurnCompletedSince,
+  getLatestThreadStopAim,
+  getLatestModelFallbackRowSinceTurnRequest,
+  getUnfinishedCommandItemData,
+  listCommandItemDataByItemIds,
+  findStoredEditMessageOperationRow,
+  findLatestEditableUserTurnRequestRow,
+  listStoredEventRowMetadata,
+  listOwnerStoppedBackgroundTaskRowsForHost,
   listTimelineInterruptionRows,
   findTimelineWindowBudgetFloorSequence,
   findStoredTimelineWindowByteBudgetFloor,
@@ -515,6 +541,8 @@ export {
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
   MissingStoredTurnStartedError,
+  type StoredEventRowMetadata,
+  type InsertEventInput,
 } from "./events.js";
 export {
   getDatabaseDataVersion,
@@ -579,11 +607,13 @@ export {
   interruptPendingInteractionsForThreads,
   interruptPendingInteractionsForPlugin,
   listActivePluginPendingInteractions,
+  listActiveProviderPendingInteractionsForHost,
   listPendingInteractionsByThread,
   setPendingInteractionInterrupted,
   setPendingInteractionResolving,
   setPendingInteractionResolved,
 } from "./pending-interactions.js";
+export type { CreatePendingInteractionInput } from "./pending-interactions.js";
 export type { PendingInteractionRow } from "./pending-interactions.js";
 
 export {
@@ -710,12 +740,25 @@ export {
 export * from "./project-attachments.js";
 
 export * from "./project-attachment-backfill.js";
-export {
-  clearDiffViewedFiles,
-  listDiffViewedFiles,
-  markDiffViewedFile,
-} from "./diff-viewed-files.js";
-export type {
-  DiffViewedFileRecord,
-  DiffViewedFileScope,
-} from "./diff-viewed-files.js";
+export * from "./project-attachments.js";
+export * from "./project-execution-defaults.js";
+export * from "./project-sources.js";
+export * from "./projects.js";
+export * from "./prompt-history.js";
+export * from "./provider-model-catalogs.js";
+export * from "./queued-thread-messages.js";
+export * from "./retained-event-outputs.js";
+export * from "./server-move.js";
+export * from "./sessions.js";
+export * from "./sweep-item-failures.js";
+export * from "./sweeps.js";
+export * from "./terminal-sessions.js";
+export * from "./thread-conversation-outlines.js";
+export * from "./thread-plugin-metadata.js";
+export * from "./thread-pruning.js";
+export * from "./thread-purges.js";
+export * from "./thread-run-state.js";
+export * from "./thread-sections.js";
+export * from "./thread-tabs.js";
+export * from "./threads.js";
+export * from "./ui-preferences.js";

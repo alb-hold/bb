@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 export function useElementWidth() {
   const [width, setWidth] = useState(0);

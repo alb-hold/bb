@@ -5,6 +5,8 @@ const SHELL_WRAPPER_NAMES = new Set(["sh", "bash", "zsh"]);
 
 const SHELL_SEGMENT_BREAK_TOKENS = new Set(["&&", "||", "|", ";", "\n"]);
 
+const DOUBLE_QUOTED_ESCAPABLE_CHARS = new Set(["$", "`", '"', "\\", "\n"]);
+
 function unwrapQuotedShellArg(value: string): string {
   if (value.length < 2) return value;
   const quote = value[0];
@@ -14,26 +16,22 @@ function unwrapQuotedShellArg(value: string): string {
   const inner = value.slice(1, -1);
   if (quote === "'") return inner;
 
-  let result = "";
-  for (let i = 0; i < inner.length; i += 1) {
-    const ch = inner[i];
-    if (ch === "\\" && i + 1 < inner.length) {
-      const next = inner[i + 1]!;
-      if (
-        next === "$" ||
-        next === "`" ||
-        next === '"' ||
-        next === "\\" ||
-        next === "\n"
-      ) {
-        result += next;
-        i += 1;
-        continue;
-      }
+  const parts: string[] = [];
+  let start = 0;
+  let index = inner.indexOf("\\");
+  while (index !== -1 && index + 1 < inner.length) {
+    const next = inner[index + 1]!;
+    if (DOUBLE_QUOTED_ESCAPABLE_CHARS.has(next)) {
+      parts.push(inner.slice(start, index), next);
+      start = index + 2;
+      index = inner.indexOf("\\", start);
+    } else {
+      index = inner.indexOf("\\", index + 1);
     }
-    result += ch;
   }
-  return result;
+  if (parts.length === 0) return inner;
+  parts.push(inner.slice(start));
+  return parts.join("");
 }
 
 function isKnownShellWrapper(value: string): boolean {
@@ -768,7 +766,37 @@ function parseThreadTellSegment(
   return { threadId, message };
 }
 
+const THREAD_TELL_CACHE_MAX_ENTRIES = 16_384;
+const THREAD_TELL_CACHE_MAX_COMMAND_CHARS = 8_000_000;
+const threadTellCache = new Map<string, ThreadTellCommand | null>();
+let threadTellCacheCommandChars = 0;
+
 export function parseThreadTellCommand(
+  command: string,
+): ThreadTellCommand | null {
+  const cached = threadTellCache.get(command);
+  if (cached !== undefined) {
+    return cached === null ? null : { ...cached };
+  }
+  const parsed = parseUncachedThreadTellCommand(command);
+  if (command.length <= THREAD_TELL_CACHE_MAX_COMMAND_CHARS) {
+    while (
+      threadTellCache.size >= THREAD_TELL_CACHE_MAX_ENTRIES ||
+      threadTellCacheCommandChars + command.length >
+        THREAD_TELL_CACHE_MAX_COMMAND_CHARS
+    ) {
+      const oldest = threadTellCache.keys().next().value;
+      if (oldest === undefined) break;
+      threadTellCache.delete(oldest);
+      threadTellCacheCommandChars -= oldest.length;
+    }
+    threadTellCache.set(command, parsed);
+    threadTellCacheCommandChars += command.length;
+  }
+  return parsed === null ? null : { ...parsed };
+}
+
+function parseUncachedThreadTellCommand(
   command: string,
 ): ThreadTellCommand | null {
   if (!THREAD_TELL_HINT.test(command)) return null;

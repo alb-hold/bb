@@ -11,7 +11,6 @@ import type {
   Environment,
   PromptHistoryEntry,
   ResolvedThreadExecutionOptions,
-  ThreadListEntry,
   ThreadQueuedMessage,
   ThreadWithRuntime,
 } from "@bb/domain";
@@ -44,6 +43,7 @@ import {
 import type { SendThreadMessageMutationRequest } from "../mutations/mutation-request-types";
 import {
   insertOptimisticTimelineRow,
+  insertOptimisticTimelineRowUnlessDelivered,
   optimisticallyInsertThread,
   removeOptimisticTimelineRow,
 } from "./query-cache";
@@ -79,8 +79,6 @@ interface ThreadIdCacheArgs {
 interface PrefetchThreadQueuedMessagesArgs extends ThreadIdCacheArgs {
   load: (signal: AbortSignal) => Promise<ThreadQueuedMessageListResponse>;
 }
-
-type ThreadBannerActivityKind = "goal" | "plan";
 
 interface BeginCreateThreadTransactionArgs {
   queryClient: QueryClient;
@@ -401,6 +399,7 @@ function buildOptimisticQueuedMessage({
     waitingOn: scheduledSendAt === null ? null : { kind: "time" },
     failureReason: null,
     payload: { kind: "inline" },
+    systemNotice: null,
     editable: true,
     createdAt,
     updatedAt: createdAt,
@@ -734,21 +733,10 @@ function predictStopRequest({
   });
 }
 
-function clearThreadBannerActivity(
-  activity: ThreadListEntry["activity"],
-  kind: ThreadBannerActivityKind,
-): ThreadListEntry["activity"] {
-  return {
-    ...activity,
-    ...(kind === "plan" ? { activePlanModeCount: 0 } : { activeGoalCount: 0 }),
-  };
-}
-
-function applyAuthoritativeThreadBannerCancellation({
-  kind,
+export function applyThreadPlanCancellationResult({
   queryClient,
   threadId,
-}: ThreadIdCacheArgs & { kind: ThreadBannerActivityKind }): void {
+}: ThreadIdCacheArgs): void {
   for (const [
     queryKey,
     timeline,
@@ -760,25 +748,15 @@ function applyAuthoritativeThreadBannerCancellation({
     }
     queryClient.setQueryData<ThreadTimelineResponse>(queryKey, {
       ...timeline,
-      ...(kind === "plan" ? { activePromptMode: null } : { goal: null }),
+      activePromptMode: null,
     });
   }
 
   const activity = getThreadEntity(queryClient, threadId)?.list?.activity;
   if (activity !== undefined)
     patchThreadEntity(queryClient, threadId, {
-      activity: clearThreadBannerActivity(activity, kind),
+      activity: { ...activity, activePlanModeCount: 0 },
     });
-}
-
-export function applyThreadPlanCancellationResult(
-  args: ThreadIdCacheArgs,
-): void {
-  applyAuthoritativeThreadBannerCancellation({ ...args, kind: "plan" });
-}
-
-export function applyThreadGoalClearResult(args: ThreadIdCacheArgs): void {
-  applyAuthoritativeThreadBannerCancellation({ ...args, kind: "goal" });
 }
 
 export async function beginCreateThreadTransaction({
@@ -841,7 +819,7 @@ export function applyCreateThreadResult({
     projectId: request.projectId,
   });
   if (hasUnmanagedCheckoutIntent(request)) {
-    queryClient.invalidateQueries({
+    void queryClient.invalidateQueries({
       queryKey: projectSourceBranchesQueryKeyPrefix(request.projectId),
     });
   }
@@ -984,17 +962,18 @@ export function applySendThreadMessageSuccess({
         queryClient,
         threadId: request.id,
       }).confirm([], readThreadBack(queryClient));
-      insertOptimisticTimelineRow(
+      insertOptimisticTimelineRowUnlessDelivered({
+        messageSequence: result.messageSequence,
         queryClient,
-        request.id,
-        buildOptimisticUserMessageRow({
+        row: buildOptimisticUserMessageRow({
           createdAt: optimisticCreatedAt,
           input: request.input,
           mode: request.mode,
           threadId: request.id,
           threadStatus: transaction.previousThreadStatus,
         }),
-      );
+        threadId: request.id,
+      });
     }
     invalidateThreadQueuedMessageListQuery({
       queryClient,

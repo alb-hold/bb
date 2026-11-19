@@ -4,7 +4,6 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -24,8 +23,6 @@ const THREAD_ROW_TARGET_SELECTOR = "a[data-sidebar-thread-id]";
 const SELECTION_KEEPING_SELECTOR =
   '[data-sidebar-rename-row], [data-radix-popper-content-wrapper], [role="menu"]';
 
-export const SIDEBAR_MULTI_SELECT_EXPERIMENT = "sidebarMultiSelect";
-
 export interface ThreadSelectionModifiers {
   metaKey: boolean;
   ctrlKey: boolean;
@@ -37,7 +34,8 @@ export class ThreadSelectionStore {
   private selectedSet: ReadonlySet<string> = new Set();
   private anchor: string | null = null;
   private activeThreadId: string | null = null;
-  private enabled = true;
+  private listedThreadsById: ReadonlyMap<string, SidebarThread> = new Map();
+  private selectionTargets: readonly PluginThreadActionTarget[] | null = null;
   private readonly listeners = new Set<() => void>();
 
   subscribe = (listener: () => void): (() => void) => {
@@ -49,17 +47,35 @@ export class ThreadSelectionStore {
 
   getSelected = (): readonly string[] => this.selected;
 
+  getSelectionTargets = (): readonly PluginThreadActionTarget[] => {
+    this.selectionTargets ??= this.selected.flatMap((threadId) => {
+      const thread = this.listedThreadsById.get(threadId);
+      return thread === undefined ? [] : [toThreadActionTarget(thread)];
+    });
+    return this.selectionTargets;
+  };
+
+  setListedThreads(threadsById: ReadonlyMap<string, SidebarThread>): void {
+    if (threadsById === this.listedThreadsById) return;
+    this.listedThreadsById = threadsById;
+    const removed = new Set(
+      this.selected.filter((threadId) => !threadsById.has(threadId)),
+    );
+    if (removed.size > 0) {
+      this.remove(removed);
+      return;
+    }
+    if (this.selected.length === 0) return;
+    this.selectionTargets = null;
+    for (const listener of this.listeners) listener();
+  }
+
   isSelected(threadId: string): boolean {
     return this.selectedSet.has(threadId);
   }
 
   setActiveThreadId(threadId: string | null): void {
     this.activeThreadId = threadId;
-  }
-
-  setEnabled(enabled: boolean): void {
-    this.enabled = enabled;
-    if (!enabled) this.clear();
   }
 
   clear(): void {
@@ -94,7 +110,6 @@ export class ThreadSelectionStore {
     modifiers: ThreadSelectionModifiers,
     origin: Element,
   ): boolean {
-    if (!this.enabled) return false;
     if (!modifiers.shiftKey) {
       this.anchor = threadId;
       if (this.selected.length > 0) this.replace(NO_THREAD_IDS);
@@ -138,6 +153,7 @@ export class ThreadSelectionStore {
     }
     this.selected = next;
     this.selectedSet = new Set(next);
+    this.selectionTargets = null;
     for (const listener of this.listeners) listener();
   }
 }
@@ -210,32 +226,22 @@ export function ThreadSelectionProvider({
   children: ReactNode;
 }) {
   const [store] = useState(() => new ThreadSelectionStore());
-  const enabled = experimental_useExperiment(SIDEBAR_MULTI_SELECT_EXPERIMENT);
   useLayoutEffect(() => {
     store.setActiveThreadId(activeThreadId);
   }, [activeThreadId, store]);
-  useLayoutEffect(() => {
-    store.setEnabled(enabled);
-  }, [enabled, store]);
   const { projects } = useSidebarData();
-  const listedThreadIds = useMemo(
+  const listedThreadsById = useMemo(
     () =>
-      new Set(
+      new Map(
         projects.flatMap((project) =>
-          project.threads.map((thread) => thread.id),
+          project.threads.map((thread) => [thread.id, thread] as const),
         ),
       ),
     [projects],
   );
-  const previousListedThreadIds = useRef(listedThreadIds);
   useLayoutEffect(() => {
-    const previous = previousListedThreadIds.current;
-    previousListedThreadIds.current = listedThreadIds;
-    const removed = new Set(
-      [...previous].filter((threadId) => !listedThreadIds.has(threadId)),
-    );
-    if (removed.size > 0) store.remove(removed);
-  }, [listedThreadIds, store]);
+    store.setListedThreads(listedThreadsById);
+  }, [listedThreadsById, store]);
   const hasSelection = useSyncExternalStore(
     store.subscribe,
     () => store.getSelected().length > 0,

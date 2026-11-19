@@ -32,6 +32,7 @@ import {
 import { holdSplitPreloads, startSplitPreloading } from "@/lib/split-prefetch";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { useCodeRendererPreloads } from "./useCodeRendererPreloads";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const imports = vi.hoisted(() => ({ diff: vi.fn(), source: vi.fn() }));
 

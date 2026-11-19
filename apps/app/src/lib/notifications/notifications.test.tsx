@@ -28,6 +28,7 @@ let pendingSonnerTimeouts = new Map<
 
 beforeEach(() => {
   cleanup();
+  appToast.dismiss();
   vi.restoreAllMocks();
   resetNotificationStore();
   pendingSonnerTimeouts = new Map();
@@ -156,6 +157,9 @@ describe("toast history", () => {
     await waitFor(() => expect(screen.getByText("Deployed v2")).toBeDefined());
     act(() => {
       toast.dismiss();
+    });
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("app-toast-title")).toHaveLength(0);
     });
   });
 });

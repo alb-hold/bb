@@ -222,6 +222,7 @@ export function createWorktreeHostEntry() {
             status: "created",
             path: created.path,
             baseBranch: baseBranch?.ref ?? null,
+            ownsBranch: created.ownsBranch,
           } as const;
         } catch (error) {
           if (context.signal.aborted) throw error;
@@ -327,6 +328,27 @@ export function createWorktreeHostEntry() {
           if (context.signal.aborted) throw error;
           return { status: "failed", message: describeError(error) } as const;
         }
+        if (input.ownedBranch !== null) {
+          try {
+            await deleteOwnedBranch({
+              repositoryPath: input.ownedBranch.repositoryPath,
+              branchName: input.ownedBranch.name,
+              baseBranch: input.ownedBranch.baseBranch,
+              onProgress,
+              signal: context.signal,
+            });
+          } catch (error) {
+            if (context.signal.aborted) throw error;
+            emitOutput(
+              onProgress,
+              "branch-cleanup",
+              `Kept branch ${input.ownedBranch.name}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+        return { status: "removed" } as const;
       },
     },
   });

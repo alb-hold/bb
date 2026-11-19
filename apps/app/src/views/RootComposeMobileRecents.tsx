@@ -12,7 +12,6 @@ import {
   RecentThreadProviderMark,
   RecentThreadCollapseMark,
   RECENT_THREAD_COLLAPSE_CLASS,
-  recentThreadRowIndicatorState,
   RecentThreadRowContent,
   RecentThreadsSection,
   RECENT_THREAD_ROW_CLASS,
@@ -35,16 +34,13 @@ import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-cl
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
 import { getThreadRoutePath, isProjectlessProjectId } from "@/lib/route-paths";
-import {
-  getThreadListIndicatorLabel,
-  resolveThreadListIndicator,
-} from "@bb/client-core";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
 import { findEnvironmentDisplayProvider } from "@/lib/environment-workspace-display";
 import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
+import { useThreadListEntryStatus } from "@/hooks/useThreadListEntryStatus";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
@@ -74,19 +70,12 @@ function MobileRecentThreadRow({
   projectName,
   provider,
   row,
-  now,
 }: MobileRecentThreadRowProps) {
   const { thread, depth, hasChildren, isCollapsed } = row;
   const touchStartedBeforeLink = useRef(false);
   const { providers: environmentProviders } = useSystemEnvironmentProviders();
   const threadTitle = useThreadTitleDisplayText(getThreadDisplayTitle(thread));
-  const { indicatorState, trailingIndicatorState } =
-    recentThreadRowIndicatorState(row, now);
-  const indicatorKind = resolveThreadListIndicator(trailingIndicatorState);
-  const indicatorLabel = getThreadListIndicatorLabel(
-    indicatorKind,
-    indicatorState.queuedFailedCount,
-  );
+  const { indicator: indicatorKind, label: indicatorLabel, rowStatus } = useThreadListEntryStatus(thread, { threads: row.hiddenThreads, haveDraft: row.hiddenThreadsHaveDraft });
   const environmentProviderLookup = findEnvironmentDisplayProvider(
     environmentProviders,
     thread.environmentProviderId,
@@ -159,7 +148,8 @@ function MobileRecentThreadRow({
             projectName={projectName}
             environmentProviderLookup={environmentProviderLookup}
             indicatorKind={indicatorKind}
-            queuedFailedCount={indicatorState.queuedFailedCount}
+            queuedFailedCount={thread.queuedFailedCount}
+            rowStatus={rowStatus}
           />
         </RouteAnchor>
       </li>

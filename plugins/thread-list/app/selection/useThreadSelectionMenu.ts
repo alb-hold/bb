@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useSyncExternalStore } from "react";
 import type {
   PluginThreadActionsInlineItem,
   PluginThreadActionTarget,
@@ -25,17 +25,9 @@ export function useThreadSelectionMenu(
   const store = useThreadSelectionStore();
   const projects = useThreadSelectionProjects();
   const dismissedWithEscape = useRef(false);
-  const selection = useMemo(() => {
-    if (threadIds === null) return null;
-    const byId = new Map<string, SidebarThread>();
-    for (const project of projects) {
-      for (const thread of project.threads) byId.set(thread.id, thread);
-    }
-    return threadIds.flatMap((threadId) => {
-      const thread = byId.get(threadId);
-      return thread === undefined ? [] : [toThreadActionTarget(thread)];
-    });
-  }, [projects, threadIds]);
+  const selection = useSyncExternalStore(store.subscribe, () =>
+    threadIds === null ? null : store.getSelectionTargets(),
+  );
   return useMemo(
     () =>
       selection === null

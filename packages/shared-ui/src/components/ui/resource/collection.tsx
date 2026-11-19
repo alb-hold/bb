@@ -310,6 +310,7 @@ type ResourceBrowseCardProps = {
   title: ReactNode;
   description?: ReactNode;
   descriptionLines?: 2 | 3 | "expandable";
+  descriptionAlign?: "center" | "start";
   byline?: ReactNode;
   headerAction?: ReactNode;
   footerMeta?: ReactNode;
@@ -328,6 +329,7 @@ export function ResourceBrowseCard({
   title,
   description,
   descriptionLines = 2,
+  descriptionAlign = "center",
   byline,
   headerAction,
   footerMeta,
@@ -339,6 +341,11 @@ export function ResourceBrowseCard({
 }: ResourceBrowseCardProps) {
   const hasLeading =
     leading !== undefined && leading !== null && leading !== false;
+  const titleNode = (
+    <span className="block truncate text-sm font-medium text-foreground">
+      {title}
+    </span>
+  );
   return (
     <div
       className={cn(
@@ -371,11 +378,11 @@ export function ResourceBrowseCard({
           >
             {leading}
           </span>
-          <span className="ml-3 min-w-0 flex-1">{renderTitle()}</span>
+          <span className="ml-3 min-w-0 flex-1">{titleNode}</span>
         </span>
       ) : (
         <span className="pointer-events-none relative col-start-1 row-start-1 min-w-0 self-center">
-          {renderTitle()}
+          {titleNode}
         </span>
       )}
       {headerAction ? (
@@ -389,7 +396,8 @@ export function ResourceBrowseCard({
       {description ? (
         <span
           className={cn(
-            "pointer-events-none relative col-span-2 row-start-2 self-center text-left text-xs leading-snug text-muted-foreground",
+            "pointer-events-none relative col-span-2 row-start-2 text-left text-xs leading-snug text-muted-foreground",
+            descriptionAlign === "start" ? "self-start" : "self-center",
             descriptionLines === "expandable"
               ? "break-words"
               : descriptionLines === 3
@@ -421,14 +429,6 @@ export function ResourceBrowseCard({
       ) : null}
     </div>
   );
-
-  function renderTitle() {
-    return (
-      <span className="block truncate text-sm font-medium text-foreground">
-        {title}
-      </span>
-    );
-  }
 }
 
 export function ResourceTemplateBrowseCard({

@@ -1,4 +1,5 @@
 import { HOST_TAILWIND_VERSION } from "@bb/plugin-build/host-tailwind-version";
+import type { SystemConfigResponse } from "@bb/server-contract";
 import { useInsertionEffect } from "react";
 import {
   collectHostUtilityKeys,
@@ -222,7 +223,11 @@ function deactivateAfterFinalRelease(
 }
 
 function hostTailwindUrl(url: string): string {
-  return `${url}${url.includes("?") ? "&" : "?"}host-tailwind=${HOST_TAILWIND_VERSION}`;
+  const keyed =
+    appQueryClient.getQueryData<SystemConfigResponse>(systemConfigQueryKey())
+      ?.experiments.keyedPluginCss === true;
+  if (keyed) keepPluginScopeAttributes();
+  return `${url}${url.includes("?") ? "&" : "?"}host-tailwind=${HOST_TAILWIND_VERSION}&css-scope=${keyed ? "plugin-attribute-v1" : "owned-root-v1"}`;
 }
 
 export function prefetchPluginCss(url: string): void {

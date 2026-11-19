@@ -7,7 +7,10 @@ import {
 } from "@/components/plugin/plugin-composer-host";
 import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
 import { getThreadSecondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
-import { LazyThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import {
+  LazyThreadSecondaryPanel,
+  ThreadSecondaryPanelDrawerPlaceholder,
+} from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   ThreadMetadataCard,
   ThreadMetadataContent,
@@ -126,7 +129,7 @@ function ThreadDetailSecondaryContentBody({
         resetKey={metadata.thread.id}
         contentKey={metadata.thread.id}
         drawerLabel="Thread details"
-        drawerFallback={<ThreadMetadataLoadingSkeleton />}
+        drawerFallback={drawerFallback}
         mainPanelId="thread-detail-timeline-panel"
         mainHeader={header}
         main={
@@ -157,7 +160,7 @@ function ThreadDetailSecondaryContentBody({
         }) => (
           <LazyThreadSecondaryPanel
             {...threadSecondaryPanelProps}
-            drawerFallback={<ThreadMetadataLoadingSkeleton />}
+            drawerFallback={drawerFallback}
             renderBrowserDeck={(activeBrowserTabId, pane) =>
               renderBrowserDeck?.({
                 activeBrowserTabId,

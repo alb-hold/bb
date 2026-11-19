@@ -49,7 +49,9 @@ and ill-formed Unicode—have no active href and cannot record a preview in the
 frontend harness. Buttons and menus can call
 `experimental_openFilePreview({ target, location })` or
 `experimental_openFileExternally({ target, location })`; both return whether
-the current host accepted the intent. The
+the current host accepted the intent. Pass `opener: "<id>"` to
+`experimental_openFilePreview` to show the file with one of your own
+`fileOpener` registrations for that open, as the "Open with" menu does. The
 `experimental_useCanOpenFileExternally(target)` hook reports whether the
 external open can succeed now (false while loading) and re-renders the
 component when that changes; use it to disable an Open externally control.
@@ -113,7 +115,10 @@ a React slot. The host supplies `{ pluginId, generation, signal }`, awaits
 mount setup, and owns abort plus exact-once reverse-order disposal across hash
 reload, disable, removal, failed replacement, and app-window teardown. The old
 generation is disposed before candidate mounts, so generations never overlap.
-Content scripts are trusted same-origin page code, not a sandbox.
+When the page unloads, the host aborts and cleans up content scripts but leaves
+slot components mounted for the browser to discard, so React effect cleanups do
+not run at unload. Save state as it changes, or flush it from a content script
+cleanup. Content scripts are trusted same-origin page code, not a sandbox.
 
 Static styles should stay in the normal imported `app.css`. The host keeps
 that stylesheet active while the plugin has rendered slot, panel-header, or

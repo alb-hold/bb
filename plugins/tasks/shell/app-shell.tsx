@@ -19,6 +19,7 @@ import { ManagePanel } from "../views/manage/manage-panel.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 const BOARD_MIN_WIDTH = 448;
 
@@ -48,9 +49,9 @@ function RouteOutlet({
 }) {
   switch (route.kind) {
     case "all":
-      return <ListView projectId={null} />;
+      return <ListView key="all" projectId={null} />;
     case "active":
-      return <ListView projectId={null} activeOnly />;
+      return <ListView key="active" projectId={null} activeOnly />;
     case "manage":
       return <ManagePanel />;
     case "task":
@@ -59,7 +60,7 @@ function RouteOutlet({
       return route.view === "board" && boardUsable ? (
         <BoardView projectId={route.projectId} />
       ) : (
-        <ListView projectId={route.projectId} />
+        <ListView key={route.projectId} projectId={route.projectId} />
       );
   }
 }
@@ -113,14 +114,15 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     const main = mainRef.current;
     if (!main || typeof ResizeObserver === "undefined") return;
-    const update = () => {
+    const readUsable = () => {
       const mainWidth = main.clientWidth;
-      setBoardUsable(!(mainWidth > 0 && mainWidth < BOARD_MIN_WIDTH));
+      return !(mainWidth > 0 && mainWidth < BOARD_MIN_WIDTH);
     };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(main);
-    return () => observer.disconnect();
+    setBoardUsable(readUsable());
+    return observeSharedResize(main, {
+      read: readUsable,
+      write: setBoardUsable,
+    });
   }, []);
   const projects = useProjects();
 

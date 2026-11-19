@@ -40,7 +40,7 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         sessionId: session.id,
         socket,
-        raw: JSON.stringify({ type: "heartbeat" }),
+        message: { type: "heartbeat" },
       });
 
       const updatedSession = harness.db
@@ -93,13 +93,13 @@ describe("internal environment change websocket hints", () => {
         hostId: hostB.host.id,
         sessionId: hostB.session.id,
         socket,
-        raw: JSON.stringify({
+        message: {
           type: "host-rpc.response",
           requestId: "rpc-protocol-session-scoped",
           commandType: "host.list_files",
           ok: true,
           result: { files: [], truncated: false },
-        }),
+        },
       });
 
       await Promise.resolve();
@@ -110,13 +110,13 @@ describe("internal environment change websocket hints", () => {
         hostId: hostA.host.id,
         sessionId: hostA.session.id,
         socket,
-        raw: JSON.stringify({
+        message: {
           type: "host-rpc.response",
           requestId: "rpc-protocol-session-scoped",
           commandType: "host.list_files",
           ok: true,
           result: { files: [], truncated: false },
-        }),
+        },
       });
 
       await expect(observed).resolves.toEqual({
@@ -130,10 +130,56 @@ describe("internal environment change websocket hints", () => {
     });
   });
 
+  it("notifies only the changed thread when its storage changes, and only from its own host", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-storage-owner",
+      });
+      const other = seedHostSession(harness.deps, {
+        id: "host-storage-other",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/env-storage-change",
+        status: "ready",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+      });
+      const notifyThreadSpy = vi.spyOn(harness.hub, "notifyThread");
+      const notifyEnvironmentSpy = vi.spyOn(harness.hub, "notifyEnvironment");
+      const send = (hostId: string, sessionId: string) =>
+        onDaemonSocketMessage(harness.deps, {
+          hostId,
+          sessionId,
+          socket: createTestDaemonSocket(),
+          message: {
+            type: "thread-storage-change",
+            threadId: thread.id,
+          },
+        });
+
+      send(other.host.id, other.session.id);
+      expect(notifyThreadSpy).not.toHaveBeenCalled();
+
+      send(host.id, session.id);
+      expect(notifyThreadSpy).toHaveBeenCalledTimes(1);
+      expect(notifyThreadSpy).toHaveBeenCalledWith(thread.id, [
+        "storage-changed",
+      ]);
+      expect(notifyEnvironmentSpy).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     "work-status-changed",
-    "thread-storage-changed",
     "git-refs-changed",
+    "git-branches-changed",
   ] as const)(
     "notifies clients for %s hints without mutating rows",
     async (change) => {
@@ -158,11 +204,11 @@ describe("internal environment change websocket hints", () => {
           hostId: host.id,
           sessionId: session.id,
           socket,
-          raw: JSON.stringify({
+          message: {
             type: "environment-change",
             environmentId: environment.id,
             change,
-          }),
+          },
         });
 
         expect(notifyEnvironmentSpy).toHaveBeenCalledWith(environment.id, [
@@ -200,17 +246,17 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         sessionId: session.id,
         socket,
-        raw: JSON.stringify({
+        message: {
           type: "environment-metadata-change",
           environmentId: environment.id,
           workspace: {
-            path: environment.path,
+            path: environment.path ?? "/tmp/env-metadata-change",
             isGitRepo: true,
             isWorktree: true,
             branchName: "main",
             defaultBranch: "main",
           },
-        }),
+        },
       });
 
       expect(socket.close).not.toHaveBeenCalled();
@@ -229,17 +275,17 @@ describe("internal environment change websocket hints", () => {
           hostId: host.id,
           sessionId: session.id,
           socket,
-          raw: JSON.stringify({
+          message: {
             type: "environment-metadata-change",
             environmentId: environment.id,
             workspace: {
-              path: environment.path,
+              path: environment.path ?? "/tmp/env-metadata-change",
               isGitRepo: true,
               isWorktree: true,
               branchName,
               defaultBranch: "main",
             },
-          }),
+          },
         });
         expect(getEnvironment(harness.db, environment.id)).toMatchObject({
           branchName,
@@ -281,11 +327,11 @@ describe("internal environment change websocket hints", () => {
         hostId: hostA.host.id,
         sessionId: hostA.session.id,
         socket,
-        raw: JSON.stringify({
+        message: {
           type: "environment-change",
           environmentId: environment.id,
           change: "work-status-changed",
-        }),
+        },
       });
 
       expect(notifyEnvironmentSpy).not.toHaveBeenCalled();
@@ -315,11 +361,11 @@ describe("internal environment change websocket hints", () => {
           hostId: host.id,
           sessionId: session.id,
           socket,
-          raw: JSON.stringify({
+          message: {
             type: "environment-change",
             environmentId,
             change: "work-status-changed",
-          }),
+          },
         });
       }
 

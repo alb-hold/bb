@@ -60,6 +60,7 @@ const warmPicker = () => {
   void ModelReasoningPickerBody.preload();
   void ModelReasoningMenu.preload();
 };
+export type MoreModelsOpenedBy = "hover" | "activation";
 export {
   buildModelNavRows,
   type ModelNavRow,
@@ -459,6 +460,13 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
               >
                 {triggerReasoningLabel}
               </span>
+            ) : reasoningIsLoading && hasSelectedModel && !modelIsLoading ? (
+              <Skeleton
+                aria-hidden
+                data-reasoning-loading-placeholder="trigger"
+                data-promptbox-hide-compact=""
+                className="h-3 w-8 shrink-0 rounded-sm"
+              />
             ) : null}
           </>
         )}

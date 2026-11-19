@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ExperimentalMessageMetadataProps } from "@get-bb/plugin-sdk";
 import { defineSplit } from "@/lib/define-split";
 import {

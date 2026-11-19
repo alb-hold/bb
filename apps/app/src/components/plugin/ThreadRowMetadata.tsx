@@ -22,7 +22,7 @@ import {
   useRegisterLineThread,
 } from "@/lib/thread-row-metadata-store";
 import {
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginThreadRowMetadataSlot,
 } from "@/lib/plugin-slots";
 

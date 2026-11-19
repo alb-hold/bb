@@ -66,13 +66,13 @@ import {
   useSidebarThreadRowStatus,
   useSidebarThreadShortcut,
   useSdk,
-  type PluginSidebarSplitPane,
   type PluginThreadActionsContextMenuProps,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
   type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
+  type PluginThreadStatus,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import { useThreadListPullRequest } from "./pull-request-query.js";
@@ -185,7 +185,7 @@ export type ThreadRowOptions =
       kind: "parent";
       isCollapsed: boolean;
       childCount: number;
-      childActivity: CollapsedChildActivity;
+      hiddenThreads: readonly SidebarThread[];
       stickyLevel?: number;
       onToggleCollapsed: (threadId: string) => void;
     });
@@ -342,7 +342,7 @@ export function CollapsedThreadStatusGlyph({
 }
 
 function ThreadTrailingIndicator({
-  state,
+  status,
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
@@ -351,7 +351,7 @@ function ThreadTrailingIndicator({
   automationStartedAt,
   elapsedMinutes,
 }: {
-  state: ThreadListIndicatorState;
+  status: PluginThreadStatus;
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
@@ -426,8 +426,8 @@ function ThreadTrailingIndicator({
       }
     >
       <ThreadStatusGlyph
-        indicator={indicatorKind}
-        rowStatus={rowStatus}
+        indicator={status.indicator}
+        rowStatus={status.rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
         experimental_queuedFailedCount={state.queuedFailedCount}
@@ -669,6 +669,8 @@ function ThreadRowComponent({
     thread.id,
     multiSelection === null ? undefined : { dragThreadIds: multiSelection },
   );
+  const miniMap = split.layout?.panes ?? null;
+  const isOpenInSplit = miniMap !== null;
   const onSplitDragPointerDown = split.splitProps.onPointerDown;
   const splitAvailable = split.isAvailable;
   const openInSplit = useCallback(() => {
@@ -710,8 +712,6 @@ function ThreadRowComponent({
   const isParentRow = parentOptions !== null;
   const isParentCollapsed = parentOptions?.isCollapsed ?? false;
   const childCount = parentOptions?.childCount ?? 0;
-  const childActivity =
-    parentOptions?.childActivity ?? NO_COLLAPSED_CHILD_ACTIVITY;
   const hasChildren = childCount > 0;
   const reserveActionSpace =
     crossProjectLabel !== null || (isParentRow && hasChildren);

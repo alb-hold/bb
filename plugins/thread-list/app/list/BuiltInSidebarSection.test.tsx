@@ -1,18 +1,27 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+
 import type { ReactNode } from "react";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+
+import { makeSidebarThread } from "../model/fixtures.js";
+
+
 import {
   installTestPluginRuntime,
   renderSlot,
 } from "@get-bb/plugin-sdk/testing/app";
+
 import type { BuiltInSidebarSectionOptionsById } from "./BuiltInSidebarSection.js";
 
+
 installTestPluginRuntime();
+
 const { renderBuiltInSidebarSection } =
   await import("./BuiltInSidebarSection.js");
+
 
 const SECTIONS: BuiltInSidebarSectionOptionsById = {
   pinned: {
@@ -25,13 +34,16 @@ const SECTIONS: BuiltInSidebarSectionOptionsById = {
   },
 };
 
+
 function Slot({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+
 function renderSections(children: ReactNode) {
   return renderSlot({ component: Slot }, { children });
 }
+
 
 function BuiltInSectionsProbe({ showPinned }: { showPinned: boolean }) {
   const sharedProps = {
@@ -56,11 +68,13 @@ function BuiltInSectionsProbe({ showPinned }: { showPinned: boolean }) {
   );
 }
 
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
 
 describe("built-in sidebar section renderer", () => {
   it("waits for observed layout before measuring the pinned overflow cue", () => {
@@ -83,6 +97,7 @@ describe("built-in sidebar section renderer", () => {
     expect(content.hasAttribute("data-more-below")).toBe(false);
   });
 
+
   it("keeps clipped pinned rows opaque while preserving scrolling", () => {
     renderSections(<BuiltInSectionsProbe showPinned />);
     const content = screen.getByText("Pinned content").parentElement;
@@ -103,6 +118,7 @@ describe("built-in sidebar section renderer", () => {
       screen.getByText("Threads content").parentElement?.hasAttribute("data-sidebar-section-scroll"),
     ).toBe(false);
   });
+
 
   it.each([false, true])(
     "keeps Pinned in normal flow without changing Threads stickiness (collapsed: %s)",
@@ -149,6 +165,7 @@ describe("built-in sidebar section renderer", () => {
     },
   );
 
+
   it("hides Pinned without hiding Threads, then restores Pinned", () => {
     const result = renderSections(<BuiltInSectionsProbe showPinned={false} />);
 
@@ -166,6 +183,7 @@ describe("built-in sidebar section renderer", () => {
     expect(result.container.querySelector('[data-icon="Pin"]')).toBeNull();
   });
 
+
   it("surfaces shared activity when Threads is collapsed", () => {
     renderSections(
       renderBuiltInSidebarSection({
@@ -177,11 +195,13 @@ describe("built-in sidebar section renderer", () => {
           ...SECTIONS,
           threads: {
             ...SECTIONS.threads,
-            activity: {
-              ...NO_COLLAPSED_CHILD_ACTIVITY,
-              goal: true,
-              working: true,
-            },
+            collapsedThreads: [
+              makeSidebarThread({
+                id: "thread-plan",
+                isUnread: false,
+                activity: { planMode: 1 },
+              }),
+            ],
           },
         },
         showPinnedSection: false,

@@ -1,5 +1,10 @@
 import path from "node:path";
 import { HOST_DAEMON_RESTART_EXIT_CODE } from "@bb/config/machine-service";
+import {
+  readAgentCpuPriority,
+  setAgentWorkloadsLowered,
+  writeAgentCpuPriority,
+} from "@bb/process-utils";
 import type { WorktreeHolderScan } from "@bb/process-utils";
 import { startDesktopBrowserBroker } from "./desktop-browser-broker.js";
 import { MachineEnvironment } from "./machine-environment.js";
@@ -20,7 +25,11 @@ import { startHostDaemonHealthMonitor } from "./host-daemon-health-monitor.js";
 import { startLocalApiServer, type LocalApiServer } from "./local-api.js";
 import type { HostDaemonLocalApiConfig } from "./local-api-config.js";
 import type { HostDaemonLogger } from "./logger.js";
-import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
+import type {
+  HostDaemonDaemonWsMessage,
+  HostDaemonInteractiveRequestKey,
+  HostDaemonOpenThreadWork,
+} from "@bb/host-daemon-contract";
 import {
   RuntimeManager,
   type RuntimeManagerReapIdleProviderSessionsArgs,
@@ -62,7 +71,11 @@ import {
   createRuntimeShellEnvCache,
   type RuntimeShellEnvRefreshArgs,
 } from "./runtime-shell-env-cache.js";
-import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
+import type {
+  AgentRuntime,
+  AgentRuntimeOptions,
+  RuntimeOpenBackgroundWork,
+} from "@bb/agent-runtime";
 import { createProtocolSelfUpdater } from "./protocol-self-update.js";
 import {
   disposeParcelWatcherBackend,
@@ -84,6 +97,33 @@ const INTERACTIVE_INTERRUPT_RETRY_DELAY_MS = 1_000;
 const INTERACTIVE_INTERRUPT_MAX_RETRY_DELAY_MS = 60_000;
 const IDLE_PROVIDER_SESSION_REAP_INTERVAL_MS = 5 * 60 * 1000;
 const RUNTIME_SHELL_ENV_REFRESH_TTL_MS = 10_000;
+const ENDED_INTERACTIVE_REQUEST_REASON =
+  "The question was closed while the host was disconnected";
+
+function collectOpenThreadWork(args: {
+  backgroundWork: readonly RuntimeOpenBackgroundWork[];
+  interactiveRequests: readonly HostDaemonInteractiveRequestKey[];
+}): HostDaemonOpenThreadWork[] {
+  const byThreadId = new Map<string, HostDaemonOpenThreadWork>();
+  const threadWork = (threadId: string): HostDaemonOpenThreadWork => {
+    const existing = byThreadId.get(threadId);
+    if (existing) return existing;
+    const created: HostDaemonOpenThreadWork = {
+      threadId,
+      backgroundItemIds: [],
+      interactiveRequests: [],
+    };
+    byThreadId.set(threadId, created);
+    return created;
+  };
+  for (const work of args.backgroundWork) {
+    threadWork(work.threadId).backgroundItemIds.push(...work.itemIds);
+  }
+  for (const request of args.interactiveRequests) {
+    threadWork(request.threadId).interactiveRequests.push(request);
+  }
+  return [...byThreadId.values()];
+}
 
 interface IdleProviderSessionReaperTimer {
   clear(): void;
@@ -232,6 +272,7 @@ interface MaybeInvalidateSessionArgs {
 export async function createHostDaemonApp(
   options: CreateHostDaemonAppOptions,
 ): Promise<HostDaemonApp> {
+  setAgentWorkloadsLowered(readAgentCpuPriority(options.dataDir));
   const machineEnvironment = new MachineEnvironment(
     process.env,
     options.runtimeShellEnv ?? {},
@@ -475,11 +516,10 @@ export async function createHostDaemonApp(
       runtimeManager.refreshEnvironmentWorkspace(args),
     shellEnv: () => runtimeManager.getShellEnv(),
     threadStorageRootPath,
-    onThreadStorageChanged: ({ environmentId }) => {
+    onThreadStorageChanged: ({ threadId }) => {
       sendServerMessage({
-        type: "environment-change",
-        environmentId,
-        change: "thread-storage-changed",
+        type: "thread-storage-change",
+        threadId,
       });
     },
     onThreadStorageWatchError: ({ error }) => {
@@ -662,7 +702,8 @@ export async function createHostDaemonApp(
       } catch (error) {
         if (
           error instanceof InteractiveRequestRegistryError &&
-          error.code === "interactive_request_rejected"
+          (error.code === "interactive_request_rejected" ||
+            error.code === "interactive_request_ended")
         ) {
           options.logger.warn(
             {
@@ -955,15 +996,27 @@ export async function createHostDaemonApp(
     }),
     onSelfUpdateInstalled: () => requestDaemonRestart(),
     onMachineShutdown: () => requestMachineShutdown(),
+    onInteractiveRequestsEnded: ({ reason, requests }) =>
+      interactiveRequestRegistry.endRequests(requests, reason),
     onServerMoved: (notice) => serverMove.handleServerMoved(notice),
     onMachineEnvironment: (environment) =>
       machineEnvironment.replace(environment.entries),
     onIdleProviderSessionTimeout: (value) =>
       idleProviderSessionReaper.setTimeoutMinutes(value),
+    onAgentCpuPriority: (enabled) => {
+      setAgentWorkloadsLowered(enabled);
+      writeAgentCpuPriority(options.dataDir, enabled);
+    },
     createWebSocket: options.createWebSocket,
+    getTurnCommandThreadIds: () => router.listThreadIdsHandlingTurnCommands(),
     getActiveThreads: () => runtimeManager.listActiveThreads(),
     hasOpenBackgroundWork: () => runtimeManager.hasOpenBackgroundWork(),
     getUndeliveredEventThreadIds: () => eventSink.listUndeliveredThreadIds(),
+    getOpenThreadWork: () =>
+      collectOpenThreadWork({
+        backgroundWork: runtimeManager.listOpenBackgroundWork(),
+        interactiveRequests: interactiveRequestRegistry.listOpenRequests(),
+      }),
     getLoadedEnvironments: () => runtimeManager.listLoadedEnvironments(),
     getAdoptedThreads: () => runtimeManager.listAdoptedBridgeThreads(),
     onHostRpcRequest: async (message) => {
@@ -997,6 +1050,19 @@ export async function createHostDaemonApp(
         terminalDataSocket.close();
       }
       sessionState.value = session.sessionId;
+      if (session.endedInteractiveRequests.length > 0) {
+        interactiveRequestRegistry.endRequests(
+          session.endedInteractiveRequests,
+          ENDED_INTERACTIVE_REQUEST_REASON,
+        );
+        options.logger.info(
+          {
+            requests: session.endedInteractiveRequests,
+            sessionId: session.sessionId,
+          },
+          "Ended provider questions the server no longer waits on",
+        );
+      }
       connectTunnel.replaceAuthoritativeShareSet(session.connectShares);
       machineNextTunnel.replaceAuthoritative(session.connectNext);
       void machineNextTunnel.setPorts(connectTunnel.status().ports);

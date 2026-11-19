@@ -20,6 +20,7 @@ import {
 } from "@bb/domain";
 import type {
   HostDaemonBridgeLaunch,
+  HostDaemonCommand,
   HostDaemonOnlineRpcResponseMessage,
 } from "@bb/host-daemon-contract";
 import { makeTempDir } from "@bb/test-helpers";
@@ -39,7 +40,6 @@ import {
   noopEventSink,
   unexpectedProjectAttachmentFetch,
   unexpectedProviderMaintenance,
-  fetchDispatchTestArtifact,
 } from "./dispatch-helpers.js";
 
 const ENVIRONMENT_ID = "env-stop-race";
@@ -87,7 +87,7 @@ function nextClientRequestId(): ClientTurnRequestId {
   return requestId;
 }
 
-function flushMicrotasks(): Promise<void> {
+function nextMacrotask(): Promise<void> {
   return new Promise((resolve) => {
     setImmediate(resolve);
   });
@@ -283,9 +283,13 @@ function turnSubmitCommand(
   };
 }
 
-function threadStopCommand(threadId: string): CommandOf<"thread.stop"> {
+function threadStopCommand(
+  threadId: string,
+  aimedAt: CommandOf<"thread.stop">["aimedAt"] = null,
+): CommandOf<"thread.stop"> {
   return {
     type: "thread.stop",
+    aimedAt,
     intent: "interrupt",
     environmentId: ENVIRONMENT_ID,
     threadId,
@@ -299,22 +303,43 @@ function recordedThreadStops(harness: RaceHarness): Record<string, unknown>[] {
     .map((request) => request.params ?? {});
 }
 
-function routerStop(
+function routerCommand(
   router: CommandRouter,
-  threadId: string,
+  command: HostDaemonCommand,
 ): Promise<HostDaemonOnlineRpcResponseMessage> {
   const requestId = `stop-race-rpc-${nextRpcRequestIdValue}`;
   nextRpcRequestIdValue += 1;
   return router.handleOnlineRpcRequest({
     type: "host-rpc.request",
     requestId,
-    command: threadStopCommand(threadId),
+    command,
+  });
+}
+
+function routerStop(
+  router: CommandRouter,
+  threadId: string,
+): Promise<HostDaemonOnlineRpcResponseMessage> {
+  return routerCommand(router, threadStopCommand(threadId));
+}
+
+function createRaceRouter(harness: RaceHarness): CommandRouter {
+  return new CommandRouter({
+    dataDir: "/tmp/bb-stop-race-data",
+    eventSink: noopEventSink,
+    fetchProjectAttachment: unexpectedProjectAttachmentFetch,
+    fetchPluginHostArtifact: harness.dispatchOptions.fetchPluginHostArtifact,
+    ...unexpectedProviderMaintenance,
+    logger: { debug: () => undefined, warn: () => undefined },
+    runtimeManager: harness.manager,
+    threadStorageRootPath: "/tmp/bb-stop-race-thread-storage",
   });
 }
 
 describe("thread.stop race semantics", () => {
-  it("resolves a stop dispatched before turn/started event-driven and stops the right turn", async () => {
+  it("interrupts the turn of a submit that was still in flight when the stop arrived", async () => {
     const harness = await createRaceHarness();
+    const router = createRaceRouter(harness);
     await dispatchCommand(
       threadStartCommand(harness, { threadId: "t-race" }),
       harness.dispatchOptions,
@@ -323,22 +348,21 @@ describe("thread.stop race semantics", () => {
     expect(runtime.hasThread("t-race")).toBe(true);
     expect(runtime.getActiveTurnId("t-race")).toBeNull();
 
-    const stopPromise = dispatchCommand(
-      threadStopCommand("t-race"),
-      harness.dispatchOptions,
-    );
-    await flushMicrotasks();
-    expect(recordedThreadStops(harness)).toHaveLength(0);
-
-    const submitPromise = dispatchCommand(
+    const submitPromise = routerCommand(
+      router,
       turnSubmitCommand(harness, {
         threadId: "t-race",
         inputText: "delay:60000",
       }),
-      harness.dispatchOptions,
     );
-    await expect(stopPromise).resolves.toEqual({ providerCheckpointId: null });
-    await expect(submitPromise).resolves.toEqual({ trace: { spans: [] } });
+    await nextMacrotask();
+    const stopPromise = routerStop(router, "t-race");
+
+    await expect(submitPromise).resolves.toMatchObject({ ok: true });
+    await expect(stopPromise).resolves.toMatchObject({
+      ok: true,
+      result: { providerCheckpointId: null },
+    });
 
     expect(recordedThreadStops(harness)).toEqual([
       expect.objectContaining({
@@ -358,7 +382,7 @@ describe("thread.stop race semantics", () => {
     expect(runtime.hasThread("t-race")).toBe(false);
   });
 
-  it("noops a stop after the turn-start wait times out without hanging", async () => {
+  it("stops an idle loaded thread without waiting for a turn to start", async () => {
     const harness = await createRaceHarness();
     await dispatchCommand(
       threadStartCommand(harness, { threadId: "t-idle" }),
@@ -367,16 +391,13 @@ describe("thread.stop race semantics", () => {
     const runtime = harness.requireRuntime();
     expect(runtime.getActiveTurnId("t-idle")).toBeNull();
 
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const stopPromise = dispatchCommand(
-      threadStopCommand("t-idle"),
-      harness.dispatchOptions,
+    const startedAt = performance.now();
+    await expect(
+      dispatchCommand(threadStopCommand("t-idle"), harness.dispatchOptions),
+    ).resolves.toEqual({ providerCheckpointId: null });
+    expect(performance.now() - startedAt).toBeLessThan(
+      THREAD_STOP_ACTIVE_TURN_WAIT_MS,
     );
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(THREAD_STOP_ACTIVE_TURN_WAIT_MS);
-    vi.useRealTimers();
-
-    await expect(stopPromise).resolves.toEqual({ providerCheckpointId: null });
     expect(recordedThreadStops(harness)).toEqual([
       expect.objectContaining({
         threadId: "t-idle",
@@ -448,16 +469,7 @@ describe("thread.stop race semantics", () => {
 
   it("treats the second of two racing stops as an idempotent no-op", async () => {
     const harness = await createRaceHarness();
-    const router = new CommandRouter({
-      dataDir: "/tmp/bb-stop-race-data",
-      eventSink: noopEventSink,
-      fetchProjectAttachment: unexpectedProjectAttachmentFetch,
-      fetchPluginHostArtifact: fetchDispatchTestArtifact,
-      ...unexpectedProviderMaintenance,
-      logger: { debug: () => undefined, warn: () => undefined },
-      runtimeManager: harness.manager,
-      threadStorageRootPath: "/tmp/bb-stop-race-thread-storage",
-    });
+    const router = createRaceRouter(harness);
     await dispatchCommand(
       threadStartCommand(harness, {
         threadId: "t-double",
@@ -493,4 +505,42 @@ describe("thread.stop race semantics", () => {
     ]);
     expect(runtime.hasThread("t-double")).toBe(false);
   });
+
+  it.each([
+    { aimedAt: "its message", interrupted: true },
+    { aimedAt: "another turn", interrupted: false },
+  ])(
+    "interrupts a running turn only when the stop is aimed at it ($aimedAt)",
+    async ({ interrupted }) => {
+      const harness = await createRaceHarness();
+      const start = threadStartCommand(harness, {
+        threadId: "t-aimed",
+        inputText: "delay:60000",
+      });
+      await dispatchCommand(start, harness.dispatchOptions);
+      const runtime = harness.requireRuntime();
+      await vi.waitFor(
+        () => {
+          expect(runtime.getActiveTurnId("t-aimed")).not.toBeNull();
+        },
+        { timeout: 5_000 },
+      );
+
+      const result = await dispatchCommand(
+        threadStopCommand("t-aimed", {
+          turnId: interrupted ? null : "turn-before-this-one",
+          requestIds: interrupted ? [start.requestId] : [],
+        }),
+        harness.dispatchOptions,
+      );
+
+      expect(recordedThreadStops(harness)).toHaveLength(interrupted ? 1 : 0);
+      expect(result).toEqual(
+        interrupted
+          ? { providerCheckpointId: null }
+          : { providerCheckpointId: null, activeTurnRetained: true },
+      );
+      expect(runtime.getActiveTurnId("t-aimed") !== null).toBe(!interrupted);
+    },
+  );
 });

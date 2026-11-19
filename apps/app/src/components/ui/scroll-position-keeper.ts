@@ -706,6 +706,10 @@ export class ScrollPositionKeeper {
     this.reconcile();
   }
 
+  readonly reconcileAfterLayout = (): void => {
+    this.reconcile();
+  };
+
   reconcile(urgent = true): void {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null) return;

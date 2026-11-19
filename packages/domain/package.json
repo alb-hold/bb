@@ -9,6 +9,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./thread-run-state": {
+      "source": "./src/thread-run-state.ts",
+      "types": "./src/thread-run-state.ts",
+      "default": "./src/thread-run-state.ts"
+    },
     "./thread-status": {
       "source": "./src/thread-status.ts",
       "types": "./src/thread-status.ts",
@@ -58,6 +63,11 @@
       "source": "./src/update-state.ts",
       "types": "./src/update-state.ts",
       "default": "./src/update-state.ts"
+    },
+    "./mobile-app": {
+      "source": "./src/mobile-app.ts",
+      "types": "./src/mobile-app.ts",
+      "default": "./src/mobile-app.ts"
     },
     "./plugin-cli": {
       "source": "./src/plugin-cli.ts",
@@ -114,14 +124,15 @@
   "scripts": {
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@bb/tsconfig": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
   }

@@ -175,6 +175,7 @@ function workspaceConfigForCwd(args: {
   cwd: string;
 }): ReturnType<typeof buildCodexConfig> {
   return buildCodexConfig({
+    supportsAgentsEnabled: true,
     threadId: "bb-thread-1",
     additionalWorkspaceWriteRoots: [],
     gitWritableRoots: gitWritableRootsForWorkspace(args.cwd),
@@ -530,6 +531,7 @@ describe("codex permission settings", () => {
 
 function configFor(options: CodexSessionOptions) {
   return buildCodexConfig({
+    supportsAgentsEnabled: true,
     threadId: "bb-thread-1",
     additionalWorkspaceWriteRoots: [],
     gitWritableRoots: [],
@@ -553,13 +555,30 @@ describe("buildCodexConfig", () => {
   });
 
   it("disables Codex native subagents", () => {
-    expect(
-      configFor({ ...FULL_OPTIONS, providerSubagentsEnabled: false }),
-    ).toMatchObject({
-      "features.multi_agent": false,
-      "features.multi_agent_v2.max_concurrent_threads_per_session": 1,
+    const config = configFor({
+      ...FULL_OPTIONS,
+      providerSubagentsEnabled: false,
     });
+
+    expect(config).toMatchObject({
+      "agents.enabled": false,
+      "features.multi_agent_v2": false,
+    });
+    expect(config).not.toHaveProperty("features.multi_agent");
+    expect(config).not.toHaveProperty(
+      "features.multi_agent_v2.max_concurrent_threads_per_session",
+    );
   });
+
+  it.each([true, undefined])(
+    "preserves native subagent configuration when enabled is %s",
+    (providerSubagentsEnabled) => {
+      const config = configFor({ ...FULL_OPTIONS, providerSubagentsEnabled });
+
+      expect(config).not.toHaveProperty("agents.enabled");
+      expect(config).not.toHaveProperty("features.multi_agent_v2");
+    },
+  );
 
   it("injects contributed environment into session params and drops invalid keys", () => {
     const config = configFor({
@@ -629,6 +648,7 @@ describe("buildCodexConfig", () => {
   it("omits the writable-roots key for a full-access session", () => {
     expectWorkspaceWriteWritableRootsConfigAbsent(
       buildCodexConfig({
+        supportsAgentsEnabled: true,
         threadId: "bb-thread-1",
         additionalWorkspaceWriteRoots: ["/repo/.git/objects"],
         gitWritableRoots: [],

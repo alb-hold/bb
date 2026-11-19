@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
 const moduleImports = await vi.hoisted(async () => {

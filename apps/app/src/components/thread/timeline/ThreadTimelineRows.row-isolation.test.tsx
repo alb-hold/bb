@@ -5,7 +5,7 @@ import { createElement, useState, type ComponentProps } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { formatShortMessageTime } from "./message-time";
@@ -14,7 +14,12 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { settleLazyModules } from "@/test/lazy-modules";
 
+const renderRecorder = await vi.hoisted(async () => {
+  const { installRenderRecorder } = await import("@/test/render-recorder");
+  return installRenderRecorder();
+});
 const renderedMessageTexts = vi.hoisted(() => [] as string[]);
 
 vi.mock("./ConversationMessageContent.js", async (importOriginal) => {
@@ -40,7 +45,7 @@ function assistantRow(
     role: "assistant",
     text,
     sourceSeqStart: 10 + index,
-    sourceSeqEnd: 10 + index,
+    sourceSeqEnd: streamed?.sourceSeqEnd ?? 10 + index,
     threadId: "thr_main",
     turnId,
   });
@@ -49,8 +54,20 @@ function assistantRow(
 afterEach(() => {
   cleanup();
   renderedMessageTexts.length = 0;
+  renderRecorder.reset();
   resetPluginSlotStoreForTest();
 });
+
+afterAll(() => {
+  renderRecorder.uninstall();
+});
+
+function renderedRowIds(componentName: string): string[] {
+  return renderRecorder
+    .propsOf(componentName)
+    .map((props) => (props as { row: { id: string } }).row.id)
+    .sort();
+}
 
 describe("ThreadTimelineRows row isolation", () => {
   it.each(["user", "assistant"] as const)(

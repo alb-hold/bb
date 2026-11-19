@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
+
 import { once } from "node:events";
+
 import { mkdtemp, rm } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
+
 import { join } from "node:path";
+
 import { expect, it, onTestFinished } from "vitest";
+
 import { FileLockTimeoutError, withFileLock } from "../src/file-lock.js";
+
 
 it("excludes another process and releases a native lock when its owner dies", async () => {
   const directory = await mkdtemp(join(tmpdir(), "bb-lock 日本語 "));
@@ -23,7 +30,7 @@ it("excludes another process and releases a native lock when its owner dies", as
        await new Promise((resolve) => setInterval(resolve, 60_000));
      }});`,
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"] },
   );
   const closed = once(child, "close");
   onTestFinished(async () => {

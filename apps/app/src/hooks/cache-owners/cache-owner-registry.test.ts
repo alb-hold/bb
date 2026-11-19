@@ -296,6 +296,7 @@ function toAppRelativePath(filePath: string): string {
 
 function isTestOrStoryFile(relativePath: string): boolean {
   return (
+    relativePath.startsWith("test/") ||
     relativePath.includes(".test.") ||
     relativePath.includes(".stories.") ||
     relativePath.endsWith(".d.ts")

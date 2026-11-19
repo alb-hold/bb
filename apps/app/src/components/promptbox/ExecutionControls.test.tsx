@@ -44,6 +44,7 @@ function makeExecutionControlsProps(
     reasoning: {
       value: "medium",
       options: [{ value: "medium", label: "Medium" }],
+      isLoading: false,
       onChange: vi.fn(),
     },
   };
@@ -54,7 +55,7 @@ function renderExecutionControls(props: ExecutionControlsProps) {
   return render(<ExecutionControls {...props} />, { wrapper });
 }
 
-beforeAll(() => ModelReasoningMenu.preload());
+await ModelReasoningMenu.preload();
 
 afterEach(async () => {
   cleanup();

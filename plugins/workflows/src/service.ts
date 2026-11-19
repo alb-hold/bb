@@ -37,9 +37,11 @@ import {
   listPendingNotificationRuns,
   listRunningCalls,
   listTimedOutRuns,
+  nextMaintenanceDueAt,
   markCallReplayedSameRun,
   markNotificationSent,
   queueCallProviderRetry,
+  reopenFailedCallOnWorker,
   recordNotificationFailure,
   recoverInterruptedRuns,
   settleNotificationUndeliverable,
@@ -54,6 +56,7 @@ import {
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
+import { resolveWorkflowReasoning } from "./reasoning-selection.js";
 import { executeWorkflowScript } from "./runtime.js";
 import {
   DEFAULT_WORKFLOW_SETTINGS,
@@ -70,6 +73,11 @@ import type {
   WorkflowReference,
 } from "./types.js";
 import { utf8Prefix } from "./utf8.js";
+import {
+  readRetryHandoff,
+  RETRY_DECISION_WAIT_MS,
+  type RetryHandoff,
+} from "./retry-handoff.js";
 import { parseStoredAgentOptions } from "./validation.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
 
@@ -95,7 +103,10 @@ const VALUE_LIMITS = { bytes: 1024 * 1024, nodes: 100_000, depth: 128 };
 const NOTIFICATION_RETRY_BASE_MS = 1_000;
 const NOTIFICATION_RETRY_MAX_MS = 60 * 60 * 1_000;
 const PROVIDER_RETRY_DELAYS_MS = [1_000, 4_000] as const;
+const RETRY_HANDOFF_POLL_MS = 1_000;
 const RETENTION_SWEEP_RUNS = 20;
+const MAINTENANCE_MIN_INTERVAL_MS = 1_000;
+const MAINTENANCE_SAFETY_INTERVAL_MS = 60_000;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -393,16 +404,16 @@ export function createWorkflowService(
 ): WorkflowService {
   let shuttingDown = false;
   let currentSettings = initialSettings;
-  let claimRequested = true;
+  let workRequested = true;
   let wakeWaiter: (() => void) | null = null;
 
   function wakeWorker(): void {
-    claimRequested = true;
+    workRequested = true;
     wakeWaiter?.();
   }
 
   function waitForWork(ms: number, signal: AbortSignal): Promise<void> {
-    if (claimRequested || signal.aborted) return Promise.resolve();
+    if (workRequested || signal.aborted) return Promise.resolve();
     return new Promise((resolve) => {
       const settle = () => {
         clearTimeout(timeout);
@@ -431,6 +442,7 @@ export function createWorkflowService(
 
   function publishRunsChanged(originThreadId: string): void {
     bb.rpc.experimental_invalidate([`runs:${originThreadId}`]);
+    wakeWorker();
   }
 
   function publishRunProgress(runId: string): void {
@@ -439,6 +451,7 @@ export function createWorkflowService(
   }
 
   const spawningCalls = new Set<string>();
+  const handoffCalls = new Set<string>();
 
   async function onOriginUnavailable(threadId: string): Promise<void> {
     const stops = listActiveRunsForOriginThread(db, threadId).map((run) =>
@@ -536,6 +549,7 @@ export function createWorkflowService(
     for (const worker of retiredWorkers(db, Date.now())) {
       if (
         spawningCalls.has(worker.callId) ||
+        handoffCalls.has(worker.callId) ||
         !isWorkerRetired(db, worker.threadId)
       )
         continue;
@@ -764,11 +778,12 @@ export function createWorkflowService(
         `Model ${JSON.stringify(requested.model)} is not available for provider ${requested.provider}`,
       );
     }
-    if (
-      !model.supportedReasoningEfforts.some(
-        (effort) => effort.reasoningEffort === requested.reasoningLevel,
-      )
-    ) {
+    const reasoningLevel = resolveWorkflowReasoning(
+      model,
+      requested.reasoningLevel,
+      inherited,
+    );
+    if (reasoningLevel === null) {
       throw new Error(
         `Reasoning level ${JSON.stringify(requested.reasoningLevel)} is not supported by ${requested.provider}/${requested.model}`,
       );
@@ -784,7 +799,7 @@ export function createWorkflowService(
     return selectedExecutionSchema.parse({
       providerId: requested.provider,
       model: model.model,
-      reasoningLevel: requested.reasoningLevel,
+      reasoningLevel,
       permissionMode,
     });
   }
@@ -973,45 +988,57 @@ export function createWorkflowService(
         }
         publishRunsChanged(run.originThreadId);
         spawningCalls.delete(call.id);
-        const stopOnAbort = () => void stopChild(child.id);
-        signal.addEventListener("abort", stopOnAbort, { once: true });
-        try {
-          const current = await bb.sdk.threads.get({ threadId: child.id });
-          throwIfCancelled(signal);
-          if (current.status === "idle") {
-            const output = await bb.sdk.threads.output({ threadId: child.id });
-            throwIfCancelled(signal);
-            onThreadIdle(child.id, output.output);
-          } else if (current.status === "error") {
-            failThreadCall(
-              child.id,
-              "Workflow worker failed before attachment completed",
-            );
-          }
-        } catch (error) {
-          if (signal.aborted) {
-            await stopChild(child.id);
-            throw error;
-          }
-          bb.log.warn(
-            `Could not reconcile new workflow worker ${child.id}: ${message(error)}`,
-          );
-        }
-        try {
-          return await waitForCall(call, signal);
-        } finally {
-          signal.removeEventListener("abort", stopOnAbort);
-        }
+        return await waitOnWorker(call, child.id, signal, "spawned");
       } catch (error) {
         spawningCalls.delete(call.id);
+        wakeWorker();
+        if (signal.aborted) handoffCalls.delete(call.id);
         throwIfCancelled(signal);
-        const delay = PROVIDER_RETRY_DELAYS_MS[call.providerRetryAttempts];
-        if (delay === undefined || !isRetryableProviderFailure(error)) {
-          throw error;
+        let failure = error;
+        while (handoffCalls.has(call.id)) {
+          const failedWorker = getCall(
+            db,
+            call.runId,
+            call.callIndex,
+          )?.childThreadId;
+          if (failedWorker === null || failedWorker === undefined) {
+            handoffCalls.delete(call.id);
+            break;
+          }
+          let reopened: WorkflowCallRow | null = null;
+          let handoff: RetryHandoff;
+          try {
+            handoff = await awaitRetryHandoff(failedWorker, signal);
+            throwIfCancelled(signal);
+            if (handoff.kind === "stand-down") {
+              reopened = reopenFailedCallOnWorker(db, call.id);
+            }
+          } finally {
+            handoffCalls.delete(call.id);
+          }
+          if (reopened === null || handoff.kind !== "stand-down") {
+            wakeWorker();
+            break;
+          }
+          call = reopened;
+          publishRunsChanged(run.originThreadId);
+          bb.log.info(
+            `[${run.id}] Agent call ${callIndex + 1} keeps worker ${failedWorker}: ${handoff.reason}`,
+          );
+          try {
+            return await waitOnWorker(call, failedWorker, signal, "handed-off");
+          } catch (handedOffError) {
+            throwIfCancelled(signal);
+            failure = handedOffError;
+          }
         }
-        const detail = message(error);
+        const delay = PROVIDER_RETRY_DELAYS_MS[call.providerRetryAttempts];
+        if (delay === undefined || !isRetryableProviderFailure(failure)) {
+          throw failure;
+        }
+        const detail = message(failure);
         const queued = queueCallProviderRetry(db, call.id, detail);
-        if (queued === null) throw error;
+        if (queued === null) throw failure;
         call = queued;
         publishRunsChanged(run.originThreadId);
         bb.log.warn(
@@ -1020,6 +1047,83 @@ export function createWorkflowService(
         );
         await sleep(delay, signal);
       }
+    }
+  }
+
+  async function awaitRetryHandoff(
+    threadId: string,
+    signal: AbortSignal,
+  ): Promise<RetryHandoff> {
+    const failedAt = Date.now();
+    while (true) {
+      let handoff: RetryHandoff;
+      try {
+        handoff = await readRetryHandoff(bb, {
+          threadId,
+          failedAt,
+          now: Date.now(),
+        });
+      } catch (error) {
+        bb.log.warn(
+          `Could not read the retry state of workflow worker ${threadId}: ${message(error)}`,
+        );
+        handoff =
+          Date.now() - failedAt < RETRY_DECISION_WAIT_MS
+            ? { kind: "wait" }
+            : { kind: "re-run" };
+      }
+      if (handoff.kind !== "wait") return handoff;
+      await sleep(RETRY_HANDOFF_POLL_MS, signal);
+      throwIfCancelled(signal);
+    }
+  }
+
+  async function waitOnWorker(
+    call: WorkflowCallRow,
+    threadId: string,
+    signal: AbortSignal,
+    origin: "spawned" | "handed-off",
+  ): Promise<JsonValue> {
+    const stopOnAbort = () => void stopChild(threadId);
+    signal.addEventListener("abort", stopOnAbort, { once: true });
+    try {
+      const current = await bb.sdk.threads.get({ threadId });
+      throwIfCancelled(signal);
+      if (current.status === "idle") {
+        const output = await bb.sdk.threads.output({ threadId });
+        throwIfCancelled(signal);
+        onThreadIdle(threadId, output.output);
+      } else if (
+        current.status === "error" &&
+        (origin === "spawned" ||
+          (
+            await readRetryHandoff(bb, {
+              threadId,
+              failedAt: Date.now(),
+              now: Date.now(),
+            })
+          ).kind !== "stand-down")
+      ) {
+        failWorkerThread(
+          threadId,
+          origin === "spawned"
+            ? "Workflow worker failed before attachment completed"
+            : "Workflow worker failed while its retry was handed off",
+        );
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        await stopChild(threadId);
+        throw error;
+      }
+      bb.log.warn(
+        `Could not reconcile workflow worker ${threadId}: ${message(error)}`,
+      );
+    }
+    try {
+      return await waitForCall(call, signal);
+    } finally {
+      signal.removeEventListener("abort", stopOnAbort);
     }
   }
 
@@ -1176,6 +1280,12 @@ export function createWorkflowService(
       });
     handlerTasks.add(task);
     idleHandlerTasks.set(call.id, task);
+  }
+
+  function failWorkerThread(threadId: string, error: string): void {
+    const call = getCallByChildThread(db, threadId);
+    if (call !== null && call.status === "running") handoffCalls.add(call.id);
+    failThreadCall(threadId, error);
   }
 
   function failThreadCall(threadId: string, error: string): void {
@@ -1650,10 +1760,13 @@ export function createWorkflowService(
       }
     }
     const active = new Set<Promise<void>>();
-    let nextMaintenanceAt = 0;
+    let maintenanceRequested = true;
+    let lastMaintenanceAt = -Infinity;
+    let dueAt = 0;
     while (!signal.aborted) {
-      const shouldClaim = claimRequested;
-      claimRequested = false;
+      const shouldClaim = workRequested;
+      workRequested = false;
+      if (shouldClaim) maintenanceRequested = true;
       while (shouldClaim && active.size < currentSettings.maxActiveRuns) {
         const run = claimQueuedRun(db, currentSettings.maxActiveRuns);
         if (run === null) break;
@@ -1669,9 +1782,15 @@ export function createWorkflowService(
         });
         active.add(execution);
       }
-      if (Date.now() >= nextMaintenanceAt) {
+      const now = Date.now();
+      if (
+        now >= dueAt ||
+        (maintenanceRequested &&
+          now >= lastMaintenanceAt + MAINTENANCE_MIN_INTERVAL_MS)
+      ) {
+        maintenanceRequested = false;
+        lastMaintenanceAt = now;
         await maintenanceTick();
-        nextMaintenanceAt = Date.now() + 1_000;
       }
       for (const pending of listPendingNotificationRuns(db, Date.now(), 100)) {
         try {
@@ -1682,7 +1801,19 @@ export function createWorkflowService(
           );
         }
       }
-      await waitForWork(nextMaintenanceAt - Date.now(), signal);
+      dueAt = Math.min(
+        Math.max(
+          nextMaintenanceDueAt(db) ?? Infinity,
+          lastMaintenanceAt + MAINTENANCE_MIN_INTERVAL_MS,
+        ),
+        lastMaintenanceAt + MAINTENANCE_SAFETY_INTERVAL_MS,
+      );
+      await waitForWork(
+        (maintenanceRequested
+          ? lastMaintenanceAt + MAINTENANCE_MIN_INTERVAL_MS
+          : dueAt) - Date.now(),
+        signal,
+      );
     }
     shuttingDown = true;
     for (const controller of controllers.values()) controller.abort();
@@ -1722,7 +1853,7 @@ export function createWorkflowService(
     onThreadIdle,
     onOriginUnavailable,
     onThreadFailed: (threadId, error) =>
-      failThreadCall(threadId, error ?? "Workflow worker failed"),
+      failWorkerThread(threadId, error ?? "Workflow worker failed"),
     onThreadArchived: (threadId) =>
       failThreadCall(threadId, "Workflow worker was archived"),
     onThreadDeleted: (threadId) =>

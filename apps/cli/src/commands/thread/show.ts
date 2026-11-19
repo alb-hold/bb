@@ -256,6 +256,49 @@ function threadShowEnvironmentJson(
   };
 }
 
+function usedDeprecatedGitFlags(opts: ThreadShowCommandOptions): string[] {
+  return [
+    opts.workStatus && "--work-status",
+    opts.gitDiff && "--git-diff",
+    opts.diffTarget !== undefined && "--diff-target",
+    opts.diffSha !== undefined && "--diff-sha",
+    opts.diffMergeBase !== undefined && "--diff-merge-base",
+  ].filter((flag): flag is string => typeof flag === "string");
+}
+
+function deprecatedGitFlagsNotice(args: {
+  opts: ThreadShowCommandOptions;
+  usedFlags: string[];
+  environmentId: string | null;
+  environmentMergeBaseBranch: string | undefined;
+}): string {
+  const { opts, usedFlags } = args;
+  const environmentId = args.environmentId ?? "<environment-id>";
+  const json = opts.json ? " --json" : "";
+  const commands: string[] = [];
+  if (opts.workStatus) {
+    commands.push(
+      `bb git status ${environmentId} --merge-base-branch ${args.environmentMergeBaseBranch ?? "<branch>"}${json}`,
+    );
+  }
+  if (usedFlags.some((flag) => flag !== "--work-status")) {
+    const target = (opts.diffTarget ?? "all").trim();
+    const targetArgs =
+      target === "commit"
+        ? ` --sha ${opts.diffSha ?? "<sha>"}`
+        : target === "uncommitted"
+          ? ""
+          : ` --merge-base-branch ${opts.diffMergeBase ?? args.environmentMergeBaseBranch ?? "<branch>"}`;
+    commands.push(
+      `bb git diff ${environmentId} --target ${target}${targetArgs}${json}`,
+    );
+  }
+  return [
+    `bb thread show ${usedFlags.join(", ")} ${usedFlags.length === 1 ? "is" : "are"} deprecated and will be removed. Use:`,
+    ...commands.map((command) => `  ${command}`),
+  ].join("\n");
+}
+
 export function printExecutionProfile(
   execution: ThreadExecutionProfileResult | null,
 ): void {
@@ -516,6 +559,19 @@ export function registerShowCommand(
           });
           return environment;
         };
+        const deprecatedFlags = usedDeprecatedGitFlags(opts);
+        if (deprecatedFlags.length > 0) {
+          console.error(
+            deprecatedGitFlagsNotice({
+              opts,
+              usedFlags: deprecatedFlags,
+              environmentId: thread.environmentId,
+              environmentMergeBaseBranch: resolveEnvironmentMergeBaseBranch(
+                await getEnvironment(),
+              ),
+            }),
+          );
+        }
         const requireMergeBaseBranch = async (override?: string) => {
           const environment = await getEnvironment();
           const mergeBaseBranch =
@@ -890,9 +946,6 @@ function printThreadStatus(
   if (thread.parentThreadId) {
     console.log(`  Parent: ${thread.parentThreadId}`);
     console.log(`  Parent notifications: ${thread.parentNotifications}`);
-  }
-  if (thread.archivedAt !== null) {
-    console.log(`  Archived: ${new Date(thread.archivedAt).toLocaleString()}`);
   }
   if (thread.pinnedAt !== null) {
     console.log(`  Pinned: ${new Date(thread.pinnedAt).toLocaleString()}`);

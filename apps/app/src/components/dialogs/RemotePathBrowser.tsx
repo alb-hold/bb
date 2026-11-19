@@ -5,9 +5,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { normalizeProjectPathInput } from "@bb/domain";
+import {
+  getHostPathBasename,
+  getHostPathDirname,
+  joinHostPath,
+  normalizeHostPath,
+  normalizeProjectPathInput,
+} from "@bb/domain";
 import type { HostDirectoryListing } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -22,6 +27,7 @@ import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { Input } from "@bb/shared-ui/input";
 import { invalidateHostDirectoryListing } from "@/hooks/cache-owners/host-directory-cache-owner";
 import { useHostDirectory } from "@/hooks/queries/host-queries";
+import { useCompilerSafeVirtualizer } from "@/hooks/useCompilerSafeVirtualizer";
 import { sdk } from "@/lib/sdk";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -32,33 +38,18 @@ interface Crumb {
 }
 
 export function toBreadcrumb(directory: string): Crumb[] {
-  const isWindows = /^[A-Za-z]:/.test(directory);
-  if (!isWindows) {
-    const crumbs: Crumb[] = [{ label: "/", path: "/" }];
-    let accumulated = "";
-    for (const segment of directory.split("/").filter(Boolean)) {
-      accumulated = `${accumulated}/${segment}`;
-      crumbs.push({ label: segment, path: accumulated });
-    }
-    return crumbs;
-  }
-
-  const segments = directory.replace(/\//g, "\\").split("\\").filter(Boolean);
-  const drive = segments[0] ?? "";
-  const crumbs: Crumb[] = [{ label: drive, path: `${drive}\\` }];
-  let accumulated = drive;
-  for (const segment of segments.slice(1)) {
-    accumulated = `${accumulated}\\${segment}`;
-    crumbs.push({ label: segment, path: accumulated });
+  const crumbs: Crumb[] = [];
+  let path = normalizeHostPath(directory);
+  while (path !== null) {
+    crumbs.unshift({
+      label: getHostPathBasename(path) || path.replace(/\\$/u, ""),
+      path,
+    });
+    const parent = getHostPathDirname(path);
+    if (parent === path) break;
+    path = parent;
   }
   return crumbs;
-}
-
-export function joinHostPath(directory: string, name: string): string {
-  if (/^[A-Za-z]:/.test(directory)) {
-    return `${directory.replace(/[\\/]+$/, "")}\\${name}`;
-  }
-  return `${directory.replace(/\/+$/, "")}/${name}`;
 }
 
 export function getFolderNameValidationMessage(name: string): string | null {
@@ -119,7 +110,12 @@ export function RemotePathBrowser({
     (index: number) => entries[index]?.path ?? index,
     [entries],
   );
-  const entryVirtualizer = useVirtualizer({
+  const {
+    virtualItems: entryVirtualItems,
+    totalSize: entriesTotalSize,
+    measureElement: measureEntryElement,
+    scrollToOffset: scrollEntriesToOffset,
+  } = useCompilerSafeVirtualizer({
     count: entries.length,
     getScrollElement,
     estimateSize: estimateEntrySize,
@@ -134,7 +130,7 @@ export function RemotePathBrowser({
 
   const navigateTo = (path: string) => {
     cancelCreatingFolder();
-    entryVirtualizer.scrollToOffset(0);
+    scrollEntriesToOffset(0);
     setCurrentPath(path);
   };
 
@@ -156,7 +152,8 @@ export function RemotePathBrowser({
 
   const createFolder = useMutation({
     mutationFn: async ({ parent, name }: { parent: string; name: string }) => {
-      const path = joinHostPath(parent, name);
+      const path = joinHostPath({ rootPath: parent, relativePath: name });
+      if (path === null) throw new Error("Invalid parent directory.");
       await sdk.files.mkdir({ hostId, path });
       return path;
     },
@@ -258,11 +255,8 @@ export function RemotePathBrowser({
     body = <EmptyState message="This folder is empty." className="px-2 py-3" />;
   } else {
     body = (
-      <ul
-        className="relative"
-        style={{ height: entryVirtualizer.getTotalSize() }}
-      >
-        {entryVirtualizer.getVirtualItems().map((virtualItem) => {
+      <ul className="relative" style={{ height: entriesTotalSize }}>
+        {entryVirtualItems.map((virtualItem) => {
           const entry = entries[virtualItem.index];
           if (!entry) return null;
           if (entry.kind === "file") {
@@ -270,7 +264,7 @@ export function RemotePathBrowser({
               <li
                 key={entry.path}
                 data-index={virtualItem.index}
-                ref={entryVirtualizer.measureElement}
+                ref={measureEntryElement}
                 className="absolute left-0 flex w-full items-center gap-2 px-2 py-1 text-sm text-muted-foreground"
                 style={{ top: virtualItem.start }}
               >
@@ -285,7 +279,7 @@ export function RemotePathBrowser({
             <li
               key={entry.path}
               data-index={virtualItem.index}
-              ref={entryVirtualizer.measureElement}
+              ref={measureEntryElement}
               className="absolute left-0 w-full"
               style={{ top: virtualItem.start }}
             >

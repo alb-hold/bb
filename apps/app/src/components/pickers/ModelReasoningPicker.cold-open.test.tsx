@@ -6,7 +6,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
@@ -14,12 +13,9 @@ import { ModelReasoningPicker } from "./ModelReasoningPicker";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import { startSplitPreloading } from "@/lib/split-prefetch";
 
-const menu = vi.hoisted(() => ({ imports: 0, release: () => {} }));
+const menu = vi.hoisted(() => ({ imports: 0 }));
 vi.mock("./ModelReasoningMenu", async (importOriginal) => {
   menu.imports += 1;
-  await new Promise<void>((resolve) => {
-    menu.release = resolve;
-  });
   return importOriginal();
 });
 
@@ -51,6 +47,7 @@ it("keeps search typing and keyboard selection across the first menu download", 
       onModelChange={onModelChange}
       reasoningValue="medium"
       reasoningOptions={[{ value: "medium", label: "Medium" }]}
+      reasoningIsLoading={false}
       onReasoningChange={() => {}}
       serviceTierValue={undefined}
       serviceTierOptions={[]}

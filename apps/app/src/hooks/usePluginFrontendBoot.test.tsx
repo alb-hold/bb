@@ -11,9 +11,9 @@ import {
   usePluginFrontendsSettled,
 } from "@/lib/plugin-frontend-boot-state";
 import {
-  markRouteContentPainted,
-  resetRouteContentPaintForTest,
-} from "@/lib/route-content-paint";
+  markScreenPainted,
+  resetScreenPaintForTest,
+} from "@/lib/screen-paint";
 
 const mocks = vi.hoisted(() => ({
   bootPluginFrontends: vi.fn(async () => {}),
@@ -56,7 +56,7 @@ beforeEach(() => {
   );
   vi.useFakeTimers();
   mocks.systemConfigData = { generalSettings: {} };
-  resetRouteContentPaintForTest();
+  resetScreenPaintForTest();
   window.history.replaceState(null, "", "/");
 });
 
@@ -228,7 +228,7 @@ describe("usePluginFrontendBoot", () => {
     const fetchList = vi.spyOn(appQueryClient, "fetchQuery");
     const { rerender } = renderHook(() => usePluginFrontendBoot());
     await act(async () => {
-      markRouteContentPainted();
+      markScreenPainted();
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
@@ -249,9 +249,13 @@ describe("usePluginFrontendBoot", () => {
       return usePluginFrontendsSettled();
     });
     expect(result.current).toBe(false);
-    act(() => vi.advanceTimersByTime(PLUGIN_FRONTEND_SETTLE_FLOOR_MS - 1));
+    act(() => {
+      vi.advanceTimersByTime(PLUGIN_FRONTEND_SETTLE_FLOOR_MS - 1);
+    });
     expect(result.current).toBe(false);
-    act(() => vi.advanceTimersByTime(1));
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(result.current).toBe(true);
   });
 

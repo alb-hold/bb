@@ -9,11 +9,12 @@ import type {
   EnvironmentStatus,
 } from "@bb/domain";
 import { areHostPathsEqual, evaluateEnvironmentLifecycleEvent } from "@bb/domain";
-import type { DbConnection, DbTransaction, DbQueryConnection } from "../connection.js";
+import type { DbConnection, DbQueryConnection, DbTransaction } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
 import { environments, threads } from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 import { hostPathContains, hostPathEquals } from "./host-path-sql.js";
+
 
 type EnvironmentReadConnection = DbConnection | DbTransaction;
 type EnvironmentWriteConnection = DbConnection | DbTransaction;

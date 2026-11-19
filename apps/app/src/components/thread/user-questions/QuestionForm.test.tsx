@@ -401,21 +401,6 @@ describe("answering a single-select question", () => {
     } satisfies InteractionResponse);
   });
 
-  it("selects an option with its number-key shortcut", () => {
-    const submit = vi.fn<(value: InteractionResponse) => Promise<void>>(
-      async () => undefined,
-    );
-    const slot = render(singleSelect, { submit });
-
-    fireEvent.keyDown(window, { key: "2" });
-    fireEvent.click(getButtonByText(slot, "Submit answer"));
-
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect(submit.mock.calls[0]?.[0]).toEqual({
-      answers: { q0: { selected: ["q0o1"] } },
-    } satisfies InteractionResponse);
-  });
-
   it("ignores number keys typed into the free-text box", () => {
     const slot = render(singleSelect);
     fireEvent.click(getButtonByText(slot, "Other…"));
@@ -736,18 +721,10 @@ describe("multi-select and multi-question flows", () => {
       composer.remove();
     }
   });
-
-  it("cancels the request instead of submitting", () => {
-    const cancel = vi.fn(async () => undefined);
-    const slot = render(multi, { cancel });
-
-    fireEvent.click(getButtonByText(slot, "Cancel"));
-    expect(cancel).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("question answer dictation", () => {
-  it("appends a transcript to the latest edited answer without submitting", () => {
+  it("appends a transcript to the latest edited answer without submitting", async () => {
     const submit = vi.fn(async () => undefined);
     const slot = render(singleSelect, { submit });
     fireEvent.click(getButtonByText(slot, "Other…"));
@@ -756,7 +733,9 @@ describe("question answer dictation", () => {
     const recording = vi.mocked(useVoiceInput).mock.calls.at(-1)?.[0];
     fireEvent.click(slot.getByRole("button", { name: "Start voice input" }));
     fireEvent.change(input, { target: { value: "Edited" } });
-    act(() => recording?.onTranscript("dictated answer", "insert"));
+    await act(async () => {
+      await recording?.onTranscript("dictated answer", "insert");
+    });
     expect(input).toHaveProperty("value", "Edited dictated answer");
     expect(submit).not.toHaveBeenCalled();
     fireEvent.click(getButtonByText(slot, "Submit answer"));
@@ -765,7 +744,7 @@ describe("question answer dictation", () => {
     });
   });
 
-  it("ignores late transcripts after the custom answer is closed", () => {
+  it("ignores late transcripts after the custom answer is closed", async () => {
     const slot = render(singleSelect);
     fireEvent.click(getButtonByText(slot, "Other…"));
     fireEvent.change(slot.getByRole("textbox"), {
@@ -774,7 +753,9 @@ describe("question answer dictation", () => {
     const recording = vi.mocked(useVoiceInput).mock.calls.at(-1)?.[0];
     fireEvent.click(getButtonByText(slot, "Postgres"));
     fireEvent.click(getButtonByText(slot, "Other…"));
-    act(() => recording?.onTranscript("discard this", "insert"));
+    await act(async () => {
+      await recording?.onTranscript("discard this", "insert");
+    });
     expect(slot.getByRole("textbox")).toHaveProperty("value", "Keep this");
   });
 

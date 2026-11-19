@@ -4,7 +4,7 @@ import {
 } from "@/lib/plugin-frontend-boot-state";
 // @vitest-environment jsdom
 
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { resetAllCrashedPluginSlotsForTest } from "./PluginSlotMount";
 import {
   act,
@@ -162,7 +162,9 @@ function Host({ context }: { context: PluginTabContext }) {
           {isThreadTab(entry.slot) ? (
             <entry.slot.component
               threadId={context.kind === "thread" ? context.threadId : ""}
-              environment={context.kind === "thread" ? context.environment : null}
+              environment={
+                context.kind === "thread" ? context.environment : null
+              }
             />
           ) : isNavTab(entry.slot) ? (
             <entry.slot.component
@@ -176,6 +178,32 @@ function Host({ context }: { context: PluginTabContext }) {
   );
 }
 
+const tabVisibility = {
+  visible: true,
+  listeners: new Set<() => void>(),
+};
+
+function subscribeToTabVisibility(listener: () => void) {
+  tabVisibility.listeners.add(listener);
+  return () => {
+    tabVisibility.listeners.delete(listener);
+  };
+}
+
+function useTabVisible() {
+  return useSyncExternalStore(
+    subscribeToTabVisibility,
+    () => tabVisibility.visible,
+  );
+}
+
+function setTabVisible(visible: boolean) {
+  act(() => {
+    tabVisibility.visible = visible;
+    for (const listener of tabVisibility.listeners) listener();
+  });
+}
+
 const cases = [
   ["thread", "fixed", "new"],
   ["thread", "action", "new"],
@@ -187,6 +215,7 @@ const cases = [
 
 beforeEach(() => markPluginFrontendsSettled());
 afterEach(() => {
+  tabVisibility.visible = true;
   vi.restoreAllMocks();
   resetPluginFrontendBootStateForTest();
   cleanup();
@@ -199,7 +228,6 @@ afterEach(() => {
 it.each(cases)(
   "keeps %s %s lifecycle and saved identity through %s registration",
   (kind, availability, api) => {
-    let visible = true;
     function register(title: string) {
       const component = (props: {
         threadId?: string;
@@ -236,13 +264,12 @@ it.each(cases)(
                 fixedTabs: [{ ...registration, panelId: "board" }],
               });
             } else {
-              const useVisible = () => visible;
               app.slots.experimental_tab({
                 ...registration,
                 context:
                   kind === "thread" ? { kind } : { kind, panelId: "board" },
                 availability,
-                useVisible,
+                useVisible: useTabVisible,
               } as ExperimentalTabRegistration);
             }
           }),
@@ -290,7 +317,7 @@ it.each(cases)(
     expect(stored).not.toBeNull();
     view.unmount();
     resetFixedPanelTabsStateForTest();
-    const restored = render(<Host context={context} />, {
+    render(<Host context={context} />, {
       wrapper: ({ children }) => (
         <QueryClientProvider client={client}>
           <MemoryRouter>{children}</MemoryRouter>
@@ -308,8 +335,7 @@ it.each(cases)(
     ).toHaveLength(1);
     expect(screen.getByText(/Content Reloaded:/)).toBeTruthy();
     if (api === "new") {
-      visible = false;
-      restored.rerender(<Host context={context} />);
+      setTabVisible(false);
       expect(
         screen.queryByRole("button", { name: "Open Reloaded" }),
       ).toBeNull();

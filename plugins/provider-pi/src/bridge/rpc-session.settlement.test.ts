@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,11 @@ function deferred() {
 function harness(settlement = true) {
   const events: PiRpcEvent[] = [];
   const aDelivered = deferred();
-  const requestOk = vi.fn(async () => undefined);
+  const requestOk = vi.fn<
+    (command: Record<string, unknown>) => Promise<unknown>
+  >(async (command) =>
+    command.type === "prompt" ? { disposition: "started" } : undefined,
+  );
   const onDone = vi.fn();
   const kill = vi.fn();
   const session = new PiRpcSession(
@@ -156,6 +161,104 @@ it("keeps B processing and checkpoints run-local when A delivery is delayed", as
   expect(h.control.pendingRunSettlements).toHaveLength(0);
   expect(h.control.runs.size).toBe(0);
   expect(h.requestOk.mock.calls).toHaveLength(2);
+});
+
+function flushIo(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function stateRequests(requestOk: ReturnType<typeof harness>["requestOk"]) {
+  return requestOk.mock.calls.filter(
+    ([command]) => command.type === "get_state",
+  );
+}
+
+it.each([
+  [true, { disposition: "handled" }],
+  [false, { disposition: "handled" }],
+  [true, undefined],
+  [false, undefined],
+])(
+  "settles a prompt Pi handled without a run (settlement %s, reply %j)",
+  async (settlement, handledReply) => {
+    const h = harness(settlement);
+    h.requestOk.mockImplementation(async (command) => {
+      if (command.type === "get_state") return { isStreaming: false };
+      if (command.message !== "/return-now") return { disposition: "started" };
+      h.event({ type: "entry_appended", customType: "command-handled" });
+      return handledReply;
+    });
+    const handled = h.session.prompt("/return-now");
+    await handled.consumed;
+    expect(await handled.settled).toEqual({});
+    expect(h.events.map((e) => e.type)).toEqual(["entry_appended"]);
+    expect(h.control.isProcessing).toBe(false);
+    expect(h.control.pendingRunSettlements).toHaveLength(0);
+    expect(stateRequests(h.requestOk)).toHaveLength(1);
+
+    const next = h.session.prompt("next");
+    await next.consumed;
+    const nextSettled = vi.fn();
+    void next.settled.then(nextSettled);
+    h.event({ type: "agent_start" });
+    h.end("next");
+    await h.control.deliveryChain;
+    if (settlement) {
+      expect(nextSettled).not.toHaveBeenCalled();
+      h.settle("next");
+    }
+    expect(await next.settled).toEqual({ boundaryDelivered: true });
+    expect(h.control.isProcessing).toBe(false);
+    expect(stateRequests(h.requestOk)).toHaveLength(1);
+  },
+);
+
+it.each([
+  ["Pi replies handled before the command's run starts", "reply-first"],
+  ["the command's run starts before the handled reply", "run-first"],
+  ["the run starts and ends while Pi answers get_state", "run-in-state"],
+  ["get_state fails after a handled reply", "state-error"],
+  ["the reply has no disposition", "no-disposition"],
+])("waits for the run when %s", async (_name, order) => {
+  const h = harness();
+  let started = false;
+  let ended = false;
+  const start = () => {
+    started = true;
+    h.event({ type: "agent_start" });
+  };
+  h.requestOk.mockImplementation(async (command) => {
+    if (command.type === "get_state") {
+      if (order === "state-error") throw new Error("pi did not answer");
+      if (order === "run-in-state") {
+        start();
+        h.end("run");
+        ended = true;
+        return { isStreaming: false };
+      }
+      return { isStreaming: true };
+    }
+    if (order === "run-first") start();
+    return order === "no-disposition" ? undefined : { disposition: "handled" };
+  });
+  const dispatch = h.session.prompt("/start-run");
+  await dispatch.consumed;
+  const settled = vi.fn();
+  void dispatch.settled.then(settled);
+  await flushIo();
+  expect(settled).not.toHaveBeenCalled();
+  if (!started) start();
+  if (!ended) h.end("run");
+  await h.control.deliveryChain;
+  expect(settled).not.toHaveBeenCalled();
+  expect(h.control.isProcessing).toBe(true);
+  h.settle("run");
+  expect(await dispatch.settled).toEqual({ boundaryDelivered: true });
+  expect(h.control.isProcessing).toBe(false);
+  expect(h.control.pendingRunSettlements).toHaveLength(0);
+  expect(stateRequests(h.requestOk)).toHaveLength(
+    order === "run-first" ? 0 : 1,
+  );
 });
 
 it.each(["retry", "overflow", "followUp"])(
@@ -288,6 +391,11 @@ it("surfaces a failed run's error when queued work continues the same settlement
       kind: "provider.error",
       message: "Provider error",
       detail: "failure-original",
+      errorInfo: {
+        category: "unknown",
+        httpStatusCode: null,
+        providerCode: null,
+      },
     },
   ]);
   expect(deltas.filter((delta) => delta.kind === "turn.boundary")).toEqual([
@@ -352,7 +460,7 @@ it("ignores duplicate authoritative settlement without duplicate delivery", asyn
 it.each(["bb-first", "bb-last"])(
   "real Pi 0.84 starts B inside an async settlement handler before A stdout (%s)",
   async (order) => {
-    expect(VERSION).toBe("0.84.0");
+    expect(VERSION).toBe("0.84.4");
     const h = harness();
     const dir = mkdtempSync(join(tmpdir(), "bb-pi-real-settlement-"));
     const settingsManager = SettingsManager.inMemory({
@@ -362,33 +470,35 @@ it.each(["bb-first", "bb-last"])(
     const sessionManager = SessionManager.inMemory(dir);
     const wireOrder: string[] = [];
     const source = BB_PI_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
-      "export default function bbExtension",
-      "function bbExtension",
+      "export default async function bbExtension",
+      "async function bbExtension",
     );
+    class ChannelSocket extends EventEmitter {
+      readonly writable = true;
+      write(line: string): boolean {
+        if (line.startsWith("{")) {
+          const message: Record<string, unknown> = JSON.parse(line);
+          h.control.handleChannelMessage(message);
+        }
+        return true;
+      }
+      unref(): void {}
+    }
     const bbFactory: ExtensionFactory = runInNewContext(
       `${source}; bbExtension`,
       {
         PiRuntime: { VERSION, SessionManager },
-        Buffer,
         StringDecoder,
-        process: { env: {} },
-        Socket: class {
-          on() {
-            return this;
-          }
-          unref() {}
+        process: {
+          env: {
+            BB_PI_BRIDGE_CHANNEL: "settlement",
+            BB_PI_BRIDGE_CHANNEL_TOKEN: "token",
+          },
         },
-        writeSync: (
-          _fd: number,
-          buffer: Buffer,
-          offset: number,
-          length: number,
-        ) => {
-          const message: Record<string, unknown> = JSON.parse(
-            buffer.subarray(offset, offset + length).toString(),
-          );
-          h.control.handleChannelMessage(message);
-          return length;
+        connect: () => {
+          const socket = new ChannelSocket();
+          setImmediate(() => socket.emit("connect"));
+          return socket;
         },
       },
     );

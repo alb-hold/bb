@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { PermissionModePicker } from "./PermissionModePicker";
+import { expectNonmodalPicker } from "@/test/nonmodal-picker";
 
 const options = [
   { value: "auto", label: "Approve for me" },

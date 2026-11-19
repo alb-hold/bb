@@ -28,6 +28,7 @@ export function preloadPluginFrontend(): void {
 }
 
 let bootRequested = false;
+let reconcileRequestedBeforeBoot = false;
 
 export async function bootPluginFrontends(): Promise<void> {
   bootRequested = true;
@@ -35,6 +36,10 @@ export async function bootPluginFrontends(): Promise<void> {
   try {
     const pluginFrontend = await loadPluginFrontend();
     await pluginFrontend.bootPluginFrontends();
+    if (reconcileRequestedBeforeBoot) {
+      reconcileRequestedBeforeBoot = false;
+      pluginFrontend.schedulePluginFrontendReconcile();
+    }
   } catch (error) {
     setPluginFrontendLoadFailed(true);
     console.warn(
@@ -46,7 +51,10 @@ export async function bootPluginFrontends(): Promise<void> {
 }
 
 export function schedulePluginFrontendReconcile(): void {
-  if (!bootRequested) return;
+  if (!bootRequested) {
+    reconcileRequestedBeforeBoot = true;
+    return;
+  }
   void (async () => {
     try {
       const pluginFrontend = await loadPluginFrontend();

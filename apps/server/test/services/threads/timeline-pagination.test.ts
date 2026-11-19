@@ -74,11 +74,11 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 0,
       ownedSequenceEnd: 3,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [user, assistant, { ...assistant }],
     });
     expect(page.rows).toEqual([user, assistant]);
-    expect(page.olderCursor).toBeNull();
     expect(page.olderCursor).toBeNull();
   });
 
@@ -96,6 +96,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 0,
       ownedSequenceEnd: 4,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 2 },
       rows,
     });
@@ -140,6 +141,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 13,
       ownedSequenceEnd: 21,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows,
     });
@@ -176,6 +178,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 20,
       ownedSequenceEnd: 32,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [olderUser, lateOlderRow, latestUser],
     });
@@ -200,6 +203,7 @@ describe("paginateTimelineRows", () => {
         maxBytes,
         ownedSequenceStart: 20,
         ownedSequenceEnd: 22,
+        ownershipSequenceOf: (row) => row.sourceSeqStart,
         page: { kind: "latest", segmentLimit: 1 },
         rows: [older, latest],
       });
@@ -265,6 +269,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 20,
       ownedSequenceEnd: 27,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [
         userRow({ id: "thread-1:user-seed:1", seq: 1, text: "older" }),
@@ -284,7 +289,7 @@ describe("paginateTimelineRows", () => {
     ]);
   });
 
-  it("does not invalidate history for content-cut rows included in older updates", () => {
+  it("reports only content-cut rows that reach into the returned content", () => {
     const output = (
       id: string,
       seq: number,
@@ -301,30 +306,31 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 1,
       ownedSequenceEnd: 31,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [
         userRow({ id: "thread-1:user-seed:1", seq: 1, text: "prompt" }),
         output("thread-1:running-item", 2, 30),
-        output("thread-1:item-3", 3, 3),
-        output("thread-1:item-4", 4, 4),
+        output("thread-1:settled-item", 3, 4),
+        output("thread-1:item-5", 5, 5),
+        output("thread-1:item-6", 6, 6),
       ],
     });
 
     expect(page.rows.map((row) => row.id)).toEqual([
-      "thread-1:item-3",
-      "thread-1:item-4",
+      "thread-1:item-5",
+      "thread-1:item-6",
     ]);
-    expect(page.contentCursor).toMatchObject({ beforeLeaf: 2 });
-    expect(page.olderRowsSourceSeqEnd).toBeNull();
+    expect(page.contentCursor).toMatchObject({ beforeLeaf: 3 });
+    expect(page.olderRowsSourceSeqEnd).toBe(4);
     expect(page.olderRowUpdates?.map((row) => row.id)).toEqual([
-      "thread-1:user-seed:1",
       "thread-1:running-item",
     ]);
     expect(page.olderCursor).toEqual({
       anchorId: "timeline-window:1",
       anchorSeq: 1,
     });
-    expect(page.contentCursor).toEqual({ beforeLeaf: 2, beforeSequence: 31 });
+    expect(page.contentCursor).toEqual({ beforeLeaf: 3, beforeSequence: 31 });
   });
 
   it("continues a content cut at the next window bound, not a projected row", () => {
@@ -334,6 +340,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 10,
       ownedSequenceEnd: 40,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [
         assistantRow(12),
@@ -349,7 +356,8 @@ describe("paginateTimelineRows", () => {
       anchorId: "timeline-window:10",
       anchorSeq: 10,
     });
-    expect(page.olderRowsSourceSeqEnd).toBeNull();
+    expect(page.olderRowsSourceSeqEnd).toBe(33);
+    expect(page.olderRowUpdates).toBeUndefined();
   });
 
   it.each([
@@ -383,6 +391,7 @@ describe("paginateTimelineRows", () => {
         maxBytes,
         ownedSequenceStart: 1,
         ownedSequenceEnd: 32,
+        ownershipSequenceOf: (row) => row.sourceSeqStart,
         page: { kind: "latest", segmentLimit: 20 },
         rows: [nested, tail],
       });
@@ -410,6 +419,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 300,
       ownedSequenceStart: 1,
       ownedSequenceEnd: 21,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [
         {
@@ -453,6 +463,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 0,
       ownedSequenceEnd: 4,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 1 },
       rows: [
         provisioning,
@@ -472,6 +483,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 0,
       ownedSequenceEnd: 3,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "older", beforeCursor: page.olderCursor!, segmentLimit: 1 },
       rows: [
         provisioning,
@@ -482,7 +494,6 @@ describe("paginateTimelineRows", () => {
       "thread-1:op:thread-provisioning:1",
     ]);
     expect(older.olderCursor).toBeNull();
-    expect(older.olderCursor).toBeNull();
   });
 
   it("owns rows by the selected window, whatever row shape they project to", () => {
@@ -492,6 +503,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 15,
       ownedSequenceEnd: 30,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 8 },
       rows: [
         assistantRow(10),
@@ -520,6 +532,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 12545,
       ownedSequenceEnd: 14416,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 20 },
       rows: [
         userRow({ id: "thread-1:user-seed:5198", seq: 5198, text: "context" }),
@@ -556,6 +569,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 1,
       ownedSequenceEnd: 30,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 1 },
       rows: [
         userRow({ id: "thread-1:user-seed:1", seq: 1, text: "first" }),
@@ -582,6 +596,7 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 100,
       ownedSequenceEnd: 200,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "latest", segmentLimit: 8 },
       rows: [userRow({ id: "thread-1:user-seed:5", seq: 5, text: "old" })],
     });
@@ -600,10 +615,10 @@ describe("paginateTimelineRows", () => {
       maxBytes: 1_000_000,
       ownedSequenceStart: 0,
       ownedSequenceEnd: 100,
+      ownershipSequenceOf: (row) => row.sourceSeqStart,
       page: { kind: "older", beforeCursor: page.olderCursor!, segmentLimit: 8 },
       rows: [],
     });
-    expect(last.olderCursor).toBeNull();
     expect(last.olderCursor).toBeNull();
   });
 });

@@ -103,6 +103,7 @@ export class CommandRouter {
   private readonly threadUnarchiveBarriers = new Map<string, Promise<void>>();
   private readonly threadLaneTails = new Map<string, Promise<void>>();
   private readonly threadTurnLaneTails = new Map<string, Promise<void>>();
+  private readonly turnCommandCountsByThreadId = new Map<string, number>();
   private readonly onlineRpcAbortControllers = new Map<
     string,
     AbortController
@@ -183,6 +184,10 @@ export class CommandRouter {
     this.onlineRpcAbortControllers.get(message.requestId)?.abort();
   }
 
+  listThreadIdsHandlingTurnCommands(): string[] {
+    return [...this.turnCommandCountsByThreadId.keys()];
+  }
+
   private executeHostRpcCommand(
     command: HostDaemonRpcCommand,
     signal: AbortSignal,
@@ -255,7 +260,31 @@ export class CommandRouter {
       ),
     );
     this.registerThreadUnarchiveBarrier(command, task);
+    this.trackTurnCommand(command, task);
     return task;
+  }
+
+  private trackTurnCommand(
+    command: HostDaemonCommand,
+    task: CommandRouterTask,
+  ): void {
+    if (command.type !== "thread.start" && command.type !== "turn.submit") {
+      return;
+    }
+    const { threadId } = command;
+    this.turnCommandCountsByThreadId.set(
+      threadId,
+      (this.turnCommandCountsByThreadId.get(threadId) ?? 0) + 1,
+    );
+    const release = (): void => {
+      const count = this.turnCommandCountsByThreadId.get(threadId) ?? 0;
+      if (count <= 1) {
+        this.turnCommandCountsByThreadId.delete(threadId);
+      } else {
+        this.turnCommandCountsByThreadId.set(threadId, count - 1);
+      }
+    };
+    void task.then(release, release);
   }
 
   private async executeLiveDaemonCommandBody(

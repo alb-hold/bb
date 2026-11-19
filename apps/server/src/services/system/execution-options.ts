@@ -12,9 +12,9 @@ import {
   type ProviderInfo,
 } from "@bb/domain";
 import { getAppSettings } from "@bb/db";
+import type { HostDaemonBridgeLaunch } from "@bb/host-daemon-contract";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
-import { callHostRetryableOnlineRpc } from "../hosts/online-rpc.js";
 import { getHostPermissionCeiling } from "../hosts/permission-ceiling.js";
 import {
   requireConnectedHostSession,
@@ -35,12 +35,16 @@ import {
 } from "../providers/provider-model-catalog-store.js";
 import type {
   ProviderHealthCacheKey,
+  ProviderRegistration,
   ProviderRegistryService,
 } from "../providers/provider-registry.js";
 import { getSupportedReasoningLevelsForProvider } from "../threads/thread-reasoning-policy.js";
-import { resolvePluginProviderEnvHealth } from "../plugins/plugin-agent-contributions.js";
 import { resolveSystemLookupHostId } from "./host-lookup.js";
 import { resolveBridgeLaunchForProviderId } from "./provider-bridge-launch.js";
+import {
+  requestProviderHealth,
+  type ProviderHealthResult,
+} from "./provider-health-requests.js";
 import { mapProviderMaintenanceRequests } from "./provider-maintenance-concurrency.js";
 
 type SystemExecutionOptionsRequest = SystemExecutionOptionsQuery;
@@ -118,7 +122,7 @@ function providerMatchesFilter(
   }
 }
 
-function listConfiguredSystemProviderInfos(
+export function listConfiguredSystemProviderInfos(
   deps: Pick<LoggedWorkSessionDeps, "providerRegistry">,
   filter: ProviderFilter = {},
 ): ProviderInfo[] {
@@ -158,68 +162,12 @@ function canOmitProviderDiscoveryForError(error: unknown): error is ApiError {
   );
 }
 
-const healthRefreshNotifications = new WeakSet<Promise<unknown>>();
-
-function notifyWhenHealthSettles(
-  deps: LoggedWorkSessionDeps,
-  hostId: string,
-  providerId: string,
-  pending: ReturnType<ProviderRegistryService["lookupProviderHealthStatus"]>,
-): void {
-  if (pending === undefined || healthRefreshNotifications.has(pending)) return;
-  healthRefreshNotifications.add(pending);
-  const previous = deps.providerRegistry.peekProviderHealthStatus({
-    hostId,
-    providerId,
-  });
-  void pending.then(
-    (status) => {
-      if (status !== previous) {
-        deps.hub.notifyHost(hostId, ["provider-model-catalog-changed"]);
-      }
-    },
-    () => undefined,
-  );
-}
-
-async function omitProvidersThatCannotStartAThread(
-  deps: LoggedWorkSessionDeps,
-  hostId: string | null,
-  providers: ProviderInfo[],
-): Promise<ProviderInfo[]> {
-  if (hostId === null) return providers;
-  const usable = await Promise.all(
-    providers.map(async (provider) => {
-      const status = deps.providerRegistry.peekProviderHealthStatus({
-        hostId,
-        providerId: provider.id,
-      });
-      const pending = deps.providerRegistry.lookupProviderHealthStatus({
-        hostId,
-        providerId: provider.id,
-      });
-      notifyWhenHealthSettles(deps, hostId, provider.id, pending);
-      if (status !== "unauthenticated" && status !== "not_installed") {
-        return true;
-      }
-      const contributed = await resolvePluginProviderEnvHealth({
-        providerId: provider.id,
-        hostId,
-      });
-      return contributed !== null;
-    }),
-  );
-  const offered = providers.filter((_, index) => usable[index]);
-  return offered.length > 0 ? offered : providers;
-}
-
-async function listInstalledPluginProviderInfos(
-  deps: LoggedWorkSessionDeps,
-  hostId: string,
-  filter: ProviderFilter,
-): Promise<ProviderInfo[]> {
+export function listInstalledOnlyProviderRegistrations(
+  deps: Pick<LoggedWorkSessionDeps, "providerRegistry">,
+  filter: ProviderFilter = {},
+): ProviderRegistration[] {
   const disabled = deps.providerRegistry.disabledProviderIds();
-  const registrations = deps.providerRegistry
+  return deps.providerRegistry
     .list()
     .filter(
       (registration) =>
@@ -227,6 +175,58 @@ async function listInstalledPluginProviderInfos(
         registration.visibility === "installed" &&
         providerMatchesFilter(registration.info, filter),
     );
+}
+
+export function isInstalledProviderHealth(
+  result: ProviderHealthResult,
+): boolean {
+  return result.supported && result.health.status !== "not_installed";
+}
+
+export function probeInstalledProvider(
+  deps: LoggedWorkSessionDeps,
+  args: {
+    hostId: string;
+    providerId: string;
+    bridgeLaunch: HostDaemonBridgeLaunch;
+    budget: ProviderListingBudget;
+  },
+): Promise<boolean> {
+  return requestProviderHealth(deps, {
+    hostId: args.hostId,
+    providerId: args.providerId,
+    bridgeLaunch: args.bridgeLaunch,
+    timeoutMs: args.budget.remainingMs(),
+  }).then(isInstalledProviderHealth);
+}
+
+export function omitInstalledProviderAfterError(
+  deps: LoggedWorkSessionDeps,
+  key: ProviderHealthCacheKey,
+  error: unknown,
+): void {
+  deps.providerRegistry.forgetInstalledKey(key);
+  if (!canOmitProviderDiscoveryForError(error)) {
+    throw error;
+  }
+  if (!isSuspendedHostUnavailableError(error)) {
+    deps.logger.warn(
+      {
+        ...expectedFallbackErrorLogFields(error),
+        hostId: key.hostId,
+        providerId: key.providerId,
+      },
+      "Failed to resolve installed-only provider status",
+    );
+  }
+}
+
+async function listInstalledPluginProviderInfos(
+  deps: LoggedWorkSessionDeps,
+  hostId: string,
+  filter: ProviderFilter,
+): Promise<ProviderInfo[]> {
+  const registrations = listInstalledOnlyProviderRegistrations(deps, filter);
   const budget = createProviderListingBudget();
   const results = await mapProviderMaintenanceRequests(
     registrations,
@@ -240,69 +240,26 @@ async function listInstalledPluginProviderInfos(
         hostId,
         providerId: registration.info.id,
       };
-      const probe = async (probeBudget: ProviderListingBudget) => {
-        const result = await callHostRetryableOnlineRpc(deps, {
+      const probe = (probeBudget: ProviderListingBudget) =>
+        probeInstalledProvider(deps, {
           hostId,
-          timeoutMs: probeBudget.remainingMs(),
-          command: {
-            type: "provider.health",
-            providerId: registration.info.id,
-            bridgeLaunch,
-          },
+          providerId: registration.info.id,
+          bridgeLaunch,
+          budget: probeBudget,
         });
-        return result.supported ? result.health.status : null;
-      };
-      const cachedInstalled = deps.providerRegistry.lookupInstalled(cacheKey);
-      const cachedStatus =
-        deps.providerRegistry.lookupProviderHealthStatus(cacheKey);
+      const cached = deps.providerRegistry.lookupInstalled(cacheKey);
       try {
-        const status =
-          cachedInstalled !== undefined
-            ? cachedInstalled.then((installed) =>
-                installed ? "ready" : "not_installed",
-              )
-            : (cachedStatus ?? probe(budget));
-        const installed = status.then(
-          (discovered) => discovered !== null && discovered !== "not_installed",
-        );
-        if (cachedStatus === undefined && cachedInstalled === undefined) {
-          deps.providerRegistry.rememberProviderHealthStatus(cacheKey, status);
-        }
-        if (cachedInstalled === undefined) {
+        const installed = cached ?? probe(budget);
+        if (cached === undefined) {
           deps.providerRegistry.rememberInstalled(cacheKey, installed);
         } else {
-          void deps.providerRegistry.revalidateInstalled(cacheKey, async () => {
-            const pending = probe(createProviderListingBudget());
-            deps.providerRegistry.rememberProviderHealthStatus(
-              cacheKey,
-              pending,
-            );
-            notifyWhenHealthSettles(
-              deps,
-              hostId,
-              registration.info.id,
-              pending,
-            );
-            const discovered = await pending;
-            return discovered !== null && discovered !== "not_installed";
-          });
+          void deps.providerRegistry.revalidateInstalled(cacheKey, () =>
+            probe(createProviderListingBudget()),
+          );
         }
         return (await installed) ? registration.info : null;
       } catch (error) {
-        deps.providerRegistry.forgetInstalledKey(cacheKey);
-        if (!canOmitProviderDiscoveryForError(error)) {
-          throw error;
-        }
-        if (!isSuspendedHostUnavailableError(error)) {
-          deps.logger.warn(
-            {
-              ...expectedFallbackErrorLogFields(error),
-              hostId,
-              providerId: registration.info.id,
-            },
-            "Failed to resolve installed-only provider status",
-          );
-        }
+        omitInstalledProviderAfterError(deps, cacheKey, error);
         return null;
       }
     },
@@ -497,10 +454,17 @@ export function resolveSystemExecutionOptions(
   deps: LoggedWorkSessionDeps,
   query: SystemExecutionOptionsRequest,
 ): Promise<SystemExecutionOptionsResponse> {
-  return resolveExecutionOptions(deps, query, {
-    kind: "picker",
-    selectedModel: query.selectedModel,
-  });
+  return resolveExecutionOptions(
+    deps,
+    query,
+    query.preferCached === "true"
+      ? { kind: "picker", selectedModel: query.selectedModel }
+      : {
+          kind: "validation",
+          requiredModel: query.selectedModel ?? null,
+          selectedModel: query.selectedModel,
+        },
+  );
 }
 
 export function resolveSystemExecutionOptionsForValidation(
@@ -558,11 +522,6 @@ async function resolveExecutionOptions(
     await earlyModelResultPromise?.catch(() => undefined);
     throw error;
   }
-  providers = await omitProvidersThatCannotStartAThread(
-    deps,
-    hostId,
-    providers,
-  );
   providers = includeRequestedRegisteredProvider(
     deps,
     providers,

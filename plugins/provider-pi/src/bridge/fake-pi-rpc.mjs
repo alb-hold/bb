@@ -38,6 +38,12 @@ function flag(name) {
   const index = args.indexOf(name);
   return index === -1 ? undefined : args[index + 1];
 }
+const failNextStartFile = process.env.FAKE_PI_FAIL_NEXT_START_FILE;
+if (failNextStartFile && existsSync(failNextStartFile)) {
+  rmSync(failNextStartFile);
+  process.stderr.write("Error: pi failed to start\n");
+  process.exit(1);
+}
 const sessionFile = args.includes("--no-session")
   ? undefined
   : flag("--session");
@@ -63,6 +69,17 @@ if (sessionFile !== undefined) {
       cwd: process.cwd(),
     };
     writeFileSync(sessionFile, `${JSON.stringify(header)}\n`, "utf8");
+  } else {
+    let header = null;
+    try {
+      header = JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0]);
+    } catch {}
+    if (header?.type !== "session") {
+      process.stderr.write(
+        `Error: Session file is not a valid pi session: ${sessionFile}\n`,
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -261,7 +278,10 @@ async function emitExtensionEvent(type, payload = {}) {
   }
 }
 
-async function loadExtension(path) {
+let extensionGeneration = 0;
+let extensionLoadPath = null;
+
+async function prepareExtensionLoadPath(path) {
   const runtimeUrl = new URL(
     "./core/session-manager.js",
     import.meta.resolve("@earendil-works/pi-coding-agent"),
@@ -271,7 +291,6 @@ async function loadExtension(path) {
     ["@earendil-works/pi-coding-agent", runtimeShim],
     ["typebox", import.meta.resolve("typebox")],
   ]);
-  let hooksRegistered = false;
   if (typeof Bun === "undefined") {
     try {
       const { registerHooks } = await import("node:module");
@@ -284,32 +303,34 @@ async function loadExtension(path) {
               : nextResolve(specifier, context);
           },
         });
-        hooksRegistered = true;
+        return path;
       }
-    } catch {
-      hooksRegistered = false;
-    }
+    } catch {}
   }
-  let loadPath = path;
-  if (!hooksRegistered) {
-    const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-    const staging = mkdtempSync(join(pkgRoot, "node_modules", ".fake-pi-ext-"));
-    writeFileSync(
-      staging + "/extension.mjs",
-      readFileSync(path, "utf8").replaceAll(
-        '"@earendil-works/pi-coding-agent"',
-        JSON.stringify(runtimeShim),
-      ),
-    );
-    loadPath = staging + "/extension.mjs";
-    process.on("exit", () => {
-      try {
-        rmSync(staging, { recursive: true, force: true });
-      } catch {}
-    });
-  }
-  const module = await import(pathToFileURL(loadPath).href);
-  module.default({
+  const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+  const staging = mkdtempSync(join(pkgRoot, "node_modules", ".fake-pi-ext-"));
+  writeFileSync(
+    staging + "/extension.mjs",
+    readFileSync(path, "utf8").replaceAll(
+      '"@earendil-works/pi-coding-agent"',
+      JSON.stringify(runtimeShim),
+    ),
+  );
+  process.on("exit", () => {
+    try {
+      rmSync(staging, { recursive: true, force: true });
+    } catch {}
+  });
+  return staging + "/extension.mjs";
+}
+
+async function loadExtension(path) {
+  extensionGeneration += 1;
+  extensionLoadPath ??= prepareExtensionLoadPath(path);
+  const module = await import(
+    `${pathToFileURL(await extensionLoadPath).href}?generation=${extensionGeneration}`
+  );
+  await module.default({
     registerTool(tool) {
       extensionTools.set(tool.name, tool);
       if (process.env.FAKE_PI_TOOLS_DUMP) {
@@ -375,6 +396,11 @@ async function runPrompt(text) {
   turnCounter += 1;
   if (text === "/compact-on-settle" || text === "/compact-on-settle-late") {
     compactOnSettle = text;
+  }
+  if (text === "/reload") {
+    extensionTools.clear();
+    extensionHandlers.clear();
+    await loadExtension(extensionPath);
   }
   await emitExtensionEvent("agent_start");
   event({ type: "agent_start" });

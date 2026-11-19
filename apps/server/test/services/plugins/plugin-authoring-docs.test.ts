@@ -39,6 +39,8 @@ import {
   type ExperimentalThreadContextSegmentProps,
   type ExperimentalThreadInfoProps,
   type ExperimentalThreadContextCardProps,
+  type ExperimentalThreadHeaderRowProps,
+  type ExperimentalThreadHeaderTitleProps,
   type ExperimentalThreadRowMetadataProps,
   type PluginThreadActionItemInput,
   type ExperimentalPluginBrowserToolbarActionProps,
@@ -51,6 +53,7 @@ import {
   type ExperimentalThreadActionTabProps,
   type ThreadChatMessageAction,
   type ThreadChatProps,
+  type InternalDoNotUseSetupGuideSectionProps,
 } from "@get-bb/plugin-sdk";
 
 const FRONTEND_RUNTIME_EXPORT_NAMES = Object.keys(pluginSdkApp).sort();
@@ -235,6 +238,7 @@ void _assertAllAuthModesListed;
 const THREAD_EVENT_PAYLOAD_FIELDS = {
   "experimental_thread.events": ["thread", "sequence"],
   "experimental_thread.parentChanged": ["thread", "previousParentThreadId"],
+  "experimental_thread.read": ["thread"],
   "experimental_terminal.input": ["terminal"],
   "experimental_host.deleted": ["host"],
   "experimental_environment.removed": ["removal"],
@@ -280,6 +284,7 @@ type SlotPropsByName = {
   homepageSection: PluginHomepageSectionProps;
   settingsSection: PluginSettingsSectionProps;
   experimental_appOverlay: ExperimentalAppOverlayProps;
+  internal_DO_NOT_USE_setupGuideSection: InternalDoNotUseSetupGuideSectionProps;
   navPanel: PluginNavPanelProps;
   experimental_tab: ExperimentalThreadActionTabProps | PluginNavPanelProps;
   experimental_newThreadPanelAction: PluginNewThreadPanelProps;
@@ -291,6 +296,8 @@ type SlotPropsByName = {
   experimental_threadRowMetadata: ExperimentalThreadRowMetadataProps;
   experimental_threadInfoRow: ExperimentalThreadInfoProps;
   experimental_threadInfoSection: ExperimentalThreadInfoProps;
+  experimental_threadHeaderRow: ExperimentalThreadHeaderRowProps;
+  experimental_threadHeaderTitle: ExperimentalThreadHeaderTitleProps;
   experimental_threadContextCardRow: ExperimentalThreadContextCardProps;
   experimental_threadContextCardSection: ExperimentalThreadContextCardProps;
   experimental_threadAction: PluginThreadActionItemInput<unknown>;
@@ -366,8 +373,16 @@ void _assertAllContentScriptRegistrationFieldsListed;
 
 const FRONTEND_SLOT_PROP_FIELDS = {
   homepageSection: ["projectId"],
-  settingsSection: [],
+  settingsSection: [
+    "internal_DO_NOT_USE_onSetupStarted",
+    "internal_DO_NOT_USE_onSetupFailed",
+  ],
   experimental_appOverlay: [],
+  internal_DO_NOT_USE_setupGuideSection: [
+    "onPhone",
+    "onSetupStarted",
+    "onSetupFailed",
+  ],
   navPanel: ["subPath"],
   experimental_tab: ["threadId", "environment", "subPath", "params"],
   experimental_newThreadPanelAction: ["projectId", "params"],
@@ -391,6 +406,8 @@ const FRONTEND_SLOT_PROP_FIELDS = {
   ],
   experimental_threadInfoRow: ["threadId", "projectId", "environment"],
   experimental_threadInfoSection: ["threadId", "projectId", "environment"],
+  experimental_threadHeaderRow: ["threadId", "projectId", "environment"],
+  experimental_threadHeaderTitle: ["threadId", "projectId", "environment"],
   experimental_threadContextCardRow: ["threadId", "projectId", "environment"],
   experimental_threadContextCardSection: [
     "threadId",
@@ -526,6 +543,8 @@ const NAV_PANEL_REGISTRATION_FIELDS = [
   "experimental_usePageTitle",
   "headerContent",
   "experimental_sidebar",
+  "experimental_headerTitle",
+  "experimental_hideFromNavigation",
 ] as const satisfies readonly (keyof PluginNavPanelRegistration)[];
 
 type MissingNavPanelRegistrationField = Exclude<

@@ -23,6 +23,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { SplitButton } from "@/components/ui/split-button.js";
 import {
   AppPageHeader,
@@ -50,6 +51,7 @@ import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
 import {
+  RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
   RIGHT_PANEL_TOGGLE_ICON_NAME,
   RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
 } from "@/components/secondary-panel/panelToggleControlState";
@@ -69,6 +71,14 @@ const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   "border-border/70 bg-transparent font-normal hover:bg-state-hover",
 );
 const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
+const INTERACTIVE_TITLE_TARGET_SELECTOR =
+  "a, button, input, select, textarea, label, [role='button'], [role='link'], [contenteditable='true']";
+
+function isInteractiveTitleTarget(event: ReactPointerEvent): boolean {
+  if (!(event.target instanceof Element)) return false;
+  const interactive = event.target.closest(INTERACTIVE_TITLE_TARGET_SELECTOR);
+  return interactive !== null && event.currentTarget.contains(interactive);
+}
 
 export interface ThreadDetailHeaderActionsMenuArgs {
   includeResponsiveActions: boolean;
@@ -81,6 +91,7 @@ export interface ThreadDetailHeaderActionsMenuArgs {
 interface ThreadDetailHeaderProps {
   actionsMenu: ((args: ThreadDetailHeaderActionsMenuArgs) => ReactNode) | null;
   contextCardButton?: ReactNode;
+  environmentId: string | null;
   isSecondaryPanelOpen: boolean;
   onClosePane?: () => void;
   onToggleSecondaryPanel: () => void;
@@ -101,6 +112,7 @@ interface ThreadDetailHeaderProps {
 
 export function ThreadDetailHeader({
   actionsMenu,
+  environmentId,
   isSecondaryPanelOpen,
   onClosePane,
   onToggleSecondaryPanel,
@@ -138,6 +150,7 @@ export function ThreadDetailHeader({
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
+  const pluginTitleSlot = usePluginThreadHeaderTitleSlot();
   const [primaryAction, ...secondaryActions] = headerActions;
   const { renameThreadAsync } = useThreadActions();
   const handleRename = useCallback(
@@ -180,7 +193,7 @@ export function ThreadDetailHeader({
   const isWindowPanelOpen =
     useContext(SecondaryPanelHostLayoutContext)?.isOpen === true;
   const isSplitPaneHeader = beginPaneDrag !== undefined;
-  const [measuredPaneWidth, setMeasuredPaneWidth] = useState(0);
+  const [isNarrowSplitPane, setIsNarrowSplitPane] = useState(false);
   const usesResponsiveActionOverflow =
     (isSplitPaneHeader || isCompactViewport) &&
     measuredPaneWidth > 0 &&
@@ -196,24 +209,25 @@ export function ThreadDetailHeader({
     const measure = () => {
       const width = measuredElement.getBoundingClientRect().width;
       if (width > 0) {
-        setMeasuredPaneWidth(width);
+        setIsNarrowSplitPane(width < NARROW_SPLIT_HEADER_MAX_WIDTH);
       }
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(measuredElement);
-    return () => {
-      observer.disconnect();
-    };
+    write(read());
+    return observeSharedResize(measuredElement, { read, write });
   }, [isSplitPaneHeader]);
   const handleTitlePointerDown = (event: ReactPointerEvent) => {
-    if (isEditing || !beginPaneDrag || event.button !== 0) {
+    if (
+      isEditing ||
+      !beginPaneDrag ||
+      event.button !== 0 ||
+      isInteractiveTitleTarget(event)
+    ) {
       return;
     }
     beginPaneDrag(event, threadTitle);
   };
   const handleTitleDoubleClick = () => {
-    if (!isEditing) startEditingFromDoubleClick();
+    if (!isEditing && pluginTitleSlot === null) startEditingFromDoubleClick();
   };
   const [searchFits, setSearchFits] = useState<boolean | null>(null);
   const searchInMenu =
@@ -433,8 +447,7 @@ export function ThreadDetailHeader({
             variant="ghost"
             size="icon"
             className={cn(
-              HEADER_ICON_BUTTON_CLASS,
-              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+              RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
               "relative",
               usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
               isTopRow &&

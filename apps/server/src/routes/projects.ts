@@ -43,6 +43,7 @@ import type { Hono } from "hono";
 import type { AppDeps } from "../types.js";
 import { COMMAND_TIMEOUT_MS } from "../constants.js";
 import { ApiError } from "../errors.js";
+import { readMultipartFormData } from "./multipart-form-data.js";
 import {
   copyProjectAttachments,
   createAttachmentContentResponse,
@@ -54,10 +55,7 @@ import {
   requirePublicProject,
   requirePublicStandardProject,
 } from "../services/lib/entity-lookup.js";
-import {
-  isWindowsHostPath,
-  PROMPT_HISTORY_ENTRY_LIMIT,
-} from "@bb/domain";
+import { isWindowsHostPath, PROMPT_HISTORY_ENTRY_LIMIT } from "@bb/domain";
 import { toThreadListEntryResponses } from "../services/threads/thread-runtime-display.js";
 import { callHostRetryableOnlineRpc } from "../services/hosts/online-rpc.js";
 import {
@@ -81,7 +79,6 @@ import {
   beginProjectDeletion,
   requestProjectDeletionAdvance,
 } from "../services/projects/project-deletion.js";
-import { resolveDefaultWorktreeBaseBranch } from "../services/projects/worktree-base-branch.js";
 import { listProjectPromptHistory } from "../services/prompt-history.js";
 import { parsePathKindInclusion } from "./path-list-inclusion.js";
 import {
@@ -924,11 +921,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
       inspectionPromise,
       branchOptionsPromise,
     ]);
-    const result = { ...inspection, ...branchOptions };
-    return {
-      ...result,
-      defaultWorktreeBaseBranch: resolveDefaultWorktreeBaseBranch(result),
-    };
+    return { ...inspection, ...branchOptions };
   };
 
   get(routes.branches, async (context, query) =>
@@ -944,7 +937,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.uploadAttachment, async (context) => {
     requirePublicProject(deps.db, context.req.param("id"));
-    const formData = await context.req.formData();
+    const formData = await readMultipartFormData(context.req);
     const fields = [...formData.keys()];
     if (fields.length === 0) {
       throw new ApiError(400, "invalid_request", "Attachment file is required");

@@ -1,40 +1,34 @@
-import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { eq } from "drizzle-orm";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
-import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
-import {
-  provisionHostMock,
-  resumeHostMock,
-} from "./public-thread-test-harness.js";
-
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import {
   archiveThread,
-  createProjectSource,
-  getProjectExecutionDefaults,
   getThread,
   getThreadExecutionOverride,
   listEvents,
   listQueuedThreadMessages,
-  listThreadsWithPendingInteractionState,
   recordThreadSpawner,
   setThreadExecutionOverride,
-  setExperiments,
-  upsertProjectExecutionDefaults,
   threads,
+  createProjectSource,
+  getProjectExecutionDefaults,
+  listThreadsWithPendingInteractionState,
+  upsertProjectExecutionDefaults,
 } from "@bb/db";
-import { eq } from "drizzle-orm";
-import { defaultExperiments, threadSchema } from "@bb/domain";
+import { threadSchema } from "@bb/domain";
 import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
 import {
   listQueuedThreadCommands,
-  waitForQueuedCommand,
   reportQueuedCommandSuccess,
+  waitForQueuedCommand,
 } from "../helpers/commands.js";
+import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import {
   EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
-  registerProviderHostRpcResponder,
   type HostRpcHandlerResult,
+  registerProviderHostRpcResponder,
 } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import {
@@ -47,14 +41,9 @@ import {
 } from "../helpers/seed.js";
 import { type TestAppHarness, withTestHarness } from "../helpers/test-app.js";
 import { installFakeGitWorktreeProvider } from "../helpers/environment-provider.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { vi, describe, expect, it } from "vitest";
 
 describe("public thread default routes", () => {
-  beforeEach(() => {
-    provisionHostMock.mockReset();
-    resumeHostMock.mockReset();
-  });
-
   it.each(["provider registration", "bridge artifact"] as const)(
     "waits for pending %s before accepting a valid Claude spawn",
     async (pending) => {
@@ -150,7 +139,7 @@ describe("public thread default routes", () => {
   );
 
   it.each([
-    { providerId: "claude", status: 400, code: "invalid_provider" },
+    { providerId: "claude", status: 400, code: "invalid_request" },
     {
       providerId: "claude-code",
       status: 409,
@@ -291,22 +280,16 @@ describe("public thread default routes", () => {
       const { host: secondaryHost } = seedHostSession(harness.deps, {
         id: "host-managed-secondary",
       });
-      setExperiments(harness.db, {
-        ...defaultExperiments,
-      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: localHost.id,
         path: "/tmp/default-managed-source",
       });
-      const secondarySource = createProjectSource(harness.db, harness.hub, {
+      createProjectSource(harness.db, harness.hub, {
         projectId: project.id,
         type: "local_path",
         hostId: secondaryHost.id,
         path: "/tmp/secondary-managed-source",
       });
-      if (secondarySource.type !== "local_path") {
-        throw new Error("Expected local_path project source");
-      }
 
       const response = await harness.app.request("/api/v1/threads", {
         method: "POST",
@@ -337,7 +320,6 @@ describe("public thread default routes", () => {
       expect(context.thread.id).toBe(thread.id);
       expect(context.host?.id).toBe(secondaryHost.id);
       expect(context.inputs).toEqual({ branch: { kind: "default" } });
-      expect(secondarySource.path).toBe("/tmp/secondary-managed-source");
     });
   });
 

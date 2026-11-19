@@ -1,11 +1,16 @@
 import type { ThreadListEntry } from "@bb/domain";
+
 import { describe, expect, it } from "vitest";
+
 import { toPluginSidebarThread } from "./plugin-sidebar-threads";
+
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+
 import {
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
 } from "@bb/client-core";
+
 
 function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
   const entry = makeThreadListEntry({
@@ -27,12 +32,14 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
   };
 }
 
+
 describe("toPluginSidebarThread", () => {
   it.each([true, false])("preserves native terminal mode without live activity (%s)", (nativeTerminal) => {
     const mapped = toPluginSidebarThread(makeThread({ nativeTerminal }));
     expect(mapped.experimental_nativeTerminal).toBe(nativeTerminal);
     expect(mapped.experimental_nativeActivity).toBeUndefined();
   });
+
   it("resolves the display title through the same rules bb's row uses", () => {
     expect(toPluginSidebarThread(makeThread()).displayTitle).toBe("A thread");
     expect(
@@ -60,15 +67,16 @@ describe("toPluginSidebarThread", () => {
     ).toBe("Review Slop Cop in bb");
   });
 
-  it("maps activity counts onto the plugin-facing names", () => {
+
+  it("maps activity counts onto the plugin-facing names and keeps the retired goals count at 0", () => {
     const mapped = toPluginSidebarThread(
       makeThread({
         activity: {
+      activeGoalCount: 0,
           activeWorkflowCount: 2,
           activeBackgroundAgentCount: 3,
           activeBackgroundCommandCount: 4,
           activePlanModeCount: 5,
-          activeGoalCount: 6,
         },
       }),
     );
@@ -77,9 +85,11 @@ describe("toPluginSidebarThread", () => {
       backgroundAgents: 3,
       backgroundCommands: 4,
       planMode: 5,
-      goals: 6,
+      goals: 0,
     });
   });
+
+
 
   it("resolves the indicator with the host's precedence", () => {
     expect(
@@ -118,6 +128,8 @@ describe("toPluginSidebarThread", () => {
     ).toBe("working");
   });
 
+
+
   it("carries the host's accessible label, and null for none", () => {
     expect(
       toPluginSidebarThread(makeThread({ hasPendingInteraction: true }))
@@ -128,6 +140,8 @@ describe("toPluginSidebarThread", () => {
     expect(idle.indicatorLabel).toBeNull();
   });
 
+
+
   it("reports an unread failure as a completed unread turn", () => {
     const mapped = toPluginSidebarThread(
       makeThread({ status: "error", lastReadAt: 1, latestAttentionAt: 9 }),
@@ -135,6 +149,7 @@ describe("toPluginSidebarThread", () => {
     expect(mapped.indicator).toBe("done-unread");
     expect(mapped.isUnread).toBe(true);
   });
+
 
   it("reports unread child threads as unread", () => {
     const mapped = toPluginSidebarThread(
@@ -148,11 +163,13 @@ describe("toPluginSidebarThread", () => {
     expect(mapped.indicator).toBe("none");
   });
 
+
   it("treats a never-read thread as unread", () => {
     expect(
       toPluginSidebarThread(makeThread({ lastReadAt: null })).isUnread,
     ).toBe(true);
   });
+
 
   it("maps pin, archive, and environment fields", () => {
     const mapped = toPluginSidebarThread(
@@ -187,6 +204,7 @@ describe("toPluginSidebarThread", () => {
     });
   });
 
+
   it("carries status, runtime status, and lineage the list sorts and groups by", () => {
     const mapped = toPluginSidebarThread(
       makeThread({
@@ -205,12 +223,14 @@ describe("toPluginSidebarThread", () => {
     expect(mapped.sourceThreadId).toBe("thr_source");
   });
 
+
   it("exposes hidden threads with a flag instead of dropping them", () => {
     expect(toPluginSidebarThread(makeThread()).isHidden).toBe(false);
     expect(
       toPluginSidebarThread(makeThread({ visibility: "hidden" })).isHidden,
     ).toBe(true);
   });
+
 
   it("reports queued work as its own indicators", () => {
     const failed = toPluginSidebarThread(
@@ -233,13 +253,16 @@ describe("toPluginSidebarThread", () => {
     expect(unreadAndFailed.indicator).toBe("done-unread");
   });
 
+
   it("reports no environment when the thread has none", () => {
     expect(toPluginSidebarThread(makeThread()).environment).toBeNull();
   });
 
+
   it("carries the provider so a row can draw an agent glyph", () => {
     expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
   });
+
 
   it("resolves the machine name for the thread's host", () => {
     const mapped = toPluginSidebarThread(
@@ -249,6 +272,7 @@ describe("toPluginSidebarThread", () => {
     expect(mapped.host).toEqual({ id: "host_1", name: "Sawyer's MacBook" });
   });
 
+
   it("falls back to the host id when the machine is unknown", () => {
     const mapped = toPluginSidebarThread(
       makeThread({ environmentHostId: "host_gone" }),
@@ -257,10 +281,12 @@ describe("toPluginSidebarThread", () => {
     expect(mapped.host).toEqual({ id: "host_gone", name: "host_gone" });
   });
 
+
   it("reports no host when the thread has none", () => {
     expect(toPluginSidebarThread(makeThread()).host).toBeNull();
   });
 });
+
 
 it.each([null, 100])(
   "presents a clean exit without a red error (archivedAt %s)",

@@ -409,7 +409,9 @@ export function SidebarSplitContainer({
     next?.scrollIntoView({ block: "nearest" });
     return true;
   };
-  useAppCommandHandler("panel.previousNewTabItem", () => navigateNewTabItem(-1));
+  useAppCommandHandler("panel.previousNewTabItem", () =>
+    navigateNewTabItem(-1),
+  );
   useAppCommandHandler("panel.nextNewTabItem", () => navigateNewTabItem(1));
 
   const focusPane = useCallback(
@@ -945,6 +947,18 @@ interface SidebarSplitLeafProps {
   rect: { h: number; w: number; x: number; y: number };
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   state: SidebarSplitState;
+}
+
+interface SidebarSplitSinglePaneProps {
+  args: SidebarSplitPaneRenderArgs;
+  renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
+}
+
+function SidebarSplitSinglePane({
+  args,
+  renderPane,
+}: SidebarSplitSinglePaneProps) {
+  return renderPane(args);
 }
 
 function SidebarSplitLeaf(props: SidebarSplitLeafProps) {

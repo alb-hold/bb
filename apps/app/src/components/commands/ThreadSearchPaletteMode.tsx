@@ -15,21 +15,12 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { cn } from "@bb/shared-ui/lib/utils";
-import {
-  resolveThreadListIndicator,
-  threadListIndicatorStateForThread,
-} from "@bb/client-core";
-import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
-import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
+import { useThreadListEntryStatus } from "@/hooks/useThreadListEntryStatus";
 import {
   highlightedText,
   ThreadTitle,
 } from "@/components/thread/ThreadTitleMentions";
-import {
-  ThreadStatusGlyph,
-  resolveThreadStatus,
-} from "@/components/thread/ThreadStatusGlyph";
-import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { THREAD_LIFECYCLE_OPTIONS } from "@/components/thread/ThreadLifecycleFilter";
 import {
   paletteThreadLifecyclesAtom,
@@ -84,6 +75,21 @@ interface ThreadSearchOption {
 
 function optionKey(option: ThreadSearchOption): string {
   return option.row?.id ?? `more:${option.lifecycle}`;
+}
+
+function growShownCounts(
+  current: Partial<Record<ThreadArchiveFilter, number>>,
+  lifecycles: readonly ThreadArchiveFilter[],
+  options: readonly ThreadSearchOption[],
+): Partial<Record<ThreadArchiveFilter, number>> {
+  let next = current;
+  for (const lifecycle of lifecycles) {
+    const shown = options.filter(
+      (option) => option.lifecycle === lifecycle && option.row !== null,
+    ).length;
+    if (shown > (next[lifecycle] ?? 0)) next = { ...next, [lifecycle]: shown };
+  }
+  return next;
 }
 
 export function ThreadSearchPaletteMode({
@@ -219,19 +225,11 @@ export function ThreadSearchPaletteMode({
       return groupOptions;
     });
   }, [expandedGroups, highlightedKey, lifecycles, result, shownCounts]);
-  useLayoutEffect(() => {
-    setShownCounts((current) => {
-      let next = current;
-      for (const lifecycle of lifecycles) {
-        const shown = options.filter(
-          (option) => option.lifecycle === lifecycle && option.row !== null,
-        ).length;
-        if (shown > (next[lifecycle] ?? 0))
-          next = { ...next, [lifecycle]: shown };
-      }
-      return next;
-    });
-  }, [lifecycles, options]);
+  const filterStateIsCurrent = previousFilterKey === filterKey;
+  const grownShownCounts = growShownCounts(shownCounts, lifecycles, options);
+  if (filterStateIsCurrent && grownShownCounts !== shownCounts) {
+    setShownCounts(grownShownCounts);
+  }
   const retainedIndex = options.findIndex(
     (option) => optionKey(option) === highlightedKey,
   );
@@ -241,10 +239,17 @@ export function ThreadSearchPaletteMode({
       : options.length === 0
         ? -1
         : Math.min(highlightedIndex, options.length - 1);
-  useLayoutEffect(() => {
-    setHighlightedIndex(Math.max(activeIndex, 0));
-    setHighlightedKey(activeIndex < 0 ? null : optionKey(options[activeIndex]));
-  }, [activeIndex, options]);
+  const syncedHighlightedIndex = Math.max(activeIndex, 0);
+  const syncedHighlightedKey =
+    activeIndex < 0 ? null : optionKey(options[activeIndex]);
+  if (
+    filterStateIsCurrent &&
+    (highlightedIndex !== syncedHighlightedIndex ||
+      highlightedKey !== syncedHighlightedKey)
+  ) {
+    setHighlightedIndex(syncedHighlightedIndex);
+    setHighlightedKey(syncedHighlightedKey);
+  }
   const highlightOption = useCallback(
     (index: number) => {
       setHighlightedIndex(index);
@@ -660,29 +665,7 @@ function PaletteMatchText({
 }
 
 function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
-  const hasUnsubmittedDraft = usePromptDraftHasInput({
-    kind: "thread",
-    projectId: row.projectId,
-    threadId: row.threadId,
-  });
-  const nativeActivityUnconfirmed = useNativeActivityUnconfirmed(
-    row.thread.runtime,
-  );
-  const state = threadListIndicatorStateForThread(
-    row.thread,
-    hasUnsubmittedDraft,
-  );
-  const indicator = resolveThreadListIndicator({
-    ...state,
-    isRuntimeActive: state.isRuntimeActive && !nativeActivityUnconfirmed,
-  });
-  const rowStatus = usePluginThreadRowStatus(row.threadId);
-  const { accessibleLabel: label } = resolveThreadStatus(
-    indicator,
-    rowStatus,
-    false,
-    state.queuedFailedCount,
-  );
+  const { indicator, rowStatus, label } = useThreadListEntryStatus(row.thread);
   if (label === null) return null;
   return (
     <>
@@ -703,7 +686,7 @@ function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
           >
             <ThreadStatusGlyph
               indicator={indicator}
-              experimental_queuedFailedCount={state.queuedFailedCount}
+              experimental_queuedFailedCount={row.thread.queuedFailedCount}
               rowStatus={rowStatus}
               size="compact"
             />

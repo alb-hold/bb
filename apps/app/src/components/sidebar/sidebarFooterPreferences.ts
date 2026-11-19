@@ -1,7 +1,8 @@
 import { type RefObject, useLayoutEffect, useState } from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import {
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginSidebarFooterItemSlot,
 } from "@/lib/plugin-slots";
 import { createSyncedPreferenceAtom } from "@/lib/ui-preferences/synced-preference-atom";
@@ -26,14 +27,12 @@ export function useMeasureSidebarFooterCapacity(
     const row = rowRef.current;
     const more = moreRef.current;
     if (!row || !more) return;
-    const measure = () => {
+    const measure = (): number | null => {
       const width = row.getBoundingClientRect().width;
       const controlWidth = more.getBoundingClientRect().width;
-      if (width === 0 || controlWidth === 0) return;
+      if (width === 0 || controlWidth === 0) return null;
       const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 0;
-      setCapacity(
-        Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1),
-      );
+      return Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1);
     };
     if (typeof ResizeObserver === "undefined") {
       const frame = requestAnimationFrame(measure);
@@ -67,7 +66,7 @@ export function footerPreferenceKey(item: {
 }
 
 export function useSidebarFooterPreferences() {
-  const { sidebarFooterItems } = usePluginSlots();
+  const sidebarFooterItems = usePluginSlotKind("sidebarFooterItems");
   const [order, setOrder] = useAtom(sidebarFooterOrderAtom);
   const [hidden, setHidden] = useAtom(sidebarFooterHiddenAtom);
   const capacity = useAtomValue(sidebarFooterCapacityAtom);

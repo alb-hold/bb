@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   claimAutomationScheduledRun,
   closeAutomationRun,
+  listAutomationRuns,
   listDueAutomations,
   parseAutomationExecution,
   parseAutomationTrigger,
@@ -10,6 +11,12 @@ import {
   type AutomationRunRow,
   type Db,
 } from "./data.js";
+import {
+  readRetryHandoff,
+  RETRY_DECISION_WAIT_MS,
+  type RetryHandoff,
+  type RetryHandoffApi,
+} from "./retry-handoff.js";
 import { publishAutomationChange } from "./realtime.js";
 import type { ScriptRunScope } from "./script-runner.js";
 import { computeNextScheduledTime } from "./schedule-helpers.js";
@@ -34,7 +41,8 @@ const hostListSchema = z.array(
     .passthrough(),
 );
 type SweepApi = AgentRunApi &
-  ScriptRunApi & {
+  ScriptRunApi &
+  RetryHandoffApi & {
     sdk: { hosts: { list(): Promise<unknown> } };
   };
 
@@ -54,6 +62,48 @@ function buildScheduleFailureHandler(
   };
 }
 
+async function readFailedRunHandoff(
+  bb: RetryHandoffApi & Pick<BbPluginApi, "log">,
+  db: Db,
+  args: { automation: AutomationRow; now: number },
+): Promise<RetryHandoff> {
+  const [latestRun] = listAutomationRuns(db, {
+    automationId: args.automation.id,
+    limit: 1,
+  });
+  if (
+    latestRun === undefined ||
+    latestRun.status !== "failed" ||
+    latestRun.trigger !== "schedule" ||
+    latestRun.threadId === null ||
+    latestRun.finishedAt === null
+  ) {
+    return { kind: "re-run" };
+  }
+  let handoff: RetryHandoff;
+  try {
+    handoff = await readRetryHandoff(bb, {
+      threadId: latestRun.threadId,
+      failedAt: latestRun.finishedAt,
+      now: args.now,
+    });
+  } catch (error) {
+    bb.log.warn(
+      `Could not read the retry state of failed automation run ${latestRun.id} in thread ${latestRun.threadId}: ${errorMessage(error)}`,
+    );
+    handoff =
+      args.now - latestRun.finishedAt < RETRY_DECISION_WAIT_MS
+        ? { kind: "wait" }
+        : { kind: "re-run" };
+  }
+  return handoff.kind === "stand-down"
+    ? {
+        kind: "stand-down",
+        reason: `failed run ${latestRun.id} is not re-run: ${handoff.reason}`,
+      }
+    : handoff;
+}
+
 async function processDueAutomation(
   bb: SweepApi,
   db: Db,
@@ -62,7 +112,6 @@ async function processDueAutomation(
     automation: AutomationRow;
     now: number;
     agentHostsAvailable: boolean;
-    serverUrl: string;
     resolveWorkingDirectory: ScriptWorkingDirectoryResolver;
     scriptRuns: ScriptRunScope;
   },
@@ -93,17 +142,27 @@ async function processDueAutomation(
     return;
   }
 
+  const handoff: RetryHandoff =
+    execution.mode === "agent"
+      ? await readFailedRunHandoff(bb, db, {
+          automation: args.automation,
+          now: args.now,
+        })
+      : { kind: "re-run" };
+  if (handoff.kind === "wait") return;
   const claim = claimAutomationScheduledRun(db, {
     automationId: args.automation.id,
     expectedNextRunAt,
     newNextRunAt,
     now: args.now,
+    skipReason: handoff.kind === "stand-down" ? handoff.reason : null,
   });
   if (!claim.advanced) return;
   publishAutomationChange(bb, args.automation.projectId, [
     "automations-changed",
     "automation-runs-changed",
   ]);
+  if (claim.run.status === "skipped") return;
   const onFailure = buildScheduleFailureHandler(db, {
     run: claim.run,
   });
@@ -121,7 +180,6 @@ async function processDueAutomation(
       run: claim.run,
       execution,
       onFailure,
-      serverUrl: args.serverUrl,
       resolveWorkingDirectory: args.resolveWorkingDirectory,
       scriptRuns: args.scriptRuns,
     }).catch((error: unknown) => {
@@ -154,7 +212,6 @@ export async function sweepDueAutomations(
   db: Db,
   args: {
     pluginDataDir: string;
-    serverUrl: string;
     serverHostId: string | null;
     scriptRuns: ScriptRunScope;
     now?: number;
@@ -176,7 +233,6 @@ export async function sweepDueAutomations(
         automation,
         now,
         agentHostsAvailable,
-        serverUrl: args.serverUrl,
         resolveWorkingDirectory,
         scriptRuns: args.scriptRuns,
       });
