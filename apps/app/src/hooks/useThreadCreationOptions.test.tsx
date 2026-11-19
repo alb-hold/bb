@@ -85,6 +85,8 @@ function multipleReadyProviderStates(
       canUpdate: false,
       loginCommand: null,
       localLoginCommand: null,
+      internal_DO_NOT_USE_guidedSignIn: false,
+      internal_DO_NOT_USE_setupGuidePlanLabel: null,
     })),
   };
 }
@@ -128,6 +130,8 @@ function piUnauthenticatedProviderStates(): SystemProviderStatesResponse {
         canUpdate: false,
         loginCommand: null,
         localLoginCommand: null,
+        internal_DO_NOT_USE_guidedSignIn: false,
+        internal_DO_NOT_USE_setupGuidePlanLabel: null,
       },
     ],
   };
@@ -552,6 +556,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
             />
           </>
@@ -687,6 +692,7 @@ describe("useThreadCreationOptions", () => {
               value: options.reasoningLevel,
               options: options.reasoningOptions,
               onChange: options.setReasoningLevel,
+              isLoading: false,
             }}
           />
         );
@@ -798,6 +804,7 @@ describe("useThreadCreationOptions", () => {
             value: options.reasoningLevel,
             options: options.reasoningOptions,
             onChange: options.setReasoningLevel,
+            isLoading: false,
           }}
         />
       );
@@ -2348,6 +2355,7 @@ describe("useThreadCreationOptions", () => {
             value: result.current.reasoningLevel,
             options: result.current.reasoningOptions,
             onChange: result.current.setReasoningLevel,
+            isLoading: false,
           }}
         />,
         { wrapper },
@@ -2566,6 +2574,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
               provider={{
                 selectedId: options.selectedProviderId,
@@ -2853,6 +2862,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
             />
           </CompactViewportOverrideProvider>

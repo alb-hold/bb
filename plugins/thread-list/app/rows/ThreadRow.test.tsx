@@ -64,7 +64,7 @@ import {
   sidebarShowRowMetadataAtom,
   THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
-import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
+import { SidebarProjectNamesContext } from "../model/use-sidebar-data.js";
 import {
   StickyRowStateReportProvider,
   type StickyRowStateReporter,
@@ -144,6 +144,7 @@ function activity(
     workflows: 0,
     backgroundAgents: 0,
     backgroundCommands: 0,
+    goals: 0,
     planMode: 0,
     ...overrides,
   };
@@ -195,7 +196,9 @@ function ThreadRowHarness({
   ) : threadRow;
   const content = (
     <SidebarRowMetadataExperiment>
-      <SidebarProjectsContext.Provider value={projects}>
+      <SidebarProjectNamesContext.Provider
+        value={new Map(projects.map((project) => [project.id, project.name]))}
+      >
         <SidebarProvidersContext.Provider value={providers}>
           <TooltipProvider>
             <SidebarDraftPresenceSync />
@@ -238,7 +241,7 @@ function ThreadRowHarness({
             </ThreadRowNavigationProvider>
           </TooltipProvider>
         </SidebarProvidersContext.Provider>
-      </SidebarProjectsContext.Provider>
+      </SidebarProjectNamesContext.Provider>
     </SidebarRowMetadataExperiment>
   );
   const rowStateReporter =
@@ -303,6 +306,7 @@ interface RenderThreadRowArgs extends Omit<HarnessProps, "thread"> {
   sdk?: PluginSdkTestFakes;
   threadActions?: TestThreadActionsResolver;
   threadBulkActions?: TestThreadBulkActionsResolver;
+  experiments?: string[];
 }
 
 function renderThreadRow({
@@ -319,6 +323,7 @@ function renderThreadRow({
   sdk,
   threadActions = hostThreadActions(),
   threadBulkActions,
+  experiments,
   ...harness
 }: RenderThreadRowArgs = {}): RenderedSlot & {
   rerenderThreadRow(nextThread: PluginSidebarThread): void;
@@ -383,6 +388,7 @@ function renderThreadRow({
       sdk,
       threadActions,
       threadBulkActions,
+      experiments,
     },
   );
   return Object.assign(slot, {

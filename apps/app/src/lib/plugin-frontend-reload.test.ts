@@ -275,7 +275,7 @@ function makeDeps(initial: PluginFrontendCandidate[] = []): TestReconcileDeps {
     flushSlotBatch: vi.fn(),
     warn: vi.fn(),
     priorityPluginIds: () => [],
-    whenScreenPainted: () => Promise.resolve(),
+    waitForComposerPaint: () => Promise.resolve(),
   };
 }
 
@@ -315,7 +315,7 @@ async function loadHelloThenFetchInventory(
   const queryClient = newQueryClient();
   vi.stubGlobal("fetch", vi.fn(fetchInventory));
   harness.deps.fetchCandidates = vi.fn(() =>
-    fetchFrontendCandidates(queryClient, "await-refresh"),
+    fetchFrontendCandidates(queryClient, "force-refresh"),
   );
   return harness;
 }
@@ -356,7 +356,7 @@ describe("reconcilePluginFrontends", () => {
       );
 
       await expect(
-        fetchFrontendCandidates(newQueryClient(), "await-refresh"),
+        fetchFrontendCandidates(newQueryClient(), "force-refresh"),
       ).resolves.toEqual([candidate("account-pool", "v1")]);
     },
   );
@@ -397,7 +397,7 @@ describe("reconcilePluginFrontends", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       const cancel = start(queryClient);
-      const candidates = fetchFrontendCandidates(queryClient, "await-refresh");
+      const candidates = fetchFrontendCandidates(queryClient, "force-refresh");
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       cancel();
 

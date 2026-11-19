@@ -45,7 +45,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
   const leadingSpacerRef = useRef<HTMLDivElement>(null);
-  const bottomSpacerRef = useRef<HTMLDivElement>(null);
   const composerFadeRef = useRef<HTMLDivElement>(null);
   const [composerMaxHeight, setComposerMaxHeight] = useState<number>();
 
@@ -56,7 +55,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
     const scrollViewport = scrollViewportRef.current;
     const scrollContent = scrollContentRef.current;
     const leadingSpacer = leadingSpacerRef.current;
-    const bottomSpacer = bottomSpacerRef.current;
     const composerFade = composerFadeRef.current;
     if (
       !region ||
@@ -64,7 +62,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
       !scrollViewport ||
       !scrollContent ||
       !leadingSpacer ||
-      !bottomSpacer ||
       !composerFade
     ) {
       return;
@@ -93,11 +90,11 @@ function useCompactHomeMetrics(isCompact: boolean) {
         );
       }
       const composerHeight = composer.offsetHeight;
+      scrollViewport.style.bottom = `${composerHeight}px`;
       leadingSpacer.style.height = `${getCompactHomeLeadingSpace({
         regionHeight: region.offsetHeight,
         composerHeight,
       })}px`;
-      bottomSpacer.style.height = `${composerHeight}px`;
       composerFade.hidden =
         scrollViewport.scrollHeight <= scrollViewport.clientHeight;
     };
@@ -122,7 +119,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
     scrollViewportRef,
     scrollContentRef,
     leadingSpacerRef,
-    bottomSpacerRef,
     composerFadeRef,
     composerMaxHeight,
   };
@@ -141,7 +137,6 @@ export function RootComposeHome({
     scrollViewportRef,
     scrollContentRef,
     leadingSpacerRef,
-    bottomSpacerRef,
     composerFadeRef,
     composerMaxHeight,
   } = useCompactHomeMetrics(isCompact);
@@ -187,7 +182,7 @@ export function RootComposeHome({
             <div
               ref={scrollContentRef}
               data-testid="root-compose-compact-scroll-content"
-              className="flex min-h-full flex-col justify-end"
+              className="flex min-h-full flex-col pb-[calc(1rem+env(safe-area-inset-bottom))]"
             >
               <div
                 ref={leadingSpacerRef}
@@ -198,11 +193,6 @@ export function RootComposeHome({
                 {compactScrollContent}
                 {homepageSections}
               </div>
-              <div
-                ref={bottomSpacerRef}
-                aria-hidden
-                data-testid="root-compose-compact-bottom-spacer"
-              />
             </div>
           </div>
         ) : null}

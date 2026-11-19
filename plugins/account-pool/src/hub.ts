@@ -1323,7 +1323,7 @@ export class AccountPoolHub {
         const retryTransient = async (
           retryAfter: string | null,
         ): Promise<boolean> => {
-          if (selected.account.id !== routing.pinnedAccountId) return false;
+          if (!selected.keepAffinity) return false;
           const delayMs = transientRetryDelay(
             transientRetries,
             retryAfter,

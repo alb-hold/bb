@@ -3,7 +3,6 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PluginHomepageSections } from "@/components/plugin/PluginHomepageSections";
@@ -160,7 +159,7 @@ export function RootComposeSecondaryContent({
           isSecondaryPanelOpen || panelRealized ? (
             <LazyThreadSecondaryPanel
               {...threadSecondaryPanelProps}
-              drawerFallback={<DrawerPanelLoadingSkeleton />}
+              drawerFallback={drawerFallback}
               renderBrowserDeck={(activeBrowserTabId, pane) =>
                 renderBrowserDeck?.({
                   activeBrowserTabId,

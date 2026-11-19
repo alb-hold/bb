@@ -19,12 +19,14 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
+import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { type ThreadActionMenuSurface } from "./ThreadActionMenuItems";
 import {
   ThreadActionsMenuItems,

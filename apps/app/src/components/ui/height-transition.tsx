@@ -273,7 +273,7 @@ export function AutoHeightContainer({
       pendingVisibilitySnap: false,
       initialSettleComplete: false,
       initialSettleTimerId: 0,
-      release: null,
+      release: null as (() => void) | null,
       fallbackTimerId: null as number | null,
     };
     transitionState.initialSettleTimerId = window.setTimeout(() => {

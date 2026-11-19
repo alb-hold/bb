@@ -25,11 +25,9 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { useSidebarThreadShortcut as useHostSidebarThreadShortcut } from "@/components/sidebar/sidebarThreadShortcuts";
 import {
-  resolveThreadTitleDisplayText,
   useThreadTitleMentionResources,
   type ThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
-import { getThreadDisplayTitle } from "./thread-title";
 import {
   usePromptDraftHasInput,
   usePromptDraftInputThreadIds,
@@ -55,7 +53,6 @@ import { toPluginSidebarThread } from "./plugin-sidebar-threads";
 import {
   useSidebarThreadEntries,
   useSidebarThreadEntriesStore,
-  useSidebarThreadEntry,
 } from "./sidebar-thread-entries";
 import { useSetRootComposeProjectId } from "./root-compose-selection";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -105,15 +102,6 @@ function toPluginSidebarThreadCached(
   titleResources: ThreadTitleMentionResources,
   now: number,
 ): PluginSidebarThread {
-  const hostName =
-    entry.environmentHostId === null
-      ? null
-      : (hostNamesById.get(entry.environmentHostId) ??
-        entry.environmentHostId);
-  const displayTitle = resolveThreadTitleDisplayText(
-    getThreadDisplayTitle(entry),
-    titleResources,
-  );
   const cached = pluginSidebarThreadByEntry.get(entry);
   const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
     entry.runtime,

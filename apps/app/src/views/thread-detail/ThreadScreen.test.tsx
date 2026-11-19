@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ComponentType, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
+import type { ThreadTimelineEditMessageHandler } from "@/components/thread/timeline";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
@@ -27,7 +28,10 @@ const mocks = vi.hoisted(() => ({
   surfaceProps: [] as Array<Record<string, unknown>>,
   timeline: null as UseThreadTimelineControllerResult | null,
   toastWarning: vi.fn(),
+  editMessageMutateAsync: vi.fn(),
 }));
+
+let activeScreenWrapper: ComponentType<{ children: ReactNode }> = ({ children }) => <>{children}</>;
 
 vi.mock("@/components/ui/app-toast", async (importOriginal) => {
   const actual =
@@ -63,9 +67,9 @@ vi.mock("@/hooks/queries/system-queries", () => ({
 
 vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
   return {
-    useCreateThreadQueuedMessage: mutation,
-    useEditThreadMessage: mutation,
-    useSendThreadMessage: mutation,
+    useCreateThreadQueuedMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useEditThreadMessage: () => ({ mutateAsync: mocks.editMessageMutateAsync, isPending: false }),
+    useSendThreadMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   };
 });
 
@@ -122,7 +126,9 @@ const TIMELINE: UseThreadTimelineControllerResult = {
   activeWorkflows: [],
   contextBoundarySeq: null,
   contextWindowUsage: undefined,
+  goal: null,
   hasOlderTimelineRows: false,
+  hasUnseenTimelineEvents: false,
   isCatchingUpTimeline: false,
   isLoadingOlderTimelineRows: false,
   loadOlderTimelineRows: async () => {},
@@ -177,7 +183,21 @@ function renderScreen(
   } = {},
 ) {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
-  return render(
+  activeScreenWrapper = Wrapper;
+  mocks.timeline = overrides.timeline ?? TIMELINE;
+  return render(screenElement(presentation, overrides));
+}
+
+function screenElement(
+  presentation: ThreadScreenPresentation,
+  overrides: {
+    hasUnseenTimelineEvents?: boolean;
+    thread?: ThreadResponse;
+    timeline?: UseThreadTimelineControllerResult;
+  } = {},
+) {
+  const Wrapper = activeScreenWrapper;
+  return (
     <Wrapper>
       <ThreadScreen
         composer={{
@@ -191,7 +211,7 @@ function renderScreen(
         projectId={THREAD.projectId}
         resolveMentionLink={() => null}
         thread={overrides.thread ?? THREAD}
-        timeline={overrides.timeline ?? TIMELINE}
+        timelineEnabled={true}
         timelineHost={{
           environmentHostName: null,
           includePluginMessageActions: false,
@@ -199,7 +219,7 @@ function renderScreen(
           unreadDividerPlacement: null,
         }}
       />
-    </Wrapper>,
+    </Wrapper>
   );
 }
 
@@ -269,6 +289,7 @@ beforeEach(() => {
   mocks.promptAreaProps = [];
   mocks.surfaceProps = [];
   mocks.timeline = null;
+  mocks.editMessageMutateAsync.mockReset();
 });
 
 it("includes an idle signaled child in the parent banner", () => {

@@ -195,6 +195,9 @@ export async function acceptThreadSendRequest(
     return {
       ok: true,
       delivery: "sent",
+      ...(outcome.messageSequence !== null
+        ? { messageSequence: outcome.messageSequence }
+        : {}),
       ...(outcome.refusal ? { refusal: outcome.refusal } : {}),
     };
   }

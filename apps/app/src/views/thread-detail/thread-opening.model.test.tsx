@@ -132,6 +132,7 @@ function OpenedThread() {
   const { unreadDividerState } = useThreadDetailThread(
     THREAD_ID,
     true,
+    "first-unread-row",
     {
       hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
       isFocused: true,
@@ -645,6 +646,7 @@ describe("thread opening model", () => {
       const { thread, hasThreadDetailBootstrapSettled } = useThreadDetailThread(
         THREAD_ID,
         false,
+        "first-unread-row",
             {
           hasUnseenTimelineEvents: false,
           isFocused: true,

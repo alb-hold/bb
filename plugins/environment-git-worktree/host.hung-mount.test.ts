@@ -151,6 +151,7 @@ describe.runIf(fuseAvailable)(
           operationId: "remove-hung-mount",
           pathKey: "thr_hung",
           path: fixture.path,
+          ownedBranch: null,
         })
         .finally(() => {
           removeFinishedAt = performance.now();

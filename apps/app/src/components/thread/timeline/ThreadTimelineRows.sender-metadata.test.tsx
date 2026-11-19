@@ -79,6 +79,7 @@ describe("ThreadTimelineRows sender thread titles", () => {
         <QueryClientProvider client={queryClient}>
           <ThreadTimelineRows
             threadId="thr_main"
+            threadIsActive={false}
             timelineRows={SENDERS.map(senderRow)}
             threadRuntimeDisplayStatus="idle"
           />

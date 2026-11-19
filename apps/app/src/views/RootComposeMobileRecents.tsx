@@ -73,12 +73,17 @@ function MobileRecentThreadRow({
   projectName,
   provider,
   row,
+  now,
 }: MobileRecentThreadRowProps) {
   const { thread, depth, hasChildren, isCollapsed } = row;
   const touchStartedBeforeLink = useRef(false);
   const { providers: environmentProviders } = useSystemEnvironmentProviders();
   const threadTitle = useThreadTitleDisplayText(getThreadDisplayTitle(thread));
-  const { indicator: indicatorKind, label: indicatorLabel, rowStatus } = useThreadListEntryStatus(thread, { threads: row.hiddenThreads, haveDraft: row.hiddenThreadsHaveDraft });
+  const { indicator: indicatorKind, label: indicatorLabel } = useThreadListEntryStatus(
+    thread,
+    { threads: [], haveDraft: row.hasUnsubmittedDraft },
+    now,
+  );
   const environmentProviderLookup = findEnvironmentDisplayProvider(
     environmentProviders,
     thread.environmentProviderId,
@@ -152,7 +157,6 @@ function MobileRecentThreadRow({
             environmentProviderLookup={environmentProviderLookup}
             indicatorKind={indicatorKind}
             queuedFailedCount={thread.queuedFailedCount}
-            rowStatus={rowStatus}
           />
         </RouteAnchor>
       </li>

@@ -15,7 +15,7 @@ import { useInitialPromptDraft } from "@/components/promptbox/mentions/initial-p
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSystemProviders } from "@/hooks/queries/system-queries";
+import { useProviderDirectory } from "@/hooks/queries/system-queries";
 import {
   findLocalPathProjectSourceForHost,
   type EnvironmentStatus,

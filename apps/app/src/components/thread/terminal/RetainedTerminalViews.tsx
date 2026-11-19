@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -106,6 +107,32 @@ export function createRetainedTerminalViews() {
     retainNativeOutput: props.retainNativeOutput,
     attentionShownAsBanner: props.attentionShownAsBanner,
   });
+  const sessionChanged = (entry: Entry, session: TerminalSession) => {
+    update(entry, {
+      ...entry.snapshot,
+      retained: { ...entry.snapshot.retained, session },
+    });
+    if (session.status !== "running")
+      invalidate((candidate) => candidate === entry);
+  };
+  const revealed = (entry: Entry) => {
+    if (entry.revealed || !entries.includes(entry)) return;
+    entry.revealed = true;
+    if (openingEntry === entry) openingEntry = null;
+    if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+    if (revealTimer !== null) clearTimeout(revealTimer);
+    const finish = () => {
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      revealFrame = null;
+      if (revealTimer !== null) clearTimeout(revealTimer);
+      revealTimer = null;
+      schedulePrune();
+    };
+    revealFrame = requestAnimationFrame(() => {
+      revealFrame = requestAnimationFrame(finish);
+    });
+    revealTimer = setTimeout(finish, 2_000);
+  };
   return {
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -172,22 +199,7 @@ export function createRetainedTerminalViews() {
       return entry;
     },
     revealed(entry: Entry) {
-      if (entry.revealed || !entries.includes(entry)) return;
-      entry.revealed = true;
-      if (openingEntry === entry) openingEntry = null;
-      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
-      if (revealTimer !== null) clearTimeout(revealTimer);
-      const finish = () => {
-        if (revealFrame !== null) cancelAnimationFrame(revealFrame);
-        revealFrame = null;
-        if (revealTimer !== null) clearTimeout(revealTimer);
-        revealTimer = null;
-        schedulePrune();
-      };
-      revealFrame = requestAnimationFrame(() => {
-        revealFrame = requestAnimationFrame(finish);
-      });
-      revealTimer = setTimeout(finish, 2_000);
+      revealed(entry);
     },
     update(entry: Entry, attachment: Attachment, projectId?: string) {
       if (projectId !== undefined) entry.projectId = projectId;
@@ -221,12 +233,7 @@ export function createRetainedTerminalViews() {
     },
     invalidate,
     sessionChanged(entry: Entry, session: TerminalSession) {
-      update(entry, {
-        ...entry.snapshot,
-        retained: { ...entry.snapshot.retained, session },
-      });
-      if (session.status !== "running")
-        invalidate((candidate) => candidate === entry);
+      sessionChanged(entry, session);
     },
     setDocumentHidden(hidden: boolean) {
       if (hiddenTimer !== null) clearTimeout(hiddenTimer);

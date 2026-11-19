@@ -48,7 +48,7 @@ import {
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { prefetchPluginModule } from "./plugin-module-preload";
-import { lazyRuntimeGroups } from "./plugin-lazy-runtime-groups";
+import { pluginRuntimeGroupsFor } from "./plugin-runtime-groups";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
@@ -85,6 +85,8 @@ interface PluginFrontendBundle {
   compatible: boolean;
   runtimeSlots: string[];
 }
+
+type PluginListFreshness = "reuse-cached" | "force-refresh";
 
 export interface PluginFrontendCandidate {
   pluginId: string;
@@ -838,10 +840,10 @@ async function reconcileCandidates(
           });
           await previous;
           try {
-            if (state.tornDown) return;
+            if (state.discarded) return;
             if (!isCandidateApplied(candidate, state))
               await deps.yieldBetweenDeferredLoads();
-            if (!state.tornDown)
+            if (!state.discarded)
               await reconcileCandidate(candidate, state, {
                 ...deps,
                 prefetchModule: () => {},
@@ -867,7 +869,7 @@ async function reconcileCandidates(
       try {
         if (candidate.pluginId === "bb--composer" && deps.waitForComposerPaint)
           await deps.waitForComposerPaint();
-        if (!state.tornDown) await reconcileCandidate(candidate, state, deps);
+        if (!state.discarded) await reconcileCandidate(candidate, state, deps);
       } finally {
         if (priorityPluginIds.includes(candidate.pluginId)) {
           pendingPriority -= 1;
@@ -1158,7 +1160,7 @@ const startingPluginsRecheck = createStartingPluginsRecheck({
 
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: () =>
-    fetchFrontendCandidates(appQueryClient, "await-refresh"),
+    fetchFrontendCandidates(appQueryClient, "force-refresh"),
   importModule: (url) => import(/* @vite-ignore */ url),
   importRetryDelaysMs: PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS,
   applyCss: applyPluginCss,

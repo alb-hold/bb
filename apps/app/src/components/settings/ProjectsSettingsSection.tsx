@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";import { arrayMove } from "@dnd-kit/sortable";
 import type { Host } from "@bb/domain";
 import type { ProjectWithThreadsResponse } from "@bb/server-contract";

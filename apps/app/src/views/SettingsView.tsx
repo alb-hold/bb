@@ -1203,6 +1203,11 @@ const EXPERIMENT_DEFINITIONS: Record<
     description:
       "Show a thread's changes, pull request, and parent and child threads in a card at the upper-right of each thread pane instead of above the composer. A header button opens or pins it; wide panes keep it beside the transcript.",
   },
+  unreadDividerAtAnswer: {
+    label: "NEW divider before final assistant message",
+    description:
+      "When you open a thread whose turn finished while you were away, place the NEW divider before the turn's final assistant message, or the error that ended it, instead of before its first tool call. The turn's work stays above the divider.",
+  },
   walCheckpointWorker: {
     label: "Background database checkpoints",
     description:

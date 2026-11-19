@@ -3,6 +3,7 @@ import {
   useThread,
   useThreadDetailBootstrap,
 } from "@/hooks/queries/thread-queries";
+import type { ThreadTimelineUnreadDividerAnchor } from "@/components/thread/timeline";
 import { useMarkThreadRead } from "@/hooks/mutations/thread-state-mutations";
 import { useRetainedThreadSnapshot } from "@/hooks/use-retained-thread-snapshot";
 import { useThreadReadTracking } from "@/hooks/useThreadReadTracking";
@@ -22,6 +23,7 @@ const DEFAULT_TIMELINE_STATE: ThreadDetailThreadTimelineState = {
 export function useThreadDetailThread(
   threadId: string,
   trackRead: boolean,
+  unreadDividerAnchor: ThreadTimelineUnreadDividerAnchor,
   {
     hasUnseenTimelineEvents,
     isFocused,
@@ -44,6 +46,7 @@ export function useThreadDetailThread(
     threadId,
   });
   const unreadDividerState = useThreadUnreadDividerState({
+    anchor: unreadDividerAnchor,
     bootstrapQuery: threadDetailBootstrapQuery,
     threadQuery: {
       isFetchedAfterMount: threadQuery.isFetchedAfterMount,

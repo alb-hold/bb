@@ -23,7 +23,7 @@ import {
   type PromptTextMention,
   type ThreadListEntry,
 } from "@bb/domain";
-import { QueryClientContext } from "@tanstack/react-query";
+import { QueryClientContext, hashKey, type QueryClient } from "@tanstack/react-query";
 import type { ThreadResponse } from "@bb/server-contract";
 import {
   THREAD_MENTION_RESOLVE_MAX_IDS,

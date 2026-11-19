@@ -1974,6 +1974,7 @@ function buildThreadTimelineInternal(
     activeBackgroundCommands:
       options.page.kind === "latest" ? timeline.activeBackgroundCommands : [],
     pendingTodos: headState?.pendingTodos ?? null,
+    goal: timeline.goal,
     extensionStates: headState?.extensionStates ?? {},
     providerCommands: headState?.providerCommands ?? null,
     sessionOptions: headState?.sessionOptions ?? null,

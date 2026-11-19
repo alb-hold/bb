@@ -358,6 +358,9 @@ const UPDATE_BUTTON_CLASS = cn(
   "rounded-full bg-sidebar-accent text-sidebar-foreground [&>[data-icon-root]]:opacity-100",
   "hover:bg-sidebar-border hover:text-sidebar-foreground active:bg-sidebar-border",
 );
+const UPDATE_CARD_CLASS = "flex min-w-0 items-center gap-2 rounded-md";
+const UPDATE_CARD_BUTTON_CLASS = "flex min-w-0 items-center gap-2";
+const UPDATE_CARD_ICON_CLASS = "size-4 shrink-0";
 
 function SidebarUpdateCardBody({
   model,

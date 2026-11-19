@@ -39,6 +39,7 @@ const unavailableSystemConfig: SystemConfigResponse = {
     resumeDaemonSessions: false,
     skipFocusedThreadNotifications: false,
     threadContextCard: false,
+    unreadDividerAtAnswer: false,
     walCheckpointWorker: false,
   },
   appearance: defaultAppTheme,

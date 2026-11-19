@@ -1280,7 +1280,7 @@ describe("thread runtime cache owner", () => {
         queryClient,
         realtimeConnected: true,
         request,
-        result: { ok: true, delivery: "sent", messageSequence },
+        result: { ok: true, delivery: "sent", messageSequence: messageSequence ?? undefined },
         transaction,
       });
 

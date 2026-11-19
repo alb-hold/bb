@@ -2,6 +2,8 @@ import { atom } from "jotai";
 import { createRevealableCollapsedAtoms } from "./revealable-collapsed-atom.js";
 import { createSyncedPreferenceAtom } from "./synced-preference-atom.js";
 
+export const THREAD_ROW_METADATA_EXPERIMENT = "threadRowMetadata";
+
 const collapsedProjects = createRevealableCollapsedAtoms(
   createSyncedPreferenceAtom("collapsedProjects"),
 );

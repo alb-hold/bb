@@ -105,16 +105,14 @@ it("starts selected built-ins while SDK adapters are still downloading, without 
   );
   expect(requestWorkers).toHaveBeenCalled();
   expect(screen.queryByText("Diff ready")).toBeNull();
-  await act(async () => {
-    downloads.renderers.resolve();
-    downloads.adapters.resolve();
-    await Promise.all([
+  await settleLazyModules(
+    Promise.all([
       LazyPluginDiff.preload(),
       LazyPluginSourceCode.preload(),
       BbDiffSplit.preload(),
       BbSourceCodeSplit.preload(),
-    ]);
-  });
+    ]),
+  );
   expect(screen.getByText("Diff ready")).toBeDefined();
   expect(screen.getByText("Source ready")).toBeDefined();
 });

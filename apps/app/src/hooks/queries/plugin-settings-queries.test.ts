@@ -105,7 +105,7 @@ describe("plugin list envelope", () => {
     vi.stubGlobal("fetch", networkFetch);
 
     await expect(
-      fetchFrontendCandidates(queryClient, "await-refresh"),
+      fetchFrontendCandidates(queryClient, "force-refresh"),
     ).resolves.toEqual([expect.objectContaining({ pluginId: "linear" })]);
     expect(networkFetch).not.toHaveBeenCalled();
   });
@@ -130,7 +130,7 @@ describe("plugin list envelope", () => {
 
     const olderCandidates = fetchFrontendCandidates(
       queryClient,
-      "await-refresh",
+      "force-refresh",
     );
     await vi.waitFor(() => {
       expect(networkFetch).toHaveBeenCalledTimes(1);
@@ -147,7 +147,7 @@ describe("plugin list envelope", () => {
     ]);
     await refresh;
     await expect(
-      fetchFrontendCandidates(queryClient, "await-refresh"),
+      fetchFrontendCandidates(queryClient, "force-refresh"),
     ).resolves.toEqual([
       expect.objectContaining({
         bundle: expect.objectContaining({ hash: "new" }),

@@ -22,6 +22,7 @@ import {
   LazyHostScopedFilePreviewTabContent,
   LazyProjectFilePreviewTabContent,
   LazyThreadStorageFilePreviewTabContent,
+  ThreadSecondaryPanelDrawerPlaceholder,
 } from "./lazySecondaryPanelComponents";
 
 const { queueSplitPreload } = vi.hoisted(() => ({

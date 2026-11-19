@@ -1182,6 +1182,10 @@ const quotaRowSchema = z.object({
   observed_at: z.number().int().nullable(),
   held_until: z.number().int().nullable(),
   error: z.string().nullable(),
+  five_hour_utilization: z.number().nullable().optional(),
+  five_hour_reset_at: z.number().int().nullable().optional(),
+  seven_day_utilization: z.number().nullable().optional(),
+  seven_day_reset_at: z.number().int().nullable().optional(),
 });
 
 const EMPTY_QUOTA = {
@@ -1241,6 +1245,10 @@ export class QuotaStore {
       limitWindows: JSON.parse(row.limit_windows_json),
       extraUsage: JSON.parse(row.extra_usage_json),
       usageRestriction: JSON.parse(row.usage_restriction_json),
+      fiveHourUtilization: row.five_hour_utilization,
+      fiveHourResetAt: row.five_hour_reset_at,
+      sevenDayUtilization: row.seven_day_utilization,
+      sevenDayResetAt: row.seven_day_reset_at,
       observedAt: row.observed_at,
       heldUntil: row.held_until,
       error: row.error,

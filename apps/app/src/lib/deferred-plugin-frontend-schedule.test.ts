@@ -54,8 +54,8 @@ async function start(
 ) {
   const { createDeferredPluginFrontendSchedule } =
     await import("./deferred-plugin-frontend-schedule");
-  const { markRouteContentPainted } = await import("./route-content-paint");
   const { markHomeComposerReady } = await import("./home-composer-ready");
+  window.history.replaceState(null, "", "/projects/project-1/threads/thread-1");
   const schedule = createDeferredPluginFrontendSchedule();
   dispose = schedule.dispose;
   const module = {
@@ -100,7 +100,9 @@ async function start(
     ...schedule,
     ...overrides,
   };
-  markRouteContentPainted();
+  const mountedRow = document.createElement("div");
+  mountedRow.setAttribute("data-timeline-row-id", "thread-1");
+  document.body.append(mountedRow);
   const done = reconcilePluginFrontends(
     createPluginFrontendReconcileState(),
     deps,

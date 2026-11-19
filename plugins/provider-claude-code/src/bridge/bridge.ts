@@ -334,6 +334,7 @@ interface SessionConstructionConfig {
 
 interface ClaudeLiveSessionSettings {
   autoCompactWindow?: number;
+  commandDescriptionsEnabled: boolean;
   fullAccessApprovalsEnabled: boolean;
   memoryEnabled: boolean;
   model?: string;
@@ -1246,6 +1247,7 @@ function toInitialLiveSessionSettings(
       ? { autoCompactWindow: autoCompactWindow.value }
       : {}),
     fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
+    commandDescriptionsEnabled: params.commandDescriptionsEnabled ?? false,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
     providerSubagentsEnabled: params.providerSubagentsEnabled ?? true,
@@ -1274,6 +1276,8 @@ function withTurnLiveSessionSettings(
     ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
     fullAccessApprovalsEnabled:
       params.fullAccessApprovalsEnabled ?? current.fullAccessApprovalsEnabled,
+    commandDescriptionsEnabled:
+      params.commandDescriptionsEnabled ?? current.commandDescriptionsEnabled,
     memoryEnabled: params.memoryEnabled ?? current.memoryEnabled,
     ...(model !== undefined ? { model } : {}),
     providerSubagentsEnabled:

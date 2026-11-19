@@ -46,6 +46,7 @@ import {
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
+  getCollapsedChildActivity,
   NO_COLLAPSED_CHILD_ACTIVITY,
   type CollapsedChildActivity,
   type ThreadListIndicatorState,
@@ -69,18 +70,15 @@ import {
   type PluginThreadActionsContextMenuProps,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarSplitPane,
   type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
-  type PluginThreadStatus,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { useThreadListPullRequest } from "./pull-request-query.js";
-import {
-  NO_THREAD_IDS,
-  useThreadsHaveDraft,
-} from "../list/sidebarDraftPresence.js";
+import { useThreadsHaveDraft } from "../list/sidebarDraftPresence.js";
 import { useAutomationWokeAt } from "../model/automation-woke.js";
 import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
@@ -148,6 +146,7 @@ import {
 } from "../list/ThreadRowActionsCustomize.js";
 
 const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
+const NO_THREAD_IDS: readonly { id: string }[] = [];
 
 export const SidebarProvidersContext = createContext<
   PluginProvidersState["providers"]
@@ -186,7 +185,8 @@ export type ThreadRowOptions =
       kind: "parent";
       isCollapsed: boolean;
       childCount: number;
-      hiddenThreads: readonly SidebarThread[];
+      childActivity?: CollapsedChildActivity;
+      hiddenThreads?: readonly SidebarThread[];
       stickyLevel?: number;
       onToggleCollapsed: (threadId: string) => void;
     });
@@ -316,7 +316,9 @@ export function CollapsedThreadStatusGlyph({
   activity,
   pluginStatus = null,
 }: CollapsedThreadStatusGlyphProps) {
-  const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
+  const hasUnsubmittedDraft = useThreadsHaveDraft(
+    activity.threadIds.map((id) => ({ id })),
+  );
   const statusProps: ThreadListIndicatorState = {
     hasPendingInteraction: activity.pending,
     hasTerminalAttention: activity.terminalAttention,
@@ -343,7 +345,7 @@ export function CollapsedThreadStatusGlyph({
 }
 
 function ThreadTrailingIndicator({
-  status,
+  state,
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
@@ -352,7 +354,7 @@ function ThreadTrailingIndicator({
   automationStartedAt,
   elapsedMinutes,
 }: {
-  status: PluginThreadStatus;
+  state: ThreadListIndicatorState;
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
@@ -427,8 +429,8 @@ function ThreadTrailingIndicator({
       }
     >
       <ThreadStatusGlyph
-        indicator={status.indicator}
-        rowStatus={status.rowStatus}
+        indicator={indicatorKind}
+        rowStatus={rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
         experimental_queuedFailedCount={state.queuedFailedCount}
@@ -711,12 +713,19 @@ function ThreadRowComponent({
   const isParentRow = parentOptions !== null;
   const isParentCollapsed = parentOptions?.isCollapsed ?? false;
   const childCount = parentOptions?.childCount ?? 0;
+  const childActivity =
+    parentOptions?.childActivity ??
+    (parentOptions === null
+      ? NO_COLLAPSED_CHILD_ACTIVITY
+      : getCollapsedChildActivity(parentOptions.hiddenThreads ?? []));
   const hasChildren = childCount > 0;
   const reserveActionSpace =
     crossProjectLabel !== null || (isParentRow && hasChildren);
   const hasHiddenChildren = isParentRow && isParentCollapsed && hasChildren;
   const hiddenChildrenHaveDraft = useThreadsHaveDraft(
-    hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
+    hasHiddenChildren
+      ? childActivity.threadIds.map((id) => ({ id }))
+      : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
     hasTerminalAttention: threadStatus.hasTerminalAttention ||

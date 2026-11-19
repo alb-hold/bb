@@ -82,6 +82,7 @@ import {
 } from "@/components/plugin/PluginPanelHeader";
 import { PluginAppOverlays } from "@/components/plugin/PluginAppOverlays";
 import { ThreadRowMetadataCollectors } from "@/components/plugin/ThreadRowMetadataCollectors";
+import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
 import {
   usePluginNavPanelChrome,

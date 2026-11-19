@@ -8,6 +8,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { createRoot } from "react-dom/client";
 import { downloadSplit } from "./split-prefetch";
 import { defineSplit } from "./define-split";
 

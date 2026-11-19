@@ -1,10 +1,40 @@
 import { describe, expect, it } from "vitest";
 
-import { usagePlanLabel, usagePlan, usageWindowLabel } from "./usage-source.js";
+import {
+  accountUsageWindows,
+  usagePlanLabel,
+  usagePlan,
+  usageWindowLabel,
+} from "./usage-source.js";
 
 import { displayPlanLabel } from "./display.js";
 
 describe("usage presentation labels", () => {
+  it("uses legacy quota fields when normalized windows are empty", () => {
+    expect(
+      accountUsageWindows({
+        limitWindows: [],
+        fiveHourUtilization: 0.42,
+        fiveHourResetAt: 1_800_000_000_000,
+        sevenDayUtilization: 0.63,
+        sevenDayResetAt: 1_800_000_100_000,
+      }),
+    ).toEqual([
+      {
+        id: "five-hour",
+        label: "Five-hour limit",
+        utilization: 0.42,
+        resetAt: 1_800_000_000_000,
+      },
+      {
+        id: "weekly",
+        label: "Weekly limit",
+        utilization: 0.63,
+        resetAt: 1_800_000_100_000,
+      },
+    ]);
+  });
+
   it.each([
     ["claude", "api-key", null, null, "Claude subscription"],
     ["codex", "oauth", "max", "max_20x", "Max (20x)"],

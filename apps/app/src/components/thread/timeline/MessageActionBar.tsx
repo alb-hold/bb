@@ -1,5 +1,6 @@
 import {
   useCallback,
+  createContext,
   useRef,
   useState,
   type ReactNode,
@@ -142,6 +143,48 @@ export function computeMessageActionRowLayout({
     ),
   );
   return { inlineCount, overflowCount: actionCount - inlineCount };
+}
+
+export interface SharedMessageColumnWidth {
+  width: number | undefined;
+}
+
+export const MessageColumnWidthContext =
+  createContext<SharedMessageColumnWidth | null>(null);
+
+export function useMeasuredWidth({
+  enabled,
+  resolveTarget,
+}: {
+  enabled: boolean;
+  resolveTarget?: (node: HTMLElement) => Element | null;
+}): {
+  measureRef: (node: HTMLElement | null) => void;
+  width: number | undefined;
+} {
+  const [width, setWidth] = useState<number | undefined>();
+  const unobserveRef = useRef<(() => void) | null>(null);
+  const measureRef = useCallback(
+    (node: HTMLElement | null) => {
+      unobserveRef.current?.();
+      unobserveRef.current = null;
+      if (!enabled || node === null || typeof ResizeObserver === "undefined")
+        return;
+      const target = resolveTarget ? resolveTarget(node) : node;
+      if (target === null) return;
+      unobserveRef.current = observeSharedResize(target, {
+        read: (entry) =>
+          Math.floor(
+            entry?.contentBoxSize?.[0]?.inlineSize ??
+              entry?.contentRect.width ??
+              target.clientWidth,
+          ),
+        write: setWidth,
+      });
+    },
+    [enabled, resolveTarget],
+  );
+  return { measureRef, width };
 }
 
 function useMessageActionRowFit({

@@ -74,7 +74,7 @@ import {
 import { SplitThreadArea } from "./SplitThreadArea";
 import { applyThreadOpenToLayout } from "./splitThreadNavigation";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import { ComposerBox } from "@/components/promptbox/ComposerBox";
+import { ControlledComposerBox } from "@/test/fixtures/controlled-composer-box";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 import { LocationProbe } from "@/test/location-probe";
 
@@ -112,6 +112,13 @@ function ResponsiveFocusComposer() {
 const composerScopeProbe = vi.hoisted(() => ({ active: false }));
 const routeCommits = vi.hoisted(
   (): Array<{ path: string; panes: string[] }> => [],
+);
+const routeProjectCommits = vi.hoisted(
+  (): Array<{
+    path: string;
+    composerKey: string | null;
+    paneProjects: string[];
+  }> => [],
 );
 
 function ThreadComposerScope({
@@ -537,6 +544,7 @@ function ThreadPaneFixture({
   return (
     <div
       data-testid={`pane-${threadId}`}
+      data-project-id={projectId}
       data-focused={pane?.isFocused ? "true" : "false"}
       data-window-top-left-owner={pane?.ownsWindowTopLeft ? "true" : "false"}
     >
@@ -558,7 +566,7 @@ function ThreadPaneFixture({
           threadId,
         ) ? null : responsiveComposerProbe.enabled ? (
           <PluginComposerHostProvider value={composerHost}>
-            <ComposerBox
+            <ControlledComposerBox
               surface="thread"
               value={draft.text}
               mentionRanges={[]}
@@ -906,6 +914,15 @@ function RouteCommitProbe() {
         .queryAllByTestId(/^pane-thr-/)
         .map((pane) => pane.getAttribute("data-testid") ?? ""),
     });
+    routeProjectCommits.push({
+      path: pathname,
+      composerKey:
+        screen.queryByTestId("plugin-composer")?.getAttribute("data-key") ??
+        null,
+      paneProjects: screen
+        .queryAllByTestId(/^pane-thr-/)
+        .map((pane) => pane.getAttribute("data-project-id") ?? ""),
+    });
   }, [pathname]);
   return null;
 }
@@ -982,6 +999,7 @@ function renderSplitArea(options: {
                   <SplitThreadArea routeContent={options.routeContent} />
                 )}
                 <LocationProbe />
+                <RouteCommitProbe />
                 {options.externalTo !== undefined ? (
                   <ExternalNav to={options.externalTo} />
                 ) : null}
@@ -1010,6 +1028,8 @@ beforeEach(() => {
   responsiveComposerProbe.enabled = false;
   nativeTerminalPanes.clear();
   nativeTerminalComposerPanes.clear();
+  routeCommits.length = 0;
+  routeProjectCommits.length = 0;
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -2402,6 +2422,41 @@ describe("SplitThreadArea", () => {
       routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
     ).toEqual([
       { path: threadPath("thr-c"), panes: ["pane-thr-a", "pane-thr-c"] },
+    ]);
+  });
+
+  it("reconciles a same-thread project switch before the destination route commits", async () => {
+    composerScopeProbe.active = true;
+    const destination = "/projects/proj-b/threads/thr-a";
+    renderSplitArea({
+      path: "/projects/proj-a/threads/thr-a",
+      layout: {
+        root: {
+          type: "pane",
+          paneId: "pane-1",
+          content: { kind: "thread", projectId: "proj-a", threadId: "thr-a" },
+        },
+        focusedPaneId: "pane-1",
+      },
+      externalTo: destination,
+    });
+    await screen.findByTestId("pane-thr-a");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+
+    const expectedKey = getPromptDraftAccessor({
+      kind: "thread",
+      projectId: "proj-b",
+      threadId: "thr-a",
+    }).storageKey;
+    expect(
+      routeProjectCommits.filter((commit) => commit.path === destination),
+    ).toEqual([
+      {
+        path: destination,
+        composerKey: expectedKey,
+        paneProjects: ["proj-b"],
+      },
     ]);
   });
 

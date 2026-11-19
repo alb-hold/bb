@@ -112,6 +112,7 @@ export function ModelReasoningPickerBody({
   formatModelLabel,
   reasoningValue,
   reasoningOptions,
+  reasoningIsLoading = false,
   onReasoningChange,
   serviceTierValue,
   serviceTierOptions,
@@ -139,7 +140,6 @@ export function ModelReasoningPickerBody({
     initialPreviewProviderId,
   );
   const [showMoreModels, setShowMoreModels] = useState(false);
-  const [moreModelsOpen, setMoreModelsOpen] = useState(false);
   const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
     useState(selectedProviderId);
   const [browsingHandoff, setHandoffMode] = useState(false);
@@ -158,7 +158,6 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
     setSearchQuery("");
     setActiveIndex(-1);
   }
@@ -394,7 +393,6 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
     setSearchQuery("");
     setActiveIndex(-1);
   }, []);
@@ -423,11 +421,9 @@ export function ModelReasoningPickerBody({
             (isPreviewing ? previewSelection?.reasoningLevel : undefined) ??
             reasoningValue,
         });
-        setMoreModelsOpen(false);
         return;
       }
       onModelChange(model);
-      setMoreModelsOpen(false);
       setPreviewProviderId(null);
     },
     [
@@ -452,7 +448,6 @@ export function ModelReasoningPickerBody({
       );
       setHandoffReasoningLevel(null);
       setShowMoreModels(false);
-      setMoreModelsOpen(false);
       setSearchQuery("");
       setActiveIndex(-1);
     },
@@ -510,7 +505,6 @@ export function ModelReasoningPickerBody({
       }
       onReasoningChange(level);
       setPreviewProviderId(null);
-      setMoreModelsOpen(false);
     },
     [
       handoffMode,
@@ -848,14 +842,14 @@ export function ModelReasoningPickerBody({
         isSearching={isSearching}
         showMoreModels={showMoreModels}
         onToggleMoreModels={toggleShowMoreModels}
-        moreModelOptions={filteredMoreModelOptions}
-        moreModelsOpen={moreModelsOpen}
-        onMoreModelsOpenChange={setMoreModelsOpen}
         isPreviewing={isPreviewing}
         modelValue={modelValue}
         selectionBlocked={previewSelectionBlocked}
         onModelSelect={handleModelSelect}
         showReasoningSection={showReasoningSection}
+        showReasoningPlaceholder={
+          reasoningIsLoading && hasSelectedModel && !modelIsLoading
+        }
         reasoningValue={activeReasoningValue}
         reasoningOptions={activeReasoningOptions}
         onReasoningSelect={handleReasoningSelect}

@@ -17,7 +17,6 @@ import { useLocation } from "react-router-dom";
 import {
   findLocalPathProjectSourceForHost,
   isActiveTerminalSessionStatus,
-  mobileAppDownloads,
   createTerminalGridByteMarkerScanner,
 } from "@bb/domain";
 import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";

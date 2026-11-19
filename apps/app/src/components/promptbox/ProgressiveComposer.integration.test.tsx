@@ -18,7 +18,6 @@ import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { TiptapEditorHTMLElement } from "@tiptap/core";
 import {
-  ComposerBox,
   type PromptBoxHandle,
   type PromptVoiceConfig,
 } from "./ComposerBox";
@@ -31,6 +30,7 @@ import {
 } from "@/test/fixtures/composer-search";
 import { resetPluginSlotStoreForTest } from "@/lib/plugin-slots";
 import { resetPluginFrontendBootStateForTest } from "@/lib/plugin-frontend-boot-state";
+import { ControlledComposerBox } from "@/test/fixtures/controlled-composer-box";
 
 vi.mock("@/hooks/usePromptMentions", async () =>
   (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
@@ -93,7 +93,7 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
     function Host() {
       const [value, setValue] = useState(draft);
       return (
-        <ComposerBox
+        <ControlledComposerBox
           surface="new-thread"
           value={value}
           mentionRanges={[]}
@@ -110,6 +110,7 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
               reasoning={{
                 value: "medium",
                 options: [{ value: "medium", label: "Medium" }],
+                isLoading: false,
                 onChange() {},
               }}
               model={{
@@ -214,7 +215,7 @@ it("hands a live home draft to the actual plugin with its selection and working 
     const current = useRef(value);
     current.current = value;
     return (
-      <ComposerBox
+      <ControlledComposerBox
         surface="new-thread"
         autoFocus={autoFocus}
         value={value}
@@ -356,6 +357,7 @@ it.each([false, true])(
           reasoning={{
             value: "medium",
             options: [{ value: "medium", label: "Medium" }],
+            isLoading: false,
             onChange: () => {},
           }}
         />
@@ -364,7 +366,7 @@ it.each([false, true])(
     function Host() {
       const [value, setValue] = useState("draft");
       return (
-        <ComposerBox
+        <ControlledComposerBox
           surface="new-thread"
           value={value}
           mentionRanges={[]}
@@ -434,7 +436,7 @@ it("inserts voice at the plain caret and carries a pasted attachment into the ri
     const [value, setValue] = useState("left right");
     const [items, setItems] = useState<PromptDraftAttachment[]>([]);
     return (
-      <ComposerBox
+      <ControlledComposerBox
         surface="new-thread"
         value={value}
         mentionRanges={[]}
@@ -529,7 +531,7 @@ it("normalizes and sends a voice result while transcription is finishing before 
   function Host() {
     const [value, setValue] = useState(latest.text);
     return (
-      <ComposerBox
+      <ControlledComposerBox
         surface="new-thread"
         value={value}
         mentionRanges={[]}
@@ -601,7 +603,7 @@ it.each(["plain", "rich"] as const)(
           onSubmit={submit}
         >
           {(onBlockedSubmit) => (
-            <ComposerBox
+            <ControlledComposerBox
               surface="new-thread"
               value={value}
               mentionRanges={[]}
@@ -679,7 +681,7 @@ it.each(["plain", "rich"] as const)(
 
 it("keeps the terminal-specific placeholder while the composer plugin loads", () => {
   render(
-    <ComposerBox
+    <ControlledComposerBox
       surface="thread"
       value=""
       mentionRanges={[]}

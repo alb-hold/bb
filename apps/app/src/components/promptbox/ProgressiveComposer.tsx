@@ -12,6 +12,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
@@ -19,7 +20,7 @@ import type {
   ExperimentalComposerInput,
   ExperimentalComposerRendererApi,
 } from "@get-bb/plugin-sdk";
-import { composerDraftFromPromptDraft } from "@bb/client-core";
+import { composerDraftFromPromptDraft } from "@/lib/plugin-composer-handle";
 import type { PromptTextMention } from "@bb/domain";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -151,14 +152,18 @@ export function ProgressiveComposer({
   const pendingAttachments = useRef(0);
   const frame = useRef<number | null>(null);
   const current = useRef(props);
+  const promptDraft = useSyncExternalStore(
+    props.draft.subscribeDraft,
+    props.draft.getCurrent,
+  );
   const currentActions = composerSubmission(props.submission, props.onSubmit);
   const actions = useRef(currentActions);
-  const draft = useRef({ text: props.value, mentions: props.mentionRanges });
+  const draft = useRef(promptDraft);
   useLayoutEffect(() => {
     current.current = props;
     actions.current = currentActions;
-    draft.current = { text: props.value, mentions: props.mentionRanges };
-  }, [currentActions, props]);
+    draft.current = promptDraft;
+  }, [currentActions, promptDraft, props]);
   const richRefState = useRef(false);
   const [attaching, setAttaching] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -170,8 +175,9 @@ export function ProgressiveComposer({
       text,
       draft.current.mentions,
     );
-    draft.current = { text, mentions };
-    current.current.onChange(text, mentions);
+    const next = { ...draft.current, text, mentions };
+    draft.current = next;
+    current.current.draft.setDraft(next);
   }, []);
   const takeOver = useCallback(() => {
     frame.current = null;
@@ -257,7 +263,7 @@ export function ProgressiveComposer({
     if (!input || rich) return;
     input.style.height = "0px";
     input.style.height = `${input.scrollHeight}px`;
-  }, [props.value, rich]);
+  }, [promptDraft.text, rich]);
   useEffect(() => {
     if (
       rich ||
@@ -293,7 +299,7 @@ export function ProgressiveComposer({
       if (
         action.requiresInput &&
         !input.value.trim() &&
-        !latest.attachments?.items?.length
+        !latest.draft.getCurrent().attachments.length
       )
         return;
       commit(input.value);
@@ -359,7 +365,7 @@ export function ProgressiveComposer({
   };
   const voiceActive =
     props.voice?.state === "recording" || props.voice?.state === "transcribing";
-  const empty = !props.value.trim() && !props.attachments?.items?.length;
+  const empty = !promptDraft.text.trim() && !promptDraft.attachments.length;
   const canSubmit =
     (!currentActions.enter.requiresInput || !empty) &&
     !props.submission?.disabled &&
@@ -444,7 +450,7 @@ export function ProgressiveComposer({
                       )}
                       style={{
                         minHeight:
-                          !props.value &&
+                          !promptDraft.text &&
                           api.input.internal_DO_NOT_USE_composerSizing
                             ?.editorHeight == null
                             ? 44
@@ -462,7 +468,7 @@ export function ProgressiveComposer({
                       <textarea
                         ref={inputRef}
                         id={props.id}
-                        value={props.value}
+                        value={promptDraft.text}
                         placeholder={
                           props.placeholder ??
                           "Ask anything. @ to mention files, folders, or sections"

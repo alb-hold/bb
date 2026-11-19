@@ -8,6 +8,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineRow } from "@bb/server-contract";

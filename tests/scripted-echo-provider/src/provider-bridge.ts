@@ -277,6 +277,7 @@ interface TurnPlan {
   backgroundTask: boolean;
   settleBackgroundTasks: boolean;
   streamChunks: number;
+  stream: { chunks: number; intervalMs: number } | null;
 }
 
 function promptText(input: readonly PromptInput[]): string {

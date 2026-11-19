@@ -401,7 +401,7 @@ export function AppSidebar({
   );
 
   return (
-    <SidebarThreadShortcutKeysContext.Provider value={threadShortcutKeysById}>
+    <SidebarThreadShortcutKeysContext.Provider value={threadShortcuts.keysById}>
       <SidebarOpenBesideCommandHandler />
       <SidebarNavigationModelProvider
         onNavigate={closeOnMobile}

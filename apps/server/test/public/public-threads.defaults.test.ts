@@ -139,7 +139,7 @@ describe("public thread default routes", () => {
   );
 
   it.each([
-    { providerId: "claude", status: 400, code: "invalid_request" },
+    { providerId: "claude", status: 400, code: "invalid_provider" },
     {
       providerId: "claude-code",
       status: 409,

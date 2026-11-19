@@ -22,6 +22,7 @@ import {
   resolveComposerCommandScope,
 } from "@/lib/composer-command-ownership";
 import { useAppCommandContext } from "@/components/commands/AppCommandProvider";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { registerPaneComposerFocus } from "@/lib/pane-composer-focus";
 import { registerThreadMentionDropTarget } from "@/lib/thread-mention-drop";
 import {

@@ -159,16 +159,17 @@ async function writeOutput(seq: number, text: string) {
 }
 
 async function mount() {
-  const view = render(
+  const renderView = (sessionId = "term_test") => (
     <AppCommandProvider>
       <AppCommandSpies />
       <ThreadTerminalView
         autoFocus
         isPanelOpen
-        session={makeTerminalSession({ status: "running" })}
+        session={makeTerminalSession({ id: sessionId, status: "running" })}
       />
-    </AppCommandProvider>,
+    </AppCommandProvider>
   );
+  const view = render(renderView());
   const textarea = await waitFor(() => {
     const element = view.container.querySelector<HTMLTextAreaElement>(
       ".xterm-helper-textarea",
@@ -180,7 +181,10 @@ async function mount() {
   await writeOutput(0, "needle first\r\nother\r\nneedle last\r\n");
   await writeOutput(1, "filler\r\n".repeat(60));
   textarea.focus();
-  return { textarea };
+  return {
+    textarea,
+    switchSession: (sessionId: string) => view.rerender(renderView(sessionId)),
+  };
 }
 
 it("finds scrollback without copying matches, navigates them, and returns focus on Escape", async () => {
@@ -239,4 +243,16 @@ it("leaves Ctrl+letter shell keys to the shell on Linux and finds with Ctrl+Shif
     await screen.findByRole("searchbox", { name: "Find in terminal" }),
   ).toBe(document.activeElement);
   expect(state.input).toHaveBeenCalledTimes(3);
+});
+
+it("clears a pending find focus request when the terminal session changes", async () => {
+  const { textarea, switchSession } = await mount();
+  act(() => {
+    fireEvent.keyDown(textarea, { key: "f", metaKey: true, keyCode: 70 });
+    switchSession("term_next");
+  });
+  const input = await screen.findByRole("searchbox", {
+    name: "Find in terminal",
+  });
+  expect(document.activeElement).not.toBe(input);
 });

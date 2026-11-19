@@ -1353,7 +1353,6 @@ export function QueuedMessagesList({
   const surfaceDragOffsetRef = useRef(0);
   const surfaceDraggingRef = useRef(false);
   const suppressNextTriggerClickRef = useRef(false);
-  const wasInlineEditingRef = useRef(false);
   useEffect(() => {
     if (expandedMobileActionsId === null) return;
 
@@ -1599,7 +1598,12 @@ export function QueuedMessagesList({
     onExpandedChange(true);
   }, [onExpandedChange]);
   const isExpanded = mode !== "collapsed";
-  const focus = useDisclosureFocusHandoff(
+  const {
+    triggerRef,
+    collapseRef,
+    onTriggerClick,
+    onCollapseClick,
+  } = useDisclosureFocusHandoff(
     isExpanded,
     isExpanded ? collapseDrawer : showDrawer,
   );
@@ -1829,7 +1833,7 @@ export function QueuedMessagesList({
               event.preventDefault();
               return;
             }
-            focus.onTriggerClick();
+            onTriggerClick();
           }}
           onPointerDown={handleSurfacePointerDown}
           onPointerMove={handleSurfacePointerMove}

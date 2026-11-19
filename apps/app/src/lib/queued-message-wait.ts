@@ -1,4 +1,4 @@
-import type { QueuedMessagePayload, QueuedMessageWaitingOn } from "@bb/domain";
+import { RESTART_RESUME_RETRY_REASON, type QueuedMessagePayload, type QueuedMessageWaitingOn, type ThreadStatus } from "@bb/domain";
 import { isInboxQueuedMessageWait } from "@bb/domain/queued-message-inbox";
 import type { IconName } from "@bb/shared-ui/icon";
 import { formatScheduledTime } from "@/lib/relative-time";
@@ -49,6 +49,7 @@ export function isQueuedMessageSendNowAllowed(
     case "superseded":
       return true;
   }
+  return false;
 }
 
 export function queuedMessageHasWaitLine(args: {
@@ -90,6 +91,7 @@ export function queuedMessageWaitIcon(args: {
     case "plugin":
       return null;
   }
+  return null;
 }
 
 export interface DescribeQueuedMessageWaitArgs {
@@ -169,6 +171,7 @@ export function describeQueuedMessageWait(
     case "plugin":
       return `Held by ${args.pluginDisplayName ?? args.waitingOn.pluginId} · ${args.waitingOn.reason}`;
   }
+  return null;
 }
 
 export function queuedMessageCountdownInstant(args: {

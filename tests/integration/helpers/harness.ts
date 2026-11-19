@@ -1,5 +1,6 @@
 import { sweepProviderLifecycles } from "../../../apps/server/src/services/environments/environment-engine.js";
 import { randomUUID } from "node:crypto";
+import * as net from "node:net";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -484,6 +485,7 @@ async function startHarnessDaemon(
   dataDir: string,
   server: RunningTestServer,
   testWorktreeHolderScan?: WorktreeHolderScan,
+  serverUrl = server.baseUrl,
 ): Promise<HarnessDaemonResources> {
   const releaseLock = await acquireDaemonLock(dataDir);
 
@@ -560,7 +562,9 @@ export async function createIntegrationHarness(
   });
 
   let server: RunningTestServer | null = null;
-  let daemonProxy: DaemonConnectionProxy | null = null;
+  const daemonProxy: { current: DaemonConnectionProxy | null } = {
+    current: null,
+  };
   let daemonResources: HarnessDaemonResources | null = null;
   let cleanedUp = false;
   let harness: IntegrationHarness | null = null;
@@ -576,10 +580,14 @@ export async function createIntegrationHarness(
       return;
     }
 
+    const daemonServerUrl = options.proxyDaemonConnection
+      ? (daemonProxy.current ??= await startDaemonConnectionProxy(server.baseUrl)).url
+      : server.baseUrl;
     daemonResources = await startHarnessDaemon(
       daemonDataDir,
       server,
       options.testWorktreeHolderScan,
+      daemonServerUrl,
     );
     if (daemonResources.hostId !== harness.hostId) {
       const mismatchedResources = daemonResources;
@@ -638,7 +646,7 @@ export async function createIntegrationHarness(
       .shutdownAll("stop")
       .catch(() => undefined);
     await shutdownDaemon("integration-cleanup").catch(() => undefined);
-    await daemonProxy?.close().catch(() => undefined);
+    await daemonProxy.current?.close().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await killProcessesHoldingFilesUnder(tmpRoot, {
       exclude: [process.pid, process.ppid],
@@ -651,10 +659,14 @@ export async function createIntegrationHarness(
     const api = createPublicApiClient(server.baseUrl, {
       fetch: createIntegrationFetch(),
     });
+    const daemonServerUrl = options.proxyDaemonConnection
+      ? (daemonProxy.current ??= await startDaemonConnectionProxy(server.baseUrl)).url
+      : server.baseUrl;
     daemonResources = await startHarnessDaemon(
       daemonDataDir,
       server,
       options.testWorktreeHolderScan,
+      daemonServerUrl,
     );
     await waitForHostConnected(api);
     await persistHostId({
@@ -670,10 +682,10 @@ export async function createIntegrationHarness(
       daemonApp: daemonResources.daemonApp,
       db: server.db,
       dropDaemonConnections() {
-        if (daemonProxy === null) {
+        if (daemonProxy.current === null) {
           throw new Error("Pass proxyDaemonConnection to drop connections");
         }
-        return daemonProxy.dropConnections();
+        return daemonProxy.current.dropConnections();
       },
       hostId: daemonResources.hostId,
       hub: server.hub,

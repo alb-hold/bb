@@ -4,7 +4,7 @@ import { createLastKnownCache } from "@/lib/last-known-cache";
 import {
   usePluginFrontendBootComplete,
 } from "@/lib/plugin-frontend-boot-state";
-import { usePluginSlotKind, type PluginNavPanelSlot } from "@/lib/plugin-slots";
+import { usePluginSlots, type PluginNavPanelSlot } from "@/lib/plugin-slots";
 
 const pluginNavPanelChromeSchema = z.object({
   pluginId: z.string().min(1),
@@ -110,7 +110,7 @@ export function usePluginNavPanelChrome(): PluginNavPanelChromeEntry[] {
 
 export function useRememberPluginNavPanelChrome(): void {
   const bootComplete = usePluginFrontendBootComplete();
-  const navPanels = usePluginSlotKind("navPanels");
+  const { navPanels } = usePluginSlots();
   useEffect(() => {
     rememberPluginNavPanelChrome(bootComplete, navPanels);
   }, [navPanels, bootComplete]);

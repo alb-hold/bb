@@ -471,6 +471,7 @@ describe("Rail", () => {
         path: "notes",
         title: "Demo notes",
         icon: "BookOpen",
+        hideFromNavigation: false,
       },
     ]);
     renderRail(THREAD_PATH);

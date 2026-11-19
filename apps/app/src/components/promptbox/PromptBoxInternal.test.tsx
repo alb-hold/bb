@@ -66,7 +66,6 @@ import {
   useRef,
   useState,
   type ComponentType,
-  type ComponentProps,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -169,7 +168,7 @@ import {
   type TypeaheadConfig,
 } from "./ComposerBox";
 
-const PromptBoxInternal = ComposerBox;
+const PromptBoxInternal = ControlledComposerBox;
 
 import {
   ControlledComposerBox,
@@ -804,7 +803,7 @@ describe("suppressPromptEditorAnchorActivation", () => {
     function TypingComposer() {
       const [value, setValue] = useState("Draft");
       return (
-        <ComposerBox
+        <ControlledComposerBox
           {...createPromptBoxProps({
             value,
             onChange: (text) => {
@@ -863,7 +862,7 @@ describe("suppressPromptEditorAnchorActivation", () => {
     function TypingComposer() {
       const [value, setValue] = useState("");
       return (
-        <ComposerBox {...createPromptBoxProps({ value, onChange: setValue })} />
+        <ControlledComposerBox {...createPromptBoxProps({ value, onChange: setValue })} />
       );
     }
     const view = render(<TypingComposer />);
@@ -3090,7 +3089,7 @@ describe("ComposerBox size controls", () => {
     const store = createStore();
     render(
       <Provider store={store}>
-        <ComposerBox {...createPromptBoxProps()} />
+        <ControlledComposerBox {...createPromptBoxProps()} />
       </Provider>,
     );
 
@@ -3125,7 +3124,7 @@ describe("ComposerBox size controls", () => {
       window.localStorage.removeItem(COMPOSER_CONTENT_WIDTH_STORAGE_KEY);
     });
 
-    render(<ComposerBox {...createPromptBoxProps()} />);
+    render(<ControlledComposerBox {...createPromptBoxProps()} />);
     const heightHandle = screen.getByRole("separator", {
       name: "Resize composer height",
     });
@@ -3620,7 +3619,7 @@ describe("ComposerBox compact layout", () => {
         });
         const composer = (value: string, submission = props.submission) => (
           <CompactViewportOverrideProvider isCompactViewport>
-            <ComposerBox {...props} value={value} submission={submission} />
+            <ControlledComposerBox {...props} value={value} submission={submission} />
           </CompactViewportOverrideProvider>
         );
         const view = render(composer(""));
@@ -3653,7 +3652,7 @@ describe("ComposerBox compact layout", () => {
     try {
       render(
         <CompactViewportOverrideProvider isCompactViewport>
-          <ComposerBox
+          <ControlledComposerBox
             {...createPromptBoxProps({
               value: "Select handoff",
               submission: { label: "New thread", icon: "MessageSquarePlus" },
@@ -3680,7 +3679,7 @@ describe("ComposerBox compact layout", () => {
 
   it("keeps a labelled desktop submit action as a pill", () => {
     render(
-      <ComposerBox
+      <ControlledComposerBox
         {...createPromptBoxProps({
           value: "Run this",
           submission: { label: "Run task" },
@@ -3699,7 +3698,7 @@ describe("ComposerBox compact layout", () => {
     "uses the same idle send glyph on %s",
     (surface) => {
       render(
-        <ComposerBox
+        <ControlledComposerBox
           {...createPromptBoxProps()}
           surface={surface}
           voice={undefined}
@@ -5094,7 +5093,7 @@ describe("ComposerBox compact layout", () => {
     (surface, pending) => {
       const onModeChange = vi.fn();
       render(
-        <ComposerBox
+        <ControlledComposerBox
           {...createPromptBoxProps({
             surface,
             submission: { isRunning: pending, onStop: vi.fn() },
@@ -5117,6 +5116,7 @@ describe("ComposerBox compact layout", () => {
                   value: "medium",
                   options: [{ value: "medium", label: "Medium" }],
                   onChange: vi.fn(),
+                  isLoading: false,
                 }}
                 nativeTerminal={{ enabled: true, onChange: onModeChange }}
               />
@@ -7485,7 +7485,7 @@ describe("pending text submission", () => {
           storageKey = draft.storageKey;
         }, [draft.storageKey]);
         return (
-          <ComposerBox
+          <ControlledComposerBox
             {...createPromptBoxProps({
               value: draft.text,
               mentionRanges: draft.mentions,

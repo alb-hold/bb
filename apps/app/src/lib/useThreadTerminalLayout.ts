@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { TerminalSession } from "@bb/server-contract";
 import { resolveThreadTerminalLayout } from "./terminal-session-visibility";
 import type { CompactTerminalLayoutRequest } from "./useCompactTerminalLayoutRequest";

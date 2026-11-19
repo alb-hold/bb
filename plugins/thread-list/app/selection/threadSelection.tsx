@@ -8,13 +8,18 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { experimental_useExperiment } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_useExperiment,
+  type PluginThreadActionTarget,
+} from "@get-bb/plugin-sdk/app";
 import {
   useSidebarData,
   type SidebarProject,
 } from "../model/use-sidebar-data.js";
+import type { SidebarThread } from "../model/sidebar-thread.js";
 import { SIDEBAR_CONTENT_SELECTOR } from "../ui/sidebar.js";
 import { SIDEBAR_WINDOWED_NAV_ATTRIBUTE } from "../list/sidebarThreadShortcuts.js";
+import { toThreadActionTarget } from "../rows/threadActionTarget.js";
 
 const NO_THREAD_IDS: readonly string[] = [];
 

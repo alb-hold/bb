@@ -37,6 +37,7 @@ import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
 import { SidebarProvidersContext } from "../rows/ThreadRow.js";
 import {
   buildProjectThreadGroups,
+  buildSectionGroupItem,
   buildSectionThreadList,
   getProjectThreadItemDescendants,
   type ProjectThreadNode,
@@ -1352,6 +1353,7 @@ function ProjectListComponent({
     projects,
     personalProject,
     archived,
+    projectNamesById,
   } = useSidebarData();
   const [createdSections, setCreatedSections] = useState<
     SidebarSectionDefinition[]

@@ -6,9 +6,11 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { ModelReasoningPicker } from "./ModelReasoningPicker";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import { startSplitPreloading } from "@/lib/split-prefetch";
@@ -78,10 +80,7 @@ it("keeps search typing and keyboard selection across the first menu download", 
   fireEvent.change(search, { target: { value: "o4m" } });
   fireEvent.keyDown(search, { key: "ArrowDown" });
   expect(menu.imports).toBe(1);
-  await act(async () => {
-    menu.release();
-    await ModelReasoningMenu.preload();
-  });
+  await settleLazyModules(ModelReasoningMenu.preload());
   expect(await screen.findByText("o4-mini")).toBeTruthy();
   expect(screen.queryByText("Sonnet")).toBeNull();
   expect(search).toHaveProperty("value", "o4m");

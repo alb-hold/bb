@@ -112,6 +112,12 @@ function ThreadDetailSecondaryContentBody({
       ),
     [hasForks, isMetadataLoading, metadata],
   );
+  const drawerFallback = (
+    <ThreadSecondaryPanelDrawerPlaceholder
+      activeTab={threadSecondaryPanelProps.activeTab}
+      metadataContent={metadataContent}
+    />
+  );
 
   return (
     <div

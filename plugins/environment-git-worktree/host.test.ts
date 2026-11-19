@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import {
+  cp,
   appendFile,
   lstat,
   mkdir,
@@ -20,7 +21,15 @@ import { promisify } from "node:util";
 import { experimental_createProcessLifeline } from "@get-bb/plugin-sdk/testing";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  type TestContext,
+} from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 import { worktreeHostContract } from "./contract.js";
 import {
@@ -35,6 +44,32 @@ import { worktreeHolderScopeNotice } from "./host/worktree-preservation.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
+let repositoryTemplate: string;
+let clonedRepositoryTemplate: string;
+
+beforeAll(async () => {
+  repositoryTemplate = await mkdtemp(join(tmpdir(), "bb-worktree-template-"));
+  await git(repositoryTemplate, "init", "--initial-branch=main");
+  await writeFile(join(repositoryTemplate, "README.md"), "hello\n");
+  await git(repositoryTemplate, "add", ".");
+  await git(repositoryTemplate, "commit", "-m", "initial");
+  clonedRepositoryTemplate = await mkdtemp(
+    join(tmpdir(), "bb-worktree-clone-template-"),
+  );
+  const sourcePath = join(clonedRepositoryTemplate, "repo");
+  const clone = join(clonedRepositoryTemplate, "clone");
+  await cp(repositoryTemplate, sourcePath, { recursive: true });
+  await git(sourcePath, "branch", "release");
+  await git(clonedRepositoryTemplate, "clone", sourcePath, clone);
+  await git(clone, "remote", "set-url", "origin", "../repo");
+});
+
+afterAll(async () => {
+  if (clonedRepositoryTemplate)
+    await rm(clonedRepositoryTemplate, { recursive: true, force: true });
+  if (repositoryTemplate)
+    await rm(repositoryTemplate, { recursive: true, force: true });
+});
 const expectedRemoved = () => {
   const notice = worktreeHolderScopeNotice();
   return { status: "removed", ...(notice === null ? {} : { message: notice }) };
@@ -45,6 +80,15 @@ it("exposes no uncalled retention or inspection host RPCs", () => {
   expect(rpcNames).not.toContain("proveRetentionAbsent");
   expect(rpcNames).not.toContain("inspect");
 });
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, {
@@ -60,13 +104,22 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return result.stdout;
 }
 
-async function createSourceRepository(repositoryName = "repo"): Promise<{
+async function createSourceRepository(
+  onTestFinishedOrName?: TestContext["onTestFinished"] | string,
+  requestedName = "repo",
+): Promise<{
   root: string;
   sourcePath: string;
   dataDir: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "bb-worktree-plugin-"));
   temporaryRoots.push(root);
+  const repositoryName =
+    typeof onTestFinishedOrName === "string"
+      ? onTestFinishedOrName
+      : requestedName;
+  if (typeof onTestFinishedOrName === "function")
+    onTestFinishedOrName(() => rm(root, { recursive: true, force: true }));
   const sourcePath = join(root, repositoryName);
   const dataDir = join(root, "plugin-data");
   await mkdir(sourcePath, { recursive: true });
@@ -76,6 +129,23 @@ async function createSourceRepository(repositoryName = "repo"): Promise<{
   await git(sourcePath, "add", ".");
   await git(sourcePath, "commit", "-m", "initial");
   return { root, sourcePath, dataDir };
+}
+
+async function createClonedRepository(
+  onTestFinished: TestContext["onTestFinished"],
+): Promise<{ root: string; sourcePath: string; clone: string; dataDir: string }> {
+  const root = await mkdtemp(join(tmpdir(), "bb-worktree-plugin-clone-"));
+  temporaryRoots.push(root);
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await cp(clonedRepositoryTemplate, root, { recursive: true });
+  const dataDir = join(root, "plugin-data");
+  await mkdir(dataDir, { recursive: true });
+  return {
+    root,
+    sourcePath: join(root, "repo"),
+    clone: join(root, "clone"),
+    dataDir,
+  };
 }
 
 async function publishToBareRemote(
@@ -739,8 +809,10 @@ describe("worktree host entry", () => {
 
   it.skipIf(process.platform === "win32")(
     "settles a cancelled create promptly when Git's children are still running",
-    async () => {
+    async ({ onTestFinished }) => {
       const { root, sourcePath, dataDir } = await createSourceRepository();
+      const lifeline = await experimental_createProcessLifeline();
+      onTestFinished(() => lifeline.close());
       const hookPidPath = join(root, "hook.pid");
       const hookPath = join(sourcePath, ".git", "hooks", "post-checkout");
       await writeFile(
@@ -1051,6 +1123,7 @@ describe("worktree host entry", () => {
       operationId: "remove-deferred",
       pathKey: "thr_6",
       path: created.path,
+      ownedBranch: null,
     });
     const stillRunning = isPidAlive(lingering.pid ?? 0);
     lingering.kill("SIGKILL");
@@ -1607,6 +1680,7 @@ function removeFrom(
     operationId: "remove",
     pathKey: worktree.pathKey,
     path,
+    ownedBranch: null,
   });
 }
 
@@ -2075,6 +2149,7 @@ describe.skipIf(process.platform === "win32")(
           operationId: "remove-link",
           pathKey: "thr_link",
           path: linkPath,
+          ownedBranch: null,
         });
         expect(result).toMatchObject({
           status: "retained",
@@ -2100,6 +2175,7 @@ describe.skipIf(process.platform === "win32")(
         operationId: "remove-outside",
         pathKey: "thr_outside",
         path: outside,
+        ownedBranch: null,
       });
       expect(result).toMatchObject({
         status: "retained",

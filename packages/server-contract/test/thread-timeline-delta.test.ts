@@ -87,6 +87,7 @@ function timeline(
     activeWorkflows: [],
     activeBackgroundCommands: [],
     pendingTodos: null,
+    goal: null,
     extensionStates: {},
     providerCommands: null,
     sessionOptions: null,

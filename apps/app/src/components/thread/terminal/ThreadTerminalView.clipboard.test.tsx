@@ -14,7 +14,6 @@ import { appToast } from "@/components/ui/app-toast";
 import { sdk } from "@/lib/sdk";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { ThreadTerminalView } from "./ThreadTerminalView";
-import { settleLazyModules } from "@/test/lazy-modules";
 
 const preferences = vi.hoisted(() => ({ terminalCopyOnSelect: true }));
 
@@ -68,14 +67,11 @@ async function mountTerminal(
   const terminals: Terminal[] = [];
   const screenRequest = vi.spyOn(sdk.terminals, "experimental_screen");
   const open = Terminal.prototype.open;
-  const opened = new Promise<Terminal>((resolve) => {
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      parent: HTMLElement,
-    ) {
-      open.call(this, parent);
-      resolve(this);
-    });
+  vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+    this: Terminal,
+    parent: HTMLElement,
+  ) {
+    open.call(this, parent);
   });
   const view = render(
     <ThreadTerminalView

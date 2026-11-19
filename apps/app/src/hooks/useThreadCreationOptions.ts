@@ -516,7 +516,7 @@ export function useThreadCreationOptions(
   const preferredDefaultProviderId =
     systemConfig.data?.generalSettings?.defaultProviderId ?? null;
   const userChoseSelectedProvider =
-    touchedThreadFieldsRef.current.has("selectedProviderId") ||
+    touchedThreadFields.has("selectedProviderId") ||
     (usesStoredCreateSelections && storedProviderId.length > 0);
   const rejectCatalogLoadErrorSelection =
     modelLoadError !== null &&

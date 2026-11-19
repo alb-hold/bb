@@ -75,7 +75,7 @@ export function applyThreadTimelineDelta(
   if (rows === null) {
     return null;
   }
-  const { contextWindowUsage, timelinePage, ...fields } = delta.fields;
+  const { contextWindowUsage, goal, timelinePage, ...fields } = delta.fields;
   const { contextWindowUsage: previousUsage, ...base } = previous;
   const usage =
     contextWindowUsage === undefined
@@ -84,6 +84,7 @@ export function applyThreadTimelineDelta(
   return {
     ...base,
     ...fields,
+    goal: goal === undefined ? previous.goal : goal,
     ...(usage === undefined ? {} : { contextWindowUsage: usage }),
     timelinePage: applyTimelinePagePatch(previous.timelinePage, timelinePage),
     rows,

@@ -16,6 +16,7 @@ import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { Button } from "@bb/shared-ui/button";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
+import { Skeleton } from "@bb/shared-ui/skeleton";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import {
@@ -85,6 +86,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
     formatModelLabel,
     reasoningValue,
     reasoningOptions,
+    reasoningIsLoading = false,
     onReasoningChange,
     serviceTierValue,
     serviceTierOptions,

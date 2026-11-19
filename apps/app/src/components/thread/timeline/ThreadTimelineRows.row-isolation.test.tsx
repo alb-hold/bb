@@ -14,7 +14,6 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import { settleLazyModules } from "@/test/lazy-modules";
 
 const renderRecorder = await vi.hoisted(async () => {
   const { installRenderRecorder } = await import("@/test/render-recorder");
@@ -45,7 +44,7 @@ function assistantRow(
     role: "assistant",
     text,
     sourceSeqStart: 10 + index,
-    sourceSeqEnd: streamed?.sourceSeqEnd ?? 10 + index,
+    sourceSeqEnd: 10 + index,
     threadId: "thr_main",
     turnId,
   });
@@ -62,12 +61,6 @@ afterAll(() => {
   renderRecorder.uninstall();
 });
 
-function renderedRowIds(componentName: string): string[] {
-  return renderRecorder
-    .propsOf(componentName)
-    .map((props) => (props as { row: { id: string } }).row.id)
-    .sort();
-}
 
 describe("ThreadTimelineRows row isolation", () => {
   it.each(["user", "assistant"] as const)(

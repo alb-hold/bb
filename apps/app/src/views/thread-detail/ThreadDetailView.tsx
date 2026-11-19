@@ -46,6 +46,7 @@ import {
   type ThreadTimelineLocalFileLink,
   type TimelineTitleActionResolver,
 } from "@/components/thread/timeline";
+import { useThreadTimelineController } from "@/components/thread/timeline/useThreadTimelineController";
 import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
 import { type ThreadListEntry } from "@bb/domain";
 import type { TerminalSession } from "@bb/server-contract";
@@ -120,6 +121,7 @@ import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provi
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { resolveAbsoluteFilePath } from "@bb/shared-ui/lib/absolute-file-path";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
+import { hasThreadProvisioningFailure } from "@/lib/thread-provisioning-failure";
 import {
   getProjectComposeRoutePath,
   type ThreadRoutePathArgs,
@@ -337,6 +339,9 @@ function ThreadDetailViewInternal(
   } = useThreadDetailThread(
     threadId,
     timelineEnabled,
+    systemConfigQuery.data?.experiments.unreadDividerAtAnswer === true
+      ? "turn-answer"
+      : "first-unread-row",
     {
       hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
       isFocused,
@@ -1707,6 +1712,10 @@ function ThreadDetailViewInternal(
   }
   const canAssignToParent = isThreadRoot;
   const canTakeOverThread = Boolean(thread.parentThreadId);
+  const environmentProvisioningFailure =
+    thread.status === "error" && thread.environmentId === null
+      ? hasThreadProvisioningFailure(timeline.timelineRows)
+      : false;
   const threadEnvironmentProviderLookup = findEnvironmentDisplayProvider(
     registeredEnvironmentProviders,
     environment?.environmentProviderId ?? null,

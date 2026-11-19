@@ -2,12 +2,14 @@ import type { BbPluginRuntime } from "./plugin-frontend";
 import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 
 interface PluginRuntimeGroup {
+  id: string;
   slots: (keyof BbPluginRuntime)[];
   load: () => Promise<Partial<BbPluginRuntime>>;
 }
 
 const lazyPluginRuntimeGroups: PluginRuntimeGroup[] = [
   {
+    id: "plugin-pierre-runtime",
     slots: ["pierreDiffs", "pierreDiffsReact"],
     load: createRetryingModuleLoader(async () => {
       const { pierreRuntimeSlots } = await import("./plugin-pierre-runtime");
@@ -15,6 +17,7 @@ const lazyPluginRuntimeGroups: PluginRuntimeGroup[] = [
     }),
   },
   {
+    id: "plugin-zod-runtime",
     slots: ["zod"],
     load: createRetryingModuleLoader(async () => {
       const { zodRuntimeSlots } = await import("./plugin-zod-runtime");

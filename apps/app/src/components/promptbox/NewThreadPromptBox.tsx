@@ -13,7 +13,6 @@ import {
   PERSONAL_PROJECT_ID,
   type Host,
   type ProjectSource,
-  type PromptTextMention,
 } from "@bb/domain";
 import type {
   SystemEnvironmentProvider,
@@ -77,7 +76,6 @@ import {
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
-import type { PromptDraftController } from "@/hooks/usePromptDraftStorage";
 
 const NEW_THREAD_PROMPT_BOX_MIN_HEIGHT = 80;
 
@@ -129,7 +127,6 @@ export interface NewThreadModeConfig {
 }
 
 interface NewThreadPromptBoxUIProps {
-  draftSource?: Pick<PromptDraftController, "getCurrent" | "subscribe">;
   id?: string;
 
   draft: ComposerDraftStore;
@@ -191,9 +188,6 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI(
   );
 });
 
-const subscribeToNoDraft = () => () => {};
-const getNoDraft = () => null;
-
 function LiveNewThreadComposer(
   props: NewThreadPromptBoxUIProps & {
     promptBoxRef: RefObject<PromptBoxHandle | null>;
@@ -202,21 +196,8 @@ function LiveNewThreadComposer(
   },
 ) {
   "use no memo";
-  const { draftSource, pluginComposerHost, execution, focusDefault } = props;
-  const draft = useSyncExternalStore(
-    draftSource?.subscribe ?? subscribeToNoDraft,
-    draftSource?.getCurrent ?? getNoDraft,
-    draftSource?.getCurrent ?? getNoDraft,
-  );
-  const value = draft?.text ?? props.value;
-  const mentionRanges = draft?.mentions ?? props.mentionRanges;
-  const history = draft
-    ? { ...props.history, currentDraft: draft }
-    : props.history;
-  const attachments = draft
-    ? { ...props.attachments, items: draft.attachments }
-    : props.attachments;
-  const attachmentCount = attachments.items?.length ?? 0;
+  const { pluginComposerHost, execution, focusDefault } = props;
+  const { history, attachments } = props;
   const [composerLayout, setComposerLayout] =
     useState<ComposerView["layout"]>("expanded");
   const composerView = usePluginComposerStaticViewModel({
@@ -228,7 +209,7 @@ function LiveNewThreadComposer(
   const controller = useComposerExtensionController({
     host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
-    draft,
+    draft: props.draft,
     focusDefault,
   });
 
@@ -238,8 +219,6 @@ function LiveNewThreadComposer(
       defaultRenderer={
         <DefaultNewThreadComposer
           {...props}
-          value={value}
-          mentionRanges={mentionRanges}
           history={history}
           attachments={attachments}
           onComposerLayoutChange={setComposerLayout}
@@ -283,6 +262,11 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   onComposerLayoutChange,
   onFocusCommand,
 }: DefaultNewThreadComposerProps) {
+  const promptDraft = useSyncExternalStore(
+    draft.subscribeDraft,
+    draft.getCurrent,
+    draft.getCurrent,
+  );
   const isProjectlessPrompt = project?.value === null;
   const providerLabel = execution.provider.options?.find(
     (option) => option.value === execution.provider.selectedId,
@@ -324,7 +308,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         </ComposerBannersSlot>
       </div>
       <PendingComposerSubmission
-        text={value}
+        text={promptDraft.text}
         resetKey={history.resetKey}
         loading={Boolean(execution.pending || execution.model.isLoading)}
         disabled={disabled}
@@ -341,9 +325,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
             suppressPluginComposerCustomizations={execution.pending}
             id={id}
             promptBoxRef={promptBoxRef}
-            value={value}
-            mentionRanges={mentionRanges}
-            onChange={onChange}
+            draft={draft}
             onSubmit={onSubmit}
             textEffects={textEffects}
             onComposerLayoutChange={onComposerLayoutChange}

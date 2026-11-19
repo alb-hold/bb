@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import {
   hashKey,
   notifyManager,
@@ -180,6 +180,22 @@ export function sidebarThreadEntriesStoreFor(
     storesByQueryClient.set(queryClient, store);
   }
   return store;
+}
+
+export function SidebarThreadEntriesProvider({
+  children,
+  navigation,
+}: {
+  children: ReactNode;
+  navigation: SidebarBootstrapResponse | undefined;
+}) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (navigation !== undefined) {
+      queryClient.setQueryData(sidebarNavigationQueryKey(), navigation);
+    }
+  }, [navigation, queryClient]);
+  return children;
 }
 
 export function useSidebarThreadEntriesStore(): SidebarThreadEntriesStore {

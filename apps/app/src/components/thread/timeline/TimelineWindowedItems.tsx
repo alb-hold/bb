@@ -17,8 +17,6 @@ import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
 import {
   observeSharedResize,
-  observedBorderBoxBlockSize,
-  settleAfterSharedResizeWrites,
 } from "@bb/shared-ui/lib/shared-resize-observer";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
@@ -39,7 +37,9 @@ function TimelineItemWithMeasurementRef({
   item: ReactNode;
   itemRef: RefCallback<HTMLDivElement>;
 }) {
-  return isValidElement(item) ? cloneElement(item, { ref: itemRef }) : item;
+  return isValidElement<{ ref?: RefCallback<HTMLDivElement> }>(item)
+    ? cloneElement(item, { ref: itemRef })
+    : item;
 }
 
 export function recordTimelineMeasurement(
@@ -443,7 +443,7 @@ export function TimelineWindowedItems({
       cached.itemKeys === live.itemKeys &&
       cached.mountedIndexes === live.mountedIndexes &&
       cached.renderedHeights === live.renderedHeights &&
-      cached.revision === measurementRevisionRef.current &&
+      cached.revision === measurementRevision(measurements) &&
       cached.gap === live.gap &&
       cached.estimateItemHeight === live.estimateItemHeight
     ) {
@@ -465,7 +465,7 @@ export function TimelineWindowedItems({
       itemKeys: live.itemKeys,
       mountedIndexes: live.mountedIndexes,
       renderedHeights: live.renderedHeights,
-      revision: measurementRevisionRef.current,
+      revision: measurementRevision(measurements),
       gap: live.gap,
       estimateItemHeight: live.estimateItemHeight,
       model,
@@ -645,7 +645,8 @@ export function TimelineWindowedItems({
         (!mountToTop && visible.start - first > 3 * OVERSCAN_ITEMS) ||
         last - visible.end > 3 * OVERSCAN_ITEMS;
       if (!uncovered && !nearEdge) return commitWidths();
-      const keys = windowKeysAround(live.itemKeys, visible, mountToTop);
+      const window = windowAround(live.itemKeys, visible, mountToTop);
+      const keys = window.keys;
       const heldKey = heldKeyOf(positionKeeper);
       if (heldKey !== null && live.indexByKey.has(heldKey)) keys.add(heldKey);
       if (sameKeys(keys, live.windowKeys) || !takeFrameUpdate()) {
@@ -658,14 +659,13 @@ export function TimelineWindowedItems({
       );
       const apply = () => {
         applyWidths();
-        setWindowState({ keys, heights });
+        setWindowState({ ...window, keys, heights });
       };
       if (urgent && (uncovered || widthsChanged)) {
         flushSync(apply);
       } else {
         apply();
       }
-      setWindowState(next);
     },
     [measurements, positionKeeper, renderedModel, takeFrameUpdate],
   );

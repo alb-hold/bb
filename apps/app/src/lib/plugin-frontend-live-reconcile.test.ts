@@ -41,7 +41,7 @@ function deps(
     flushSlotBatch: () => {},
     warn: () => {},
     priorityPluginIds: () => [],
-    whenScreenPainted: () => Promise.resolve(),
+    waitForComposerPaint: () => Promise.resolve(),
   };
 }
 

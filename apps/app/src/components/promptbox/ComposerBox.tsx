@@ -17,6 +17,7 @@ import {
 import { useAtom, useAtomValue } from "jotai";
 import { QueryClientContext } from "@tanstack/react-query";
 import type {
+  ComposerView,
   ComposerAttachment,
   ExperimentalComposerContributions,
   ExperimentalComposerEditor,
@@ -34,13 +35,13 @@ import type {
 } from "@get-bb/plugin-sdk";
 import type { ThreadResponse } from "@bb/server-contract";
 import {
-  composerDraftFromPromptDraft,
   DEFAULT_PLUGIN_MENTION_TRIGGER,
   promptDraftFromComposerDraft,
   type PromptDraftAttachment,
   type PromptDraftState,
   type PromptMentionLinkResolver,
 } from "@bb/client-core";
+import { composerDraftFromPromptDraft } from "@/lib/plugin-composer-handle";
 import { isProjectAttachmentPath } from "@/lib/file-content-urls";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { composerMentionResource } from "./mentions/prompt-mention-pill";
@@ -57,7 +58,6 @@ import {
   usePluginComposerStaticViewModel,
   type ComposerDraftStore,
   type PluginComposerHost,
-  type PluginComposerStaticView,
 } from "@/components/plugin/plugin-composer-host";
 import {
   useResolvedComposerEditor,
@@ -313,13 +313,14 @@ function promptDraftAttachmentFromComposer(
 
 function composerHistory(
   history: HistoryConfig | undefined,
+  draft: PromptDraftState,
   promptHistorySearchOpen: boolean,
   onPromptHistorySearchOpenChange: (open: boolean) => void,
 ): ExperimentalComposerHistory | undefined {
   if (history === undefined) return undefined;
   const promptHistorySearch = history.promptHistorySearch;
   return {
-    currentDraft: composerDraftFromPromptDraft(currentDraft),
+    currentDraft: composerDraftFromPromptDraft(draft),
     entries: history.entries.map(composerDraftFromPromptDraft),
     onSelectEntry: (draft) =>
       history.onSelectEntry(promptDraftFromComposerDraft(draft)),
@@ -376,10 +377,10 @@ function useComposerRendererHostApi({
   typeahead,
   attachments,
   history,
-  onChange,
   ...input
 }: ComposerBoxProps): {
   api: ExperimentalComposerRendererApi;
+  view: ComposerView;
   boxHost: PluginComposerHost;
   rootHost: ComposerRootHost;
   contributions: ExperimentalComposerContributions;
@@ -406,7 +407,7 @@ function useComposerRendererHostApi({
     (next: ComposerView["layout"]) => setLayout(next),
     [],
   );
-  const localView = usePluginComposerViewModel({
+  const localView = usePluginComposerStaticViewModel({
     scope: host?.scope ?? DEFAULT_COMPOSER_SCOPE,
     layout,
     isRunning: submission?.isRunning ?? false,
@@ -423,11 +424,11 @@ function useComposerRendererHostApi({
     draftStore.getCurrent,
     draftStore.getCurrent,
   );
-  const draftAttachments = draft.attachments;
   const liveView = useMemo<ComposerView>(
     () => ({ ...view, draft: composerViewDraft(draft) }),
     [draft, view],
   );
+  const draftAttachments = draft.attachments;
   const previousAttachmentPathsRef = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     const paths = new Set(draftAttachments.map((item) => item.path));
@@ -481,10 +482,9 @@ function useComposerRendererHostApi({
       }),
       getCurrent: draftStore.getCurrent,
       subscribeDraft: draftStore.subscribeDraft,
-      setTextAndMentions: onChange,
       setDraft: draftStore.setDraft,
     }),
-    [draftStore, host, onChange, syntheticKey],
+    [draftStore, host, syntheticKey],
   );
   const key = boxHost.textEffectKey;
   const inputLocked = useComposerInputLock(key);
@@ -575,16 +575,15 @@ function useComposerRendererHostApi({
         (trigger) => !mentionTriggers.some((mention) => mention === trigger),
       ),
       resolveMentionLink,
-      attachments: composerAttachments(attachments),
+      attachments: composerAttachments(attachments, draftAttachments),
       history: composerHistory(
         history,
+        draft,
         promptHistorySearchOpen,
         setPromptHistorySearchOpen,
       ),
       internal_DO_NOT_USE_composerSizing: sizing,
     },
-    view,
-    key,
     inputLocked,
     focusComposerShortcut,
     decorationSources,
@@ -602,45 +601,17 @@ function useComposerRendererHostApi({
           signal,
           ({ threads }) => onBatch(threads),
         ),
-        resolveMentionLink: mentionLinkResolver({
-          resolveLink: typeahead.mention.resolveLink,
-          attachments: draftAttachments,
-          attachmentProjectId: attachments?.projectId,
-          openAttachment,
-        }),
-        attachments: composerAttachments(attachments, draftAttachments),
-        history: composerHistory(history, draft),
-      },
-      view: liveView,
-      key,
-      inputLocked,
-      focusComposerShortcut,
-      decorationSources,
-      threadLinks: {
-        parse: (url) => parseThreadLink(url, window.location.origin),
-        cached: getCachedThreadLink,
-        resolve: (threadIds, signal, onBatch) =>
-          resolveThreadMentionsInBatches(
-            threadIds,
-            (batch, batchSignal) =>
-              sdk.threads.resolveMentions({
-                threadIds: batch,
-                signal: batchSignal,
-              }),
-            signal,
-            ({ threads }) => onBatch(threads),
-          ),
-      },
-      clipboard: {
-        readMessage: readMessageClipboardHtml,
-        readMessageImage: readMessageClipboardImage,
-      },
-      dispatchAppCommandKey,
-      showError: (message) => appToast.error(message),
-      attachmentSrc: (path, projectId) =>
-        getLocalAttachmentPreviewSrc(path) ??
-        toUserAttachmentImageSrc(path, projectId),
-    };
+    },
+    clipboard: {
+      readMessage: readMessageClipboardHtml,
+      readMessageImage: readMessageClipboardImage,
+    },
+    dispatchAppCommandKey,
+    showError: (message) => appToast.error(message),
+    attachmentSrc: (path, projectId) =>
+      getLocalAttachmentPreviewSrc(path) ??
+      toUserAttachmentImageSrc(path, projectId),
+  };
   const getEditorRef = useRef<(() => ExperimentalComposerEditor) | null>(null);
   const lastFocusEndKeyRef = useRef(focusEndKey);
   useLayoutEffect(() => {
@@ -681,7 +652,7 @@ function useComposerRendererHostApi({
     Popup: PluginComposerPopup,
     MenuEntry: ComposerMenuEntry,
   };
-  return { api, view, boxHost, rootHost, contributions, typeahead };
+  return { api, view: liveView, boxHost, rootHost, contributions, typeahead };
 }
 
 export function ComposerRendererHostProvider({

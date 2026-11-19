@@ -21,12 +21,11 @@ import type {
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
 import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { expectNonmodalPicker } from "@/test/nonmodal-picker";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import {
@@ -260,7 +259,7 @@ function renderPicker({
         onModelChange={onModelChange}
         reasoningValue={reasoningValue}
         reasoningOptions={pickerReasoningOptions}
-        reasoningIsLoading={reasoningIsLoading}
+        reasoningIsLoading={false}
         onReasoningChange={onReasoningChange}
         serviceTierValue={serviceTierValue}
         serviceTierOptions={serviceTierOptions}

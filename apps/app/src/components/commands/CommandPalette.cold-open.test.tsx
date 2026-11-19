@@ -18,6 +18,7 @@ import {
 import { AppCommandProvider, useAppCommandHandler } from "./AppCommandProvider";
 import { CommandPalette } from "./CommandPalette";
 import { startSplitPreloading } from "@/lib/split-prefetch";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const body = vi.hoisted(() => ({
   imports: 0,

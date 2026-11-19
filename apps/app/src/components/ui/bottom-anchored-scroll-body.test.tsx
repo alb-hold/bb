@@ -77,7 +77,6 @@ function Timeline({ keys }: { keys: string[] }) {
           return (
             <div
               key={key}
-              ref={state.itemRef}
               data-timeline-row-id={key}
               data-timeline-window-key={key}
               data-fake-height={overrides.get(key) ?? heightOf(key)}

@@ -22,6 +22,40 @@ export function usageWindowLabel(
     : `${minutes / 60} hour limit`;
 }
 
+export function accountUsageWindows(
+  account: Pick<
+    AccountSummary,
+    | "limitWindows"
+    | "fiveHourUtilization"
+    | "fiveHourResetAt"
+    | "sevenDayUtilization"
+    | "sevenDayResetAt"
+  >,
+) {
+  if (account.limitWindows.length > 0) {
+    return account.limitWindows.map((window) => ({
+      id: window.slot,
+      label: usageWindowLabel(window.windowMinutes, window.slot),
+      utilization: window.utilization,
+      resetAt: window.resetAt,
+    }));
+  }
+  return [
+    {
+      id: "five-hour",
+      label: "Five-hour limit",
+      utilization: account.fiveHourUtilization ?? null,
+      resetAt: account.fiveHourResetAt ?? null,
+    },
+    {
+      id: "weekly",
+      label: "Weekly limit",
+      utilization: account.sevenDayUtilization ?? null,
+      resetAt: account.sevenDayResetAt ?? null,
+    },
+  ];
+}
+
 export function usagePlan(
   account: Pick<AccountSummary, "subscriptionType" | "rateLimitTier">,
 ): { id: string; label: string } | null {
@@ -166,8 +200,8 @@ export function registerUsageSource(
                 cost: null,
               });
             };
-            for (const window of account.limitWindows) {
-              add(window.slot, usageWindowLabel(window.windowMinutes, window.slot), window.utilization, window.resetAt, null);
+            for (const window of accountUsageWindows(account)) {
+              add(window.id, window.label, window.utilization, window.resetAt, null);
             }
             for (const { name, quota } of modelWeeklyRows(
               account,

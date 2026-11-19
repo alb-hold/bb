@@ -273,69 +273,6 @@ function usePreservedSplitScrollPositions(maximizedPaneId: string | null) {
   return { captureVisibleScrollPositions, workspaceRef };
 }
 
-function focusPaneUntilSettled({
-  focusFirstControl,
-  onFinish,
-  root,
-}: {
-  focusFirstControl: boolean;
-  onFinish: () => void;
-  root: HTMLElement;
-}): () => void {
-  let observer: MutationObserver | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const cancel = () => {
-    observer?.disconnect();
-    clearTimeout(timeout);
-  };
-  const finish = () => {
-    cancelAnimationFrame(frame);
-    cancel();
-    onFinish();
-  };
-  const focus = () => {
-    if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
-      return false;
-    return focusPaneComposer(root) && root.contains(document.activeElement);
-  };
-  const frame = requestAnimationFrame(() => {
-    if (focus()) {
-      finish();
-      return;
-    }
-    const content =
-      root.querySelector<HTMLElement>("[data-pane-content]") ?? root;
-    const control = !focusFirstControl
-      ? null
-      : content.querySelector<HTMLElement>(
-          "input:not(:disabled), textarea:not(:disabled), [contenteditable='true'], button:not(:disabled), a[href], [tabindex='0']",
-        );
-    (control ?? root).focus({ preventScroll: true });
-    observer = new MutationObserver(() => {
-      if (document.activeElement !== root) {
-        finish();
-        return;
-      }
-      if (focus()) finish();
-    });
-    observer.observe(root, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["contenteditable", "disabled"],
-    });
-    timeout = setTimeout(finish, 1000);
-  });
-  document.addEventListener("pointerdown", finish, true);
-  document.addEventListener("keydown", finish, true);
-  return () => {
-    cancelAnimationFrame(frame);
-    cancel();
-    document.removeEventListener("pointerdown", finish, true);
-    document.removeEventListener("keydown", finish, true);
-  };
-}
-
 export function SplitThreadArea(props: SplitThreadAreaProps = {}) {
   return (
     <ThreadDetailWorkerPoolProvider>
@@ -367,34 +304,17 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     [routeContent, routeThread],
   );
 
-  const [reconciliation, setReconciliation] = useState<{
-    content: PaneContent;
-    from: SplitLayout | null;
-    layout: SplitLayout;
-  } | null>(null);
-  let layout = storedLayout;
-  if (currentContent !== null) {
-    if (reconciliation?.content !== currentContent) {
-      const next = {
-        content: currentContent,
-        from: storedLayout,
-        layout: reconcileLayoutForContent(storedLayout, currentContent),
-      };
-      setReconciliation(next);
-      layout = next.layout;
-    } else if (storedLayout === reconciliation.from) {
-      layout = reconciliation.layout;
-    }
-  }
+  const layout = useMemo(
+    () =>
+      currentContent === null
+        ? storedLayout
+        : reconcileLayoutForContent(storedLayout, currentContent),
+    [currentContent, storedLayout],
+  );
 
   useEffect(() => {
-    if (reconciliation === null) {
-      return;
-    }
-    setLayout((previous) =>
-      reconcileLayoutForContent(previous, reconciliation.content),
-    );
-  }, [currentContent, reconciliation, setLayout]);
+    if (currentContent !== null && layout !== storedLayout) setLayout(layout);
+  }, [currentContent, layout, setLayout, storedLayout]);
 
   useTerminalMountGate(
     "terminal-split-layout",

@@ -20,6 +20,7 @@ import {
 import { pluginSdkAppImplementation } from "./plugin-sdk-app-impl";
 
 import { useSidebarThreadPullRequest } from "./plugin-sidebar-hooks";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 function candidate(
   pluginId: string,

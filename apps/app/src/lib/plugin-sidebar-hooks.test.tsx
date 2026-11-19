@@ -5,6 +5,8 @@ import {
   cleanup,
   renderHook as renderHookBase,
 } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { QueryClient } from "@tanstack/react-query";
 import { getDefaultStore } from "jotai";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
@@ -26,7 +28,6 @@ import {
 } from "./plugin-thread-row-status";
 import { useEnvironmentProviders } from "./plugin-sdk-hooks";
 import { SidebarThreadShortcutKeysContext } from "@/components/sidebar/sidebarThreadShortcuts";
-import { SidebarThreadEntriesTestProvider } from "@/test/sidebarThreadEntriesTestProvider";
 import { sidebarNavigationQueryKey } from "@/hooks/queries/query-keys";
 import { createRealtimeCacheEffects } from "@/hooks/realtime-cache-effects";
 

@@ -14,6 +14,7 @@ import {
   QUOTA_MIGRATIONS,
   QuotaStore,
 } from "./store.js";
+import { ThreadTokenStore } from "./thread-tokens.js";
 
 const MINUTE = 60_000;
 const ROUTE = "/api/v1/plugins/account-pool/http";
@@ -38,12 +39,16 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
   const secretsDir = path.join(dataDir, "secrets");
   let time = 1_800_000_000_000;
   const now = () => time;
-  const stores = () => ({
-    accounts: new AccountStore(host.bb.storage.kv, secretsDir),
-    quotas: new QuotaStore(database),
-    affinity: new PoolAffinityStore(database),
-    hubTokens: new HubTokenStore(secretsDir, now),
-  });
+  const stores = () => {
+    const hubTokens = new HubTokenStore(secretsDir, now);
+    return {
+      accounts: new AccountStore(host.bb.storage.kv, secretsDir),
+      quotas: new QuotaStore(database),
+      affinity: new PoolAffinityStore(database),
+      hubTokens,
+      threadTokens: new ThreadTokenStore(secretsDir, hubTokens, now),
+    };
+  };
   const initial = stores();
   await initial.accounts.initialize();
   const addAccount = (

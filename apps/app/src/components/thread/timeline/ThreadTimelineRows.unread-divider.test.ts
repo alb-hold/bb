@@ -19,7 +19,7 @@ import {
 const DIVIDER = "__divider__";
 
 function readUntil(cutoffAt: number): ThreadTimelineUnreadDividerPlacement {
-  return { cutoffAt };
+  return { anchor: "first-unread-row", cutoffAt };
 }
 
 function renderTopLevelSequence(

@@ -633,6 +633,19 @@ function latestPromptBoxProps(): Record<string, any> {
   return props as Record<string, any>;
 }
 
+function promptBoxDraft() {
+  return latestPromptBoxProps().draft;
+}
+
+function promptBoxText(): string {
+  return promptBoxDraft().getCurrent().text;
+}
+
+function typeInPromptBox(text: string): void {
+  const draft = promptBoxDraft();
+  draft.setDraft({ ...draft.getCurrent(), text, mentions: [] });
+}
+
 
 function RootReuseProbe() {
   const [reuseEnvironment, setReuseEnvironment] =
@@ -4079,7 +4092,7 @@ describe("NewThreadComposer setSelection", () => {
 
   it("waits for the model catalog before reporting, bounded by the settle timeout", async () => {
     mocks.modelsLoading = true;
-    render(rootLikeElement("proj_1"));
+    const view = render(rootLikeElement("proj_1"));
     let result: ExperimentalComposerSelection | null = null;
     void currentHost().setSelection!({ permissionMode: "accept-edits" }).then(
       (value) => {
@@ -4093,7 +4106,8 @@ describe("NewThreadComposer setSelection", () => {
     });
     expect(result).toBeNull();
 
-    setModelsLoading(false);
+    mocks.modelsLoading = false;
+    view.rerender(rootLikeElement("proj_1"));
     await waitFor(() => {
       expect(result).not.toBeNull();
     });
@@ -4104,7 +4118,8 @@ describe("NewThreadComposer setSelection", () => {
     });
 
     setComposerSelectionSettleTimeoutForTest(150);
-    setModelsLoading(true);
+    mocks.modelsLoading = true;
+    view.rerender(rootLikeElement("proj_1"));
     const bounded = await settled(
       currentHost().setSelection!({ permissionMode: "full" }),
       2_000,

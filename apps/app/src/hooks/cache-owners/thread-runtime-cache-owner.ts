@@ -985,7 +985,7 @@ export function applySendThreadMessageSuccess({
         threadId: request.id,
       }).confirm([], readThreadBack(queryClient));
       insertOptimisticTimelineRowUnlessDelivered({
-        messageSequence: result.messageSequence,
+        messageSequence: result.messageSequence ?? null,
         queryClient,
         row: buildOptimisticUserMessageRow({
           createdAt: optimisticCreatedAt,

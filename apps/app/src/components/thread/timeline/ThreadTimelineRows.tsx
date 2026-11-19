@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ComponentProps, CSSProperties, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactNode, Ref } from "react";
 import "./timeline-row-spacing.css";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -83,7 +83,6 @@ import { TimelineReasoningDetail } from "./TimelineReasoningDetail.js";
 import { ExpandableTimelineRow } from "./ExpandableTimelineRow.js";
 import { TimelineRowBodyPlaceholder } from "./TimelineRowBodyPlaceholder.js";
 import {
-  timelineDetailIdentity,
   usePreloadTimelineRowBody,
   useTimelineRowBodyRenderersReady,
 } from "./timeline-row-body-preload.js";
@@ -123,7 +122,8 @@ import {
   useScrollToSearchedMessage,
   useSearchMessageLocation,
 } from "./useScrollToSearchedMessage.js";
-import { timelineRowRenderSignature } from "@bb/client-core";
+import { joinSignatureParts, timelineRowRenderSignature } from "@bb/client-core";
+import { timelineDetailIdentity } from "./timeline-detail-identity.js";
 import {
   TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
   timelineRowContainmentStyle,
@@ -253,8 +253,6 @@ interface TimelineRowsListProps {
 interface TimelineRowViewProps {
   activeLatestBundleId: string | null;
   compactActivityIntents: boolean;
-  isLatestActionableMessage: boolean;
-  isStreamingMessage: boolean;
   row: ThreadTimelineViewRow;
   turnTokenSummary?: { threadId: string; turnId: string };
   turnTokenSummaryMessageId?: string | null;
@@ -378,11 +376,6 @@ interface ConversationRowProps {
   turnTokenSummary?: { threadId: string; turnId: string };
 }
 
-interface ConversationRowStateProps extends ConversationRowProps {
-  isLatestActionableMessage: boolean;
-  isStreamingMessage: boolean;
-}
-
 interface ConversationRowContentProps extends ConversationRowProps {
   mobileActionDisplay: "inline" | "overflow";
   streaming: boolean;
@@ -454,8 +447,6 @@ function areTimelineRowViewPropsEqual(
 ): boolean {
   return (
     previous.compactActivityIntents === next.compactActivityIntents &&
-    previous.isLatestActionableMessage === next.isLatestActionableMessage &&
-    previous.isStreamingMessage === next.isStreamingMessage &&
     previous.scopeActive === next.scopeActive &&
     previous.showAssistantMessageActions === next.showAssistantMessageActions &&
     previous.turnTokenSummaryMessageId === next.turnTokenSummaryMessageId &&
@@ -982,13 +973,7 @@ function buildRowConsumerMessageActions(args: {
     }));
 }
 
-function ConversationRow({
-  isLatestActionableMessage,
-  isStreamingMessage,
-  row,
-  showAssistantMessageActions,
-  turnTokenSummary,
-}: ConversationRowProps) {
+function ConversationRow({ row, showAssistantMessageActions, turnTokenSummary }: ConversationRowProps) {
   const latestActionableAssistantMessageId = useContext(
     LatestActionableAssistantMessageIdContext,
   );
@@ -998,23 +983,6 @@ function ConversationRow({
   const streamingAssistantMessageId = useContext(
     StreamingAssistantMessageIdContext,
   );
-  return {
-    latestActionableAssistantMessageId,
-    latestActionableUserMessageId,
-    streamingAssistantMessageId,
-  };
-}
-
-function conversationRowState(
-  row: ThreadTimelineViewRow,
-  ids: ConversationMessageIds,
-): Pick<
-  TimelineRowViewProps,
-  "isLatestActionableMessage" | "isStreamingMessage"
-> {
-  if (row.kind !== "conversation") {
-    return { isLatestActionableMessage: false, isStreamingMessage: false };
-  }
   const latestActionableMessageId =
     row.role === "user"
       ? latestActionableUserMessageId
@@ -1908,8 +1876,6 @@ function SentThreadMessageRow({
 function TimelineRowView({
   activeLatestBundleId,
   compactActivityIntents,
-  isLatestActionableMessage,
-  isStreamingMessage,
   row,
   turnTokenSummary,
   turnTokenSummaryMessageId,
@@ -1934,8 +1900,6 @@ function TimelineRowView({
   if (row.kind === "conversation") {
     return (
       <ConversationRow
-        isLatestActionableMessage={isLatestActionableMessage}
-        isStreamingMessage={isStreamingMessage}
         row={row}
         showAssistantMessageActions={showAssistantMessageActions}
         turnTokenSummary={
@@ -2428,20 +2392,22 @@ function TimelineRowItemWrapper({
   spacing,
   windowedState,
   style,
+  ref,
 }: {
   style?: CSSProperties;
   children: ReactNode;
   row: ThreadTimelineViewRow;
   spacing: TimelineRowsListSpacing;
   windowedState: TimelineWindowedItemRenderState;
+  ref?: Ref<HTMLDivElement>;
 }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const composedRef = useComposedRefs(wrapperRef, itemRef);
+  const composedRef = useComposedRefs(wrapperRef, ref);
   const isTopLevel = spacing === "top-level";
   const { marginTop, ...rowStyle } = style ?? {};
   useArmTopLevelTimelineRowContainment(
     wrapperRef,
-    isTopLevel && !windowingEnabled,
+    isTopLevel && !windowedState.windowingEnabled,
   );
   return (
     <div
@@ -2450,7 +2416,7 @@ function TimelineRowItemWrapper({
       data-timeline-window-key={row.id}
       data-timeline-gap-before={marginTop}
       className={
-        isTopLevel && !windowingEnabled
+        isTopLevel && !windowedState.windowingEnabled
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
           : undefined
       }
@@ -2461,7 +2427,7 @@ function TimelineRowItemWrapper({
         ...rowStyle,
       }}
     >
-      <MemoizedTimelineRowView {...rowViewProps} />
+      {children}
     </div>
   );
 }
@@ -2565,7 +2531,6 @@ function TimelineRowsList({
   const isPointerCoarse = usePointerCoarse();
   const isCompactTouch = isCompactViewport && isPointerCoarse;
   const { threadId } = useTimelineRendererStaticContext();
-  const conversationMessageIds = useConversationMessageIds();
   const bottomAnchor = useBottomAnchoredScroll();
   const scrollRestore = useContext(TimelineScrollRestoreContext);
   const detailScrollRoot = useContext(TimelineWindowingScrollRootContext);

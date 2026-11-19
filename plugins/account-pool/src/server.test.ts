@@ -54,6 +54,7 @@ import {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { ThreadTokenStore } from "./thread-tokens.js";
 import { createHostProxy } from "./host-proxy.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import {
@@ -318,9 +319,7 @@ describe("Explicit subscription routing", () => {
     async (state) => {
       const { fixture, second, seen, key, request } = await twoSubscriptions();
       if (state === "exhausted") {
-        const quotas = new QuotaStore(fixture.host.bb.storage.database());
-        quotas.put({
-          ...quotas.get(second.id),
+        setQuota(fixture, second.id, {
           sevenDayUtilization: 0.98,
           sevenDayResetAt: Date.now() + 3_600_000,
         });
@@ -793,10 +792,63 @@ function authHeaders(key: string): Record<string, string> {
 function setQuota(
   fixture: Fixture,
   accountId: string,
-  update: Partial<AccountQuota>,
+  update: Partial<AccountQuota> & {
+    fiveHourUtilization?: number | null;
+    fiveHourStatus?: string | null;
+    fiveHourResetAt?: number | null;
+    sevenDayUtilization?: number | null;
+    sevenDayStatus?: string | null;
+    sevenDayResetAt?: number | null;
+  },
 ): void {
   const quotas = new QuotaStore(fixture.host.bb.storage.database());
-  quotas.put({ ...quotas.get(accountId), ...update });
+  const {
+    fiveHourUtilization,
+    fiveHourStatus,
+    fiveHourResetAt,
+    sevenDayUtilization,
+    sevenDayStatus,
+    sevenDayResetAt,
+    ...fields
+  } = update;
+  const previous = quotas.get(accountId);
+  const limitWindows = previous.limitWindows.filter(
+    (window) =>
+      !((window.slot === "primary" && window.windowMinutes === 300) ||
+        (window.slot === "secondary" && window.windowMinutes === 10_080)),
+  );
+  const observedAt = update.observedAt ?? previous.observedAt ?? Date.now();
+  if (
+    fiveHourUtilization !== undefined ||
+    fiveHourStatus !== undefined ||
+    fiveHourResetAt !== undefined
+  ) {
+    limitWindows.push({
+      slot: "primary",
+      windowMinutes: 300,
+      utilization: fiveHourUtilization ?? null,
+      status: fiveHourStatus ?? null,
+      resetAt: fiveHourResetAt ?? null,
+      observedAt,
+      source: "usage",
+    });
+  }
+  if (
+    sevenDayUtilization !== undefined ||
+    sevenDayStatus !== undefined ||
+    sevenDayResetAt !== undefined
+  ) {
+    limitWindows.push({
+      slot: "secondary",
+      windowMinutes: 10_080,
+      utilization: sevenDayUtilization ?? null,
+      status: sevenDayStatus ?? null,
+      resetAt: sevenDayResetAt ?? null,
+      observedAt,
+      source: "usage",
+    });
+  }
+  quotas.put({ ...previous, ...fields, limitWindows });
 }
 
 function nextClockTick(): Promise<void> {
@@ -2485,8 +2537,8 @@ describe("Account Pool plugin", () => {
     cleanups.push(upstream.close);
     const fixture = await createFixture({
       upstreamUrl: upstream.url,
-      source: "oauth",
-      options: { claudeLogin: async () => claudeCredentials() },
+      source: "import",
+      options: { importCredentials: async () => importedCredentials() },
     });
     const entries = await fixture.host.harness.behavior.resolveProviderEnv(
       "claude-code",
@@ -4793,6 +4845,38 @@ describe("Account Pool plugin", () => {
           "sk-third",
           "sk-third",
         ]);
+      },
+    );
+
+    it.each(["claude", "codex"] as const)(
+      "retries an automatically affined %s session on its account before failover",
+      async (provider) => {
+        const attempts: string[] = [];
+        let retry = false;
+        const fixture = await affinityFixture(provider, async (_input, init) => {
+          const key = upstreamKey(init);
+          attempts.push(key);
+          return retry && key === "sk-first"
+            ? Response.json({}, { status: 503, headers: { "retry-after": "0" } })
+            : Response.json({});
+        });
+        const send = async () => {
+          const response = await fixture.host.harness.behavior.fetchHttp(
+            "POST",
+            provider === "claude" ? "/v1/messages" : "/v1/responses",
+            {
+              headers: { ...authHeaders(fixture.key), "session-id": "auto-affinity" },
+              body: provider === "claude" ? claudeBody("auto-affinity") : "{}",
+            },
+          );
+          expect(response.status).toBe(200);
+          await response.text();
+        };
+        await send();
+        attempts.length = 0;
+        retry = true;
+        await send();
+        expect(attempts).toEqual(["sk-first", "sk-first", "sk-first", "sk-second"]);
       },
     );
 
@@ -7130,7 +7214,8 @@ describe("Account Pool plugin", () => {
       const cached = await accountState();
       const quota = (account: typeof cached) =>
         provider === "claude"
-          ? account?.sevenDayUtilization
+          ? account?.limitWindows.find((window) => window.slot === "secondary")
+              ?.utilization
           : account?.limitWindows[0]?.utilization;
       expect(quota(cached)).toBe(0.2);
       for (const mode of ["network", "http", "payload"] as const) {
@@ -11744,10 +11829,10 @@ it("publishes pooled subscription usage without a display plugin and does not in
   cleanups.push(upstream.close);
   const fixture = await createFixture({
     upstreamUrl: upstream.url,
-    source: "oauth",
+    source: "import",
     options: {
       usageUrl: `${upstream.url}/usage`,
-      claudeLogin: async () => claudeCredentials(),
+      importCredentials: async () => importedCredentials(),
     },
   });
   const apiKeyAccount = await addApiAccount(fixture, "sk-pay-as-you-go");

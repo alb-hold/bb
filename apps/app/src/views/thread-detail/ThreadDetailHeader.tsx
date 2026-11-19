@@ -46,6 +46,7 @@ import {
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import { usePluginThreadHeaderTitleSlot } from "@/components/plugin/PluginThreadHeaderTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
@@ -187,6 +188,7 @@ export function ThreadDetailHeader({
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
   const isSidebarFramed = useIsSidebarFramed();
   const headerRef = useRef<HTMLElement>(null!);
+  const [measuredPaneWidth, setMeasuredPaneWidth] = useState(0);
   const {
     beginPaneDrag,
     isFocused,
@@ -203,7 +205,6 @@ export function ThreadDetailHeader({
   const isWindowPanelOpen =
     useContext(SecondaryPanelHostLayoutContext)?.isOpen === true;
   const isSplitPaneHeader = beginPaneDrag !== undefined;
-  const [isNarrowSplitPane, setIsNarrowSplitPane] = useState(false);
   const usesResponsiveActionOverflow =
     (isSplitPaneHeader || isCompactViewport) &&
     measuredPaneWidth > 0 &&
@@ -216,12 +217,8 @@ export function ThreadDetailHeader({
     const header = headerRef.current;
     const pane = header.closest<HTMLElement>("[data-split-pane-id]");
     const measuredElement = isSplitPaneHeader ? (pane ?? header) : header;
-    const measure = () => {
-      const width = measuredElement.getBoundingClientRect().width;
-      if (width > 0) {
-        setIsNarrowSplitPane(width < NARROW_SPLIT_HEADER_MAX_WIDTH);
-      }
-    };
+    const read = () => measuredElement.getBoundingClientRect().width;
+    const write = (width: number) => setMeasuredPaneWidth(width);
     write(read());
     return observeSharedResize(measuredElement, { read, write });
   }, [isSplitPaneHeader]);

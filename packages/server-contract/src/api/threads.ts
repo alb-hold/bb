@@ -32,6 +32,7 @@ import {
   threadSearchSourceKindSchema,
   threadStatusSchema,
   threadTimelineActivePromptModeSchema,
+  threadTimelineGoalSchema,
   threadTimelineModelFallbackSchema,
   threadTimelinePendingTodosSchema,
   threadExecutionReportSchema,
@@ -378,6 +379,7 @@ export const sendMessageResponseSchema = z.discriminatedUnion("delivery", [
   z.object({
     ok: z.literal(true),
     delivery: z.literal("sent"),
+    messageSequence: z.number().int().nonnegative().optional(),
     refusal: sendMessageRefusalSchema.optional(),
   }),
   z.object({
@@ -1347,6 +1349,7 @@ const threadTimelineWindowFieldsShape = {
   activeWorkflows: z.array(timelineWorkflowWorkRowSchema),
   activeBackgroundCommands: z.array(timelineWorkflowWorkRowSchema),
   pendingTodos: threadTimelinePendingTodosSchema.nullable(),
+  goal: threadTimelineGoalSchema.nullable(),
   extensionStates: z.record(z.string(), jsonValueSchema),
   providerCommands: z
     .array(providerCommandSchema.omit({ pluginId: true }))

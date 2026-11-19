@@ -1770,7 +1770,7 @@ export function ThreadDetailPromptArea({
         options: serviceTierOptions,
       },
       reasoning: {
-        isLoading: false,
+        isLoading: isLoadingReasoning,
         value: reasoningLevel,
         options: reasoningOptions,
         onChange: handleReasoningLevelChange,
@@ -1796,6 +1796,7 @@ export function ThreadDetailPromptArea({
       executionOptionsPending,
       modelCatalogIsVerified,
       catalogPending,
+      isLoadingReasoning,
       defaultExecutionOptions,
       pickerSessionOptionSections,
       sessionOptionChoices.choose,

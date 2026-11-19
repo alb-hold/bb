@@ -60,8 +60,13 @@ export interface ThreadTimelineConsumerMessageAction {
 }
 
 export interface ThreadTimelineUnreadDividerPlacement {
+  anchor: ThreadTimelineUnreadDividerAnchor;
   cutoffAt: number;
 }
+
+export type ThreadTimelineUnreadDividerAnchor =
+  | "first-unread-row"
+  | "turn-answer";
 
 export type UserAttachmentImageSrcResolver = (
   pathOrUrl: string,

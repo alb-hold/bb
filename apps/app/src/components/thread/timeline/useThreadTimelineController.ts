@@ -41,6 +41,7 @@ interface UseThreadTimelineControllerArgs {
 }
 
 export interface UseThreadTimelineControllerResult {
+  goal: ThreadTimelineResponse["goal"];
   activePromptMode: ThreadTimelineResponse["activePromptMode"];
   activeThinking: ThreadTimelineResponse["activeThinking"];
   activeWorkflows: ThreadTimelineResponse["activeWorkflows"];
@@ -402,6 +403,7 @@ export function useThreadTimelineController({
       : latestTimelineQuery.error;
 
   return {
+    goal: latestTimeline?.goal ?? null,
     activePromptMode: latestTimeline?.activePromptMode ?? null,
     activeThinking: latestTimeline?.activeThinking ?? null,
     activeWorkflows: latestTimeline?.activeWorkflows ?? [],

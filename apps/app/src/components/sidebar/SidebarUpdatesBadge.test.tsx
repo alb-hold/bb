@@ -8,6 +8,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -48,22 +49,11 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 
 import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
 
-const useUpdateInventoryMock = vi.hoisted(() => vi.fn());
-
-const runner = vi.hoisted(() => ({
-  runningJobKey: null as string | null,
-  queuedJobKeys: new Set<string>(),
-  failuresByJobKey: new Map<string, unknown>(),
-  startInstall: vi.fn(),
-}));
-
 const appUpdateState = vi.hoisted(() => ({
   status: undefined as SystemAppUpdateStatus | undefined,
 }));
 
 const applyAppUpdateMock = vi.hoisted(() => vi.fn());
-
-const pluginJobsState = vi.hoisted(() => ({ jobs: [] as PluginUpdateJob[] }));
 
 const startPluginUpdateMock = vi.hoisted(() => vi.fn());
 
@@ -71,6 +61,18 @@ const desktopState = vi.hoisted(() => ({
   installUpdate: vi.fn(async () => {}),
   isDesktop: false,
 }));
+
+const live = vi.hoisted(() => ({
+  inventory: null as UpdateInventory | null,
+  providerJobs: {
+    runningJobKey: null as string | null,
+    queuedJobKeys: new Set<string>(),
+    failuresByJobKey: new Map<string, unknown>(),
+  },
+  pluginJobs: [] as PluginUpdateJob[],
+  listeners: new Set<() => void>(),
+}));
+const startInstallMock = vi.hoisted(() => vi.fn());
 
 type LiveUpdates = Pick<
   typeof live,

@@ -12,6 +12,7 @@ import {
 
 import { MemoryRouter } from "react-router-dom";
 import { useEffect } from "react";
+import { useSyncExternalStore } from "react";
 
 import { createStore, Provider } from "jotai";
 
@@ -57,6 +58,7 @@ import {
 import { CommandPalette } from "./CommandPalette";
 
 import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 
 vi.mock("@/hooks/useThreadOpenIntent", () => ({
@@ -203,6 +205,16 @@ const modeState = vi.hoisted(() => ({
   searchLoading: false,
   searchError: false,
 }));
+
+function subscribeToSearchResponse(listener: () => void): () => void {
+  modeState.searchListeners.add(listener);
+  return () => modeState.searchListeners.delete(listener);
+}
+
+function setSearchResponse(response: ThreadSearchResponse): void {
+  modeState.searchResponse = response;
+  for (const listener of modeState.searchListeners) listener();
+}
 
 const routeNavigateMock = vi.hoisted(() => vi.fn());
 

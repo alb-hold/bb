@@ -10,6 +10,7 @@ export const experimentKeys = [
   "resumeDaemonSessions",
   "skipFocusedThreadNotifications",
   "threadContextCard",
+  "unreadDividerAtAnswer",
   "walCheckpointWorker",
 ] as const;
 export const experimentKeySchema = z.enum(experimentKeys);
@@ -34,6 +35,7 @@ export const defaultExperiments: Experiments = {
   resumeDaemonSessions: false,
   skipFocusedThreadNotifications: false,
   threadContextCard: false,
+  unreadDividerAtAnswer: false,
   walCheckpointWorker: false,
 };
 
@@ -47,5 +49,6 @@ export const earlyAdopterExperiments: Experiments = {
   resumeDaemonSessions: true,
   skipFocusedThreadNotifications: true,
   threadContextCard: true,
+  unreadDividerAtAnswer: true,
   walCheckpointWorker: true,
 };

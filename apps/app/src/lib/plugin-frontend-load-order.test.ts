@@ -81,7 +81,7 @@ function makeDeps(
     removeRegistrations: vi.fn(),
     warn: vi.fn(),
     priorityPluginIds: () => [],
-    whenScreenPainted: () => Promise.resolve(),
+    waitForComposerPaint: () => Promise.resolve(),
     beginSlotBatch: () => () => {},
     flushSlotBatch: () => {},
     ...overrides,
@@ -345,7 +345,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
           importModule: imports.importModule,
           priorityPluginIds: () => ["thread-list"],
           prefetchModule,
-          whenScreenPainted: () => screenPainted,
+          waitForComposerPaint: () => screenPainted,
         },
       ),
     );

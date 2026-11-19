@@ -82,7 +82,6 @@ import type { PromptMentionLinkResolver } from "@bb/client-core";
 import {
   type ComposerDraftStore,
   type PluginComposerHost,
-  useComposerDraftSelector,
   useComposerHostSelection,
 } from "@/components/plugin/plugin-composer-host";
 import type { ComposerSubmitExtras } from "@get-bb/plugin-sdk/internal/composer-handle";
@@ -331,14 +330,20 @@ type LiveDraftNewThreadPromptBoxProps = Omit<
   allowEmpty: boolean;
 };
 
-const selectHasDraft = (draft: PromptDraftState) => !isPromptDraftEmpty(draft);
-
 function LiveDraftNewThreadPromptBox({
   promptDraft,
   blockerReason,
   allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
+  const draftStore = useMemo<ComposerDraftStore>(
+    () => ({
+      getCurrent: promptDraft.getCurrent,
+      subscribeDraft: promptDraft.subscribe,
+      setDraft: promptDraft.setDraft,
+    }),
+    [promptDraft.getCurrent, promptDraft.setDraft, promptDraft.subscribe],
+  );
   const getEmptyState = useCallback(() => {
     const draft = promptDraft.getCurrent();
     return `${isPromptDraftEmpty(draft)}/${draft.text.trim().length === 0 && draft.attachments.length === 0}`;
@@ -364,13 +369,9 @@ function LiveDraftNewThreadPromptBox({
   return (
     <NewThreadPromptBox
       {...promptBoxProps}
-      draftSource={promptDraft}
+      draft={draftStore}
       disabled={disabledReason !== undefined}
       disabledReason={disabledReason}
-      value={draft.text}
-      mentionRanges={draft.mentions}
-      history={{ ...history, currentDraft: draft }}
-      attachments={{ ...attachments, items: draft.attachments }}
     />
   );
 }
@@ -771,6 +772,7 @@ async function submitNewThreadRequest({
   request,
   submittedDraft,
   promptDraft,
+  creationData,
   onSubmit,
   clearReuseEnvironment,
   isSubmittingRef,
@@ -780,6 +782,7 @@ async function submitNewThreadRequest({
   request: NewThreadComposerSubmission;
   submittedDraft: PromptDraftState;
   promptDraft: PromptDraftController;
+  creationData: ReturnType<typeof getComposerCreateData>;
   onSubmit: (request: NewThreadComposerSubmission) => void | Promise<void>;
   clearReuseEnvironment: () => void;
   isSubmittingRef: RefObject<boolean>;
@@ -797,6 +800,7 @@ async function submitNewThreadRequest({
   });
   try {
     await onSubmit(request);
+    clearSubmittedComposerCreateData(promptDraft.storageKey, creationData);
     recordTelemetryEvent({
       name: "new_thread_submit",
       properties: { outcome: "accepted" },
@@ -2017,36 +2021,13 @@ export function NewThreadComposer({
         request,
         submittedDraft,
         promptDraft,
+        creationData,
         onSubmit,
         clearReuseEnvironment,
         isSubmittingRef,
         setIsSubmitting,
         setAttachmentError,
       });
-      try {
-        await onSubmit(request);
-        clearSubmittedComposerCreateData(promptDraft.storageKey, creationData);
-        recordTelemetryEvent({
-          name: "new_thread_submit",
-          properties: { outcome: "accepted" },
-        });
-        clearReuseEnvironment();
-      } catch (submitError) {
-        recordTelemetryEvent({
-          name: "new_thread_submit",
-          properties: {
-            outcome: "failed",
-            failure_reason: operationFailureReason(submitError),
-          },
-        });
-        if (clearedSubmittedDraft) {
-          promptDraft.restoreIfEmpty(submittedDraft);
-        }
-        throw submitError;
-      } finally {
-        isSubmittingRef.current = false;
-        setIsSubmitting(false);
-      }
     },
     [
       clearReuseEnvironment,

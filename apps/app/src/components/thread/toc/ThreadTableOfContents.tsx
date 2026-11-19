@@ -713,10 +713,7 @@ export function ThreadTableOfContents({
       scrollElement.removeEventListener("scroll", onScroll);
       if (scrollTimeout.current !== null)
         window.clearTimeout(scrollTimeout.current);
-      resizeObserver?.disconnect();
-      if (updateTimeout !== null) {
-        window.clearTimeout(updateTimeout);
-      }
+      unobserveResize?.();
     };
   }, [agentItems, bottomAnchor, tocVisible, userItems]);
 

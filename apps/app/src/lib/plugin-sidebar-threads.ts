@@ -20,6 +20,7 @@ type PluginSidebarThreadActivityWithRetiredGoals = PluginSidebarThreadActivity;
 
 export function toThreadStatusThread(
   entry: ThreadListEntry,
+  now = Date.now(),
 ): PluginThreadStatusThread {
   const activity: PluginSidebarThreadActivityWithRetiredGoals = {
     workflows: entry.activity.activeWorkflowCount,
@@ -30,9 +31,6 @@ export function toThreadStatusThread(
   };
   return {
     status: entry.status,
-    indicator: entry.listIndicator,
-    experimental_nativeActivity: entry.runtime.nativeActivity === undefined ? undefined : { ...entry.runtime.nativeActivity, confirmation: isNativeActivityUnconfirmed(entry.runtime) ? "unconfirmed" : "confirmed", evidenceKind: nativeActivityEvidenceKind(entry.runtime) },
-    experimental_queuedFailedCount: entry.queuedFailedCount,
     runtimeStatus: entry.runtime.displayStatus,
     queuedWork: entry.queuedWork,
     hasPendingInteraction: entry.hasPendingInteraction,
@@ -50,7 +48,7 @@ export function toPluginSidebarThread(
   nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
   entry = withEffectiveDisplayStatus(entry);
-  const statusThread = toThreadStatusThread(entry);
+  const statusThread = toThreadStatusThread(entry, now);
   const { indicator, label } = experimental_resolveThreadStatus({
     thread: statusThread,
     hiddenThreads: [],

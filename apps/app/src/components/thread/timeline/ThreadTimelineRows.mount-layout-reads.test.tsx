@@ -142,6 +142,7 @@ function setup(rows: TimelineRow[]) {
       <MemoryRouter>
         <BottomAnchoredScrollBody footer={null} maxWidthClassName="max-w-3xl">
           <ThreadTimelineRows
+            threadIsActive={false}
             timelineRows={timelineRows}
             threadRuntimeDisplayStatus="idle"
           />

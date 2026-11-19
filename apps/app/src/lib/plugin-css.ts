@@ -1,5 +1,8 @@
 import { HOST_TAILWIND_VERSION } from "@bb/plugin-build/host-tailwind-version";
 import type { SystemConfigResponse } from "@bb/server-contract";
+import { appQueryClient } from "./app-query-client";
+import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
+import { keepPluginScopeAttributes } from "./plugin-scope-attributes";
 import { useInsertionEffect } from "react";
 import {
   collectHostUtilityKeys,
