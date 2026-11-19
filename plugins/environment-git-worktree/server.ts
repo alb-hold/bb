@@ -9,6 +9,7 @@ import type {
   PluginEnvironmentProviderProgress,
 } from "@get-bb/plugin-sdk/environment-provider";
 import { reportHostProgress } from "bb-environment-provider-host/progress";
+import { REMOVE_TIMEOUT_MS } from "bb-environment-provider-host/remove-timeout";
 import { z } from "zod";
 import {
   discoveredWorktreeSchema,
@@ -21,7 +22,6 @@ import { attemptBranchName } from "./attempt-branch.js";
 import { GIT_WORKTREE_ENVIRONMENT_PROVIDER_ID } from "./provider-id.js";
 
 const CREATE_TIMEOUT_MS = 15 * 60 * 1000;
-const REMOVE_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const worktreeInputsSchema = z
   .union([

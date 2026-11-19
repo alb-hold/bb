@@ -480,6 +480,23 @@
       ],
       "outputs": ["src/generated/profile-worker.ts"]
     },
+    "bb-environment-provider-host#topo": {
+      "dependsOn": ["^topo", "bb-environment-provider-host#generate:remove-tree-child"]
+    },
+    "bb-environment-provider-host#generate:remove-tree-child": {
+      "dependsOn": [],
+      "inputs": [
+        "src/remove-tree-child.ts",
+        "src/remove-tree-protocol.ts",
+        "src/remove-directory-tree-core.ts",
+        "src/remove-tree-io.ts",
+        "src/remove-tree-sync-io.ts",
+        "scripts/generate-remove-tree-child.mjs",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/pnpm-lock.yaml"
+      ],
+      "outputs": ["src/generated/remove-tree-child.ts"]
+    },
     "@bb/plugin-build#topo": {
       "dependsOn": ["^topo", "@bb/plugin-build#generate"]
     },

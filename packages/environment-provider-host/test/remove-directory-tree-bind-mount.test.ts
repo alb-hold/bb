@@ -5,7 +5,7 @@ import {
   spawn,
 } from "node:child_process";
 import { existsSync } from "node:fs";
-import fs, { type FileHandle } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,12 +15,13 @@ import {
   keptTreeReasons,
   removeDirectoryTree,
   type RemoveDirectoryTreeResult,
+  type RemoveTreeFileHandle,
 } from "../src/remove-directory-tree.js";
 
 const roots: string[] = [];
 const modulePath = path.resolve(
   import.meta.dirname,
-  "../src/remove-directory-tree.ts",
+  "../src/remove-directory-tree-core.ts",
 );
 
 afterEach(async () => {
@@ -42,7 +43,28 @@ function mountNamespacesAvailable(): boolean {
   }
 }
 
-const runRemoval = `
+const resolveTypeScriptSiblings = `
+const { registerHooks } = await import("node:module");
+registerHooks({
+  resolve(specifier, context, next) {
+    try {
+      return next(specifier, context);
+    } catch (error) {
+      if (error?.code !== "ERR_MODULE_NOT_FOUND" || !specifier.startsWith(".") || !specifier.endsWith(".js")) throw error;
+      return next(specifier.slice(0, -3) + ".ts", context);
+    }
+  },
+});
+`;
+
+const installSyncBackend = `
+const sources = (await import("node:path")).dirname(process.argv[1]);
+const { installRemoveTreeIo } = await import(sources + "/remove-tree-io.ts");
+const { syncRemoveTreeIo } = await import(sources + "/remove-tree-sync-io.ts");
+installRemoveTreeIo(syncRemoveTreeIo);
+`;
+
+const runRemoval = `${resolveTypeScriptSiblings}${installSyncBackend}
 const { removeDirectoryTree } = await import(process.argv[1]);
 const result = await removeDirectoryTree(process.argv[2], {
   startedAt: Number.MAX_SAFE_INTEGER,
@@ -700,7 +722,7 @@ async function inMountNamespace(
   });
 }
 
-const inspectMountedTree = `
+const inspectMountedTree = `${resolveTypeScriptSiblings}
 const fs = await import("node:fs/promises");
 const path = await import("node:path");
 const { inspectTreeBeforeMove } = await import(process.argv[1]);
@@ -713,7 +735,7 @@ const inspection = await inspectTreeBeforeMove(root, Number.MAX_SAFE_INTEGER, {
 process.stdout.write(JSON.stringify(inspection));
 `;
 
-const inspectMoveAndRemove = `
+const inspectMoveAndRemove = `${resolveTypeScriptSiblings}
 const fs = await import("node:fs/promises");
 const { inspectTreeBeforeMove, removeDirectoryTree, treeFingerprint } = await import(process.argv[1]);
 const [root, trashEntry] = process.argv.slice(2);
@@ -722,6 +744,7 @@ const inspection = await inspectTreeBeforeMove(root, Number.MAX_SAFE_INTEGER, {
   rootMetadata: { ctimeMs: info.ctimeMs, mtimeMs: info.mtimeMs },
 });
 await fs.rename(root, trashEntry);
+${installSyncBackend}
 const moved = await treeFingerprint(trashEntry);
 const removal = await removeDirectoryTree(trashEntry, {
   startedAt: Number.MAX_SAFE_INTEGER,
@@ -749,6 +772,7 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
         changed: false,
         mountedPaths: [mounted],
         fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+        stoppedAt: null,
       });
     },
   );
@@ -773,6 +797,7 @@ describe.runIf(linux)("inspecting a tree before a move to the trash", () => {
         changed: false,
         mountedPaths: [],
         fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/u),
+        stoppedAt: null,
       });
       expect(moved).toBe(inspection.fingerprint);
       expect(removal.status).toBe("retained");
@@ -1152,7 +1177,7 @@ describe.runIf(linux)("reopening the held .git marker", () => {
     const marker = path.join(root, ".git");
     await fs.writeFile(marker, "gitdir: /nowhere\n");
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
-    let reopened: FileHandle | undefined;
+    let reopened: RemoveTreeFileHandle | undefined;
     const result = await removeDirectoryTree(root, {
       startedAt: Number.MAX_SAFE_INTEGER,
       afterMarkerReopen: async (handle) => {

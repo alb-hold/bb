@@ -30,6 +30,23 @@ vi.mock(
           ...hooks,
           ...(injected.hooks?.() ?? {}),
         }),
+      removeDirectoryTreeInChild: async (
+        root: string,
+        options: Parameters<typeof actual.removeDirectoryTreeInChild>[1],
+      ) => ({
+        result: await actual.removeDirectoryTree(root, {
+          ...actual.decodeChildRemovalOptions(
+            actual.encodeChildRemovalOptions(options),
+          ),
+          ...(injected.hooks?.() ?? {}),
+        }),
+        pid: process.pid,
+        ops: 0,
+        voluntaryContextSwitches: 0,
+        stop: null,
+        exit: { code: 0, signal: null },
+        exited: Promise.resolve(),
+      }),
     };
   },
 );

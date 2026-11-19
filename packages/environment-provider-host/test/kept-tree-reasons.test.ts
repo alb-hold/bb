@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   keptForChangedData,
   keptTreeReasons,
+  NOT_RESPONDING_REASON,
   PARTIALLY_REMOVED_REASON,
   type RemoveDirectoryTreeResult,
   UNANCHORED_DIRECTORY_REASON,
@@ -17,6 +18,8 @@ function kept(
     retainedPaths: [],
     mountedPaths: [],
     unanchoredPaths: [],
+    notRespondingPaths: [],
+    stoppedPaths: [],
     removalStarted: false,
     ...fields,
   };
@@ -89,6 +92,43 @@ describe("the reasons given for a kept tree", () => {
         retainedPaths: ["/work/tree/b", "/work/tree/bb"],
       }),
       reasons: [`${UNANCHORED_DIRECTORY_REASON}: /work/tree/b`, changed],
+    },
+    {
+      name: "a filesystem that stopped answering names the directory being listed",
+      result: kept({
+        notRespondingPaths: ["/work/tree/sub"],
+        retainedPaths: ["/work/tree/sub", "/work/tree"],
+        removalStarted: true,
+      }),
+      reasons: [
+        `${NOT_RESPONDING_REASON} /work/tree/sub`,
+        PARTIALLY_REMOVED_REASON,
+      ],
+    },
+    {
+      name: "a sibling kept beside a filesystem that stopped answering still names the changed data",
+      result: kept({
+        notRespondingPaths: ["/work/tree/sub"],
+        retainedPaths: ["/work/tree/late.txt", "/work/tree"],
+        removalStarted: true,
+      }),
+      reasons: [
+        `${NOT_RESPONDING_REASON} /work/tree/sub`,
+        changed,
+        PARTIALLY_REMOVED_REASON,
+      ],
+    },
+    {
+      name: "a stopped removal names where it stopped",
+      result: kept({
+        stoppedPaths: ["/work/tree/b"],
+        retainedPaths: ["/work/tree"],
+        removalStarted: true,
+      }),
+      reasons: [
+        "the removal was stopped (it stopped at /work/tree/b)",
+        PARTIALLY_REMOVED_REASON,
+      ],
     },
   ];
 

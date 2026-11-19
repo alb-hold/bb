@@ -2,21 +2,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const fs = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...fs,
-    lstat: async (
-      target: Parameters<typeof fs.lstat>[0],
-      options?: Parameters<typeof fs.lstat>[1],
-    ) => {
-      const info = await fs.lstat(target, options);
-      if (options?.bigint === true) return info;
-      Object.defineProperty(info, "ctimeMs", { value: 1 });
-      Object.defineProperty(info, "mtimeMs", { value: 1 });
-      return info;
-    },
-  };
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const lstatSync = ((
+    target: Parameters<typeof fs.lstatSync>[0],
+    options?: Parameters<typeof fs.lstatSync>[1],
+  ) => {
+    const info = fs.lstatSync(target, options);
+    if (info === undefined || options?.bigint === true) return info;
+    Object.defineProperty(info, "ctimeMs", { value: 1 });
+    Object.defineProperty(info, "mtimeMs", { value: 1 });
+    return info;
+  }) as typeof fs.lstatSync;
+  return { ...fs, default: { ...fs, lstatSync }, lstatSync };
 });
 
 import { removeDirectoryTree } from "../src/remove-directory-tree.js";

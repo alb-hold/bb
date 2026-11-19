@@ -8,6 +8,7 @@ import {
   FILE_TIMESTAMP_LAG_MS,
   type RemoveDirectoryTreeHooks,
 } from "bb-environment-provider-host/remove-directory-tree";
+import { removalDeadlineReason } from "bb-environment-provider-host/remove-timeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { descendantsOnly } from "./descendants-only.js";
 import { hostProc, useProcReaderForTests } from "./holders.js";
@@ -34,6 +35,26 @@ vi.mock(
           ...hooks,
           ...(injected.hooks?.() ?? {}),
         }),
+      removeDirectoryTreeInChild: async (
+        root: string,
+        options: Parameters<typeof actual.removeDirectoryTreeInChild>[1],
+      ) => {
+        if (injected.hooks === null)
+          return actual.removeDirectoryTreeInChild(root, options);
+        return {
+          result: await actual.removeDirectoryTree(root, {
+            ...actual.decodeChildRemovalOptions(
+              actual.encodeChildRemovalOptions(options),
+            ),
+            ...injected.hooks(),
+          }),
+          pid: process.pid,
+          ops: 0,
+          voluntaryContextSwitches: 0,
+          stop: null,
+          exit: { code: 0, signal: null },
+        };
+      },
     };
   },
 );
@@ -55,7 +76,9 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   await execFile("git", args, { cwd });
 }
 
-async function worktree(): Promise<{ path: string; root: string }> {
+async function worktree(
+  extraDirectories = 0,
+): Promise<{ path: string; root: string }> {
   const base = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "bb-kept-reasons-")),
   );
@@ -84,6 +107,15 @@ async function worktree(): Promise<{ path: string; root: string }> {
     await fs.writeFile(
       path.join(workspace, "node_modules", name, "out.txt"),
       name,
+    );
+  }
+  for (let directory = 0; directory < extraDirectories; directory += 1) {
+    const directoryPath = path.join(workspace, "node_modules", `d${directory}`);
+    await fs.mkdir(directoryPath);
+    await Promise.all(
+      Array.from({ length: 100 }, (_, file) =>
+        fs.writeFile(path.join(directoryPath, `f${file}`), `${file}\n`),
+      ),
     );
   }
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
@@ -162,6 +194,57 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")(
       );
       expect(message).toContain("partially removed");
       expect(message).not.toContain("new or changed");
+    });
+
+    it("removes the worktree tree in a separate process", async () => {
+      const target = await worktree();
+      const pids = new Set<number>();
+
+      await removeWorktree({
+        path: target.path,
+        rootPath: target.root,
+        trashRoot: path.join(target.root, "..", ".trash"),
+        testHooks: {
+          platform: "linux",
+          onRemovalHeartbeat: (heartbeat) => pids.add(heartbeat.pid),
+        },
+      });
+
+      await expect(fs.lstat(target.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(pids.size).toBeGreaterThan(0);
+      expect(pids.has(process.pid)).toBe(false);
+    });
+
+    it("names the deadline and the entry it stopped at when the deadline passes during the walk", async () => {
+      const target = await worktree(40);
+      const deadline = new AbortController();
+
+      const error = await removeWorktree({
+        path: target.path,
+        rootPath: target.root,
+        trashRoot: path.join(target.root, "..", ".trash"),
+        deadline: { signal: deadline.signal, ms: 120_000 },
+        testHooks: {
+          platform: "linux",
+          onRemovalHeartbeat: () => deadline.abort(),
+        },
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(removalDeadlineReason(120_000)).toBe(
+        "the removal did not finish within 2 minutes",
+      );
+      expect(message).toContain(
+        `${removalDeadlineReason(120_000)} (it stopped at `,
+      );
+      expect(message).not.toContain("cancelled");
+      await expect(fs.lstat(target.path)).resolves.toBeTruthy();
     });
   },
 );

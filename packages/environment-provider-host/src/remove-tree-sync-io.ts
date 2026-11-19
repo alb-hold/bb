@@ -1,0 +1,46 @@
+import {
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  statfsSync,
+  symlinkSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import type { RemoveTreeIo } from "./remove-tree-io.js";
+
+export const syncRemoveTreeIo: RemoveTreeIo = {
+  open: async (target, flags, mode) => openSync(target, flags, mode),
+  fstat: async (fd) => fstatSync(fd),
+  fstatBigint: async (fd) => fstatSync(fd, { bigint: true }),
+  fchmod: async (fd, mode) => fchmodSync(fd, mode),
+  read: async (fd, buffer, offset, length, position) =>
+    readSync(fd, buffer, offset, length, position),
+  write: async (fd, buffer, offset, length, position) =>
+    writeSync(fd, buffer, offset, length, position),
+  close: async (fd) => closeSync(fd),
+  lstat: async (target) => lstatSync(target),
+  lstatBigint: async (target) => lstatSync(target, { bigint: true }),
+  stat: async (target) => statSync(target),
+  statfs: async (target) => statfsSync(target),
+  readFile: async (target) => readFileSync(target, "utf8"),
+  readdir: async (target) => readdirSync(target),
+  readlink: async (target) => readlinkSync(target),
+  realpath: async (target) => realpathSync.native(target),
+  link: async (existing, created) => linkSync(existing, created),
+  symlink: async (target, created) => symlinkSync(target, created),
+  rename: async (source, destination) => renameSync(source, destination),
+  unlink: async (target) => unlinkSync(target),
+  rmdir: async (target) => rmdirSync(target),
+};

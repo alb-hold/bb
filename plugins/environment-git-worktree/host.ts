@@ -1,6 +1,10 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
+import {
+  REMOVE_DEADLINE_MS,
+  removalDeadlineReason,
+} from "bb-environment-provider-host/remove-timeout";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
 import {
   readDefaultBranchRefs,
@@ -33,6 +37,12 @@ import {
 } from "./host/worktree-preservation.js";
 
 export { setTestWorktreeHolderScan } from "./host/worktree-preservation.js";
+
+let testRemoveDeadlineMs: number | undefined;
+
+export function setTestRemoveDeadline(milliseconds: number | undefined): void {
+  testRemoveDeadlineMs = milliseconds;
+}
 
 function completionPathForWorktree(worktreePath: string): string {
   return `${worktreePath}.completed`;
@@ -231,12 +241,29 @@ export function createWorktreeHostEntry() {
             dataDir,
             pathKey: input.pathKey,
           });
+          const deadlineMs = testRemoveDeadlineMs ?? REMOVE_DEADLINE_MS;
+          const deadline = {
+            signal: AbortSignal.timeout(deadlineMs),
+            ms: deadlineMs,
+          };
           const targets = await removalTargets(dataDir, input);
-          const refusals = await findProtectedTargets(
-            targets,
-            attemptRoot,
-            context.signal,
-          );
+          let refusals: string[];
+          try {
+            refusals = await findProtectedTargets(
+              targets,
+              attemptRoot,
+              AbortSignal.any([context.signal, deadline.signal]),
+            );
+          } catch (error) {
+            if (context.signal.aborted || !deadline.signal.aborted) throw error;
+            refusals = [];
+          }
+          if (deadline.signal.aborted && !context.signal.aborted) {
+            return {
+              status: "retained",
+              message: `${removalDeadlineReason(deadlineMs)} (it stopped while checking the worktrees before removal)`,
+            } as const;
+          }
           if (refusals.length > 0) {
             return {
               status: "retained",
@@ -263,6 +290,7 @@ export function createWorktreeHostEntry() {
                 completionPath: completionPathForWorktree(target),
                 onProgress,
                 signal: context.signal,
+                deadline,
               });
               outcome.removed.push(target);
             } catch (error) {
