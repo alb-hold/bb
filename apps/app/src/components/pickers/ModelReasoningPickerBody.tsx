@@ -205,7 +205,7 @@ export function ModelReasoningPickerBody({
             (provider) => provider.id === previewProviderId,
           )
         : undefined,
-    [isPreviewing, previewProviderId, previewQuery.data?.providers],
+    [isPreviewing, previewProviderId, previewQuery.data],
   );
   const previewCatalogIsVerified =
     isPreviewing &&

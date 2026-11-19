@@ -142,7 +142,6 @@ it.each([
           renderItem={(index, state) => (
             <div
               key={itemKeys[index]}
-              ref={state.itemRef}
               data-timeline-row-id={itemKeys[index]}
               data-timeline-window-key={itemKeys[index]}
             />

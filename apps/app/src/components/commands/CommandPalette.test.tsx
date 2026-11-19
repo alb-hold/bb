@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 
 import { MemoryRouter } from "react-router-dom";
+import { useEffect } from "react";
 
 import { createStore, Provider } from "jotai";
 
@@ -476,8 +477,16 @@ function renderPalette({
 
 function ThreadSearchMoreLauncher() {
   const runner = useAppCommandRunner();
-  navigationMocks.activate = (_itemId, options) =>
-    runner.dispatch("thread.search", options.experimental_focusTarget ?? null);
+  useEffect(() => {
+    navigationMocks.activate = (_itemId, options) =>
+      runner.dispatch(
+        "thread.search",
+        options.experimental_focusTarget ?? null,
+      );
+    return () => {
+      navigationMocks.activate = null;
+    };
+  }, [runner]);
   return (
     <SidebarNavigationMoreMenu
       trigger={<button type="button">More</button>}
@@ -504,7 +513,7 @@ function ThreadSearchMoreLauncher() {
 }
 
 
-function openPalette(): KeyboardEvent {
+async function openPalette(): Promise<KeyboardEvent> {
   const event = new KeyboardEvent("keydown", {
     key: "p",
     ctrlKey: true,
@@ -520,7 +529,7 @@ function openPalette(): KeyboardEvent {
 }
 
 
-function openThreadSearch(): KeyboardEvent {
+async function openThreadSearch(): Promise<KeyboardEvent> {
   const event = new KeyboardEvent("keydown", {
     key: "k",
     ctrlKey: true,
@@ -586,8 +595,8 @@ describe("CommandPalette", () => {
     async (mode) => {
       vi.mocked(prefetchThreadViewOnIntent).mockClear();
       renderPalette();
-      if (mode === "palette") openPalette();
-      else openThreadSearch();
+      if (mode === "palette") await openPalette();
+      else await openThreadSearch();
       await waitFor(() =>
         expect(prefetchThreadViewOnIntent).toHaveBeenCalledOnce(),
       );
@@ -659,7 +668,7 @@ describe("CommandPalette", () => {
     });
     terminal.focus();
 
-    openThreadSearch();
+    await openThreadSearch();
     await screen.findByRole("combobox", { name: "Search threads" });
     await waitFor(() =>
       expect(document.activeElement).toBe(
@@ -1151,7 +1160,7 @@ describe("CommandPalette", () => {
 
   it("returns to root commands when Escape exits thread search entered from root", async () => {
     renderPalette();
-    openPalette();
+    await openPalette();
     await waitFor(() => expect(searchField()).toBeTruthy());
     const searchThreads = within(bucketGroup("Threads"))
       .getAllByRole("option")

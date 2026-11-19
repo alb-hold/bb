@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export function PendingComposerSubmission({
   children,
@@ -23,25 +23,18 @@ export function PendingComposerSubmission({
   disabledReason?: string;
   onSubmit: () => void | Promise<void>;
 }) {
-  const queued = useRef<{ text: string; resetKey?: string | number } | null>(
-    null,
-  );
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<{
+    attempt: number;
+    text: string;
+    resetKey?: string | number;
+  } | null>(null);
   const cancel = () => {
-    queued.current = null;
-    setPending(false);
+    setPending(null);
   };
   useEffect(() => {
-    const intent = queued.current;
-    if (!intent) return;
-    if (intent.text !== text || intent.resetKey !== resetKey || failed) {
-      queued.current = null;
-      setPending(false);
-      return;
-    }
+    if (pending === null) return;
+    if (pending.text !== text || pending.resetKey !== resetKey || failed) return;
     if (loading || disabled || isSubmitting || pendingUploads) return;
-    queued.current = null;
-    setPending(false);
     void Promise.resolve(onSubmit()).catch(() => {});
   }, [
     text,
@@ -63,15 +56,22 @@ export function PendingComposerSubmission({
     >
       {children(() => {
         if (!loading || failed || isSubmitting || !text.trim()) return;
-        queued.current ??= { text, resetKey };
-        setPending(true);
+        setPending((current) => ({
+          attempt: (current?.attempt ?? 0) + 1,
+          text,
+          resetKey,
+        }));
       })}
-      {pending && (
-        <p role="status" className="px-3.5 pt-1 text-xs text-muted-foreground">
-          {disabledReason ?? "Loading model and options."} Your message will
-          send when ready. Edit it or press Escape to cancel.
-        </p>
-      )}
+      {pending !== null &&
+        pending.text === text &&
+        pending.resetKey === resetKey &&
+        loading &&
+        !failed && (
+          <p role="status" className="px-3.5 pt-1 text-xs text-muted-foreground">
+            {disabledReason ?? "Loading model and options."} Your message will
+            send when ready. Edit it or press Escape to cancel.
+          </p>
+        )}
     </div>
   );
 }

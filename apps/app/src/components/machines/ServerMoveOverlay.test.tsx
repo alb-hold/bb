@@ -164,7 +164,7 @@ function LocationDisplay() {
 }
 
 
-function renderOverlay(path = "/") {
+async function renderOverlay(path = "/") {
   const navigateTo = vi.fn();
   const { queryClient, wrapper } = createQueryClientTestHarness();
   render(

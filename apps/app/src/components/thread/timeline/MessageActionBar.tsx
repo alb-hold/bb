@@ -315,6 +315,7 @@ export function formatShortMessageTime(timestamp: number, now: Date): string {
 }
 
 function MessageTimestampFooter({ timestamp }: { timestamp: number }) {
+  const [now] = useState(() => new Date());
   const date = new Date(timestamp);
   const time = date.toLocaleTimeString(undefined, {
     hour: "numeric",
@@ -330,7 +331,7 @@ function MessageTimestampFooter({ timestamp }: { timestamp: number }) {
       data-message-metadata=""
     >
       <time dateTime={date.toISOString()} title={fullDate}>
-        {formatMessageDay(date, new Date())}, {time}
+        {formatMessageDay(date, now)}, {time}
       </time>
     </div>
   );

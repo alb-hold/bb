@@ -1,5 +1,4 @@
 import {
-  useEffect,
   useState,
   type ComponentProps,
   type ReactNode,
@@ -85,9 +84,7 @@ export function RootComposeSecondaryContent({
   secondaryPanel,
 }: RootComposeSecondaryContentProps) {
   const [panelRealized, setPanelRealized] = useState(isSecondaryPanelOpen);
-  useEffect(() => {
-    if (isSecondaryPanelOpen) setPanelRealized(true);
-  }, [isSecondaryPanelOpen]);
+  if (isSecondaryPanelOpen && !panelRealized) setPanelRealized(true);
   const paneContext = useOptionalPaneContext();
   const secondaryPanelHost = paneContext?.secondaryPanelHost ?? null;
   const composerHost = usePluginComposerHost();

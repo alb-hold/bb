@@ -394,7 +394,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     setLayout((previous) =>
       reconcileLayoutForContent(previous, reconciliation.content),
     );
-  }, [currentContent, setLayout]);
+  }, [currentContent, reconciliation, setLayout]);
 
   useTerminalMountGate(
     "terminal-split-layout",

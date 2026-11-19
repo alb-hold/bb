@@ -164,49 +164,54 @@ export function WaveformVisualizer({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let color = "currentColor";
-    let cssWidth = 0;
-    let cssHeight = 0;
-    let barCount = 1;
-    let midY = 0;
-    let maxHalf = 0;
-    let edgeFade = 0;
+    const layout = {
+      color: "currentColor",
+      cssWidth: 0,
+      cssHeight: 0,
+      barCount: 1,
+      midY: 0,
+      maxHalf: 0,
+      edgeFade: 0,
+    };
 
     const measure = () => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      cssWidth = rect.width;
-      cssHeight = rect.height;
-      canvas.width = Math.max(1, Math.round(cssWidth * dpr));
-      canvas.height = Math.max(1, Math.round(cssHeight * dpr));
+      layout.cssWidth = rect.width;
+      layout.cssHeight = rect.height;
+      canvas.width = Math.max(1, Math.round(layout.cssWidth * dpr));
+      canvas.height = Math.max(1, Math.round(layout.cssHeight * dpr));
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      color = getComputedStyle(canvas).color || color;
-      ctx.strokeStyle = color;
+      layout.color = getComputedStyle(canvas).color || layout.color;
+      ctx.strokeStyle = layout.color;
       ctx.lineCap = "round";
       ctx.lineWidth = BAR_WIDTH;
-      midY = cssHeight / 2;
-      maxHalf = Math.max(0, (cssHeight * 0.95 - BAR_WIDTH) / 2);
-      edgeFade = cssWidth * 0.15;
-      barCount = Math.max(1, Math.floor(cssWidth / BAR_PITCH));
-      if (barsRef.current.length > barCount) {
+      layout.midY = layout.cssHeight / 2;
+      layout.maxHalf = Math.max(0, (layout.cssHeight * 0.95 - BAR_WIDTH) / 2);
+      layout.edgeFade = layout.cssWidth * 0.15;
+      layout.barCount = Math.max(1, Math.floor(layout.cssWidth / BAR_PITCH));
+      if (barsRef.current.length > layout.barCount) {
         barsRef.current = barsRef.current.slice(
-          barsRef.current.length - barCount,
+          barsRef.current.length - layout.barCount,
         );
       }
     };
 
     const draw = () => {
-      ctx.clearRect(0, 0, cssWidth, cssHeight);
+      ctx.clearRect(0, 0, layout.cssWidth, layout.cssHeight);
       const bars = barsRef.current;
       for (let i = 0; i < bars.length; i++) {
         const amp = bars[bars.length - 1 - i];
-        const cx = cssWidth - BAR_WIDTH / 2 - i * BAR_PITCH;
+        const cx = layout.cssWidth - BAR_WIDTH / 2 - i * BAR_PITCH;
         if (cx + BAR_WIDTH < 0) break;
-        const half = amp * maxHalf;
-        ctx.globalAlpha = cx < edgeFade ? Math.max(0.15, cx / edgeFade) : 1;
+        const half = amp * layout.maxHalf;
+        ctx.globalAlpha =
+          cx < layout.edgeFade
+            ? Math.max(0.15, cx / layout.edgeFade)
+            : 1;
         ctx.beginPath();
-        ctx.moveTo(cx, midY - half);
-        ctx.lineTo(cx, midY + half);
+        ctx.moveTo(cx, layout.midY - half);
+        ctx.lineTo(cx, layout.midY + half);
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
@@ -236,7 +241,7 @@ export function WaveformVisualizer({
     if (!canAnimate || audioTrack === null) {
       if (barsRef.current.length === 0) {
         barsRef.current = Array.from(
-          { length: barCount },
+          { length: layout.barCount },
           () => IDLE_AMPLITUDE,
         );
       }
@@ -256,13 +261,12 @@ export function WaveformVisualizer({
     source.connect(analyser);
 
     const timeData = new Uint8Array(analyser.fftSize);
-    let frame = 0;
-    let rafId = 0;
+    const animationState = { frame: 0, rafId: 0 };
 
     const tick = () => {
       if (audioCtx.state === "suspended")
         void audioCtx.resume().catch(() => {});
-      if (frame % SAMPLE_EVERY_N_FRAMES === 0) {
+      if (animationState.frame % SAMPLE_EVERY_N_FRAMES === 0) {
         analyser.getByteTimeDomainData(timeData);
         let sumSquares = 0;
         for (let i = 0; i < timeData.length; i++) {
@@ -274,18 +278,18 @@ export function WaveformVisualizer({
         const amp = Math.min(1, boosted ** AMPLITUDE_GAMMA);
         const bars = barsRef.current;
         bars.push(amp);
-        if (bars.length > barCount) bars.shift();
+        if (bars.length > layout.barCount) bars.shift();
         draw();
       }
-      frame++;
-      rafId = requestAnimationFrame(tick);
+      animationState.frame++;
+      animationState.rafId = requestAnimationFrame(tick);
     };
 
     const unobserve = observeResize(redrawOnResize);
-    rafId = requestAnimationFrame(tick);
+    animationState.rafId = requestAnimationFrame(tick);
 
     return () => {
-      cancelAnimationFrame(rafId);
+      cancelAnimationFrame(animationState.rafId);
       unobserve?.();
       source.disconnect();
       analyser.disconnect();

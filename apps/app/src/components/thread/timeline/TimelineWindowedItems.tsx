@@ -2,6 +2,7 @@ import {
   cloneElement,
   isValidElement,
   type CSSProperties,
+  type RefCallback,
   createContext,
   useCallback,
   useContext,
@@ -30,6 +31,16 @@ const EDGE_MARGIN_ITEMS = 2;
 const TOP_MOUNT_VIEWPORTS = 2;
 const MAX_INTERACTION_PINS = 24;
 const MAX_WINDOW_UPDATES_PER_FRAME = 8;
+
+function TimelineItemWithMeasurementRef({
+  item,
+  itemRef,
+}: {
+  item: ReactNode;
+  itemRef: RefCallback<HTMLDivElement>;
+}) {
+  return isValidElement(item) ? cloneElement(item, { ref: itemRef }) : item;
+}
 
 export function recordTimelineMeasurement(
   measurements: Map<string, number>,
@@ -67,7 +78,6 @@ export const TimelineWindowingMeasurementsContext = createContext<Map<
 > | null>(null);
 
 export interface TimelineWindowedItemRenderState {
-  itemRef: (node: HTMLDivElement | null) => (() => void) | undefined;
   windowingEnabled: boolean;
 }
 
@@ -736,7 +746,10 @@ export function TimelineWindowedItems({
         />,
       );
     }
-    const item = renderItem(index, { itemRef, windowingEnabled });
+    const renderedItem = renderItem(index, { windowingEnabled });
+    const item = (
+      <TimelineItemWithMeasurementRef item={renderedItem} itemRef={itemRef} />
+    );
     const overscanWidth = windowingEnabled
       ? overscanWidths.get(itemKeys[index] ?? "")
       : undefined;

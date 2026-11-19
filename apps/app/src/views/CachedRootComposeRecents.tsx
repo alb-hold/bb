@@ -1,4 +1,5 @@
 import { useAtomValue } from "jotai";
+import { useState } from "react";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import { getSidebarThreadRowPaddingLeft } from "@bb/shared-ui/sidebar-row-classes";
 import { resolveThreadListIndicator } from "@bb/client-core";
@@ -46,7 +47,7 @@ export function CachedRootComposeRecents({
     .filter(
       (thread) => thread.archivedAt === null && thread.deletedAt === null,
     );
-  const now = Date.now();
+  const [now] = useState(Date.now);
   const draftThreadIds = usePromptDraftInputThreadIds(threads);
   const rows = getMobileRecentThreads({
     threads,

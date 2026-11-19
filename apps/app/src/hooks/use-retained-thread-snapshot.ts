@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useState } from "react";
 
 interface UseRetainedThreadSnapshotArgs<TSnapshot> {
   snapshot: TSnapshot | undefined;
@@ -9,16 +9,19 @@ export function useRetainedThreadSnapshot<TSnapshot>({
   snapshot,
   threadId,
 }: UseRetainedThreadSnapshotArgs<TSnapshot>): TSnapshot | undefined {
-  const retainedSnapshotRef = useRef<{
+  const [retainedSnapshot, setRetainedSnapshot] = useState<{
     snapshot: TSnapshot | undefined;
     threadId: string;
   }>({ snapshot, threadId });
 
-  if (retainedSnapshotRef.current.threadId !== threadId) {
-    retainedSnapshotRef.current = { snapshot, threadId };
-  } else if (snapshot !== undefined) {
-    retainedSnapshotRef.current.snapshot = snapshot;
+  if (retainedSnapshot.threadId !== threadId) {
+    setRetainedSnapshot({ snapshot, threadId });
+  } else if (
+    snapshot !== undefined &&
+    snapshot !== retainedSnapshot.snapshot
+  ) {
+    setRetainedSnapshot({ snapshot, threadId });
   }
 
-  return snapshot ?? retainedSnapshotRef.current.snapshot;
+  return snapshot ?? retainedSnapshot.snapshot;
 }

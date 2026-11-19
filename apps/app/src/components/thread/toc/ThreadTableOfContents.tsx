@@ -686,11 +686,12 @@ export function ThreadTableOfContents({
         updateActiveItems();
       }, TOC_ACTIVE_UPDATE_IDLE_MS);
     };
-    let scrollTimeout: number | null = null;
+    const scrollTimeout: { current: number | null } = { current: null };
     const onScroll = () => {
       setScrolling(true);
-      if (scrollTimeout !== null) window.clearTimeout(scrollTimeout);
-      scrollTimeout = window.setTimeout(
+      if (scrollTimeout.current !== null)
+        window.clearTimeout(scrollTimeout.current);
+      scrollTimeout.current = window.setTimeout(
         () => setScrolling(false),
         TOC_ACTIVE_UPDATE_IDLE_MS,
       );
@@ -710,7 +711,8 @@ export function ThreadTableOfContents({
 
     return () => {
       scrollElement.removeEventListener("scroll", onScroll);
-      if (scrollTimeout !== null) window.clearTimeout(scrollTimeout);
+      if (scrollTimeout.current !== null)
+        window.clearTimeout(scrollTimeout.current);
       resizeObserver?.disconnect();
       if (updateTimeout !== null) {
         window.clearTimeout(updateTimeout);

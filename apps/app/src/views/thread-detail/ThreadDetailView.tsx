@@ -1333,6 +1333,7 @@ function ThreadDetailViewInternal(
       renderSecondaryPanelAsDrawer,
       resolvedThreadEnvironmentHost,
       secondaryPanelDrawerVisibility,
+      setSplitTabToRightRequest,
     ],
   );
   useEffect(() => {

@@ -159,7 +159,7 @@ function render(element: ReactNode) {
 const mocks = vi.hoisted(() => ({
   realPromptBox: false,
   promptBoxShellRenders: 0,
-  rootCompositionRenders: 0,
+  rootCompositionRenders: vi.fn(),
   unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
@@ -3786,6 +3786,7 @@ describe("NewThreadComposer environment providers", () => {
 
 describe("NewThreadComposer setSelection", () => {
   beforeEach(() => {
+    mocks.rootCompositionRenders.mockClear();
     resetFixedPanelTabsStateForTest();
     mocks.promptBoxProps.length = 0;
     mocks.promptHistoryQueryOptions.length = 0;
@@ -3840,7 +3841,7 @@ describe("NewThreadComposer setSelection", () => {
         onSubmit={() => undefined}
       >
         {(composer) => {
-          mocks.rootCompositionRenders += 1;
+          mocks.rootCompositionRenders();
           return composer.renderPromptBox({ mentionMenuPlacement: "bottom" });
         }}
       </NewThreadComposer>
@@ -3874,14 +3875,14 @@ describe("NewThreadComposer setSelection", () => {
         "Enter a prompt or attach a file.",
       ),
     );
-    const renders = mocks.rootCompositionRenders;
+    const renders = mocks.rootCompositionRenders.mock.calls.length;
     act(() => latestPromptBoxProps().onChange("a", []));
     expect(latestPromptBoxProps().value).toBe("a");
     expect(latestPromptBoxProps().disabled).toBe(false);
-    expect(mocks.rootCompositionRenders).toBe(renders);
+    expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
     act(() => latestPromptBoxProps().onChange("", []));
     expect(latestPromptBoxProps().disabled).toBe(true);
-    expect(mocks.rootCompositionRenders).toBe(renders);
+    expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
   });
 
 

@@ -51,6 +51,22 @@ type Handoff = NonNullable<
   ExperimentalComposerInput["experimental_startupHandoff"]
 >;
 type Accept = Parameters<Handoff["attach"]>[0];
+
+function ProgressiveComposerRender({
+  children,
+  handoff,
+  rich,
+  layout,
+  controls,
+}: {
+  children: (handoff: Handoff, rich: boolean, layout: (renderer: ReactNode) => ReactNode, controls: ReactNode) => ReactNode;
+  handoff: Handoff;
+  rich: boolean;
+  layout: (renderer: ReactNode) => ReactNode;
+  controls: ReactNode;
+}) {
+  return children(handoff, rich, layout, controls);
+}
 const ACTION_LAYOUT =
   "aspect-square min-w-8 shrink-0 self-center max-md:pointer-coarse:min-w-10";
 const PREPARING_STYLE: CSSProperties = {
@@ -135,11 +151,14 @@ export function ProgressiveComposer({
   const pendingAttachments = useRef(0);
   const frame = useRef<number | null>(null);
   const current = useRef(props);
-  current.current = props;
-  const actions = useRef(composerSubmission(props.submission, props.onSubmit));
-  actions.current = composerSubmission(props.submission, props.onSubmit);
+  const currentActions = composerSubmission(props.submission, props.onSubmit);
+  const actions = useRef(currentActions);
   const draft = useRef({ text: props.value, mentions: props.mentionRanges });
-  draft.current = { text: props.value, mentions: props.mentionRanges };
+  useLayoutEffect(() => {
+    current.current = props;
+    actions.current = currentActions;
+    draft.current = { text: props.value, mentions: props.mentionRanges };
+  }, [currentActions, props]);
   const richRefState = useRef(false);
   const [attaching, setAttaching] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -342,16 +361,19 @@ export function ProgressiveComposer({
     props.voice?.state === "recording" || props.voice?.state === "transcribing";
   const empty = !props.value.trim() && !props.attachments?.items?.length;
   const canSubmit =
-    (!actions.current.enter.requiresInput || !empty) &&
+    (!currentActions.enter.requiresInput || !empty) &&
     !props.submission?.disabled &&
     !props.submission?.isSubmitting &&
     !attaching &&
     !voiceActive;
   const primaryVoice = coarse && empty && props.voice?.isSupported;
-  return children(
-    handoff,
-    rich,
-    (renderer) => (
+  return (
+    <ProgressiveComposerRender
+      children={children}
+      handoff={handoff}
+      rich={rich}
+      controls={controls}
+      layout={(renderer) => (
       <StartupComposerLayout>
         {(api) => (
           <>
@@ -684,8 +706,8 @@ export function ProgressiveComposer({
           </>
         )}
       </StartupComposerLayout>
-    ),
-    controls,
+      )}
+    />
   );
 }
 

@@ -2762,7 +2762,6 @@ function TimelineRowsList({
                 return (
                   <div
                     key={item.id}
-                    ref={windowedState.itemRef}
                     data-scroll-landmark-id={item.id}
                     data-timeline-window-key={`divider:${item.id}`}
                   >
@@ -2774,7 +2773,6 @@ function TimelineRowsList({
                 return (
                   <div
                     key={item.id}
-                    ref={windowedState.itemRef}
                     data-timeline-row-id={item.id}
                     data-timeline-window-key={item.id}
                     className="max-md:[contain-intrinsic-block-size:auto_1.25rem]"

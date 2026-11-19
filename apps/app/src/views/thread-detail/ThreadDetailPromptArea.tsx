@@ -1816,7 +1816,6 @@ export function ThreadDetailPromptArea({
       providerOptions,
       reasoningLevel,
       reasoningOptions,
-      isLoadingReasoning,
       selectedModel,
       selectedProviderId,
       serviceTier,

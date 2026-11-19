@@ -376,6 +376,7 @@ function useComposerRendererHostApi({
   typeahead,
   attachments,
   history,
+  onChange,
   ...input
 }: ComposerBoxProps): {
   api: ExperimentalComposerRendererApi;
@@ -401,9 +402,10 @@ function useComposerRendererHostApi({
   useEffect(() => {
     onComposerLayoutChange?.(layout);
   }, [layout, onComposerLayoutChange]);
-  const handleLayoutChange = (next: ComposerView["layout"]) => {
-    setLayout(next);
-  };
+  const handleLayoutChange = useCallback(
+    (next: ComposerView["layout"]) => setLayout(next),
+    [],
+  );
   const localView = usePluginComposerViewModel({
     scope: host?.scope ?? DEFAULT_COMPOSER_SCOPE,
     layout,

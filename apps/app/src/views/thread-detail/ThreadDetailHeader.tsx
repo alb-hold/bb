@@ -110,6 +110,16 @@ interface ThreadDetailHeaderProps {
   environmentIsWorktree?: boolean;
 }
 
+function ThreadDetailHeaderActionsMenu({
+  actionsMenu,
+  args,
+}: {
+  actionsMenu: NonNullable<ThreadDetailHeaderProps["actionsMenu"]>;
+  args: ThreadDetailHeaderActionsMenuArgs;
+}) {
+  return actionsMenu(args);
+}
+
 export function ThreadDetailHeader({
   actionsMenu,
   environmentId,
@@ -248,7 +258,7 @@ export function ThreadDetailHeader({
         ?.getBoundingClientRect().width ?? 0;
     const available = titleWidth + (searchWidth > 0 ? searchWidth + 4 : 0);
     setSearchFits(available >= 120 + 44 + 4);
-  }, [hasNativeTerminal, measuredPaneWidth, searchInMenu]);
+  }, [hasNativeTerminal, searchInMenu]);
   const searchTerminal = () => {
     const pane =
       headerRef.current.closest("[data-split-pane-id]") ??
@@ -336,26 +346,29 @@ export function ThreadDetailHeader({
             usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
           )}
         >
-          {actionsMenu({
-            includeResponsiveActions: usesResponsiveActionOverflow,
-            terminalSearchActions:
-              hasNativeTerminal && searchInMenu
-                ? [
-                    {
-                      key: "terminal-search",
-                      group: "terminal",
-                      action: {
-                        icon: "Search",
-                        label: "Search terminal output",
-                        run: searchTerminal,
+          <ThreadDetailHeaderActionsMenu
+            actionsMenu={actionsMenu}
+            args={{
+              includeResponsiveActions: usesResponsiveActionOverflow,
+              terminalSearchActions:
+                hasNativeTerminal && searchInMenu
+                  ? [
+                      {
+                        key: "terminal-search",
+                        group: "terminal",
+                        action: {
+                          icon: "Search",
+                          label: "Search terminal output",
+                          run: searchTerminal,
+                        },
                       },
-                    },
-                  ]
-                : [],
-            headerActions,
-            requestRename: startEditingFromMenu,
-            onCloseAutoFocus,
-          })}
+                    ]
+                  : [],
+              headerActions,
+              requestRename: startEditingFromMenu,
+              onCloseAutoFocus,
+            }}
+          />
         </span>
       )}
     </>

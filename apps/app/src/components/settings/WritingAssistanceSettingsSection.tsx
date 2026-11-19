@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   WRITING_VOCABULARY_MAX_TERMS,
   type CorrectionBehavior,
@@ -77,9 +77,15 @@ export function WritingAssistanceSettingsSection() {
   const update = useUpdateWritingAssistanceSettings();
   const editVocabulary = useEditWritingVocabulary();
   const settings = view.data?.settings;
-  const [vocabulary, setVocabulary] = useState("");
   const savedVocabulary = settings?.vocabulary.join("\n") ?? "";
-  useEffect(() => setVocabulary(savedVocabulary), [savedVocabulary]);
+  const [vocabularyState, setVocabularyState] = useState({
+    saved: savedVocabulary,
+    value: savedVocabulary,
+  });
+  if (vocabularyState.saved !== savedVocabulary) {
+    setVocabularyState({ saved: savedVocabulary, value: savedVocabulary });
+  }
+  const vocabulary = vocabularyState.value;
 
   if (settings === undefined) {
     return (
@@ -175,7 +181,12 @@ export function WritingAssistanceSettingsSection() {
             disabled={disabled}
             aria-label="Vocabulary"
             placeholder={"bb\nHermes\nuseSegmentedDictation"}
-            onChange={(event) => setVocabulary(event.target.value)}
+            onChange={(event) =>
+              setVocabularyState((current) => ({
+                ...current,
+                value: event.target.value,
+              }))
+            }
             onBlur={() => {
               const edit = vocabularyEdit(
                 settings.vocabulary,

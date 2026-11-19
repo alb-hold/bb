@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BbHttpError } from "@bb/sdk/browser";
 import {
   requestAudioInputStream,
@@ -81,7 +81,9 @@ function toTranscribeError(error: unknown): unknown {
 export function useSegmentedDictation(options: UseSegmentedDictationOptions) {
   const preferredDeviceId = useAudioInputDevicePreferenceValue();
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  useLayoutEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
   const sessionRef = useRef<DictationSession | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);

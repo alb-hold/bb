@@ -10,6 +10,7 @@ export function usePanelContentLayoutTransition(
   const previousOpen = useRef(open);
   const pending = useRef(false);
   const measure = useRef<(() => void) | null>(null);
+  const previousWidth = useRef(0);
 
   useLayoutEffect(() => {
     const recordInput = () => {
@@ -28,7 +29,7 @@ export function usePanelContentLayoutTransition(
   useLayoutEffect(() => {
     const root = ref.current;
     if (!enabled || root === null) return;
-    let previousWidth = root.getBoundingClientRect().width;
+    previousWidth.current = root.getBoundingClientRect().width;
     const positions = new Map<HTMLElement, number>();
     const animations = new Set<Animation>();
     const readPositions = () => {
@@ -42,7 +43,7 @@ export function usePanelContentLayoutTransition(
     readPositions();
     const update = () => {
       const width = root.getBoundingClientRect().width;
-      if (width === previousWidth) {
+      if (width === previousWidth.current) {
         if (pending.current) readPositions();
         return;
       }
@@ -53,7 +54,7 @@ export function usePanelContentLayoutTransition(
         performance.now() - lastInputAt.current >= 500 &&
         !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       pending.current = false;
-      previousWidth = width;
+      previousWidth.current = width;
       const nextPositions = new Map<HTMLElement, number>();
       for (const element of root.querySelectorAll<HTMLElement>(
         "[data-panel-layout-anchor]",
@@ -102,15 +103,16 @@ export function usePanelContentLayoutTransition(
     if (!enabled) return;
     pending.current = enabled && performance.now() - lastInputAt.current >= 500;
     measure.current?.();
-    let secondFrame: number | null = null;
+    const secondFrame: { current: number | null } = { current: null };
     const frame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
+      secondFrame.current = requestAnimationFrame(() => {
         pending.current = false;
       });
     });
     return () => {
       cancelAnimationFrame(frame);
-      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+      if (secondFrame.current !== null)
+        cancelAnimationFrame(secondFrame.current);
     };
   }, [enabled, open]);
 

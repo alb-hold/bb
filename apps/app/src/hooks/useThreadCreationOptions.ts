@@ -446,26 +446,21 @@ export function useThreadCreationOptions(
     initialReadyProvider.status === "resolved"
       ? (initialReadyProvider.providerId ?? undefined)
       : queriedReadyProviderId;
-  useEffect(() => {
-    if (
-      !shouldResolveReadyProvider ||
-      providerStatesQuery.isPending ||
-      !systemConfigSettled
-    ) {
-      return;
-    }
+  if (
+    shouldResolveReadyProvider &&
+    !providerStatesQuery.isPending &&
+    systemConfigSettled
+  ) {
     const latchedProviderId = queriedReadyProviderId ?? null;
-    setInitialReadyProvider((current) =>
-      current.status === "resolved" && current.providerId === latchedProviderId
-        ? current
-        : { status: "resolved", providerId: latchedProviderId },
-    );
-  }, [
-    providerStatesQuery.isPending,
-    queriedReadyProviderId,
-    shouldResolveReadyProvider,
-    systemConfigSettled,
-  ]);
+    if (
+      initialReadyProvider.status !== "resolved" ||
+      initialReadyProvider.providerId !== latchedProviderId
+    )
+      setInitialReadyProvider({
+        status: "resolved",
+        providerId: latchedProviderId,
+      });
+  }
   const rawSelectedProviderId =
     selectedProviderIdBeforeReadyFallback || readyProviderId || "";
   const executionOptionsProviderId = executionOptionsQueryEnabled

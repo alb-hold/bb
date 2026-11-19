@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useSecondaryPanelActionsTarget } from "@/components/secondary-panel/SecondaryPanelActions";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { browserPlatform } from "@/lib/app-keybindings";
@@ -46,7 +46,8 @@ function readSearchDecorations() {
 
 export function TerminalSearch({
   addon,
-  terminal,
+  terminalRef,
+  hasTerminal,
   touch = false,
   hideTrigger = false,
   terminalId,
@@ -54,7 +55,8 @@ export function TerminalSearch({
   onOpenChange,
 }: {
   addon: TerminalSearchAddonInstance | null;
-  terminal: Terminal | null;
+  terminalRef: RefObject<Terminal | null>;
+  hasTerminal: boolean;
   touch?: boolean;
   hideTrigger?: boolean;
   terminalId?: string;
@@ -85,6 +87,7 @@ export function TerminalSearch({
   }, [setOpen]);
 
   useEffect(() => {
+    const terminal = terminalRef.current;
     if (!terminal) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const activeElement = document.activeElement;
@@ -113,9 +116,10 @@ export function TerminalSearch({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [addon, close, open, setOpen, terminal]);
+  }, [addon, close, hasTerminal, open, setOpen, terminalRef]);
 
   useEffect(() => {
+    const terminal = terminalRef.current;
     if (!open || !addon || !terminal) return;
     const controller = createTerminalSearchController(
       addon,
@@ -130,7 +134,7 @@ export function TerminalSearch({
       controller.close(false);
       if (controllerRef.current === controller) controllerRef.current = null;
     };
-  }, [addon, open, terminal]);
+  }, [addon, hasTerminal, open, terminalRef]);
 
   const toggleOption = (option: "caseSensitive" | "wholeWord" | "regex") => {
     const value = !state[option];
@@ -142,7 +146,7 @@ export function TerminalSearch({
     <button
       type="button"
       aria-label="Search terminal output"
-      disabled={!addon || !terminal}
+      disabled={!addon || !hasTerminal}
       onPointerDown={(event) => event.preventDefault()}
       onClick={() => setOpen(true)}
       className={cn(

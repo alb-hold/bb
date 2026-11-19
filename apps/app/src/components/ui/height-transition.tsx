@@ -268,20 +268,23 @@ export function AutoHeightContainer({
     const inner = innerRef.current;
     if (!wrapper || !inner || typeof ResizeObserver === "undefined") return;
     wrapper.style.height = `${inner.offsetHeight}px`;
-    let lastWidth: number | null = null;
-    let pendingVisibilitySnap = false;
-    let initialSettleComplete = false;
-    let initialSettleTimerId = window.setTimeout(() => {
-      initialSettleComplete = true;
+    const transitionState = {
+      lastWidth: null as number | null,
+      pendingVisibilitySnap: false,
+      initialSettleComplete: false,
+      initialSettleTimerId: 0,
+      release: null,
+      fallbackTimerId: null as number | null,
+    };
+    transitionState.initialSettleTimerId = window.setTimeout(() => {
+      transitionState.initialSettleComplete = true;
     }, AUTO_HEIGHT_INITIAL_SETTLE_MS);
-    let releaseHeightTransition: (() => void) | null = null;
-    let heightTransitionFallbackTimerId: number | null = null;
     const finishHeightTransition = () => {
-      releaseHeightTransition?.();
-      releaseHeightTransition = null;
-      if (heightTransitionFallbackTimerId !== null) {
-        window.clearTimeout(heightTransitionFallbackTimerId);
-        heightTransitionFallbackTimerId = null;
+      transitionState.release?.();
+      transitionState.release = null;
+      if (transitionState.fallbackTimerId !== null) {
+        window.clearTimeout(transitionState.fallbackTimerId);
+        transitionState.fallbackTimerId = null;
       }
     };
     const onTransitionEnd = (event: TransitionEvent) => {
@@ -302,29 +305,31 @@ export function AutoHeightContainer({
     };
     snapToCurrentHeightRef.current = snapToCurrentHeight;
     const deferInitialSettleComplete = () => {
-      if (initialSettleComplete) {
+      if (transitionState.initialSettleComplete) {
         return;
       }
-      window.clearTimeout(initialSettleTimerId);
-      initialSettleTimerId = window.setTimeout(() => {
-        initialSettleComplete = true;
+      window.clearTimeout(transitionState.initialSettleTimerId);
+      transitionState.initialSettleTimerId = window.setTimeout(() => {
+        transitionState.initialSettleComplete = true;
       }, AUTO_HEIGHT_INITIAL_SETTLE_MS);
     };
     const unobserveInner = observeSharedResize(inner, {
       read: (entry) => {
         const width = entry?.contentRect?.width;
         const widthChanged =
-          lastWidth !== null && width !== undefined && width !== lastWidth;
+          transitionState.lastWidth !== null &&
+          width !== undefined &&
+          width !== transitionState.lastWidth;
         const layoutAnimationActive =
           store.get(layoutAnimationInFlightCountAtom) > 0;
         const snap =
           widthChanged ||
-          pendingVisibilitySnap ||
-          !initialSettleComplete ||
+          transitionState.pendingVisibilitySnap ||
+          !transitionState.initialSettleComplete ||
           layoutAnimationActive;
-        pendingVisibilitySnap = false;
+        transitionState.pendingVisibilitySnap = false;
         if (width !== undefined) {
-          lastWidth = width;
+          transitionState.lastWidth = width;
         }
         if (widthChanged || resizeState.usingIntrinsicHeight) {
           return { useIntrinsicHeight: true as const };
@@ -358,15 +363,15 @@ export function AutoHeightContainer({
           Number.isFinite(nextHeight) &&
           nextHeight > currentHeight;
         if (shouldAnimateGrowth) {
-          if (releaseHeightTransition === null) {
-            releaseHeightTransition =
+          if (transitionState.release === null) {
+            transitionState.release =
               positionKeeper?.beginHeightTransition() ?? null;
           }
-          if (releaseHeightTransition !== null) {
-            if (heightTransitionFallbackTimerId !== null) {
-              window.clearTimeout(heightTransitionFallbackTimerId);
+          if (transitionState.release !== null) {
+            if (transitionState.fallbackTimerId !== null) {
+              window.clearTimeout(transitionState.fallbackTimerId);
             }
-            heightTransitionFallbackTimerId = window.setTimeout(
+            transitionState.fallbackTimerId = window.setTimeout(
               finishHeightTransition,
               durationMsRef.current + 50,
             );
@@ -380,7 +385,7 @@ export function AutoHeightContainer({
     });
     const onVisibility = () => {
       if (!isDocumentVisible()) return;
-      pendingVisibilitySnap = true;
+      transitionState.pendingVisibilitySnap = true;
       snapToCurrentHeight();
     };
     const unsubscribeFromDocumentVisibility =
@@ -391,7 +396,7 @@ export function AutoHeightContainer({
       finishHeightTransition();
       unobserveInner();
       unsubscribeFromDocumentVisibility();
-      window.clearTimeout(initialSettleTimerId);
+      window.clearTimeout(transitionState.initialSettleTimerId);
       cancelIntrinsicHeightRestore(resizeState);
       cleanupSnapState(wrapper, snapState);
     };

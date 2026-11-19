@@ -235,7 +235,6 @@ export function NativeTerminalPromptBar({
       sdk.writingAssistance.correct({ ...request, signal }),
   });
   const assistRef = useRef(assist);
-  assistRef.current = assist;
 
   const insertDictation = useCallback(
     (piece: string) => {
@@ -329,7 +328,7 @@ export function NativeTerminalPromptBar({
     });
   };
 
-  const submitNow = () => {
+  const submitNow = useCallback(() => {
     const sentText = textRef.current;
     const sentMessage = sentText.trim();
     const sentAttachments = attachments;
@@ -361,8 +360,10 @@ export function NativeTerminalPromptBar({
         },
       },
     );
-  };
-  submitRef.current = submitNow;
+  }, [attachments, pendingUploads, projectId, send, threadId, applyValue]);
+  useLayoutEffect(() => {
+    submitRef.current = submitNow;
+  }, [submitNow]);
 
   const submit = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
@@ -519,10 +520,7 @@ export function NativeTerminalPromptBar({
       "[data-native-composer]",
     );
     if (!shell) return;
-    let previousWidth = shell.clientWidth;
     const updateWidth = () => {
-      if (shell.clientWidth === previousWidth) return;
-      previousWidth = shell.clientWidth;
       measureInput();
     };
     return observeSharedResize(shell, {

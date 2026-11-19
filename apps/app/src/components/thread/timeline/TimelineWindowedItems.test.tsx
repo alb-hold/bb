@@ -92,7 +92,6 @@ function setup({
         return (
           <div
             key={key}
-            ref={state.itemRef}
             data-timeline-row-id={key}
             data-timeline-window-key={key}
             data-fake-height={heightOf(key)}
@@ -307,7 +306,6 @@ describe("TimelineWindowedItems", () => {
             return (
               <div
                 key={key}
-                ref={state.itemRef}
                 data-timeline-row-id={key}
                 data-timeline-window-key={key}
                 data-fake-height={nested ? undefined : harness.heightOf(key)}
@@ -325,7 +323,6 @@ describe("TimelineWindowedItems", () => {
                       return (
                         <div
                           key={nestedKey}
-                          ref={nestedState.itemRef}
                           data-timeline-row-id={nestedKey}
                           data-timeline-window-key={nestedKey}
                           data-fake-height={50}
@@ -475,7 +472,6 @@ it("uses four pixels between disclosures and eight at message boundaries", () =>
       renderItem={(index, state) => (
         <div
           key={index}
-          ref={state.itemRef}
           data-timeline-window-key={String(index)}
         >
           {index}
@@ -510,7 +506,6 @@ it("reuses layout estimates when a parent renders again with unchanged inputs", 
       renderItem={(index, state) => (
         <div
           key={index}
-          ref={state.itemRef}
           data-timeline-window-key={itemKeys[index]}
         >
           {label}

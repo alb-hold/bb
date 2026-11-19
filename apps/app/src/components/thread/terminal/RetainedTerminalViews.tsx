@@ -53,6 +53,9 @@ interface Entry {
   listeners: Set<() => void>;
   subscribe: (listener: () => void) => () => void;
   getSnapshot: () => Snapshot;
+  invalidateSelf: () => void;
+  updateSession: (session: TerminalSession) => void;
+  markRevealed: () => void;
 }
 
 export function createRetainedTerminalViews() {
@@ -150,6 +153,12 @@ export function createRetainedTerminalViews() {
             };
           },
           getSnapshot: () => created.snapshot,
+          invalidateSelf: () => invalidate((candidate) => candidate === created),
+          updateSession: (session) => {
+            created.snapshot.attachment?.props.onSessionChange?.(session);
+            sessionChanged(created, session);
+          },
+          markRevealed: () => revealed(created),
         };
         entry = created;
         entries = [...entries, entry];
@@ -248,22 +257,11 @@ const RetainedTerminalViewsContext = createContext<{
   projectId: string | undefined;
 } | null>(null);
 
-function RetainedView({
-  entry,
-  registry,
-}: {
-  entry: Entry;
-  registry: Registry;
-}) {
+function RetainedView({ entry }: { entry: Entry }) {
   const snapshot = useSyncExternalStore(entry.subscribe, entry.getSnapshot);
-  const [onRetentionInvalidated] = useState(
-    () => () => registry.invalidate((candidate) => candidate === entry),
-  );
-  const [onSessionChange] = useState(() => (session: TerminalSession) => {
-    entry.snapshot.attachment?.props.onSessionChange?.(session);
-    registry.sessionChanged(entry, session);
-  });
-  const [onSurfaceVisible] = useState(() => () => registry.revealed(entry));
+  const [onRetentionInvalidated] = useState(() => entry.invalidateSelf);
+  const [onSessionChange] = useState(() => entry.updateSession);
+  const [onSurfaceVisible] = useState(() => entry.markRevealed);
   const props = snapshot.attachment?.props ?? {
     ...snapshot.retained,
     autoFocus: false,
@@ -296,15 +294,26 @@ export function RetainedTerminalViewsProvider({
   children: ReactNode;
   projectId?: string;
 }) {
-  const [registry] = useState(createRetainedTerminalViews);
+  const [store] = useState(() => {
+    const registry = createRetainedTerminalViews();
+    return {
+      registry,
+      getSnapshot: registry.getSnapshot,
+      setHost: registry.setHost,
+      subscribe: registry.subscribe,
+    };
+  });
+  const { registry } = store;
   const context = useMemo(
     () => ({ registry, projectId }),
     [registry, projectId],
   );
-  const entries = useSyncExternalStore(
-    registry.subscribe,
-    registry.getSnapshot,
-  );
+  const [subscribe] = useState(() => store.subscribe);
+  const [getSnapshot] = useState(() => store.getSnapshot);
+  const entries = useSyncExternalStore(subscribe, getSnapshot);
+  const setHost = useCallback((node: HTMLDivElement | null) => {
+    store.setHost(node);
+  }, [store]);
   useEffect(() => {
     const visibility = () =>
       registry.setDocumentHidden(document.visibilityState !== "visible");
@@ -373,7 +382,7 @@ export function RetainedTerminalViewsProvider({
     <RetainedTerminalViewsContext.Provider value={context}>
       {children}
       <div
-        ref={registry.setHost}
+        ref={setHost}
         aria-hidden="true"
         inert
         data-retained-terminal-host=""
@@ -387,7 +396,7 @@ export function RetainedTerminalViewsProvider({
         }}
       >
         {entries.map((entry) => (
-          <RetainedView key={entry.id} entry={entry} registry={registry} />
+          <RetainedView key={entry.id} entry={entry} />
         ))}
       </div>
     </RetainedTerminalViewsContext.Provider>
@@ -400,16 +409,18 @@ export function useRetainedTerminalPanelState(
 ) {
   const registry = useContext(RetainedTerminalViewsContext)?.registry;
   const paneId = useOptionalPaneContext()?.paneId ?? "page";
-  const lastSessionId = useRef(sessionId);
-  if (sessionId !== undefined) lastSessionId.current = sessionId;
+  const [lastSessionId, setLastSessionId] = useState(sessionId);
+  if (sessionId !== undefined && sessionId !== lastSessionId) {
+    setLastSessionId(sessionId);
+  }
   useLayoutEffect(() => {
     if (!open)
       registry?.invalidate(
         (entry) =>
           entry.paneId === paneId &&
-          entry.snapshot.retained.session.id === lastSessionId.current,
+          entry.snapshot.retained.session.id === lastSessionId,
       );
-  }, [open, paneId, registry, sessionId]);
+  }, [lastSessionId, open, paneId, registry]);
 }
 
 export function RetainedTerminalViewSlot({
@@ -423,7 +434,9 @@ export function RetainedTerminalViewSlot({
   const slot = useRef<HTMLDivElement>(null);
   const entry = useRef<Entry | null>(null);
   const current = useRef({ props, navigation, panelActions });
-  current.current = { props, navigation, panelActions };
+  useLayoutEffect(() => {
+    current.current = { props, navigation, panelActions };
+  }, [navigation, panelActions, props]);
   const registry = context?.registry;
   const projectId = context?.projectId;
   useLayoutEffect(() => {
