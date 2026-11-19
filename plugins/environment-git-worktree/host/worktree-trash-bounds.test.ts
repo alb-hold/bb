@@ -205,6 +205,54 @@ describe("bounding the macOS inspection before a worktree moves to the trash", (
     );
   });
 
+  it("keeps the worktree when the deadline passes after the inspection finished, before the move to the trash", async () => {
+    const worktree = await managedWorktree();
+    setTestWorktreeHolderScan({ status: "clear" });
+    const deadline = new AbortController();
+    let inspecting = false;
+    const heartbeatPids = new Set<number>();
+
+    const error = await removeWorktree({
+      path: worktree.path,
+      rootPath: worktree.root,
+      trashRoot: worktree.trashRoot,
+      deadline: { signal: deadline.signal, ms: 120_000 },
+      testHooks: {
+        platform: "darwin",
+        afterFinalCheck: async () => {
+          inspecting = true;
+        },
+        afterDirectoryListed: async () => {
+          if (inspecting) deadline.abort();
+        },
+        onRemovalHeartbeat: (heartbeat) => {
+          if (inspecting) heartbeatPids.add(heartbeat.pid);
+        },
+      },
+    }).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+
+    expect(isWorktreePreservedError(error)).toBe(true);
+    expect(deadline.signal.aborted).toBe(true);
+    expect((error as Error).message).toContain(
+      `${removalDeadlineReason(120_000)} (it stopped at ${worktree.path}, before moving it to the trash)`,
+    );
+    expect((error as Error).message).not.toContain("Git metadata");
+    expect([...heartbeatPids]).toEqual([]);
+    expect(await trashEntries(worktree.trashRoot)).toEqual([]);
+    expect(
+      await fs.readFile(
+        path.join(worktree.path, "sub", "deeper", "kept.txt"),
+        "utf8",
+      ),
+    ).toBe("x\n");
+    expect(await git(worktree.source, "worktree", "list")).toContain(
+      worktree.path,
+    );
+  });
+
   it.runIf(fuseAvailable)(
     "keeps the worktree within the deadline when a filesystem inside it stops answering during the inspection",
     async () => {

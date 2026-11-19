@@ -1310,6 +1310,15 @@ async function removeRegisteredWorktree(
             ...keptNote,
           ]);
         }
+        if (
+          bounds.signal?.aborted === true ||
+          bounds.deadline?.signal.aborted === true
+        ) {
+          throw worktreePreservedError(identity.path, [
+            `${stoppedTreeReason(bounds)} (it stopped at ${identity.path}, before moving it to the trash)`,
+            ...keptNote,
+          ]);
+        }
         const inspected = inspectedTree.outcome.inspection;
         if (inspected.changed || inspected.mountedPaths.length > 0) {
           throw worktreePreservedError(identity.path, [
