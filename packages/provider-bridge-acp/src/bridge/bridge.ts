@@ -134,7 +134,10 @@ import {
   type AcpAgentConnection,
   type AcpAgentRequestResponder,
 } from "./agent-connection.js";
-import { createBrowserSentinel, type BrowserSentinel } from "./browser-sentinel.js";
+import {
+  createBrowserSentinel,
+  type BrowserSentinel,
+} from "./browser-sentinel.js";
 import type { AcpAgentCapabilities } from "../client/capabilities.js";
 import {
   createAcpSessionModel,
@@ -622,7 +625,7 @@ const AUTH_REQUIRED_MODEL_LIST_ERROR_MESSAGE =
 const OAUTH_PERSONAL_AUTH_METHOD_ID = "oauth-personal";
 const NO_AUTH_METHOD_SELECTED_MESSAGE = "No authentication method selected";
 const GOOGLE_SIGN_IN_NEEDED_MESSAGE =
-  "bb could not use a saved Google sign-in on this machine, and it does not open a browser while it lists models. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.";
+  "bb could not use a saved Google sign-in on this machine, and it does not open a browser to sign in. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.";
 
 function reasoningSupportFromCli(
   reasoningCli:
@@ -884,6 +887,45 @@ async function untilBrowserOpens<T>(
   ]);
 }
 
+async function switchToGoogleSignIn(args: {
+  env: Record<string, string | undefined>;
+  connect: (env: Record<string, string | undefined>) => AcpAgentConnection;
+  onConnection: (connection: AcpAgentConnection) => void;
+  previous: AcpAgentConnection;
+  initialize: (connection: AcpAgentConnection) => Promise<AcpAgentCapabilities>;
+}): Promise<{
+  connection: AcpAgentConnection;
+  capabilities: AcpAgentCapabilities;
+  sentinel: BrowserSentinel;
+}> {
+  const sentinel = await createBrowserSentinel();
+  if (sentinel === null) {
+    throw new AcpGoogleSignInNeededError();
+  }
+  try {
+    const connection = args.connect({ ...args.env, BROWSER: sentinel.command });
+    args.onConnection(connection);
+    await args.previous.kill();
+    const capabilities = await untilBrowserOpens(
+      args.initialize(connection),
+      sentinel,
+    );
+    await untilBrowserOpens(
+      connection.request({
+        method: "authenticate",
+        params: { methodId: OAUTH_PERSONAL_AUTH_METHOD_ID },
+        resultSchema: z.unknown(),
+        timeoutMs: ACP_AUTHENTICATE_TIMEOUT_MS,
+      }),
+      sentinel,
+    );
+    return { connection, capabilities, sentinel };
+  } catch (error) {
+    await sentinel.dispose();
+    throw error;
+  }
+}
+
 async function openAcpDiscoverySession<T>(args: {
   connection: AcpAgentConnection;
   env: Record<string, string | undefined>;
@@ -908,38 +950,23 @@ async function openAcpDiscoverySession<T>(args: {
       throw error;
     }
   }
-  await args.connection.kill();
-  const sentinel = await createBrowserSentinel();
-  if (sentinel === null) {
-    throw new AcpGoogleSignInNeededError();
-  }
+  const signedIn = await switchToGoogleSignIn({
+    env: args.env,
+    connect: args.connect,
+    onConnection: args.onConnection,
+    previous: args.connection,
+    initialize: args.initialize,
+  });
   try {
-    const connection = args.connect({ ...args.env, BROWSER: sentinel.command });
-    args.onConnection(connection);
-    const retried = await untilBrowserOpens(
-      args.initialize(connection),
-      sentinel,
-    );
-    await untilBrowserOpens(
-      connection.request({
-        method: "authenticate",
-        params: { methodId: OAUTH_PERSONAL_AUTH_METHOD_ID },
-        resultSchema: z.unknown(),
-        timeoutMs: ACP_AUTHENTICATE_TIMEOUT_MS,
-      }),
-      sentinel,
-    ).catch((error: unknown) => {
-      throw error instanceof AcpGoogleSignInNeededError
-        ? error
-        : new AcpGoogleSignInNeededError();
-    });
-    const created = await untilBrowserOpens(
-      args.createSession(connection),
-      sentinel,
-    );
-    return { capabilities: retried, created };
+    return {
+      capabilities: signedIn.capabilities,
+      created: await untilBrowserOpens(
+        args.createSession(signedIn.connection),
+        signedIn.sentinel,
+      ),
+    };
   } finally {
-    await sentinel.dispose();
+    await signedIn.sentinel.dispose();
   }
 }
 
@@ -2471,38 +2498,57 @@ async function startAgentSession(
     ...params.envVars,
     ...dialectLaunchEnv(dialect.id, params.permissionMode),
   };
-  const connection = createBridgeAgentConnection({
-    command: params.agent.command,
-    args: launch.args,
-    cwd: params.cwd,
-    env: childEnv,
-    recordThreadId: bbThreadId,
-    requestMethods: [
-      ...ACP_CORE_CLIENT_REQUEST_METHODS,
-      ...(dialect.clientRequestMethods ?? []),
-    ],
-    onResponse: (method, result) => noteAgentResponse(session, method, result),
-    onNotification: (method, notificationParams) =>
-      handleAgentNotification(session, method, notificationParams),
-    onRequest: (method, requestParams, responder) =>
-      handleAgentRequest(session, method, requestParams, responder),
-    onExit: (info) => {
-      const wasCurrent = sessionsByBbThreadId.get(bbThreadId) === session;
-      cancelPendingPermissions(session);
-      if (!wasCurrent || session.stopping || session.providerThreadId === "") {
-        removeSession(session);
-        return;
-      }
-      void releaseCursorMcpApproval(session);
-      emitSessionError(
-        session,
-        `ACP agent "${agentLabel}" exited unexpectedly` +
-          `${info.code !== null ? ` (code ${info.code})` : ""}` +
-          `${info.stderrTail ? `: ${info.stderrTail}` : ""}`,
-      );
-      setActivePromptKind(session, null);
-    },
-  });
+  const connectAgent = (
+    env: Record<string, string | undefined>,
+  ): AcpAgentConnection => {
+    const created: AcpAgentConnection = createBridgeAgentConnection({
+      command: params.agent.command,
+      args: launch.args,
+      cwd: params.cwd,
+      env,
+      recordThreadId: bbThreadId,
+      requestMethods: [
+        ...ACP_CORE_CLIENT_REQUEST_METHODS,
+        ...(dialect.clientRequestMethods ?? []),
+      ],
+      onResponse: (method, result) =>
+        noteAgentResponse(session, method, result),
+      onNotification: (method, notificationParams) =>
+        handleAgentNotification(session, method, notificationParams),
+      onRequest: (method, requestParams, responder) =>
+        handleAgentRequest(session, method, requestParams, responder),
+      onExit: (info) => {
+        if (session.connection !== created) {
+          return;
+        }
+        const wasCurrent = sessionsByBbThreadId.get(bbThreadId) === session;
+        cancelPendingPermissions(session);
+        if (
+          !wasCurrent ||
+          session.stopping ||
+          session.providerThreadId === ""
+        ) {
+          removeSession(session);
+          return;
+        }
+        void releaseCursorMcpApproval(session);
+        emitSessionError(
+          session,
+          `ACP agent "${agentLabel}" exited unexpectedly` +
+            `${info.code !== null ? ` (code ${info.code})` : ""}` +
+            `${info.stderrTail ? `: ${info.stderrTail}` : ""}`,
+        );
+        setActivePromptKind(session, null);
+      },
+    });
+    return created;
+  };
+  let connection = connectAgent(childEnv);
+  const googleSignIn: {
+    attempted: boolean;
+    failed: boolean;
+    sentinel: BrowserSentinel | null;
+  } = { attempted: false, failed: false, sentinel: null };
   session = {
     bbThreadId,
     construction: params,
@@ -2549,12 +2595,45 @@ async function startAgentSession(
   sessionsByBbThreadId.set(bbThreadId, session);
 
   try {
-    const capabilities = await requestAcpInitialize(connection, {
-      parameterizedModelPicker: params.parameterizedModelPicker,
-      fsAccess: true,
-      elicitation: true,
-    });
+    const initializeAgent = (target: AcpAgentConnection) =>
+      requestAcpInitialize(target, {
+        parameterizedModelPicker: params.parameterizedModelPicker,
+        fsAccess: true,
+        elicitation: true,
+      });
+    const capabilities = await initializeAgent(connection);
     session.capabilities = capabilities;
+    const withGoogleSignIn = async <T>(
+      run: (target: AcpAgentConnection) => Promise<T>,
+    ): Promise<T> => {
+      try {
+        return await run(connection);
+      } catch (error) {
+        if (
+          googleSignIn.attempted ||
+          !isNoAuthMethodSelectedError(error, capabilities)
+        ) {
+          throw error;
+        }
+      }
+      googleSignIn.attempted = true;
+      const signedIn = await switchToGoogleSignIn({
+        env: childEnv,
+        connect: connectAgent,
+        onConnection: (next) => {
+          connection = next;
+          session.connection = next;
+        },
+        previous: connection,
+        initialize: initializeAgent,
+      }).catch((error: unknown) => {
+        googleSignIn.failed = true;
+        throw error;
+      });
+      googleSignIn.sentinel = signedIn.sentinel;
+      session.capabilities = signedIn.capabilities;
+      return await untilBrowserOpens(run(connection), signedIn.sentinel);
+    };
     await authenticateAcpAgent({
       connection,
       env: childEnv,
@@ -2591,17 +2670,19 @@ async function startAgentSession(
     let loadedModels: AcpSessionModels | undefined;
     let createdFreshSession = false;
     if (request.kind === "fork") {
-      const forkedSession = await connection.request({
-        method: "session/fork",
-        params: {
-          sessionId: request.sourceProviderThreadId,
-          cwd: params.cwd,
-          mcpServers,
-          ...additionalSessionDirectories(params, capabilities),
-        },
-        resultSchema: acpSessionForkResultSchema,
-        timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
-      });
+      const forkedSession = await withGoogleSignIn((target) =>
+        target.request({
+          method: "session/fork",
+          params: {
+            sessionId: request.sourceProviderThreadId,
+            cwd: params.cwd,
+            mcpServers,
+            ...additionalSessionDirectories(params, capabilities),
+          },
+          resultSchema: acpSessionForkResultSchema,
+          timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
+        }),
+      );
       if (
         forkedSession.sessionId === request.sourceProviderThreadId ||
         getSessionByProviderThreadId(forkedSession.sessionId) !== undefined
@@ -2626,23 +2707,29 @@ async function startAgentSession(
       session.pendingLoadUsageUpdate = undefined;
       session.model.beginReplay();
       try {
-        const configState = await connection.request({
-          method: restoreMethod,
-          params: {
-            sessionId: request.resumeProviderThreadId,
-            cwd: params.cwd,
-            mcpServers,
-            ...additionalSessionDirectories(params, capabilities),
-          },
-          resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
-          timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
-        });
+        const configState = await withGoogleSignIn((target) =>
+          target.request({
+            method: restoreMethod,
+            params: {
+              sessionId: request.resumeProviderThreadId,
+              cwd: params.cwd,
+              mcpServers,
+              ...additionalSessionDirectories(params, capabilities),
+            },
+            resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
+            timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
+          }),
+        );
         loadedConfigOptions = configState?.configOptions;
         loadedModels = configState?.models;
         rememberGrokContextWindow(session, configState?.models);
         sessionId = request.resumeProviderThreadId;
       } catch (error) {
-        if (isAcpAuthRequiredResponse(error)) {
+        if (
+          isAcpAuthRequiredResponse(error) ||
+          error instanceof AcpAuthRequiredError ||
+          googleSignIn.failed
+        ) {
           throw error;
         }
         sessionId = undefined;
@@ -2658,16 +2745,18 @@ async function startAgentSession(
       session.loading = false;
       session.loadingSessionId = undefined;
       session.pendingLoadUsageUpdate = undefined;
-      const newSession = await connection.request({
-        method: "session/new",
-        params: {
-          cwd: params.cwd,
-          mcpServers,
-          ...additionalSessionDirectories(params, capabilities),
-        },
-        resultSchema: acpSessionNewResultSchema,
-        timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
-      });
+      const newSession = await withGoogleSignIn((target) =>
+        target.request({
+          method: "session/new",
+          params: {
+            cwd: params.cwd,
+            mcpServers,
+            ...additionalSessionDirectories(params, capabilities),
+          },
+          resultSchema: acpSessionNewResultSchema,
+          timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
+        }),
+      );
       sessionId = newSession.sessionId;
       createdFreshSession = true;
       rememberGrokContextWindow(session, newSession.models);
@@ -2761,6 +2850,8 @@ async function startAgentSession(
       args: params.agent.args,
       capabilities: session.capabilities,
     });
+  } finally {
+    await googleSignIn.sentinel?.dispose();
   }
 }
 

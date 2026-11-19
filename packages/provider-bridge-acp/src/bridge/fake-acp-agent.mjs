@@ -62,6 +62,8 @@
  *                            → authenticate oauth-personal has no saved login:
  *                              run $BROWSER with a sign-in URL and never answer
  * - FAKE_ACP_BROWSER_LOG     → append the $BROWSER value used for sign-in
+ * - FAKE_ACP_OAUTH_REJECT    → reject authenticate oauth-personal with this
+ *                              message (-32603) and open no browser
  * - FAKE_ACP_SESSION_NEW_ERROR
  *                            → reject session/new with this message (-32603)
  * - FAKE_ACP_EXIT_ON_SESSION_NEW=<code>
@@ -967,6 +969,14 @@ async function handleMessage(message) {
           jsonrpc: "2.0",
           id: message.id,
           error: { code: -32001, message: "XAI_API_KEY is required" },
+        });
+        return;
+      }
+      if (methodId === "oauth-personal" && process.env.FAKE_ACP_OAUTH_REJECT) {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32603, message: process.env.FAKE_ACP_OAUTH_REJECT },
         });
         return;
       }
