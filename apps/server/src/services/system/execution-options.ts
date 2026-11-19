@@ -16,6 +16,7 @@ import type { HostDaemonBridgeLaunch } from "@bb/host-daemon-contract";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { getHostPermissionCeiling } from "../hosts/permission-ceiling.js";
+import { resolvePluginProviderEnvHealth } from "../plugins/plugin-agent-contributions.js";
 import {
   requireConnectedHostSession,
   requireEnvironment,
@@ -160,6 +161,61 @@ function canOmitProviderDiscoveryForError(error: unknown): error is ApiError {
   return (
     error instanceof ApiError && (error.status === 502 || error.status === 504)
   );
+}
+
+const healthRefreshNotifications = new WeakSet<Promise<unknown>>();
+
+function notifyWhenHealthSettles(
+  deps: LoggedWorkSessionDeps,
+  hostId: string,
+  providerId: string,
+  pending: ReturnType<ProviderRegistryService["lookupProviderHealthStatus"]>,
+): void {
+  if (pending === undefined || healthRefreshNotifications.has(pending)) return;
+  healthRefreshNotifications.add(pending);
+  const previous = deps.providerRegistry.peekProviderHealthStatus({
+    hostId,
+    providerId,
+  });
+  void pending.then(
+    (status) => {
+      if (status !== previous) {
+        deps.hub.notifyHost(hostId, ["provider-model-catalog-changed"]);
+      }
+    },
+    () => undefined,
+  );
+}
+
+async function omitProvidersThatCannotStartAThread(
+  deps: LoggedWorkSessionDeps,
+  hostId: string | null,
+  providers: ProviderInfo[],
+): Promise<ProviderInfo[]> {
+  if (hostId === null) return providers;
+  const usable = await Promise.all(
+    providers.map(async (provider) => {
+      const status = deps.providerRegistry.peekProviderHealthStatus({
+        hostId,
+        providerId: provider.id,
+      });
+      const pending = deps.providerRegistry.lookupProviderHealthStatus({
+        hostId,
+        providerId: provider.id,
+      });
+      notifyWhenHealthSettles(deps, hostId, provider.id, pending);
+      if (status !== "unauthenticated" && status !== "not_installed") {
+        return true;
+      }
+      const contributed = await resolvePluginProviderEnvHealth({
+        providerId: provider.id,
+        hostId,
+      });
+      return contributed !== null;
+    }),
+  );
+  const offered = providers.filter((_, index) => usable[index]);
+  return offered.length > 0 ? offered : providers;
 }
 
 export function listInstalledOnlyProviderRegistrations(
@@ -522,6 +578,11 @@ async function resolveExecutionOptions(
     await earlyModelResultPromise?.catch(() => undefined);
     throw error;
   }
+  providers = await omitProvidersThatCannotStartAThread(
+    deps,
+    hostId,
+    providers,
+  );
   providers = includeRequestedRegisteredProvider(
     deps,
     providers,

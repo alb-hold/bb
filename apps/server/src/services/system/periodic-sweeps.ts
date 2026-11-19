@@ -105,6 +105,10 @@ import {
 } from "../threads/queued-messages.js";
 import { sweepNativeParentNotices } from "../threads/native-parent-notices.js";
 import { sweepNativeThreadStatus } from "../threads/native-thread-status.js";
+import {
+  recoverNativeTerminalDeliveries,
+  warnAboutLegacyNativeTerminalDeliveryTables,
+} from "../threads/native-terminal-delivery-marks.js";
 import { runEventLoopWork, runEventLoopWorkSync } from "./event-loop-work.js";
 import type { OpenPluginDatabase } from "../plugins/plugin-service.js";
 import type Database from "better-sqlite3";
@@ -496,10 +500,7 @@ function archivedThreadTeardownSweep(
         });
       }
       if (archiveUndoGraceKeepsTurnRunning(thread, now)) return;
-      requestThreadStopForCurrentState(
-        deps,
-        thread,
-      );
+      requestThreadStopForCurrentState(deps, thread);
     },
   });
 }
@@ -926,6 +927,19 @@ export const PERIODIC_SWEEP_JOBS: readonly PeriodicSweepJob[] = [
   {
     cadenceMs: 0,
     category: "durable-intent-retry",
+    name: "native-terminal-delivery-recovery",
+    background: false,
+    sweep: (deps) =>
+      defineSingleItemSweep({
+        name: "native-terminal-delivery-recovery",
+        process: async () => {
+          await recoverNativeTerminalDeliveries(deps);
+        },
+      }),
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
     name: "native-thread-status",
     background: false,
     sweep: (deps, now) =>
@@ -1025,6 +1039,20 @@ async function runStartupRecoveryStep(
 export async function runStartupRecoverySweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): Promise<void> {
+  warnAboutLegacyNativeTerminalDeliveryTables(deps);
+  await runStartupRecoveryStep(
+    deps,
+    "native-terminal-delivery-recovery",
+    async () => {
+      const uncertainDeliveries = await recoverNativeTerminalDeliveries(deps);
+      if (uncertainDeliveries > 0) {
+        deps.logger.warn(
+          { uncertainDeliveries },
+          "Held native terminal messages a previous server may have delivered",
+        );
+      }
+    },
+  );
   await runStartupRecoveryStep(deps, "forget-unknown-sweep-failures", () => {
     deleteSweepItemFailuresOfUnknownSweeps(
       deps.db,

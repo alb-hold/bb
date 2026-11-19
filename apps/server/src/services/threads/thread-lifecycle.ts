@@ -53,6 +53,7 @@ import type {
   LoggedWorkSessionDeps,
 } from "../../types.js";
 import { cancelEnvironmentProvisioningForThreadStopInTransaction } from "../environments/environment-provisioning-cancellation.js";
+import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import {
   emptyCommandResultSideEffects,
   type CommandResultPostCommitAction,
@@ -398,6 +399,7 @@ export async function prepareReadyThreadTurnCommand(
   deps: LoggedWorkSessionDeps,
   args: Omit<ThreadStartCommandArgs, "fork"> & { mayJoinRunningTurn: boolean },
 ): Promise<PreparedReadyThreadTurnCommand> {
+  assertNotNativeTerminalThread(deps.db, args.thread.id);
   await ensureHostSessionReadyForWork(deps, {
     hostId: args.environment.hostId,
   });
@@ -559,9 +561,8 @@ export function orderPendingThreadStorageDeletes<
   deps: Pick<CommandResultSideEffectsDeps, "db" | "logger">,
   pendingInQueueOrder: readonly T[],
 ): T[] {
-  for (const threadId of resolveThreadStorageDeletesHeldAtTail(
-    deps.db,
-    () => nextThreadStorageDeleteSeq(deps.db),
+  for (const threadId of resolveThreadStorageDeletesHeldAtTail(deps.db, () =>
+    nextThreadStorageDeleteSeq(deps.db),
   )) {
     deps.logger.info(
       { threadId },
@@ -663,18 +664,20 @@ async function deleteThreadStorageKeepingPlugins(
     }),
     hostId: args.environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-  }).then(() => {
-    forgetThreadStorageDelete(deps.db, args.threadId);
-  }).catch((error) => {
-    recordThreadStorageDeleteRefused(deps.db, {
-      now: Date.now(),
-      threadId: args.threadId,
+  })
+    .then(() => {
+      forgetThreadStorageDelete(deps.db, args.threadId);
+    })
+    .catch((error) => {
+      recordThreadStorageDeleteRefused(deps.db, {
+        now: Date.now(),
+        threadId: args.threadId,
+      });
+      deps.logger.warn(
+        { err: error, threadId: args.threadId },
+        "Thread storage deletion command failed",
+      );
     });
-    deps.logger.warn(
-      { err: error, threadId: args.threadId },
-      "Thread storage deletion command failed",
-    );
-  });
 }
 
 function dispatchThreadStartInTransaction(
@@ -764,6 +767,7 @@ export async function requestThreadStart(
   deps: CommandResultSideEffectsDeps,
   args: ThreadStartCommandArgs,
 ): Promise<void> {
+  assertNotNativeTerminalThread(deps.db, args.thread.id);
   if (hasThreadStartTurnRequest(deps.db, args.thread.id)) {
     return;
   }
@@ -1217,8 +1221,7 @@ export function interruptActiveThreadsForHost(
   ]);
   for (const threadId of threadIds) {
     if (
-      (args.onlyThreadIds !== undefined &&
-        !args.onlyThreadIds.has(threadId)) ||
+      (args.onlyThreadIds !== undefined && !args.onlyThreadIds.has(threadId)) ||
       args.exceptThreadIds?.has(threadId) === true
     ) {
       threadIds.delete(threadId);

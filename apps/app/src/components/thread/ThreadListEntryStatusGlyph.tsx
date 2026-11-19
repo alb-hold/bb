@@ -15,6 +15,7 @@ export function ThreadListEntryStatusGlyph({
   return (
     <ThreadStatusGlyph
       indicator={indicator}
+      experimental_queuedFailedCount={thread.queuedFailedCount}
       rowStatus={rowStatus}
       size="compact"
     />

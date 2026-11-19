@@ -1,4 +1,9 @@
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
+import { registerSpendRoutes } from "./routes/spend.js";
+import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
+import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
+import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 import {
   recheckEnvironmentProvisioning,
@@ -78,6 +83,7 @@ import { setPluginMachineProviderBridge } from "./services/plugins/plugin-machin
 import { invalidateEnvironmentProviderMachineAvailability } from "./services/environments/provider-machine-availability.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
+import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
 import type { ActiveThreadEventPruneRuntimeOptions } from "./services/system/event-pruning.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
@@ -167,6 +173,10 @@ import {
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
 type WebSocketCloseError = Error | undefined;
+
+const nativeExitHandlingRegistered = new WeakSet<
+  ServerAppDeps["terminalSessions"]
+>();
 
 interface ServerApp {
   app: Hono;
@@ -432,7 +442,9 @@ async function findPrecompressedStaticFile(args: {
   return null;
 }
 
-export function closeWebSocketServer(args: CloseWebSocketServerArgs): Promise<void> {
+export function closeWebSocketServer(
+  args: CloseWebSocketServerArgs,
+): Promise<void> {
   for (const client of args.server.clients) {
     client.close(WEB_SOCKET_SHUTDOWN_CODE, args.reason);
   }
@@ -556,6 +568,12 @@ export function createApp(
     });
   });
   app.onError(createServerErrorHandler(deps.logger));
+  if (!nativeExitHandlingRegistered.has(deps.terminalSessions)) {
+    nativeExitHandlingRegistered.add(deps.terminalSessions);
+    deps.terminalSessions.onTerminalExited((session) => {
+      clearNativeTerminalStateOnExit(deps, session);
+    });
+  }
   app.get("/health", async (context) => {
     const serverMove = await readServerMoveHealth({
       dataDir: deps.config.dataDir,
@@ -914,9 +932,13 @@ export function createApp(
   registerHostRoutes(publicApi, deps, pluginService);
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
+  registerDeviceHandoffRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps, pluginService);
   registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
+  registerSpendRoutes(publicApi, deps);
+  registerWritingAssistanceRoutes(publicApi, deps);
+  registerNativeTerminalThreadRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
   const pluginInstallJobs = createPluginInstallJobs({
@@ -970,6 +992,7 @@ export function createApp(
   );
   registerInternalToolCallRoutes(internalApi, deps);
   registerInternalInteractiveRequestRoutes(internalApi, deps);
+  registerInternalForkAdoptionRoutes(internalApi, deps);
   app.route("/internal", internalApi);
 
   const assertBrowserWebSocketAllowed = (

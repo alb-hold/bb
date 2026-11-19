@@ -69,7 +69,19 @@ function useCompactHomeMetrics(isCompact: boolean) {
     ) {
       return;
     }
+    const updateScrollCue = () => {
+      scrollViewport.toggleAttribute(
+        "data-more-above",
+        scrollViewport.scrollTop > 1,
+      );
+      scrollViewport.toggleAttribute(
+        "data-more-below",
+        scrollViewport.scrollTop + scrollViewport.clientHeight <
+          scrollViewport.scrollHeight - 1,
+      );
+    };
     const measure = () => {
+      updateScrollCue();
       const composerRoot = composerRootWithin(composer);
       if (composerRoot) {
         const surroundingHeight =
@@ -90,11 +102,18 @@ function useCompactHomeMetrics(isCompact: boolean) {
         scrollViewport.scrollHeight <= scrollViewport.clientHeight;
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    return observeSharedResize([region, composer, scrollContent], {
-      read: () => undefined,
-      write: measure,
-    });
+    scrollViewport.addEventListener("scroll", updateScrollCue, { passive: true });
+    const unobserve =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : observeSharedResize([region, composer, scrollContent], {
+            read: () => undefined,
+            write: measure,
+          });
+    return () => {
+      scrollViewport.removeEventListener("scroll", updateScrollCue);
+      unobserve?.();
+    };
   }, [isCompact]);
 
   return {

@@ -5,6 +5,7 @@ import {
   getEnvironment,
   getPendingInteraction,
   getPendingInteractionByProviderRequest,
+  reviveInterruptedProviderInteraction,
   getThread,
   hasStoredTurnCompleted,
   interruptPendingInteractionsForThreadIds,
@@ -29,6 +30,7 @@ import {
   isPluginPendingInteraction,
   parseExtensionKind,
   pluginInteractionDescriptionSchema,
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type JsonValue,
   type PendingInteraction,
   type PluginInteractionDescription,
@@ -78,10 +80,8 @@ import {
 } from "../server-move/freeze-state.js";
 
 type RegisterPendingInteractionResult =
-  | {
-      outcome: "created" | "existing";
-      interaction: PendingInteraction;
-    }
+  | { outcome: "created"; interaction: PendingInteraction }
+  | { outcome: "existing"; interaction: PendingInteraction; revived?: true }
   | {
       outcome: "rejected";
       reason: string;
@@ -507,6 +507,33 @@ export class PendingInteractionLifecycle {
           return null;
         }
         if (existing.status !== "pending" && existing.status !== "resolving") {
+          if (
+            existing.status === "interrupted" &&
+            existing.statusReason ===
+              DAEMON_RESTARTED_PENDING_INTERACTION_REASON &&
+            interaction.turnId === "native-terminal-turn" &&
+            interaction.providerRequestId.startsWith(
+              NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+            )
+          ) {
+            const revived = reviveInterruptedProviderInteraction(tx, {
+              interruptedProviderRequestId: interaction.providerRequestId,
+              interruptionReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+              payload,
+              providerId: interaction.providerId,
+              providerRequestId: interaction.providerRequestId,
+              providerThreadId: interaction.providerThreadId,
+              threadId: interaction.threadId,
+              turnId: interaction.turnId,
+            });
+            if (revived) {
+              return {
+                outcome: "existing",
+                interaction: toPendingInteraction(revived),
+                revived: true,
+              };
+            }
+          }
           return {
             outcome: "rejected",
             reason: `Provider request ${interaction.providerRequestId} was already handled and cannot be reused`,
@@ -524,6 +551,14 @@ export class PendingInteractionLifecycle {
         };
       },
     });
+
+    if (
+      registered.outcome === "existing" &&
+      "revived" in registered.existing &&
+      registered.existing.revived === true
+    ) {
+      this.announceCreatedInteraction(thread, registered.existing.interaction);
+    }
 
     return registered.outcome === "existing"
       ? registered.existing

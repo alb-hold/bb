@@ -7,12 +7,17 @@ import {
   findLastCompletedRootStoredTurn,
   findLatestUnresolvedClientTurnRequestIdAfterSequence,
   getThread,
+  getEnvironment,
   getLatestThreadSequence,
   hasRootStoredTurnStarted,
   isTurnAimedAtByEarlierStop,
   listStoredTurnCompletedKeys,
+  listStoredDaemonReplayKeys,
   listThreadEnvironmentAssignmentsOnHost,
   MissingStoredTurnStartedError,
+  recordDaemonReplayKeys,
+  recordWorkspaceFileChanges,
+  upsertThreadExecutionReport,
   events as storedEvents,
 } from "@bb/db";
 import type {
@@ -33,11 +38,15 @@ import {
   THREAD_SESSION_OPTIONS_STATE_KIND,
   THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND,
   requireThreadEventScopeTurnId,
+  getThreadEventScopeTurnId,
+  maskResolvedProviderEnvironment,
+  threadScope,
   type ClientTurnRequestId,
   type ThreadEventType,
 } from "@bb/domain";
 import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
+import { dropForkUnreadEvents } from "./fork-unread-events.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -74,6 +83,12 @@ import {
 import { getAuthenticatedDaemon } from "./auth.js";
 import { validateExtensionPayloads } from "./extension-payloads.js";
 import { validatePresentationIcons } from "./presentation-icons.js";
+import {
+  recordSpendForInsertedEvents,
+  type SpendRollupObservationSource,
+} from "../services/system/spend-rollup.js";
+import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
+import { appendThreadEvent } from "../services/threads/thread-events.js";
 import {
   observeStreamTraceEventBatch,
   observeTurnTraceEventBatch,
@@ -344,6 +359,39 @@ async function applyEventEffects(
   for (const entry of events) {
     try {
       const event = entry.event;
+      if (event.type === "item/completed" && event.item.type === "fileChange") {
+        const thread = getThread(deps.db, entry.threadId);
+        const environment = thread?.environmentId
+          ? getEnvironment(deps.db, thread.environmentId)
+          : null;
+        if (
+          thread &&
+          environment !== null &&
+          environment.path !== null &&
+          !environment.providerOwnsPath
+        ) {
+          const notices = recordWorkspaceFileChanges(deps.db, {
+            hostId: environment.hostId,
+            workspacePath: environment.path,
+            filePaths: event.item.changes.map((change) => change.path),
+            candidateThreadIds: [
+              entry.threadId,
+              ...listSharedWorkspaceActiveThreadIds(deps.db, environment),
+            ],
+          });
+          for (const notice of notices) {
+            appendThreadEvent(deps, {
+              threadId: notice.threadId,
+              environmentId: environment.id,
+              type: "system/manager/user_message",
+              scope: threadScope(),
+              data: {
+                text: `Workspace collision detected: ${notice.filePath} was also changed by bb thread ${notice.otherThreadId}.`,
+              },
+            });
+          }
+        }
+      }
       if (event.type === "turn/started") {
         if (!isRootTurnStartedEvent(event)) {
           continue;
@@ -762,6 +810,81 @@ function resolvePostableEventBatchEntries(
   };
 }
 
+function storeExecutionReports<
+  TEntry extends { envelope: HostDaemonEventEnvelope },
+>(deps: AppDeps, entries: TEntry[]): TEntry[] {
+  const kept: TEntry[] = [];
+  for (const entry of entries) {
+    const { event, threadId } = entry.envelope;
+    if (event.type === "thread/execution/reported") {
+      upsertThreadExecutionReport(deps.db, {
+        threadId,
+        execution: event.execution,
+        reportedAt: Date.now(),
+      });
+    } else {
+      kept.push(entry);
+    }
+  }
+  return kept;
+}
+
+function collectSpendObservationSources(
+  deps: AppDeps,
+  args: {
+    acceptedEvents: readonly AcceptedDaemonEvent[];
+    entries: readonly { envelope: HostDaemonEventEnvelope }[];
+    insertedInputIndexes: readonly number[];
+  },
+): SpendRollupObservationSource[] {
+  const sources: SpendRollupObservationSource[] = [];
+  const providerIdByThreadId = new Map<string, string | null>();
+  for (const [position, inputIndex] of args.insertedInputIndexes.entries()) {
+    const entry = args.entries[inputIndex];
+    const accepted = args.acceptedEvents[position];
+    if (
+      entry === undefined ||
+      accepted === undefined ||
+      entry.envelope.event.type !== "thread/tokenUsage/updated"
+    )
+      continue;
+    const threadId = entry.envelope.threadId;
+    if (!providerIdByThreadId.has(threadId))
+      providerIdByThreadId.set(
+        threadId,
+        getThread(deps.db, threadId)?.providerId ?? null,
+      );
+    const providerId = providerIdByThreadId.get(threadId) ?? null;
+    if (providerId === null) continue;
+    sources.push({
+      createdAt: accepted.createdAt,
+      event: entry.envelope.event,
+      providerId,
+      sequence: accepted.sequence,
+      threadId,
+      turnId: getThreadEventScopeTurnId(entry.envelope.event.scope) ?? null,
+    });
+  }
+  return sources;
+}
+
+function dropReplayedEntries<
+  TEntry extends { envelope: HostDaemonEventEnvelope },
+>(deps: Pick<AppDeps, "db">, entries: TEntry[]): TEntry[] {
+  const stored = listStoredDaemonReplayKeys(
+    deps.db,
+    entries.flatMap(({ envelope }) =>
+      envelope.replayKey === undefined ? [] : [envelope.replayKey],
+    ),
+  );
+  return stored.size === 0
+    ? entries
+    : entries.filter(
+        ({ envelope }) =>
+          envelope.replayKey === undefined || !stored.has(envelope.replayKey),
+      );
+}
+
 interface DroppedLifecycleEvent {
   eventIndex: number;
   eventType: string;
@@ -842,14 +965,25 @@ export function registerInternalEventRoutes(
         }
         throw error;
       }
-      const events = ungroupHostDaemonEvents(payload.eventGroups);
+      const events = ungroupHostDaemonEvents(payload.eventGroups).map(
+        (envelope) => ({
+          ...envelope,
+          event: maskResolvedProviderEnvironment(envelope.event),
+        }),
+      );
       const { entries: ownedEntries, rejectedEvents } =
         resolvePostableEventBatchEntries(deps, {
           hostId: session.hostId,
           events,
         });
-      const { entries, droppedLifecycleEvents } =
+      const { entries: lifecycleFilteredEntries, droppedLifecycleEvents } =
         dropInteractionLifecycleEvents(ownedEntries);
+      const entries = dropForkUnreadEvents(
+        storeExecutionReports(
+          deps,
+          dropReplayedEntries(deps, lifecycleFilteredEntries),
+        ),
+      );
       if (droppedLifecycleEvents.length > 0) {
         deps.logger.warn(
           {
@@ -900,11 +1034,41 @@ export function registerInternalEventRoutes(
       const postableEvents = labelledEntries.map((entry) => entry.envelope);
       let appendResult: AppendDaemonEventsResult;
       try {
+        const replayKeys = entries.flatMap((entry) =>
+          entry.envelope.replayKey === undefined
+            ? []
+            : [entry.envelope.replayKey],
+        );
         appendResult = deps.db.transaction(
-          (tx) => appendDaemonEventsInTransaction(tx, eventInputs),
+          (tx) => {
+            if (listStoredDaemonReplayKeys(deps.db, replayKeys).size > 0) {
+              throw new ApiError(
+                503,
+                "replayed_event_batch_race",
+                "A concurrent batch stored some of these replayed events first; retry to append the rest",
+                true,
+              );
+            }
+            const result = appendDaemonEventsInTransaction(tx, eventInputs);
+            recordDaemonReplayKeys(deps.db, { replayKeys, now: Date.now() });
+            recordSpendForInsertedEvents(
+              deps.db,
+              collectSpendObservationSources(deps, {
+                acceptedEvents: result.acceptedEvents,
+                entries: labelledEntries,
+                insertedInputIndexes: result.insertedInputIndexes,
+              }),
+            );
+            return result;
+          },
           { behavior: "immediate" },
         );
       } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.body.code === "replayed_event_batch_race"
+        )
+          throw error;
         if (error instanceof MissingStoredTurnStartedError) {
           deps.logger.warn(
             {
@@ -912,9 +1076,12 @@ export function registerInternalEventRoutes(
               sessionId: session.id,
               ...runtimeErrorLogFields(deps.config, error),
             },
-            "Rejected daemon event before turn/started",
+            "Deferred daemon event batch until turn/started is stored",
           );
-          throw new ApiError(409, "invalid_request", error.message);
+          throw new ApiError(503, "turn_start_pending", error.message, {
+            details: error.details,
+            retryable: true,
+          });
         }
         throw error;
       }
