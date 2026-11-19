@@ -2808,6 +2808,3 @@ export function listTurnStartDeadlineCandidates(
     .where(awaitingTurnStartPastDeadline(args.deadline))
     .all();
 }
-
-
-

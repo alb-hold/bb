@@ -134,4 +134,3 @@ describe("buildDevWebSocketUrl", () => {
     expect(buildBrowserWebSocketUrl("/ws")).toBe("wss://app.example.test/ws");
   });
 });
-

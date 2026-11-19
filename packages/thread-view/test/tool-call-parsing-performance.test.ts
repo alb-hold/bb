@@ -180,4 +180,3 @@ it("scans long quoted thread messages in chunks without summary caching", () => 
   });
   expect(quotedChunks).toBeLessThan(escapedChunks / 4);
 });
-
