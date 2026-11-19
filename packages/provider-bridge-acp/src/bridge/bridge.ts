@@ -134,6 +134,7 @@ import {
   type AcpAgentConnection,
   type AcpAgentRequestResponder,
 } from "./agent-connection.js";
+import { createBrowserSentinel, type BrowserSentinel } from "./browser-sentinel.js";
 import type { AcpAgentCapabilities } from "../client/capabilities.js";
 import {
   createAcpSessionModel,
@@ -618,6 +619,10 @@ const MODEL_LIST_TIMEOUT_MS = 30_000;
 const ACP_NATIVE_REASONING_DISCOVERY_TIMEOUT_MS = 5_000;
 const AUTH_REQUIRED_MODEL_LIST_ERROR_MESSAGE =
   "ACP agent is not authenticated.";
+const OAUTH_PERSONAL_AUTH_METHOD_ID = "oauth-personal";
+const NO_AUTH_METHOD_SELECTED_MESSAGE = "No authentication method selected";
+const GOOGLE_SIGN_IN_NEEDED_MESSAGE =
+  "No saved Google sign-in was found on this machine, and bb does not open a browser while it lists models. Add a Google account with `bb pool account add --provider gemini --login`, or sign this agent in with Google on the machine that hosts the thread, then try again.";
 
 function reasoningSupportFromCli(
   reasoningCli:
@@ -847,6 +852,97 @@ async function authenticateAcpAgent(args: {
   }
 }
 
+function isNoAuthMethodSelectedError(
+  error: unknown,
+  capabilities: AcpAgentCapabilities,
+): boolean {
+  if (
+    !(error instanceof AcpAgentResponseError) ||
+    !isAcpAuthRequiredResponse(error) ||
+    !capabilities.authMethods.some(
+      (method) => method.id === OAUTH_PERSONAL_AUTH_METHOD_ID,
+    )
+  ) {
+    return false;
+  }
+  const message = isJsonObject(error.data) ? error.data["message"] : undefined;
+  return (
+    typeof message === "string" &&
+    message.startsWith(NO_AUTH_METHOD_SELECTED_MESSAGE)
+  );
+}
+
+async function untilBrowserOpens<T>(
+  work: Promise<T>,
+  sentinel: BrowserSentinel,
+): Promise<T> {
+  return await Promise.race([
+    work,
+    sentinel.opened.then((): never => {
+      throw new AcpGoogleSignInNeededError();
+    }),
+  ]);
+}
+
+async function openAcpDiscoverySession<T>(args: {
+  connection: AcpAgentConnection;
+  env: Record<string, string | undefined>;
+  connect: (env: Record<string, string | undefined>) => AcpAgentConnection;
+  onConnection: (connection: AcpAgentConnection) => void;
+  initialize: (connection: AcpAgentConnection) => Promise<AcpAgentCapabilities>;
+  createSession: (connection: AcpAgentConnection) => Promise<T>;
+}): Promise<{ capabilities: AcpAgentCapabilities; created: T }> {
+  const capabilities = await args.initialize(args.connection);
+  await authenticateAcpAgent({
+    connection: args.connection,
+    env: args.env,
+    capabilities,
+  });
+  try {
+    return {
+      capabilities,
+      created: await args.createSession(args.connection),
+    };
+  } catch (error) {
+    if (!isNoAuthMethodSelectedError(error, capabilities)) {
+      throw error;
+    }
+  }
+  await args.connection.kill();
+  const sentinel = await createBrowserSentinel();
+  if (sentinel === null) {
+    throw new AcpGoogleSignInNeededError();
+  }
+  try {
+    const connection = args.connect({ ...args.env, BROWSER: sentinel.command });
+    args.onConnection(connection);
+    const retried = await untilBrowserOpens(
+      args.initialize(connection),
+      sentinel,
+    );
+    await untilBrowserOpens(
+      connection.request({
+        method: "authenticate",
+        params: { methodId: OAUTH_PERSONAL_AUTH_METHOD_ID },
+        resultSchema: z.unknown(),
+        timeoutMs: ACP_AUTHENTICATE_TIMEOUT_MS,
+      }),
+      sentinel,
+    ).catch((error: unknown) => {
+      throw error instanceof AcpGoogleSignInNeededError
+        ? error
+        : new AcpGoogleSignInNeededError();
+    });
+    const created = await untilBrowserOpens(
+      args.createSession(connection),
+      sentinel,
+    );
+    return { capabilities: retried, created };
+  } finally {
+    await sentinel.dispose();
+  }
+}
+
 async function loadAgentModelCatalog(
   listCommand: AcpAgentCommandParam,
 ): Promise<AgentModelCatalog | null> {
@@ -1041,23 +1137,28 @@ async function loadDeclaredSessionOptions(
     ...withoutBridgeRuntimeEnv(process.env),
     ...(agent.envVars ?? {}),
   };
-  const connection = createBridgeAgentConnection({
-    command: agent.command,
-    args: agent.args,
-    cwd: agent.cwd ?? process.cwd(),
-    env: childEnv,
-    recordThreadId: null,
-    onResponse: (method, result) => {
-      if (method === "session/new") {
-        rememberDeclaredSessionOptions(key, result);
-      }
-    },
-    onNotification: () => {},
-    onRequest: (_method, _params, responder) => {
-      responder.error(-32601, "ACP option discovery does not support requests");
-    },
-    onExit: () => {},
-  });
+  const connect = (env: Record<string, string | undefined>) =>
+    createBridgeAgentConnection({
+      command: agent.command,
+      args: agent.args,
+      cwd: agent.cwd ?? process.cwd(),
+      env,
+      recordThreadId: null,
+      onResponse: (method, result) => {
+        if (method === "session/new") {
+          rememberDeclaredSessionOptions(key, result);
+        }
+      },
+      onNotification: () => {},
+      onRequest: (_method, _params, responder) => {
+        responder.error(
+          -32601,
+          "ACP option discovery does not support requests",
+        );
+      },
+      onExit: () => {},
+    });
+  let connection = connect(childEnv);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutReached = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
@@ -1073,22 +1174,27 @@ async function loadDeclaredSessionOptions(
   try {
     await Promise.race([
       (async () => {
-        const capabilities = await requestAcpInitialize(connection, {
-          parameterizedModelPicker,
-          fsAccess: false,
-        });
-        await authenticateAcpAgent({
+        const { capabilities, created } = await openAcpDiscoverySession({
           connection,
           env: childEnv,
-          capabilities,
+          connect,
+          onConnection: (next) => {
+            connection = next;
+          },
+          initialize: (target) =>
+            requestAcpInitialize(target, {
+              parameterizedModelPicker,
+              fsAccess: false,
+            }),
+          createSession: (target) =>
+            target.request({
+              method: "session/new",
+              params: { cwd: agent.cwd ?? process.cwd(), mcpServers: [] },
+              resultSchema: z.unknown(),
+            }),
         });
-        const newSession = await connection.request({
-          method: "session/new",
-          params: { cwd: agent.cwd ?? process.cwd(), mcpServers: [] },
-          resultSchema: z.unknown(),
-        });
-        const sessionId = isJsonObject(newSession)
-          ? newSession["sessionId"]
+        const sessionId = isJsonObject(created)
+          ? created["sessionId"]
           : undefined;
         if (typeof sessionId === "string") {
           discoverySession = { capabilities, sessionId };
@@ -1151,26 +1257,31 @@ async function loadSessionDiscoveredModels(
     ...withoutBridgeRuntimeEnv(process.env),
     ...(agent.envVars ?? {}),
   };
-  const connection = createBridgeAgentConnection({
-    command: agent.command,
-    args: agent.args,
-    cwd: agent.cwd ?? process.cwd(),
-    env: childEnv,
-    recordThreadId: null,
-    onResponse: (method, result) => {
-      if (method === "session/new") {
-        rememberDeclaredSessionOptions(
-          declaredSessionOptionsKey(agent, parameterizedModelPicker),
-          result,
+  const connect = (env: Record<string, string | undefined>) =>
+    createBridgeAgentConnection({
+      command: agent.command,
+      args: agent.args,
+      cwd: agent.cwd ?? process.cwd(),
+      env,
+      recordThreadId: null,
+      onResponse: (method, result) => {
+        if (method === "session/new") {
+          rememberDeclaredSessionOptions(
+            declaredSessionOptionsKey(agent, parameterizedModelPicker),
+            result,
+          );
+        }
+      },
+      onNotification: () => {},
+      onRequest: (_method, _params, responder) => {
+        responder.error(
+          -32601,
+          "ACP model discovery does not support requests",
         );
-      }
-    },
-    onNotification: () => {},
-    onRequest: (_method, _params, responder) => {
-      responder.error(-32601, "ACP model discovery does not support requests");
-    },
-    onExit: () => {},
-  });
+      },
+      onExit: () => {},
+    });
+  let connection = connect(childEnv);
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutReached = new Promise<never>((_, reject) => {
@@ -1189,20 +1300,27 @@ async function loadSessionDiscoveredModels(
   try {
     const newSession = await Promise.race([
       (async () => {
-        const capabilities = await requestAcpInitialize(connection, {
-          parameterizedModelPicker,
-          fsAccess: false,
-        });
-        discoveredCapabilities = capabilities;
-        await authenticateAcpAgent({
+        const { capabilities, created } = await openAcpDiscoverySession({
           connection,
           env: childEnv,
-          capabilities,
-        });
-        const created = await connection.request({
-          method: "session/new",
-          params: { cwd: agent.cwd ?? process.cwd(), mcpServers: [] },
-          resultSchema: acpSessionNewResultSchema,
+          connect,
+          onConnection: (next) => {
+            connection = next;
+          },
+          initialize: async (target) => {
+            const initialized = await requestAcpInitialize(target, {
+              parameterizedModelPicker,
+              fsAccess: false,
+            });
+            discoveredCapabilities = initialized;
+            return initialized;
+          },
+          createSession: (target) =>
+            target.request({
+              method: "session/new",
+              params: { cwd: agent.cwd ?? process.cwd(), mcpServers: [] },
+              resultSchema: acpSessionNewResultSchema,
+            }),
         });
         discoverySession = { capabilities, sessionId: created.sessionId };
         return created;
@@ -1406,6 +1524,13 @@ class AcpAuthRequiredError extends BridgeRecoveryError {
   }
 }
 
+class AcpGoogleSignInNeededError extends AcpAuthRequiredError {
+  constructor() {
+    super(GOOGLE_SIGN_IN_NEEDED_MESSAGE);
+    this.name = "AcpGoogleSignInNeededError";
+  }
+}
+
 class AcpModelListAuthRequiredError extends AcpAuthRequiredError {
   constructor() {
     super(AUTH_REQUIRED_MODEL_LIST_ERROR_MESSAGE);
@@ -1469,7 +1594,10 @@ function withAcpSignInGuidance(
   },
 ): unknown {
   const typed = withAcpAuthRequiredRecovery(error);
-  if (!(typed instanceof AcpAuthRequiredError)) {
+  if (
+    !(typed instanceof AcpAuthRequiredError) ||
+    typed instanceof AcpGoogleSignInNeededError
+  ) {
     return error;
   }
   const guidance = agent.capabilities

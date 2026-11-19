@@ -1570,6 +1570,141 @@ describe("acp bridge", () => {
     });
   });
 
+  describe("an agent that needs Google sign-in selected", () => {
+    const noMethodSelected =
+      'No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key), or set "auth.type" in settings.json.';
+    const logLines = (path: string) =>
+      existsSync(path)
+        ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean)
+        : [];
+    const launchedPids = (path: string) =>
+      logLines(path).map((line) => Number(line.split(" ")[1]));
+    const authenticateMethods = (path: string) =>
+      logLines(path)
+        .map((line) => JSON.parse(line) as { method?: string; params?: unknown })
+        .filter((message) => message.method === "authenticate")
+        .map(
+          (message) =>
+            (message.params as { methodId?: string } | undefined)?.methodId,
+        );
+    const isAlive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    it("selects oauth-personal itself and lists models when this machine has a saved Google sign-in", async () => {
+      const launchLog = join(workspaceDir, "oauth-launches.txt");
+      const requestLog = join(workspaceDir, "oauth-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+      expect(authenticateMethods(requestLog)).toEqual(["oauth-personal"]);
+      expect(launchedPids(launchLog)).toHaveLength(2);
+    });
+
+    it("shows a short sign-in message with no raw agent JSON when this machine has no Google sign-in, and opens no browser", async () => {
+      const launchLog = join(workspaceDir, "signed-out-launches.txt");
+      const browserLog = join(workspaceDir, "signed-out-browser.txt");
+      const startedAt = Date.now();
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+            FAKE_ACP_OAUTH_SIGNED_OUT: "1",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_BROWSER_LOG: browserLog,
+          },
+        }),
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+      expect(response.result).toBeUndefined();
+      const message = response.error?.message ?? "";
+      expect(message).toBe(
+        "No saved Google sign-in was found on this machine, and bb does not open a browser while it lists models. Add a Google account with `bb pool account add --provider gemini --login`, or sign this agent in with Google on the machine that hosts the thread, then try again.",
+      );
+      expect(message).not.toContain("{");
+      expect(message).not.toContain("Authentication required");
+      expect(response.error?.data).toMatchObject({
+        recovery: { kind: "authRequired", retryable: false },
+      });
+      const browsers = logLines(browserLog);
+      expect(browsers).toHaveLength(1);
+      expect(browsers[0]).toMatch(/bb-acp-browser-[^/]+\/browser$/u);
+      expect(existsSync(dirname(browsers[0] ?? ""))).toBe(false);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([]);
+      });
+    });
+
+    it("leaves a signed-in agent that advertises oauth-personal on one connection with no authenticate", async () => {
+      const launchLog = join(workspaceDir, "signed-in-launches.txt");
+      const requestLog = join(workspaceDir, "signed-in-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_OPTIONAL: "1",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(launchedPids(launchLog)).toHaveLength(1);
+    });
+
+    it("does not retry with Google sign-in for any other auth-required error", async () => {
+      const launchLog = join(workspaceDir, "other-auth-launches.txt");
+      const requestLog = join(workspaceDir, "other-auth-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE:
+              "The configured gateway rejected this account.",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.result).toBeUndefined();
+      expect(response.error?.data).toMatchObject({
+        recovery: { kind: "authRequired" },
+      });
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(launchedPids(launchLog)).toHaveLength(1);
+    });
+  });
+
   it("serves ACP-native discovered models from cache within the TTL and re-discovers after it", async () => {
     const launchLog = join(workspaceDir, "discovery-launches.txt");
     const discoveryEnv = {
