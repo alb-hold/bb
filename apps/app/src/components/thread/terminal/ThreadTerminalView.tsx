@@ -228,6 +228,54 @@ export const TERMINAL_ALLOW_PROPOSED_API = true;
 const TERMINAL_TOUCH_FOCUS_MAX_DURATION_MS = 700;
 const TERMINAL_TOUCH_FOCUS_MOVEMENT_THRESHOLD_PX = 10;
 
+async function withAsyncFinally<T>(
+  action: () => Promise<T>,
+  finalize: () => void,
+): Promise<T> {
+  try {
+    return await action();
+  } finally {
+    finalize();
+  }
+}
+
+async function withAsyncCatchAndFinally(
+  action: () => Promise<void>,
+  onError: () => void,
+  finalize: () => void,
+): Promise<void> {
+  try {
+    await action();
+  } catch {
+    onError();
+  } finally {
+    finalize();
+  }
+}
+
+async function withAsyncCatch<T>(
+  action: () => Promise<T>,
+  onError: () => void,
+): Promise<T | undefined> {
+  try {
+    return await action();
+  } catch {
+    onError();
+    return undefined;
+  }
+}
+
+function focusTerminalAndResetFlag(
+  terminal: XTermTerminal,
+  flag: { current: boolean },
+): void {
+  try {
+    terminal.focus();
+  } finally {
+    flag.current = false;
+  }
+}
+
 type TerminalFitScheduler = () => void;
 
 interface ShouldFocusTerminalAfterAsyncMountArgs {
@@ -1433,8 +1481,12 @@ export function ThreadTerminalView({
     typeof createTerminalTouchHandlers
   > | null>(null);
   const touchHandlers = useCallback(() => {
-    touchHandlersRef.current ??= createTerminalTouchHandlers(terminalRef);
-    return touchHandlersRef.current;
+    let handlers = touchHandlersRef.current;
+    if (handlers === null) {
+      handlers = createTerminalTouchHandlers(terminalRef);
+      touchHandlersRef.current = handlers;
+    }
+    return handlers;
   }, []);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
   const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
@@ -3572,7 +3624,7 @@ export function ThreadTerminalView({
         if (lifecycle.disposed || !parkedRef.current || !lifecycle.replayCompleted) return;
         lifecycle.parkedOutputDraining = true;
         const started = performance.now();
-        try {
+        await withAsyncFinally(async () => {
           do {
             const chunks = hiddenOutput.takeBatch(8 * 1024);
             if (chunks.length === 0) break;
@@ -3596,10 +3648,10 @@ export function ThreadTerminalView({
             parkedRef.current &&
             performance.now() - started < 4
           );
-        } finally {
+        }, () => {
           lifecycle.parkedOutputDraining = false;
           scheduleParkedOutput(0);
-        }
+        });
       };
       const scheduleParkedOutput = (delay = 250) => {
         if (
@@ -3630,7 +3682,10 @@ export function ThreadTerminalView({
           lifecycle.paintReveal?.dispose();
           lifecycle.paintReveal = null;
           holdTerminalPaint(containerElement);
-          lifecycle.restoreParkedRendering ??= releaseParkedTerminalRendering(activeTerminal);
+          if (lifecycle.restoreParkedRendering === null) {
+            lifecycle.restoreParkedRendering =
+              releaseParkedTerminalRendering(activeTerminal);
+          }
           scheduleParkedOutput();
         } else {
           lifecycle.paintReveal?.dispose();
@@ -3790,7 +3845,7 @@ export function ThreadTerminalView({
             terminal: activeTerminal,
           });
         };
-        try {
+        await withAsyncCatchAndFinally(async () => {
           const outputPromise = sdk.terminals.output({
             terminalId: sessionRef.current.id,
             tailBytes: 64 * 1024,
@@ -3838,17 +3893,14 @@ export function ThreadTerminalView({
             lifecycle.replayNextSequence = output.nextSeq;
             restoreViewport();
           }
-        } catch {
-          revealRetainedFallback();
-        } finally {
+        }, revealRetainedFallback, () => {
           if (lifecycle.retainedReplayTimeout !== null) {
             clearTimeout(lifecycle.retainedReplayTimeout);
             lifecycle.retainedReplayTimeout = null;
           }
-        }
+        });
       } else if (!holdForFittedGrid) {
-        void (async () => {
-          try {
+        void withAsyncCatch(async () => {
             const snapshot = await screenPromise;
             if (
               !lifecycle.disposed &&
@@ -3893,14 +3945,13 @@ export function ThreadTerminalView({
                 lifecycle.replayPreview?.push(snapshotFrame, resolve),
               );
             }
-          } catch {
+          }, () => {
             if (!lifecycle.replayStarted) {
               lifecycle.replayCheckpointSequence = null;
               lifecycle.replayPreview?.dispose();
               lifecycle.replayPreview = null;
             }
-          }
-        })();
+          });
         activeTransport.start();
       }
       if (lifecycle.disposed) return;
@@ -4143,11 +4194,7 @@ export function ThreadTerminalView({
     const terminal = terminalRef.current;
     if (terminal !== null && !terminalSearchOpenRef.current) {
       restoringFocusRef.current = returningRef.current;
-      try {
-        terminal.focus();
-      } finally {
-        restoringFocusRef.current = false;
-      }
+      focusTerminalAndResetFlag(terminal, restoringFocusRef);
       onAutoFocusHandledRef.current?.();
     }
     scheduleFitRef.current?.();
@@ -4327,22 +4374,26 @@ export function ThreadTerminalView({
   }, [isCompactViewport, preferredTheme, appThemeEpoch]);
 
   const ensurePinchGesture = () => {
-    pinchGestureRef.current ??= createTerminalPinchGesture({
-      getFontSize: () => terminalFontSizeRef.current,
-      setFontSize: (requestedSize) => {
-        const size = Math.max(12, requestedSize);
-        if (size === terminalFontSizeRef.current) return;
-        terminalFontSizeRef.current = size;
-        setTerminalFontSize(size);
-        const terminal = terminalRef.current;
-        if (terminal !== null) {
-          terminal.options.fontSize = size;
-          terminal.refresh(0, terminal.rows - 1);
-        }
-      },
-      fitAndResize: () => scheduleFitRef.current?.(),
-    });
-    return pinchGestureRef.current;
+    let gesture = pinchGestureRef.current;
+    if (gesture === null) {
+      gesture = createTerminalPinchGesture({
+        getFontSize: () => terminalFontSizeRef.current,
+        setFontSize: (requestedSize) => {
+          const size = Math.max(12, requestedSize);
+          if (size === terminalFontSizeRef.current) return;
+          terminalFontSizeRef.current = size;
+          setTerminalFontSize(size);
+          const terminal = terminalRef.current;
+          if (terminal !== null) {
+            terminal.options.fontSize = size;
+            terminal.refresh(0, terminal.rows - 1);
+          }
+        },
+        fitAndResize: () => scheduleFitRef.current?.(),
+      });
+      pinchGestureRef.current = gesture;
+    }
+    return gesture;
   };
   const beginTerminalLongPress = (
     touches: ArrayLike<{

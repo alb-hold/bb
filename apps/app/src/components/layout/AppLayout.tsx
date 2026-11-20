@@ -41,6 +41,10 @@ import { CommandPalette } from "@/components/commands/CommandPalette";
 import { NotificationCenter } from "@/components/notifications/NotificationCenter";
 import { defineSplit } from "@/lib/define-split";
 
+function loadTerminalOpenNavigation() {
+  return import("./terminal-open-navigation.js");
+}
+
 import { useDeviceHandoffQueue } from "@/components/device-handoff/useDeviceHandoffQueue";
 import { useActiveDeviceHandoffTerminal } from "@/components/device-handoff/device-handoff-view";
 import {
@@ -610,7 +614,7 @@ function AppLayoutContent({ children }: AppLayoutProps) {
         }
         const terminalAction = signal.terminalAction;
         if (terminalAction !== undefined) {
-          void import("./terminal-open-navigation.js").then(
+          void loadTerminalOpenNavigation().then(
             ({ navigateThreadWithTerminalAction }) =>
               navigateThreadWithTerminalAction(
                 navigate,

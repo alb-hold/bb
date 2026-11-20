@@ -183,6 +183,27 @@ import { useSortableItemIds } from "../dnd/useStableItemIds.js";
 
 const SIDEBAR_STICKY_PARENT_DEPTH_CAP = 4;
 
+function resolveThreadEnvironmentDisplayName(
+  environment: {
+    name?: string | null;
+    branchName?: string | null;
+    path?: string | null;
+  } | null,
+  environmentProviderId: string | null,
+  providerLookup: Parameters<typeof resolveEnvironmentDisplayName>[1],
+  useName = true,
+): string | null {
+  return resolveEnvironmentDisplayName(
+    {
+      name: useName ? environment?.name ?? null : null,
+      branchName: environment?.branchName ?? null,
+      path: environment?.path ?? null,
+      environmentProviderId,
+    },
+    providerLookup,
+  );
+}
+
 export type ProjectThreadListState =
   | {
       status: "loading";
@@ -753,13 +774,9 @@ function EnvironmentThreadGroupHeader({
     environmentProviderId,
   );
   const displayName =
-    resolveEnvironmentDisplayName(
-      {
-        name: representativeThread.environment?.name ?? null,
-        branchName: representativeThread.environment?.branchName ?? null,
-        path: representativeThread.environment?.path ?? null,
-        environmentProviderId,
-      },
+    resolveThreadEnvironmentDisplayName(
+      representativeThread.environment,
+      environmentProviderId,
       providerLookup,
     ) ?? UNNAMED_ENVIRONMENT_LABEL;
   const sdk = useSdk();
@@ -774,14 +791,11 @@ function EnvironmentThreadGroupHeader({
     name: representativeThread.environment?.name ?? "",
     label: "Environment name",
     placeholder:
-      resolveEnvironmentDisplayName(
-        {
-          name: null,
-          branchName: representativeThread.environment?.branchName ?? null,
-          path: representativeThread.environment?.path ?? null,
-          environmentProviderId,
-        },
+      resolveThreadEnvironmentDisplayName(
+        representativeThread.environment,
+        environmentProviderId,
         providerLookup,
+        false,
       ) ?? UNNAMED_ENVIRONMENT_LABEL,
     maxLength: 80,
     onSave: (name) => updateEnvironment(name),
@@ -1468,14 +1482,14 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
   const isParent = hasChildren;
   const inheritedStickyOffset = useStickyOffset();
   const [growingRowHeight, setGrowingRowHeightPx] = useState(0);
-  const growingRowHeights = useRef(new Map<string, number>());
+  const [growingRowHeights] = useState(() => new Map<string, number>());
   const stickyRowStateReporter = useMemo(
     () =>
       createStickyRowStateReporter(
-        growingRowHeights.current,
+        growingRowHeights,
         setGrowingRowHeightPx,
       ),
-    [setGrowingRowHeightPx],
+    [growingRowHeights, setGrowingRowHeightPx],
   );
   const nestDropEnabled = Boolean(sectionDnd);
   const { setNodeRef: setNestDropNodeRef } = useDroppable({

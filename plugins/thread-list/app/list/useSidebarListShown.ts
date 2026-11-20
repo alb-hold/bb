@@ -19,8 +19,11 @@ export function useSidebarListShown(): boolean {
       return () => clearTimeout(fallback);
     }
     return observeSharedResize(element, {
-      read: (entry) => entry !== undefined && entry.contentRect.height > 0,
-      write: setShown,
+      read: (entry) =>
+        entry === undefined ? undefined : entry.contentRect.height > 0,
+      write: (nextShown) => {
+        if (nextShown !== undefined) setShown(nextShown);
+      },
     });
   }, [visible, canObserve, scrollElementRef]);
   return visible ?? (canObserve ? shown : true);

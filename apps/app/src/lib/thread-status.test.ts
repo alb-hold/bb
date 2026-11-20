@@ -3,6 +3,7 @@ import type {
   ThreadQueuedWork,
   ThreadRuntimeDisplayStatus,
   ThreadStatus,
+  NativeActivityDiagnostic,
 } from "@bb/domain";
 import type {
   PluginSidebarThreadIndicator,
@@ -28,6 +29,7 @@ interface ThreadSpec {
   backgroundAgents?: number;
   backgroundCommands?: number;
   planMode?: number;
+  nativeActivity?: NativeActivityDiagnostic;
 }
 
 interface StatusCase {
@@ -437,7 +439,12 @@ function toEntry(spec: ThreadSpec): ThreadListEntry {
     id: `thr_${nextId}`,
     projectId: "proj_1",
     status: spec.status ?? "idle",
-    runtime: { displayStatus: spec.runtime ?? "idle" },
+    runtime: {
+      displayStatus: spec.runtime ?? "idle",
+      ...(spec.nativeActivity === undefined
+        ? {}
+        : { nativeActivity: spec.nativeActivity }),
+    },
     lastReadAt: spec.unread ? 1 : 2,
     latestAttentionAt: 2,
     parentThreadId: spec.parented ? "thr_parent" : null,
@@ -464,6 +471,29 @@ const CALLERS: {
 ];
 
 describe("experimental_resolveThreadStatus", () => {
+  it("expires stale native activity before resolving core list status", () => {
+    const now = Date.now();
+    const entry = toEntry({
+      runtime: "active",
+      nativeActivity: {
+        lastEvidenceAt: now,
+        freshForMs: 90_000,
+        confirmation: "confirmed",
+        evidenceKind: "holder-report",
+      },
+    });
+    const resolve = (at: number) =>
+      experimental_resolveThreadStatus({
+        thread: toThreadStatusThread(entry, at),
+        hiddenThreads: [],
+        hasUnsubmittedDraft: false,
+        rowStatus: null,
+      });
+
+    expect(resolve(now).indicator).toBe("runtime");
+    expect(resolve(now + 90_001).indicator).toBe("none");
+  });
+
   describe.each(CALLERS)("through $name", ({ toThread }) => {
     it.each(CASES)("resolves $name", (testCase) => {
       const status = experimental_resolveThreadStatus({

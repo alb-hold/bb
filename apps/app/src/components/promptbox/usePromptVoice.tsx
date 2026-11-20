@@ -25,6 +25,7 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 const getRuntime = () => runtime !== null;
+const loadVoiceRecordingStore = () => import("@/lib/voice-recording-store");
 
 function LoadedPromptVoiceRuntime(props: ComponentProps<Runtime>) {
   const RuntimeComponent = runtime;
@@ -80,7 +81,7 @@ export function usePromptVoice(
     const waiters = waiting.current;
     const controller = new AbortController();
     if (recordingKey !== null) {
-      void import("@/lib/voice-recording-store")
+      void loadVoiceRecordingStore()
         .then((store) => store.hasFailedVoiceRecordings(recordingKey))
         .then((hasRecordings) => {
           if (!controller.signal.aborted && hasRecordings)

@@ -260,7 +260,7 @@ function getThreadRowStyle(depth: number): CSSProperties {
   };
 }
 
-function renderThreadRowContainer({
+function ThreadRowContainer({
   children,
   className,
   containerRef,
@@ -486,6 +486,15 @@ function isNativeActivityNotConfirmed(
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
 const CUSTOMIZE_ROW_ACTIONS_KEY = "thread-list/customizeRowActions";
 
+function runOrDeferCustomize(
+  compact: boolean,
+  pending: { current: (() => void) | null },
+  begin: () => void,
+): void {
+  if (compact) begin();
+  else pending.current = begin;
+}
+
 function renderThreadActionsTrigger(props: PluginThreadActionsTriggerProps) {
   return (
     <Button
@@ -700,8 +709,7 @@ function ThreadRowComponent({
               icon: "FilterHorizontal",
               run: () => {
                 const begin = () => customizeRowActions(thread.id);
-                if (isCompactViewport) begin();
-                else pendingMenuCustomize.current = begin;
+                runOrDeferCustomize(isCompactViewport, pendingMenuCustomize, begin);
               },
             },
           },
@@ -1353,23 +1361,25 @@ function ThreadRowComponent({
     </>
   );
 
-  const row = renderThreadRowContainer({
-    children: rowContent,
-    className: rowClassName,
-    containerRef,
-    dragBindings: rowDragBindings,
-    nestTargetState,
-    reorderPlacement,
-    selected: isSelected,
-    onClick: isEditing ? undefined : handleRowClick,
-    onClickCapture:
-      !isEditing && options.consumeClickSuppression
+  const row = (
+    <ThreadRowContainer
+      className={rowClassName}
+      containerRef={containerRef}
+      dragBindings={rowDragBindings}
+      nestTargetState={nestTargetState}
+      reorderPlacement={reorderPlacement}
+      selected={isSelected}
+      onClick={isEditing ? undefined : handleRowClick}
+      onClickCapture={
+        !isEditing && options.consumeClickSuppression
         ? handleRowClickCapture
-        : undefined,
-    onSplitDragPointerDown: isEditing ? undefined : onSplitDragPointerDown,
-    stickyLevel: parentOptions?.stickyLevel,
-    style: rowStyle,
-  });
+        : undefined
+      }
+      onSplitDragPointerDown={isEditing ? undefined : onSplitDragPointerDown}
+      stickyLevel={parentOptions?.stickyLevel}
+      style={rowStyle}
+    />
+  );
 
   const bulkMenuProps: Pick<
     PluginThreadActionsContextMenuProps,

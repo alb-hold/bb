@@ -269,6 +269,16 @@ function buildOpenTargetMenuItemLabel(target: WorkspaceOpenTarget): string {
   return `Open in ${target.label}`;
 }
 
+function buildThreadTerminalInput(threadId: string, cwd: string | undefined) {
+  const input = {
+    target: { kind: "thread" as const, threadId },
+    cols: 100,
+    rows: 30,
+  };
+  if (cwd === undefined) return input;
+  return { ...input, cwd };
+}
+
 function ThreadDetailNotFound() {
   return (
     <PageShell contentClassName="min-h-full items-center justify-center">
@@ -1152,12 +1162,9 @@ function ThreadDetailViewInternal(
     if (!canStartTerminal || !threadId) return null;
     try {
       const cwd = getActiveTerminalSpawnCwd();
-      const session = await createTerminal.mutateAsync({
-        target: { kind: "thread", threadId },
-        cols: 100,
-        rows: 30,
-        ...(cwd === undefined ? {} : { cwd }),
-      });
+      const session = await createTerminal.mutateAsync(
+        buildThreadTerminalInput(threadId, cwd),
+      );
       selectTerminal(session.id);
       return session.id;
     } catch {

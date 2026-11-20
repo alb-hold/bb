@@ -53,6 +53,20 @@ type Handoff = NonNullable<
 >;
 type Accept = Parameters<Handoff["attach"]>[0];
 
+async function withAsyncCatchAndFinally(
+  action: () => Promise<void>,
+  onError: (error: unknown) => void,
+  finalize: () => void,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    onError(error);
+  } finally {
+    finalize();
+  }
+}
+
 function ProgressiveComposerRender({
   children,
   handoff,
@@ -345,23 +359,24 @@ export function ProgressiveComposer({
   }, [commit, props.promptBoxRef, rich, submit]);
   const attachFiles = async (files: File[]) => {
     const attachments = current.current.attachments;
-    if (!attachments?.onAttachFiles || files.length === 0) return;
+    const onAttachFiles = attachments?.onAttachFiles;
+    if (!onAttachFiles || files.length === 0) return;
     pendingAttachments.current++;
     setAttaching(true);
     setAttachmentError(null);
-    try {
-      const added = await attachments.onAttachFiles(files);
+    await withAsyncCatchAndFinally(async () => {
+      const added = await onAttachFiles(files);
       attachments.onUpdate?.((items) => [...items, ...added]);
-    } catch (error) {
+    }, (error) => {
       const message =
         error instanceof Error ? error.message : "Could not attach files";
       setAttachmentError(message);
       appToast.error(message);
-    } finally {
+    }, () => {
       pendingAttachments.current--;
       setAttaching(pendingAttachments.current > 0);
       schedule();
-    }
+    });
   };
   const voiceActive =
     props.voice?.state === "recording" || props.voice?.state === "transcribing";

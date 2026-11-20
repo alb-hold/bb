@@ -19,3 +19,9 @@ export function isTmpRootOwnerIdentityLive(
     ? pidIsAlive
     : isTmpRootOwnerProcess(startedAt, recordedAt, startTimeResolutionMs);
 }
+
+export function shouldCheckTmpRootOwnerPidLiveness(
+  identity: { startedAt: number | null } | null,
+): boolean {
+  return identity === null || identity.startedAt === null;
+}

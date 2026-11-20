@@ -7,7 +7,10 @@ import type {
 import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
 import { isThreadRead } from "@bb/client-core";
 import { withEffectiveDisplayStatus } from "@bb/domain";
-import { isNativeActivityUnconfirmed, nativeActivityEvidenceKind } from "@bb/client-core";
+import {
+  isNativeActivityUnconfirmed,
+  nativeActivityEvidenceKind,
+} from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
   resolveThreadTitleDisplayText,
@@ -22,6 +25,10 @@ export function toThreadStatusThread(
   entry: ThreadListEntry,
   now = Date.now(),
 ): PluginThreadStatusThread {
+  const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
+    entry.runtime,
+    now,
+  );
   const activity: PluginSidebarThreadActivityWithRetiredGoals = {
     workflows: entry.activity.activeWorkflowCount,
     backgroundAgents: entry.activity.activeBackgroundAgentCount,
@@ -31,7 +38,9 @@ export function toThreadStatusThread(
   };
   return {
     status: entry.status,
-    runtimeStatus: entry.runtime.displayStatus,
+    runtimeStatus: nativeActivityUnconfirmed
+      ? "idle"
+      : entry.runtime.displayStatus,
     queuedWork: entry.queuedWork,
     hasPendingInteraction: entry.hasPendingInteraction,
     activity,

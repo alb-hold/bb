@@ -119,6 +119,7 @@ import {
   onTerminalSocketMessage,
   onTerminalSocketOpen,
 } from "./ws/terminal-protocol.js";
+import { terminalClientProtocolOptions } from "./ws/terminal-client-options.js";
 import {
   createBbAppArtifactService,
   type BbAppArtifactService,
@@ -1047,6 +1048,10 @@ export function createApp(
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
+            ...terminalClientProtocolOptions(
+              context.req.header("origin"),
+              socket.protocol,
+            ),
             handoffOwnerToken: query.data.handoffOwnerToken,
             outputAcks: query.data.outputAcks,
             resizeAcks: query.data.resizeAcks,

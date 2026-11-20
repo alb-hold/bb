@@ -100,6 +100,38 @@ function pastedFiles(clipboard: Pick<DataTransfer, "files" | "items">): File[] {
   });
 }
 
+function withSyncFinally<T>(action: () => T, finalize: () => void): T {
+  try {
+    return action();
+  } finally {
+    finalize();
+  }
+}
+
+async function uploadPromptAttachments(
+  files: readonly File[],
+  projectId: string,
+  uploadAttachment: (
+    projectId: string,
+    file: File,
+  ) => Promise<UploadedPromptAttachment>,
+  onUploaded: (attachment: UploadedPromptAttachment) => void,
+  onPendingChange: (delta: number) => void,
+): Promise<string[]> {
+  onPendingChange(files.length);
+  const failed: string[] = [];
+  for (const file of files) {
+    try {
+      onUploaded(await uploadAttachment(projectId, file));
+    } catch {
+      failed.push(file.name);
+    } finally {
+      onPendingChange(-1);
+    }
+  }
+  return failed;
+}
+
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
@@ -178,16 +210,14 @@ export function NativeTerminalPromptBar({
         const selectionEnd = element.selectionEnd;
         programmaticRef.current = true;
         lastChangeRef.current = null;
-        let applied = false;
-        try {
+        const applied = withSyncFinally(() => {
           element.setSelectionRange(start, end);
-          applied =
-            replacement.length > 0
-              ? document.execCommand("insertText", false, replacement)
-              : start === end || document.execCommand("delete");
-        } finally {
+          return replacement.length > 0
+            ? document.execCommand("insertText", false, replacement)
+            : start === end || document.execCommand("delete");
+        }, () => {
           programmaticRef.current = false;
-        }
+        });
         if (applied && textRef.current !== current) {
           const change = lastChangeRef.current;
           if (change !== null) {
@@ -304,18 +334,15 @@ export function NativeTerminalPromptBar({
 
   const uploadFiles = async (files: readonly File[]) => {
     setAttachError(null);
-    setPendingUploads((count) => count + files.length);
-    const failed: string[] = [];
-    for (const file of files) {
-      try {
-        const uploaded = await upload.mutateAsync({ projectId, file });
-        setAttachments((current) => [...current, uploaded]);
-      } catch {
-        failed.push(file.name);
-      } finally {
-        setPendingUploads((count) => count - 1);
-      }
-    }
+    const failed = await uploadPromptAttachments(
+      files,
+      projectId,
+      (targetProjectId, file) =>
+        upload.mutateAsync({ projectId: targetProjectId, file }),
+      (attachment) =>
+        setAttachments((current) => [...current, attachment]),
+      (delta) => setPendingUploads((count) => count + delta),
+    );
     if (failed.length > 0) {
       setAttachError(`Failed to attach ${failed.join(", ")}`);
     }

@@ -991,6 +991,17 @@ function hasDropDecisionLanded(
   }
 }
 
+function sameReorderTarget(
+  left: SectionThreadReorderTarget | null,
+  right: SectionThreadReorderTarget | null,
+): boolean {
+  if (left === null) return right === null;
+  if (right === null) return false;
+  return (
+    left.threadId === right.threadId && left.placement === right.placement
+  );
+}
+
 export function useSectionThreadDnd({
   containerId,
   containerProjectId,
@@ -1043,6 +1054,7 @@ export function useSectionThreadDnd({
     [topLevelSectionOrder],
   );
   const activeIdRef = useRef<string | null>(null);
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const armedNestThreadIdRef = useRef<string | null>(null);
   const latestRowCollisionRef = useRef<RetainedNestTarget | null>(null);
   const retainedNestTargetRef = useRef<RetainedNestTarget | null>(null);
@@ -1261,6 +1273,7 @@ export function useSectionThreadDnd({
     latestRowCollisionRef.current = null;
     retainedNestTargetRef.current = null;
     activeIdRef.current = null;
+    setActiveItemId(null);
     pinnedInsertRef.current = null;
   }, [clearNestCandidate]);
   const clearProjectedDrag = clearDropState;
@@ -1285,6 +1298,7 @@ export function useSectionThreadDnd({
       setPendingDropDecision(null);
       pendingDropDecisionRef.current = null;
       activeIdRef.current = thread ? activeId : null;
+      setActiveItemId(thread ? activeId : null);
       armedNestThreadIdRef.current = null;
       latestRowCollisionRef.current = null;
       retainedNestTargetRef.current = null;
@@ -1411,10 +1425,7 @@ export function useSectionThreadDnd({
       if (activeId === null || isPinnedRoot(activeId)) return;
       const next = pinnedInsertRef.current;
       setReorderTarget((current) =>
-        current?.threadId === next?.threadId &&
-        current?.placement === next?.placement
-          ? current
-          : next,
+        sameReorderTarget(current, next) ? current : next,
       );
     },
     [enabled, isPinnedRoot],
@@ -1624,7 +1635,6 @@ export function useSectionThreadDnd({
     if (dropDecisionLanded) clearProjectedDrag();
   }, [clearProjectedDrag, dropDecisionLanded]);
 
-  const activeItemId = activeIdRef.current;
   const itemIdsByParentKey = useSharedItemIdsByParentKey(
     lookup.itemIdsByParentKey,
     isDragging,
