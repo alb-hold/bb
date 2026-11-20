@@ -807,6 +807,14 @@ async function runRemove(
         throw new Error("The environment provider became unavailable.");
       const result = removeResultSchema.parse(invocation.value);
       if (result.status === "retained") {
+        if (environmentHasLiveThreads(deps.db, environmentId)) {
+          writeEnvironment(deps, environmentId, {
+            teardownStatus: null,
+            teardownMessage: null,
+            retireAt: null,
+          });
+          return;
+        }
         writeEnvironmentTeardownFailure(deps, environmentId, result.message);
         if (statusToRestoreOnRetention !== null)
           writeEnvironment(deps, environmentId, {
