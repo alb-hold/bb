@@ -527,6 +527,16 @@ export function requestThreadStorageDeletion(
   });
 }
 
+export function threadStorageDeletionNeedsNoHost(
+  deps: Pick<CommandResultSideEffectsDeps, "db">,
+  thread: Pick<Thread, "environmentId">,
+  environment: StopEnvironment | null,
+): boolean {
+  if (thread.environmentId === null) return true;
+  if (environment === null) return false;
+  return getHost(deps.db, environment.hostId)?.destroyedAt != null;
+}
+
 export function retryThreadStorageDeletion(
   deps: CommandResultSideEffectsDeps,
   thread: Pick<Thread, "environmentId" | "id">,

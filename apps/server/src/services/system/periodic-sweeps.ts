@@ -82,6 +82,7 @@ import {
   recoverThreadLifecyclesAfterRestart,
   requestThreadStopForCurrentState,
   retryThreadStorageDeletion,
+  threadStorageDeletionNeedsNoHost,
   turnStartDeadlineSweep,
 } from "../threads/thread-lifecycle.js";
 import {
@@ -539,14 +540,12 @@ function deletedThreadFinalizationSweep(
         finalizeStoppedThread(deps, { fence: false, threadId: thread.id });
         return;
       }
-      retryThreadStorageDeletion(
-        deps,
-        thread,
-        thread.environmentId
-          ? getEnvironment(deps.db, thread.environmentId)
-          : null,
-        Date.now(),
-      );
+      const environment = thread.environmentId
+        ? getEnvironment(deps.db, thread.environmentId)
+        : null;
+      if (threadStorageDeletionNeedsNoHost(deps, thread, environment)) {
+        retryThreadStorageDeletion(deps, thread, environment, Date.now());
+      }
     },
   });
 }
@@ -570,6 +569,7 @@ async function runThreadOrphanCleanupSweeps(
     const environment = thread.environmentId
       ? getEnvironment(deps.db, thread.environmentId)
       : null;
+    if (threadStorageDeletionNeedsNoHost(deps, thread, environment)) continue;
     retryThreadStorageDeletion(deps, thread, environment, now);
   }
 }

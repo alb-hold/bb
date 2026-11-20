@@ -198,7 +198,7 @@ describe("pruning invalidation", () => {
       const script = createThreadScript(harness);
       for (let turn = 1; turn <= 3; turn += 1) {
         const turnId = script.startTurn(turn);
-        for (let step = 0; step < 40; step += 1) {
+        for (let step = 0; step < 400; step += 1) {
           script.append("thread/tokenUsage/updated", turnScope(turnId), {
             tokenUsage: {
               total: TOKEN_BREAKDOWN,

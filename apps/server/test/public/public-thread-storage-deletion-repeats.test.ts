@@ -5,7 +5,7 @@ import {
   requestThreadPurge,
   threadPurges,
 } from "@bb/db";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   advanceProjectDeletion,
   beginProjectDeletion,
@@ -84,7 +84,7 @@ it.each(["idle", "error", "active", "starting", "stopping"] as const)(
   },
 );
 
-it("sends at most four storage deletions to a host at once", async () => {
+it("sends at most one reconnect storage deletion per minute to a host", async () => {
   await withTestHarness(async (harness) => {
     const { host } = seedHostSession(harness.deps);
     const { project } = seedProjectWithSource(harness.deps, {
@@ -105,25 +105,36 @@ it("sends at most four storage deletions to a host at once", async () => {
       markThreadDeleted(harness.db, harness.deps.hub, { threadId: thread.id });
     }
 
-    await reconcileDaemonReportedThreads(harness.deps, {
-      hostId: host.id,
-      activeThreadIds: [],
-      turnCommandThreadIds: [],
-      undeliveredEventThreadIds: [],
-      sameDaemonInstance: false,
-    });
-
-    for (let remaining = deleted.length; remaining > 0; remaining -= 1) {
-      await expect
-        .poll(() => listQueuedCommands(harness, "thread.storage.delete").length)
-        .toBe(Math.min(4, remaining));
-      const queued = await waitForQueuedCommand(
-        harness,
-        ({ command }) => command.type === "thread.storage.delete",
-      );
-      await reportQueuedCommandSuccess(harness, queued, {
-        providerCheckpointId: null,
+    const startedAt = Date.now();
+    const reconnect = () =>
+      reconcileDaemonReportedThreads(harness.deps, {
+        hostId: host.id,
+        activeThreadIds: [],
+        turnCommandThreadIds: [],
+        undeliveredEventThreadIds: [],
+        sameDaemonInstance: false,
       });
+    const now = vi.spyOn(Date, "now");
+    try {
+      for (let sent = 0; sent < deleted.length; sent += 1) {
+        now.mockReturnValue(startedAt + sent * 61_000);
+        await reconnect();
+        await reconnect();
+        await expect
+          .poll(
+            () => listQueuedCommands(harness, "thread.storage.delete").length,
+          )
+          .toBe(1);
+        const queued = await waitForQueuedCommand(
+          harness,
+          ({ command }) => command.type === "thread.storage.delete",
+        );
+        await reportQueuedCommandSuccess(harness, queued, {
+          providerCheckpointId: null,
+        });
+      }
+    } finally {
+      now.mockRestore();
     }
     await expect
       .poll(() =>
@@ -189,11 +200,17 @@ it("retries only unfinished storage deletion while a project deletion is pending
       errorMessage: "Host disconnected",
     });
 
-    await advanceProjectDeletion(harness.deps, { projectId: project.id });
-    const retry = await queuedFor(fails.id);
-    expect(storageDeleteThreadIds()).toEqual([fails.id]);
-    await reportQueuedCommandSuccess(harness, retry, {
-      providerCheckpointId: null,
-    });
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(Date.now() + 2 * 60 * 60_000);
+      await advanceProjectDeletion(harness.deps, { projectId: project.id });
+      const retry = await queuedFor(fails.id);
+      expect(storageDeleteThreadIds()).toEqual([fails.id]);
+      await reportQueuedCommandSuccess(harness, retry, {
+        providerCheckpointId: null,
+      });
+    } finally {
+      now.mockRestore();
+    }
   });
 });
