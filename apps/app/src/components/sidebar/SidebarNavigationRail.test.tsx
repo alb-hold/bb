@@ -17,6 +17,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { isLastInputKeyboard } from "@bb/shared-ui/overlay-trigger";
 import {
   SidebarProvider,
   SidebarTrigger,
@@ -370,6 +371,28 @@ afterEach(() => {
 });
 
 describe("Rail", () => {
+  it("DIAG keyboard tooltip", async () => {
+    renderRail(THREAD_PATH);
+    const before = isLastInputKeyboard();
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    const afterKey = isLastInputKeyboard();
+    const button = railButton("Home");
+    act(() => button.focus());
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    console.log(
+      "DIAG",
+      JSON.stringify({
+        before,
+        afterKey,
+        state: button.getAttribute("data-state"),
+        describedby: button.getAttribute("aria-describedby"),
+        focused: document.activeElement === button,
+        tooltips: document.querySelectorAll('[role="tooltip"]').length,
+        portals: document.querySelectorAll("[data-bb-portaled-overlay]").length,
+      }),
+    );
+  });
+
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
     "gives %s a matching keyboard tooltip and accessible name", async (label) => {
       renderRail(THREAD_PATH);
