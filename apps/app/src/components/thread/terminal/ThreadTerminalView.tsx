@@ -2488,7 +2488,7 @@ export function ThreadTerminalView({
         lifecycle.terminal,
         (grid, apply) => {
           lifecycle.markerGridActive = true;
-          if (apply) {
+          if (apply && !lifecycle.hasReceivedInitialAttach) {
             lifecycle.latestPtyGrid = grid;
           }
           updateTerminalReplayPreviewPtyGrid(

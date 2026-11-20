@@ -1073,8 +1073,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         }
       }, "initial route socket missing");
       const sessionSockets = sessions.map((viewSession) => {
-        const index = testState.socketUrls.findLastIndex((url) =>
-          new URL(url).pathname.includes(viewSession.id),
+        const index = testState.socketUrls.reduce(
+          (last: number, url: string, urlIndex: number) =>
+            new URL(url).pathname.includes(viewSession.id) ? urlIndex : last,
+          -1,
         );
         expect(index).toBeGreaterThanOrEqual(0);
         return testState.sockets[index]!;

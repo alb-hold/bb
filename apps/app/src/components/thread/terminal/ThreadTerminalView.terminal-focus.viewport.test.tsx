@@ -1128,6 +1128,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         ),
       },
     });
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 38, rows: 5 },
+      });
+      await Promise.resolve();
+    });
     await waitForReadinessCondition(() => {
       expect(getTerminal().cols).toBe(38);
       expect(getTerminal().rows).toBe(5);
