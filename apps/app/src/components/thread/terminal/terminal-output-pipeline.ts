@@ -89,10 +89,10 @@ export function createTerminalOutputPipeline(
               terminal.cols !== operation.grid.cols ||
               terminal.rows !== operation.grid.rows;
             if (changed) {
-              console.log("DIAG pipeline resize", terminal.cols, terminal.rows, "->", operation.grid.cols, operation.grid.rows, terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
+              ((globalThis as any).__diagN = ((globalThis as any).__diagN ?? 0) + 1) <= 60 && console.log("DIAG pipeline resize", terminal.cols, terminal.rows, "->", operation.grid.cols, operation.grid.rows, terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
               options.beforeResize?.();
               terminal.resize(operation.grid.cols, operation.grid.rows);
-              console.log("DIAG pipeline resized", terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
+              ((globalThis as any).__diagN = ((globalThis as any).__diagN ?? 0) + 1) <= 60 && console.log("DIAG pipeline resized", terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
             }
             onResize?.(operation.grid.cols, operation.grid.rows);
             if (changed) options.afterResize?.();

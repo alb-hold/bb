@@ -2645,7 +2645,7 @@ export function ThreadTerminalView({
       );
       const restoreViewport = (afterGridResize = false) => {
         const activeBuffer = lifecycle.terminal?.buffer.active;
-        console.log("DIAG restoreViewport", afterGridResize, liveBottomBeforeGridResize, JSON.stringify(lifecycle.savedViewportAnchor), activeBuffer?.viewportY, activeBuffer?.baseY, lifecycle.terminal?.cols, lifecycle.terminal?.rows, lifecycle.hasManualScrollIntent);
+        ((globalThis as any).__diagN = ((globalThis as any).__diagN ?? 0) + 1) <= 60 && console.log("DIAG restoreViewport", afterGridResize, liveBottomBeforeGridResize, JSON.stringify(lifecycle.savedViewportAnchor), activeBuffer?.viewportY, activeBuffer?.baseY, lifecycle.terminal?.cols, lifecycle.terminal?.rows, lifecycle.hasManualScrollIntent);
         if (!lifecycle.terminal || !activeBuffer) {
           return;
         }
