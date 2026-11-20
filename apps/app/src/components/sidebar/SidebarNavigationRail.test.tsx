@@ -713,6 +713,7 @@ describe("Rail", () => {
     renderRail(THREAD_PATH, {
       visibleKeys: ["__bb__/new-thread", "__bb__/extensions"],
     });
+    await settleLazyModules();
 
     const more = railButton("More, Docs: 2 open pages");
     expect(more.querySelector('[data-nav-rail-badge="dot"]')).not.toBeNull();
@@ -831,6 +832,7 @@ describe("Rail", () => {
       },
     ]);
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     expect(railLabels()).not.toContain("New chat here");
 
     act(() => {
@@ -862,6 +864,7 @@ describe("Rail", () => {
 
   it("keeps hidden destinations reachable from More", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
     fireEvent.click(
@@ -873,6 +876,7 @@ describe("Rail", () => {
 
   it("dispatches Search threads from More with terminal focus restored", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     const terminal = document.createElement("textarea");
     terminal.className = "xterm-helper-textarea";
     const terminalRoot = document.createElement("div");
