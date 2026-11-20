@@ -8,6 +8,7 @@ import {
 import type { FollowUpSubmitMode, PromptDraftState } from "@bb/client-core";
 import {
   memo,
+  useContext,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -53,7 +54,10 @@ import {
   type TypeaheadConfig,
 } from "@/components/promptbox/ComposerBox";
 import { usePromptModePermissionDisplay } from "@/components/promptbox/usePromptModePermissionDisplay";
-import { usePromptVoice } from "@/components/promptbox/usePromptVoice";
+import {
+  FollowUpPromptVoiceContext,
+  FollowUpPromptVoiceSplit,
+} from "@/components/promptbox/FollowUpPromptVoiceSplit";
 import { PermissionModePicker } from "@/components/pickers/PermissionModePicker";
 import {
   ExecutionControls,
@@ -86,6 +90,7 @@ function PromptBoxWithScrollAnchor({
   ...promptBoxProps
 }: PromptBoxWithScrollAnchorProps) {
   const bottomAnchor = useBottomAnchoredScroll();
+  const followUpVoice = useContext(FollowUpPromptVoiceContext);
   const handleSubmit = (extras?: ComposerSubmitExtras) => {
     const submitted = onSubmit(extras);
     if (scrollToBottomOnSubmit) {
@@ -113,6 +118,7 @@ function PromptBoxWithScrollAnchor({
   return (
     <ComposerBox
       {...promptBoxProps}
+      voice={promptBoxProps.voice ?? followUpVoice}
       onSubmit={handleSubmit}
       submission={anchoredSubmission}
     />
@@ -295,19 +301,18 @@ function FollowUpPromptBoxWithComposer({
   const onModifierSubmit = composer.canModifierSubmit
     ? composer.onModifierSubmit
     : undefined;
-  const voice = usePromptVoice(
-    promptBoxRef,
-    voiceDraft
-      ? {
-          ...voiceDraft,
-          submit:
-            steerOnPrimarySubmit && onModifierSubmit
-              ? onModifierSubmit
-              : composer.onSubmit,
-        }
-      : (pluginComposerHost ?? undefined),
-    composerScope ? composerScopeIdentity(composerScope) : null,
-  );
+  const voiceDraftTarget = voiceDraft
+    ? {
+        ...voiceDraft,
+        submit:
+          steerOnPrimarySubmit && onModifierSubmit
+            ? onModifierSubmit
+            : composer.onSubmit,
+      }
+    : (pluginComposerHost ?? undefined);
+  const voiceRecordingKey = composerScope
+    ? composerScopeIdentity(composerScope)
+    : null;
   const isCompactViewport = useIsCompactViewport();
   const isPointerCoarse = usePointerCoarse();
   const composerInteractionRef = useRef<HTMLDivElement>(null);
@@ -719,7 +724,6 @@ function FollowUpPromptBoxWithComposer({
         id={id}
         promptBoxRef={promptBoxRef}
         onFocusCommand={extensionController.focus}
-        voice={voice}
         minHeight={elasticTextareaMinHeight}
         draft={composer.draft}
         onSubmit={composer.onSubmit}
@@ -783,7 +787,9 @@ function FollowUpPromptBoxWithComposer({
         promptActions={promptActions}
         compactBeforeSend={
           <>
-            {compactBeforeSend ? <CompactBeforeSendChip {...compactBeforeSend} /> : null}
+            {compactBeforeSend ? (
+              <CompactBeforeSendChip {...compactBeforeSend} />
+            ) : null}
           </>
         }
         suppressPluginComposerCustomizations={
@@ -823,7 +829,11 @@ function FollowUpPromptBoxWithComposer({
           className="mt-1 flex min-h-6 max-h-6 select-none max-md:mt-0 max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:max-h-11 items-center justify-between gap-2 overflow-hidden pl-[15px] pr-3.5 opacity-100 transition-[max-height,min-height,margin-top,opacity] duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none"
         >
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-            {isPromptBoxCompact ? null : isCompactViewport ? compactEnvironmentSummary : environmentSummary}
+            {isPromptBoxCompact
+              ? null
+              : isCompactViewport
+                ? compactEnvironmentSummary
+                : environmentSummary}
           </div>
           <div className="flex shrink-0 items-center gap-2 max-md:gap-0">
             {sessionOptionsControl}
@@ -838,25 +848,31 @@ function FollowUpPromptBoxWithComposer({
   );
 
   return (
-    <ComposerExtensionHost
-      controller={extensionController}
-      defaultRenderer={
-        <DefaultFollowUpComposer
-          active={composer.threadRuntimeDisplayStatus === "active"}
-          composerElement={composerElement}
-          hasPluginComposerScope={
-            composerScope !== null &&
-            !suppressPluginComposerCustomizations &&
-            !execution.pending
-          }
-          isPrimaryComposer={isPrimaryComposer}
-          pendingInteraction={pendingInteraction}
-          showScrollToBottomButton={showScrollToBottomButton}
-          stack={stack}
-          stackRef={stackRef}
-        />
-      }
-    />
+    <FollowUpPromptVoiceSplit
+      promptBoxRef={promptBoxRef}
+      draft={voiceDraftTarget}
+      recordingKey={voiceRecordingKey}
+    >
+      <ComposerExtensionHost
+        controller={extensionController}
+        defaultRenderer={
+          <DefaultFollowUpComposer
+            active={composer.threadRuntimeDisplayStatus === "active"}
+            composerElement={composerElement}
+            hasPluginComposerScope={
+              composerScope !== null &&
+              !suppressPluginComposerCustomizations &&
+              !execution.pending
+            }
+            isPrimaryComposer={isPrimaryComposer}
+            pendingInteraction={pendingInteraction}
+            showScrollToBottomButton={showScrollToBottomButton}
+            stack={stack}
+            stackRef={stackRef}
+          />
+        }
+      />
+    </FollowUpPromptVoiceSplit>
   );
 }
 

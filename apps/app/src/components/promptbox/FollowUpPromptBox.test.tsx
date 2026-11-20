@@ -1580,14 +1580,16 @@ describe("FollowUpPromptBox", () => {
 
   it.each(["recording", "transcribing"] as const)(
     "keeps the status footer while the prompt box handles voice controls during %s",
-    (state) => {
+    async (state) => {
       mocks.voiceState = state;
       const props = createFollowUpPromptBoxProps({ kind: "ready" });
       props.environmentSummary = <span>Local environment</span>;
 
       render(<FollowUpPromptBox {...props} />);
 
-      expect(screen.getByTestId("prompt-box").dataset.voiceState).toBe(state);
+      await waitFor(() => {
+        expect(screen.getByTestId("prompt-box").dataset.voiceState).toBe(state);
+      });
       expect(
         document.querySelector("[data-follow-up-composer-footer]"),
       ).toBeTruthy();
