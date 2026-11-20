@@ -1129,6 +1129,8 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       },
     });
     await waitForReadinessCondition(() => {
+      const el = document.querySelector<HTMLElement>("[data-terminal-grid-cache-id]");
+      console.log("DIAG grid", getTerminal().cols, getTerminal().rows, JSON.stringify({ ...el?.dataset }), JSON.stringify(testState.socketMessages.slice(-6)));
       expect(getTerminal().cols).toBe(38);
       expect(getTerminal().rows).toBe(5);
     }, "in-band shared PTY grid marker was not applied within 5000 ms");

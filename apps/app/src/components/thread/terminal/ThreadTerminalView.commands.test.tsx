@@ -254,8 +254,8 @@ it("clears a pending find focus request when the terminal session changes", asyn
   });
   await waitFor(() => expect(state.onMessage).not.toBe(previousHandler));
   await writeOutput(0, "next session\r\n");
-  const input = await screen.findByRole("searchbox", {
-    name: "Find in terminal",
-  });
-  expect(document.activeElement).not.toBe(input);
+  expect(
+    screen.queryByRole("searchbox", { name: "Find in terminal" }),
+  ).toBeNull();
+  expect(document.activeElement?.tagName).not.toBe("INPUT");
 });

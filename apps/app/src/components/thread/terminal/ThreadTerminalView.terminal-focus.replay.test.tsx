@@ -1064,6 +1064,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       };
       const { rerender } = render(tree(true));
       await waitForReadinessCondition(() => {
+        console.log("DIAG sockets", testState.sockets.length, JSON.stringify(testState.socketUrls));
         expect(testState.sockets).toHaveLength(sessions.length);
       }, "initial route socket missing");
       const sessionSockets = sessions.map((viewSession) => {
