@@ -3892,11 +3892,11 @@ describe("NewThreadComposer setSelection", () => {
       ),
     );
     const renders = mocks.rootCompositionRenders.mock.calls.length;
-    act(() => latestPromptBoxProps().onChange("a", []));
+    act(() => typeInPromptBox("a"));
     expect(latestPromptBoxProps().value).toBe("a");
     expect(latestPromptBoxProps().disabled).toBe(false);
     expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
-    act(() => latestPromptBoxProps().onChange("", []));
+    act(() => typeInPromptBox(""));
     expect(latestPromptBoxProps().disabled).toBe(true);
     expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
   });
