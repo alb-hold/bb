@@ -628,6 +628,52 @@ describe("SidebarUpdatesBadge", () => {
     );
   });
 
+  it("spins only the provider chip during a provider update", () => {
+    live.providerJobs = {
+      ...live.providerJobs,
+      runningJobKey: "host-1:claude-code",
+    };
+    renderBadge({
+      machines: [
+        machine({ issues: [providerIssue("claude-code", "Claude Code")] }),
+      ],
+    });
+
+    expect(
+      screen
+        .getByTestId("sidebar-updates-badge-providers")
+        .querySelector('[data-icon="Loading"]'),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-updates-badge-plugins")).toBeNull();
+    expect(screen.queryByTestId("sidebar-updates-badge-bb")).toBeNull();
+  });
+
+  it("spins only the plugin chip during a plugin update", () => {
+    live.pluginJobs = [
+      {
+        id: "job-1",
+        pluginId: "linear",
+        displayName: "linear",
+        state: "running",
+        phase: "activating",
+      },
+    ];
+    renderBadge({
+      plugins: {
+        trackedCount: 1,
+        items: [{ kind: "update", plugin: plugin("linear"), version: "1.2.0" }],
+      },
+    });
+
+    expect(
+      screen
+        .getByTestId("sidebar-updates-badge-plugins")
+        .querySelector('[data-icon="Loading"]'),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
+    expect(screen.queryByTestId("sidebar-updates-badge-bb")).toBeNull();
+  });
+
   it("keeps a failed update quietly in the list so it can be tried again", async () => {
     const claude = providerIssue("claude-code", "Claude Code");
     const failure: ProviderCliInstallFailure = {
