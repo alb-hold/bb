@@ -1412,33 +1412,4 @@ function ThreadRowComponent({
   );
 }
 
-export const ThreadRow = memo(ThreadRowComponent, (previous, next) => {
-  const changed = Object.keys(next).filter(
-    (key) =>
-      !Object.is(
-        (previous as Record<string, unknown>)[key],
-        (next as Record<string, unknown>)[key],
-      ),
-  );
-  const bag = globalThis as unknown as { __rowDiag?: Set<string> };
-  for (const key of changed) {
-    const set = (bag.__rowDiag ??= new Set());
-    if (key === "thread") {
-      set.add(`thread:${next.thread.id}`);
-    } else if (key === "options") {
-      const before = previous.options as unknown as Record<string, unknown>;
-      const after = next.options as unknown as Record<string, unknown>;
-      for (const optionKey of new Set([
-        ...Object.keys(before),
-        ...Object.keys(after),
-      ])) {
-        if (!Object.is(before[optionKey], after[optionKey])) {
-          set.add(`options.${optionKey}`);
-        }
-      }
-    } else {
-      set.add(key);
-    }
-  }
-  return changed.length === 0;
-});
+export const ThreadRow = memo(ThreadRowComponent);
