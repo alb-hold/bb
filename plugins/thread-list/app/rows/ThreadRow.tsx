@@ -1422,12 +1422,5 @@ export const ThreadRow = memo(ThreadRowComponent, (previous, next) => {
   );
   const bag = globalThis as unknown as { __rowDiag?: Set<string> };
   for (const key of changed) (bag.__rowDiag ??= new Set()).add(key);
-  for (const prop of ["thread", "options"]) {
-    const a = (previous as Record<string, unknown>)[prop] as Record<string, unknown>;
-    const b = (next as Record<string, unknown>)[prop] as Record<string, unknown>;
-    if (a === b) continue;
-    const keys = Object.keys(b).filter((k) => !Object.is(a[k], b[k]));
-    (bag.__rowDiag ??= new Set()).add(`${prop}.diff=[${keys.join(",")}]@${String(b.id ?? "")}`);
-  }
   return changed.length === 0;
 });
