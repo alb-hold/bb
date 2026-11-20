@@ -654,7 +654,8 @@ async function queueChildThreadTurnNotificationBatchItem(
   }
   if (
     !isNativeTerminalThread(deps.db, args.parentThreadId) &&
-    item.holdWhileParentIdle !== true
+    item.holdWhileParentIdle !== true &&
+    !childThreadTurnNotificationBatches.has(args.parentThreadId)
   ) {
     const execution = await buildExecutionOptions(
       deps,
