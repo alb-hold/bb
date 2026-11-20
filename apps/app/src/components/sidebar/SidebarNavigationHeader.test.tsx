@@ -117,7 +117,7 @@ describe("SidebarNavigationHeader", () => {
     expect(screen.getByTestId("header-size").textContent).toBe("0/28");
   });
 
-  it("batches resized header content after observer delivery", async () => {
+  it("renders a new width in the same frame the slot resizes", async () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -134,13 +134,21 @@ describe("SidebarNavigationHeader", () => {
       expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
     );
 
+    const target = screen.getByTestId("sidebar-header-slot");
     act(() => {
       for (const callback of resizeCallbacks) {
         callback(
-          [{ contentRect: { width: 132 } } as ResizeObserverEntry],
+          [
+            {
+              target,
+              contentRect: new DOMRect(0, 0, 132, 28),
+              borderBoxSize: [],
+              contentBoxSize: [],
+              devicePixelContentBoxSize: [],
+            },
+          ],
           {} as ResizeObserver,
         );
-        expect(screen.getByTestId("header-size").textContent).toBe("0/28");
       }
     });
 
