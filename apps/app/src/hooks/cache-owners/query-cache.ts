@@ -270,6 +270,13 @@ export function listSidebarNavigationThreads(
   ];
 }
 
+export function writeSidebarNavigation(
+  queryClient: QueryClient,
+  navigation: SidebarBootstrapResponse,
+): void {
+  queryClient.setQueryData(sidebarNavigationQueryKey(), navigation);
+}
+
 export function getCachedSidebarNavigationThreads(
   queryClient: QueryClient,
 ): ThreadListEntry[] {
