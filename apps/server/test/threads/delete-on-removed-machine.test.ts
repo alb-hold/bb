@@ -86,6 +86,7 @@ describe("deleting a thread with a large event history", () => {
       for (let sweep = 0; sweep < 3; sweep += 1) {
         await runThreadLifecycleSweep(harness.deps);
       }
+      await runThreadPurges(harness.deps);
 
       expect(getThread(harness.db, thread.id)).toBeNull();
       expect(
