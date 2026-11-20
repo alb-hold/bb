@@ -1217,7 +1217,16 @@ class World {
       if (path === null) throw new Error(`${label} has no workspace path`);
       const name = `${kind}-${this.work.length}`;
       if (kind === "worktree-ref") {
-        await git(path, "update-ref", `refs/worktree/${name}`, "HEAD");
+        const unpublished = await git(
+          path,
+          "commit-tree",
+          "HEAD^{tree}",
+          "-p",
+          "HEAD",
+          "-m",
+          name,
+        );
+        await git(path, "update-ref", `refs/worktree/${name}`, unpublished);
         this.work.push({
           kind,
           thread: label,

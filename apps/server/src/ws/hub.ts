@@ -1133,6 +1133,7 @@ export class NotificationHub implements DbNotifier {
     const sockets = [...(this.terminalClientSocketsById.get(terminalId) ?? [])];
     for (const socket of sockets) {
       try {
+        console.error("DBGX closeTerminalClients", code, reason);
         socket.close(code, reason);
       } catch {}
     }
@@ -1248,6 +1249,7 @@ export class NotificationHub implements DbNotifier {
   }
 
   private dropTerminalSocket(socket: HubSocket, reason: string): void {
+    console.error("DBGX drop", reason);
     this.unregisterTerminalClientSocket(socket);
     try {
       socket.close(1013, reason);

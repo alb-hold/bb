@@ -60,6 +60,7 @@ function sendTerminalSocketError(args: TerminalSocketErrorArgs): void {
 
 function closeTerminalSocketWithError(args: TerminalSocketErrorArgs): void {
   sendTerminalSocketError(args);
+  console.error("DBGX 1008", args.code);
   args.socket.close(1008, args.code);
 }
 

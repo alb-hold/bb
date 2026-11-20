@@ -5219,6 +5219,7 @@ export class TerminalSessionLifecycle {
         error instanceof ApiError ? error.body.code : "terminal_attach_failed",
       message: error instanceof ApiError ? error.body.message : error.message,
     });
+    console.error("DBGX attach-failed", error.message);
     pending.socket.close(1013, "attach-failed");
   }
 
