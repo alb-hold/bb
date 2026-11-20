@@ -1,8 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import type { ComposerDraftSource } from "@/components/plugin/plugin-composer-host";
+
+const subscribeToNothing = () => () => {};
 
 export function PendingComposerSubmission({
   children,
-  text,
+  text: staticText,
+  draft,
   resetKey,
   loading,
   disabled,
@@ -13,7 +23,8 @@ export function PendingComposerSubmission({
   onSubmit,
 }: {
   children: (onBlockedSubmit: () => void) => ReactNode;
-  text: string;
+  text?: string;
+  draft?: ComposerDraftSource;
   resetKey?: string | number;
   loading: boolean;
   disabled: boolean;
@@ -26,6 +37,15 @@ export function PendingComposerSubmission({
   const submitted = useRef<PendingIntent | null>(null);
   const cancelled = useRef<PendingIntent | null>(null);
   const [pending, setPending] = useState<PendingIntent | null>(null);
+  const liveDraft = draft !== undefined && pending !== null ? draft : undefined;
+  const readLiveText = () => liveDraft?.getCurrent().text ?? "";
+  const liveText = useSyncExternalStore(
+    liveDraft?.subscribeDraft ?? subscribeToNothing,
+    readLiveText,
+    readLiveText,
+  );
+  const text = draft === undefined ? (staticText ?? "") : liveText;
+  const readText = () => draft?.getCurrent().text ?? staticText ?? "";
   const cancel = () => {
     if (pending !== null) cancelled.current = pending;
     setPending(null);
@@ -67,8 +87,10 @@ export function PendingComposerSubmission({
       }}
     >
       {children(() => {
-        if (!loading || failed || isSubmitting || !text.trim()) return;
-        setPending({ text, resetKey });
+        if (!loading || failed || isSubmitting) return;
+        const currentText = readText();
+        if (!currentText.trim()) return;
+        setPending({ text: currentText, resetKey });
       })}
       {pending !== null &&
         pending.text === text &&
