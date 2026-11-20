@@ -17,7 +17,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { isLastInputKeyboard } from "@bb/shared-ui/overlay-trigger";
+import { settleLazyModules } from "@/test/lazy-modules";
 import {
   SidebarProvider,
   SidebarTrigger,
@@ -371,26 +371,31 @@ afterEach(() => {
 });
 
 describe("Rail", () => {
-  it("DIAG keyboard tooltip", async () => {
+  it("DIAG more menu", async () => {
     renderRail(THREAD_PATH);
-    const before = isLastInputKeyboard();
-    fireEvent.keyDown(document.body, { key: "Tab" });
-    const afterKey = isLastInputKeyboard();
-    const button = railButton("Home");
-    act(() => button.focus());
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    throw new Error(
-      "DIAG " +
-      JSON.stringify({
-        before,
-        afterKey,
-        state: button.getAttribute("data-state"),
-        describedby: button.getAttribute("aria-describedby"),
-        focused: document.activeElement === button,
-        tooltips: document.querySelectorAll('[role="tooltip"]').length,
-        portals: document.querySelectorAll("[data-bb-portaled-overlay]").length,
-      })
-    );
+    const more = railButton("More");
+    const log: unknown[] = [];
+    const snap = (tag: string) =>
+      log.push({
+        tag,
+        expanded: more.getAttribute("aria-expanded"),
+        state: more.getAttribute("data-state"),
+        connected: more.isConnected,
+        menus: document.querySelectorAll('[role="menu"]').length,
+        wrappers: document.querySelectorAll("[data-radix-popper-content-wrapper]").length,
+        drawers: document.querySelectorAll("[data-bb-portaled-overlay]").length,
+        body: document.body.getAttribute("style"),
+      });
+    snap("before");
+    fireEvent.keyDown(more, { key: "Enter" });
+    snap("sync");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    snap("after300");
+    await settleLazyModules();
+    snap("settled");
+    throw new Error("DIAG " + JSON.stringify(log));
   });
 
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(

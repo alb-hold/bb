@@ -647,6 +647,7 @@ describe("CommandPalette", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Search threads" }),
     );
+    await flushAnimationFrames();
     await settleLazyModules();
     await flushAnimationFrames();
 
