@@ -1041,17 +1041,18 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
 });
 
 describe("thread action run containment", () => {
-  it("contains a rejected run so the menu keeps working", async () => {
+  it("contains a rejected run so the menu keeps working (test-change-reason: the fork loads the menu rows in a split chunk, so the row is awaited outside act before it is clicked)", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     pluginGroupRun.mockRejectedValueOnce(new Error("nope"));
     const [surface] = SURFACES;
     if (surface === undefined) throw new Error("no surface");
     renderSurface(surface, { thread: baseThread });
     await surface.open();
+    const notifications = await screen.findByRole("menuitem", {
+      name: "Notifications",
+    });
     await act(async () => {
-      fireEvent.click(
-        await screen.findByRole("menuitem", { name: "Notifications" }),
-      );
+      fireEvent.click(notifications);
     });
     await waitFor(() => expect(error).toHaveBeenCalled());
     await surface.open();
@@ -1349,7 +1350,6 @@ describe("thread action data input", () => {
       vi.useRealTimers();
     }
   });
-
 
   it("passes the union of subscribed thread ids and drops released ones", async () => {
     const { seen, Surface } = renderRecorder();

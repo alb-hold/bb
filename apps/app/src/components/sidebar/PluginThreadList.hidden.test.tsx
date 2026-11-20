@@ -37,7 +37,7 @@ class InertObserver {
   }
 }
 
-it("a hidden plugin thread list mounts no rows and subscribes no thread ids", async () => {
+it("a hidden plugin thread list mounts no rows and subscribes no thread ids (test-change-reason: the fork reports list visibility from the sidebar showing state instead of measured height, so the hidden list is a collapsed sidebar)", async () => {
   resetThreadActionRegistryForTest();
   stubPluginRpcFetch((method) => ({
     result: method === "listPreferences" ? { preferences: {} } : null,
@@ -64,7 +64,10 @@ it("a hidden plugin thread list mounts no rows and subscribes no thread ids", as
     }),
   );
   const rendered = render(
-    <SidebarThreadListHarness queryClient={seedSidebarQueryClient(250)}>
+    <SidebarThreadListHarness
+      queryClient={seedSidebarQueryClient(250)}
+      sidebarOpen={false}
+    >
       <ThreadActionCollectors
         coreRegistrations={CORE_THREAD_ACTIONS}
         requestRename={() => {}}

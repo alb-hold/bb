@@ -196,16 +196,18 @@ export function seedSidebarQueryClient(threadCount: number): QueryClient {
 export function SidebarThreadListHarness({
   queryClient,
   children,
+  sidebarOpen = true,
 }: {
   queryClient: QueryClient;
   children: ReactNode;
+  sidebarOpen?: boolean;
 }) {
   return (
     <TooltipProvider>
       <JotaiProvider store={createStore()}>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <SidebarProvider>
+            <SidebarProvider defaultOpen={sidebarOpen}>
               <Sidebar>
                 <SidebarContent>{children}</SidebarContent>
               </Sidebar>
