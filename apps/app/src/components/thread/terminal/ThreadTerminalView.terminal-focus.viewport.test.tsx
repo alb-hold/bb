@@ -1109,7 +1109,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         ).toContainEqual({ type: "ack", nextSeq: 2 }),
       "live output was not acknowledged within 5000 ms",
     );
-    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
+    getTerminal().scrollToBottom();
     await waitForReadinessCondition(
       () =>
         expect(getTerminal().buffer.active.viewportY).toBe(

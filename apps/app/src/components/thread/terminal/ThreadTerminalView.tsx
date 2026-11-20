@@ -2767,9 +2767,31 @@ export function ThreadTerminalView({
           lifecycle.terminal.buffer.active.viewportY < lifecycle.terminal.buffer.active.baseY,
         );
       };
+      const clearViewportAnchorAtTail = () => {
+        const activeBuffer = lifecycle.terminal?.buffer.active;
+        if (
+          !activeBuffer ||
+          !lifecycle.hasRestoredViewport ||
+          !viewportReplaySaveGate.canSave(true) ||
+          liveBottomBeforeGridResize ||
+          liveBottomResizeClearFrame !== null ||
+          activeBuffer.viewportY !== activeBuffer.baseY ||
+          lifecycle.savedViewportAnchor === null ||
+          lifecycle.savedViewportAnchor.distanceFromTail === 0
+        ) {
+          return;
+        }
+        lifecycle.savedViewportAnchor = {
+          distanceFromTail: 0,
+          lineOffset: 0,
+          outputSequence: lifecycle.anchoredOutputSequence,
+        };
+        viewportPersistence.schedule(lifecycle.savedViewportAnchor);
+      };
       const viewportScrollDisposable = lifecycle.terminal.onScroll(() => {
         updateScrollPosition();
         saveViewportAnchor();
+        clearViewportAnchorAtTail();
       });
       const parsedWriteDisposable = lifecycle.terminal.onWriteParsed(updateScrollPosition);
       lifecycle.detachViewportListeners = () => {
