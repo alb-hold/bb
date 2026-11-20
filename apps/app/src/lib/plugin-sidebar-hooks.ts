@@ -53,6 +53,7 @@ import { toPluginSidebarThread } from "./plugin-sidebar-threads";
 import {
   useSidebarThreadEntries,
   useSidebarThreadEntriesStore,
+  useSidebarThreadEntry,
 } from "./sidebar-thread-entries";
 import { useSetRootComposeProjectId } from "./root-compose-selection";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -262,12 +263,6 @@ export function useSidebarThreads(
 
 export function useThreadEntryMap(): ReadonlyMap<string, ThreadListEntry> {
   return useSidebarThreadEntries();
-}
-
-export function useSidebarThreadEntry(
-  threadId: string,
-): ThreadListEntry | null {
-  return useSidebarThreadEntries().get(threadId) ?? null;
 }
 
 export function useSidebarThreadActions(): PluginSidebarThreadActions {
