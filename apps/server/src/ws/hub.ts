@@ -2082,6 +2082,15 @@ export class NotificationHub implements DbNotifier {
     now: number,
   ): boolean {
     const owner = this.deviceHandoffDeviceHashByClientSocket.get(clientSocket);
+    console.error("DBGX linked?", JSON.stringify({
+      owner: owner ?? null,
+      termSockets: [...(this.deviceHandoffTerminalSocketsByDeviceHash.get(owner ?? "") ?? [])].map((t) => ({
+        ownerMatches: this.deviceHandoffOwnerByTerminalSocket.get(t) === owner,
+        hasId: this.terminalIdsByClientSocket.get(t)?.has(terminalId) ?? false,
+        state: this.terminalClientStateById.get(terminalId)?.get(t) ?? null,
+      })),
+      now,
+    }));
     if (owner === undefined) return false;
     for (const terminalSocket of this.deviceHandoffTerminalSocketsByDeviceHash.get(
       owner,
@@ -2140,6 +2149,7 @@ export class NotificationHub implements DbNotifier {
         for (const socket of recipients) {
           if (handoff.sentTo.has(socket)) continue;
           if (socket.readyState !== undefined && socket.readyState !== 1) {
+            console.error("DBGX readyState skip", socket.readyState);
             continue;
           }
           socket.send(handoff.payload);
