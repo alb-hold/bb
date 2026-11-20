@@ -26,8 +26,10 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useIsAppCommandModifierHeld: () => false,
 }));
 
+const NAV_PANELS = vi.hoisted(() => []);
+
 vi.mock("@/lib/plugin-nav-panel-chrome", () => ({
-  usePluginNavPanelChrome: () => [],
+  usePluginNavPanelChrome: () => NAV_PANELS,
 }));
 
 function HomeActiveProbe() {
