@@ -57,6 +57,7 @@ import {
   resolveModelPickerToggle,
   type ModelPickerScope,
 } from "./modelPickerToggle";
+import type { MoreModelsOpenedBy } from "./ModelReasoningPicker";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import type { SessionOptionMenuSection } from "./SessionOptionsMenu";
 
@@ -140,6 +141,8 @@ export function ModelReasoningPickerBody({
     initialPreviewProviderId,
   );
   const [showMoreModels, setShowMoreModels] = useState(false);
+  const [moreModelsOpenedBy, setMoreModelsOpenedBy] =
+    useState<MoreModelsOpenedBy | null>(null);
   const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
     useState(selectedProviderId);
   const [browsingHandoff, setHandoffMode] = useState(false);
@@ -158,6 +161,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }
@@ -393,6 +397,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }, []);
@@ -421,9 +426,11 @@ export function ModelReasoningPickerBody({
             (isPreviewing ? previewSelection?.reasoningLevel : undefined) ??
             reasoningValue,
         });
+        setMoreModelsOpenedBy(null);
         return;
       }
       onModelChange(model);
+      setMoreModelsOpenedBy(null);
       setPreviewProviderId(null);
     },
     [
@@ -448,6 +455,7 @@ export function ModelReasoningPickerBody({
       );
       setHandoffReasoningLevel(null);
       setShowMoreModels(false);
+      setMoreModelsOpenedBy(null);
       setSearchQuery("");
       setActiveIndex(-1);
     },
@@ -505,6 +513,7 @@ export function ModelReasoningPickerBody({
       }
       onReasoningChange(level);
       setPreviewProviderId(null);
+      setMoreModelsOpenedBy(null);
     },
     [
       handoffMode,
@@ -708,16 +717,31 @@ export function ModelReasoningPickerBody({
         return;
       }
 
+      const row = highlightedIndex >= 0 ? navRows[highlightedIndex] : undefined;
+      if (!row) return;
+
+      if (
+        row.kind === "more-submenu" &&
+        event.key === "ArrowRight" &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        setMoreModelsOpenedBy("activation");
+        return;
+      }
+
       if (event.key === "Enter") {
-        if (highlightedIndex < 0) return;
-        const row = navRows[highlightedIndex];
-        if (!row) return;
         event.preventDefault();
         if (row.kind === "model") {
           if (row.option.disabled === true) return;
           handleModelSelect(row.option.value);
-        } else {
+        } else if (row.kind === "more-toggle") {
           toggleShowMoreModels();
+        } else {
+          setMoreModelsOpenedBy("activation");
         }
       }
     },
@@ -842,6 +866,9 @@ export function ModelReasoningPickerBody({
         isSearching={isSearching}
         showMoreModels={showMoreModels}
         onToggleMoreModels={toggleShowMoreModels}
+        moreModelOptions={filteredMoreModelOptions}
+        moreModelsOpenedBy={moreModelsOpenedBy}
+        onMoreModelsOpenedByChange={setMoreModelsOpenedBy}
         isPreviewing={isPreviewing}
         modelValue={modelValue}
         selectionBlocked={previewSelectionBlocked}

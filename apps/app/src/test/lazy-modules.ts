@@ -158,6 +158,41 @@ export async function settleLazyModules<T>(
   });
 }
 
+export async function settleLazyModulesExcept(
+  heldSpecifier: string,
+): Promise<void> {
+  const state = lazyImportState();
+  const holding = state.holding;
+  state.holding = false;
+  try {
+    let started: number;
+    do {
+      started = state.started;
+      for (let index = state.held.length - 1; index >= 0; index -= 1) {
+        const entry = state.held[index];
+        if (entry === undefined || entry.specifier === heldSpecifier) continue;
+        state.held.splice(index, 1);
+        entry.release();
+      }
+      await reactAct(async () => {
+        const pending = [...state.inFlight.entries()]
+          .filter(([, specifier]) => specifier !== heldSpecifier)
+          .map(([settled]) => settled);
+        await Promise.all(pending);
+        await nextMacrotask();
+      });
+      await nextMacrotask();
+    } while (
+      state.started !== started ||
+      [...state.inFlight.values()].some(
+        (specifier) => specifier !== heldSpecifier,
+      )
+    );
+  } finally {
+    state.holding = holding;
+  }
+}
+
 function installLazyImportTracking(): void {
   globalThis.__bbTrackLazyImport = trackLazyImport;
 }

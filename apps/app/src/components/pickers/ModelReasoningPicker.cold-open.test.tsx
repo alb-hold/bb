@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { settleLazyModules } from "@/test/lazy-modules";
+import { settleLazyModules, settleLazyModulesExcept } from "@/test/lazy-modules";
 import { ModelReasoningPicker } from "./ModelReasoningPicker";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import { startSplitPreloading } from "@/lib/split-prefetch";
@@ -71,9 +71,8 @@ it("keeps search typing and keyboard selection across the first menu download", 
     screen.getByRole("button", { name: "Provider, model and reasoning" }),
   );
   await vi.waitFor(() => expect(menu.imports).toBe(1));
-  const search = await vi.waitFor(() =>
-    screen.getByPlaceholderText("Search models"),
-  );
+  await settleLazyModulesExcept("./ModelReasoningMenu");
+  const search = screen.getByPlaceholderText("Search models");
   await vi.waitFor(() => expect(document.activeElement).toBe(search));
   expect(
     screen.getByRole("status", { name: "Loading model picker" }),
