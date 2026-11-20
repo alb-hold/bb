@@ -1379,7 +1379,7 @@ fs.writeFileSync(path.join(process.env.BB_DATA_DIR, "config.json"), JSON.stringi
     expect(existsSync(join(fixture.dataDir, "install-daemon.pid"))).toBe(false);
   });
 
-  it("defaults the data dir to a per-server directory under ~/.bb-machines", () => {
+  it("defaults the data dir to a per-server directory under ~/.bb-machines", async () => {
     const fixture = createFixture();
     writeServerInstallTools(fixture, 200);
     mkdirSync(join(fixture.homeDir, ".bb-machines/machine.getbb.app"), {
@@ -1402,6 +1402,14 @@ fs.writeFileSync(path.join(process.env.BB_DATA_DIR, "config.json"), JSON.stringi
     expect(
       JSON.parse(readFileSync(join(defaultDataDir, "auth.json"), "utf8")),
     ).toMatchObject({ hostId: "host-test" });
+    const daemonPid = Number(
+      readFileSync(join(defaultDataDir, "install-daemon.pid"), "utf8"),
+    );
+    process.kill(daemonPid, "SIGTERM");
+    const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
+    while (isRunning(daemonPid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   });
 
   it("refuses a data dir enrolled for a different host instead of faking success", () => {
