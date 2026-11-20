@@ -3,6 +3,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 afterEach(() => {
   cleanup();
@@ -13,7 +14,7 @@ afterEach(() => {
 });
 
 it.each([true, false])(
-  "requests picker, voice and composer options after the timeline paints and becomes idle (native idle=%s)",
+  "requests picker, voice and composer options after the timeline paints and becomes idle (native idle=%s) (test-change-reason: upstream 0.50.1 holds dynamic imports until settleLazyModules, so the composer import is settled explicitly)",
   async (nativeIdle) => {
     vi.resetModules();
     vi.useFakeTimers();
@@ -74,7 +75,7 @@ it.each([true, false])(
     expect(requested).not.toHaveBeenCalled();
     await act(async () => {
       finishDownload();
-      await importRequested;
+      await settleLazyModules(importRequested);
     });
     expect(requested).toHaveBeenCalledOnce();
     expect(screen.getByText("Composer controls")).toBeTruthy();

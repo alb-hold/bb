@@ -57,6 +57,7 @@ vi.mock("./ThreadDetailHeader", () => ({
 vi.mock("./useThreadDetailThread", () => ({
   useThreadDetailThread: () => ({
     hasThreadDetailBootstrapSettled: true,
+    thread: THREAD,
     threadDetailBootstrapQuery: { isFetching: false },
     threadQuery: {
       data: THREAD,
@@ -106,7 +107,7 @@ function timelineWith(texts: readonly string[]) {
 }
 
 describe("ThreadDetailView timeline pushes", () => {
-  it("leaves the thread view to the timeline when a push lands", async () => {
+  it("leaves the thread view to the timeline when a push lands (test-change-reason: the fork's useThreadDetailThread returns the retained thread snapshot as a separate thread field, so the hook mock supplies it)", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
