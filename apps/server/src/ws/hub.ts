@@ -855,6 +855,14 @@ export class NotificationHub implements DbNotifier {
   }
 
   registerTerminalClient(terminalId: string, socket: HubSocket): void {
+    if (!(socket as { dbgxWrapped?: boolean }).dbgxWrapped) {
+      (socket as { dbgxWrapped?: boolean }).dbgxWrapped = true;
+      const original = socket.close.bind(socket);
+      socket.close = (code?: number, reason?: string) => {
+        console.error("DBGX server close", code, reason, performance.now(), new Error().stack);
+        original(code, reason);
+      };
+    }
     const sockets =
       this.terminalClientSocketsById.get(terminalId) ?? new Set<HubSocket>();
     sockets.add(socket);

@@ -2341,6 +2341,15 @@ describe("device handoff websocket acknowledgement", () => {
       expect(linkedAttachment).toHaveBeenCalledTimes(1);
       expect(linkedAttachment.mock.results[0]?.value).toBe(true);
       console.error("DBGX prePOST", performance.now(), token);
+      for (const method of ["close", "terminate"] as const) {
+        const original = terminalReader[method].bind(terminalReader);
+        (terminalReader as unknown as Record<string, unknown>)[method] = (
+          ...args: unknown[]
+        ) => {
+          console.error("DBGX client", method, performance.now(), new Error().stack);
+          return (original as (...a: unknown[]) => unknown)(...args);
+        };
+      }
       const delivered = nextRealtimeMessage(socket, "device-handoff");
       const forgedFrame = nextRealtimeMessage(forged, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
