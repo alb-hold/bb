@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TimelineRow } from "@bb/server-contract";
 import { BottomAnchoredScrollBody } from "@/components/ui/bottom-anchored-scroll-body";
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { conversationRow, toolRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 
@@ -123,7 +124,7 @@ function historyRows(count: number, firstSeq = 1): TimelineRow[] {
   });
 }
 
-function setup(rows: TimelineRow[]) {
+async function setup(rows: TimelineRow[]) {
   const layout = installFakeFlowLayout({
     heightOf: (element) =>
       element.hasAttribute("data-timeline-row-id") &&
@@ -151,13 +152,26 @@ function setup(rows: TimelineRow[]) {
     </QueryClientProvider>
   );
   const view = render(tree(rows));
-  for (let frame = 0; frame < 3; frame += 1) act(() => layout.frame());
+  await settleLazyModules();
   const mounted = () =>
     [
       ...document.querySelectorAll<HTMLElement>(
         "[data-timeline-items] > [data-timeline-row-id]",
       ),
     ].map((row) => row.dataset.timelineRowId ?? "");
+  const trace: string[] = [];
+  const note = (label: string) => {
+    const ids = mounted();
+    trace.push(
+      `${label}:top=${layout.scrollTop},max=${layout.maxScrollTop()},n=${ids.length},first=${ids[0]},last=${ids[ids.length - 1]}`,
+    );
+  };
+  note("render");
+  for (let frame = 0; frame < 3; frame += 1) {
+    act(() => layout.frame());
+    note(`frame${frame}`);
+  }
+  (globalThis as unknown as { __mountTrace: string[] }).__mountTrace = trace;
   return {
     layout,
     mounted,
@@ -167,10 +181,13 @@ function setup(rows: TimelineRow[]) {
   };
 }
 
-describe("timeline rows mounting", () => {
-  it("reads no layout while a scroll mounts new rows, and covers the viewport by the next paint", () => {
-    const harness = setup(historyRows(150));
-    expect(harness.mounted()).not.toContain("row-1");
+describe("timeline rows mounting (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so setup settles them before the layout frames)", () => {
+  it("reads no layout while a scroll mounts new rows, and covers the viewport by the next paint", async () => {
+    const harness = await setup(historyRows(150));
+    expect(
+      harness.mounted(),
+      `DIAG ${JSON.stringify((globalThis as unknown as { __mountTrace: string[] }).__mountTrace)}`,
+    ).not.toContain("row-1");
 
     act(() => harness.layout.userScrollTo(0));
     expect(harness.mounted()).not.toContain("row-4");
@@ -185,9 +202,9 @@ describe("timeline rows mounting", () => {
     expect(reads).toEqual([]);
   });
 
-  it("reads no layout while a streamed row mounts at the end", () => {
+  it("reads no layout while a streamed row mounts at the end", async () => {
     const rows = historyRows(150);
-    const harness = setup(rows);
+    const harness = await setup(rows);
     const grown = [...rows, ...historyRows(1, 151)];
 
     const reads = harness.recorder.during(() =>

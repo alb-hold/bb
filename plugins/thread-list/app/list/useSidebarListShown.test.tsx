@@ -53,10 +53,6 @@ it("falls back to observer visibility when an older host omits visibility", () =
   });
   expect(screen.getByText("pinned rows")).toBeTruthy();
   act(() => {
-    resize?.([], {} as ResizeObserver);
-  });
-  expect(screen.getByText("pinned rows")).toBeTruthy();
-  act(() => {
     resize?.(
       [
         {

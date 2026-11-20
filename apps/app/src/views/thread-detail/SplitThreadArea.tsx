@@ -304,17 +304,34 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     [routeContent, routeThread],
   );
 
-  const layout = useMemo(
-    () =>
-      currentContent === null
-        ? storedLayout
-        : reconcileLayoutForContent(storedLayout, currentContent),
-    [currentContent, storedLayout],
-  );
+  const [reconciliation, setReconciliation] = useState<{
+    content: PaneContent;
+    from: SplitLayout | null;
+    layout: SplitLayout;
+  } | null>(null);
+  let layout = storedLayout;
+  if (currentContent !== null) {
+    if (reconciliation?.content !== currentContent) {
+      const next = {
+        content: currentContent,
+        from: storedLayout,
+        layout: reconcileLayoutForContent(storedLayout, currentContent),
+      };
+      setReconciliation(next);
+      layout = next.layout;
+    } else if (storedLayout === reconciliation.from) {
+      layout = reconciliation.layout;
+    }
+  }
 
   useEffect(() => {
-    if (currentContent !== null && layout !== storedLayout) setLayout(layout);
-  }, [currentContent, layout, setLayout, storedLayout]);
+    if (reconciliation === null) {
+      return;
+    }
+    setLayout((previous) =>
+      reconcileLayoutForContent(previous, reconciliation.content),
+    );
+  }, [reconciliation, setLayout]);
 
   useTerminalMountGate(
     "terminal-split-layout",

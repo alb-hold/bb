@@ -6,9 +6,11 @@ import { getDefaultStore } from "jotai";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
+import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
 import { ThreadScreen } from "@/views/thread-detail/ThreadScreen";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { ThreadProviderContext } from "../thread-provider-context";
 
 const THREAD_ID = "thr_main";
@@ -45,6 +47,43 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
     useSendThreadMessage: mutation,
   };
 });
+const rows = [100, 200, 300].map((seq) =>
+  conversationRow({
+    id: `answer-${seq}`,
+    seq,
+    role: "assistant",
+    text: `Answer ${seq}`,
+    createdAt: seq,
+    startedAt: seq,
+    turnId: `turn-${seq}`,
+  }),
+);
+
+const TIMELINE = {
+  activeBackgroundCommands: [],
+  activePromptMode: null,
+  activeThinking: null,
+  activeWorkflows: [],
+  contextBoundarySeq: null,
+  contextWindowUsage: null,
+  goal: null,
+  hasOlderTimelineRows: false,
+  isCatchingUpTimeline: false,
+  isLoadingOlderTimelineRows: false,
+  loadOlderTimelineRows: async () => {},
+  modelFallback: null,
+  pendingTodos: null,
+  providerCommands: null,
+  sessionOptions: null,
+  timelineError: null,
+  timelineLoading: false,
+  timelineRows: rows,
+} as unknown as UseThreadTimelineControllerResult;
+
+vi.mock("@/components/thread/timeline", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/thread/timeline")>()),
+  useThreadTimelineController: () => TIMELINE,
+}));
 
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
@@ -131,7 +170,6 @@ function OpenThread({
   const { placement, hasUnseenTimelineEvents: openAtLatest } =
     useThreadUnreadDividerState({
       routeThreadId: THREAD_ID,
-      anchor: "first-unread-row",
       bootstrapQuery: {
         dataUpdatedAt: bootstrapUpdatedAt,
         isFetchedAfterMount: false,

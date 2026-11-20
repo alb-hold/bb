@@ -74,7 +74,6 @@ describe("experiments settings", () => {
         resumeDaemonSessions: false,
         skipFocusedThreadNotifications: false,
         threadContextCard: true,
-        unreadDividerAtAnswer: false,
         walCheckpointWorker: false,
       });
       expect(

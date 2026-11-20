@@ -5,7 +5,7 @@ import { createElement, useState, type ComponentProps } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { formatShortMessageTime } from "./message-time";
@@ -14,11 +14,8 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { settleLazyModules } from "@/test/lazy-modules";
 
-const renderRecorder = await vi.hoisted(async () => {
-  const { installRenderRecorder } = await import("@/test/render-recorder");
-  return installRenderRecorder();
-});
 const renderedMessageTexts = vi.hoisted(() => [] as string[]);
 
 vi.mock("./ConversationMessageContent.js", async (importOriginal) => {
@@ -53,14 +50,8 @@ function assistantRow(
 afterEach(() => {
   cleanup();
   renderedMessageTexts.length = 0;
-  renderRecorder.reset();
   resetPluginSlotStoreForTest();
 });
-
-afterAll(() => {
-  renderRecorder.uninstall();
-});
-
 
 describe("ThreadTimelineRows row isolation", () => {
   it.each(["user", "assistant"] as const)(
@@ -123,8 +114,8 @@ describe("ThreadTimelineRows row isolation", () => {
     { role: "user" as const, timeFollowsMenu: false },
     { role: "assistant" as const, timeFollowsMenu: true },
   ])(
-    "shows the $role message time in its action row without opening the menu",
-    ({ role, timeFollowsMenu }) => {
+    "shows the $role message time in its action row without opening the menu (test-change-reason: upstream 0.50.1 holds lazy imports until a test settles them, and the inline message time is a split chunk)",
+    async ({ role, timeFollowsMenu }) => {
       const startedAt = 1_700_000_000_123;
       render(
         <MemoryRouter>
@@ -146,6 +137,7 @@ describe("ThreadTimelineRows row isolation", () => {
           </QueryClientProvider>
         </MemoryRouter>,
       );
+      await settleLazyModules();
       const time = screen.getByText(
         formatShortMessageTime(startedAt, new Date()),
       );

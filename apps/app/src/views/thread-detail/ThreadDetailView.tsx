@@ -346,19 +346,12 @@ function ThreadDetailViewInternal(
     threadDetailBootstrapQuery,
     threadQuery: { isFetching, isLoadingError, error, refetch: refetchThread },
     unreadDividerState,
-  } = useThreadDetailThread(
-    threadId,
-    timelineEnabled,
-    systemConfigQuery.data?.experiments.unreadDividerAtAnswer === true
-      ? "turn-answer"
-      : "first-unread-row",
-    {
-      hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
-      isFocused,
-      nativeTerminalReady:
-        nativeTerminalThreadQuery.data?.terminal?.status === "running",
-    },
-  );
+  } = useThreadDetailThread(threadId, timelineEnabled, {
+    hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
+    isFocused,
+    nativeTerminalReady:
+      nativeTerminalThreadQuery.data?.terminal?.status === "running",
+  });
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
     staleTime: 5_000,
@@ -1813,84 +1806,84 @@ function ThreadDetailViewInternal(
     ) : undefined;
   const timelineHeader = (
     <>
-    <ThreadDetailHeader
-      environmentId={thread.environmentId ?? null}
-      actionsMenu={({
-        includeResponsiveActions,
-        terminalSearchActions,
-        headerActions,
-        requestRename,
-        onCloseAutoFocus,
-      }) => (
-        <ThreadActionsMenu
-          thread={threadActionTarget}
-          trigger={(triggerProps) => (
-            <Button
-              {...triggerProps}
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                triggerProps.className,
-                "rounded-md p-0",
-                "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
-                HEADER_ICON_BUTTON_CLASS,
-              )}
-              aria-label="Thread actions"
-              data-compact-touch="header"
-              onClick={(event) => {
-                triggerProps.onClick?.(event);
-                event.stopPropagation();
-              }}
-            >
-              <Icon
-                name="MoreHorizontal"
-                className={COARSE_POINTER_ICON_SIZE_CLASS}
-              />
-            </Button>
-          )}
-          inline={[
-            ...terminalSearchActions,
-            ...(includeResponsiveActions
-              ? [
-                  ...responsiveWorkspaceActions,
-                  ...headerActions.map(
-                    ({ key, action }): PluginThreadActionsInlineItem => ({
-                      key,
-                      group: THREAD_HEADER_ACTIONS_GROUP,
-                      action: { ...action, run: () => action.run() },
-                    }),
-                  ),
-                ]
-              : []),
-          ]}
-          requestRename={requestRename}
-          onCloseAutoFocus={onCloseAutoFocus}
-        />
-      )}
-      isSecondaryPanelOpen={isSecondaryPanelOpen}
-      onClosePane={onRequestClose ?? undefined}
-      onToggleSecondaryPanel={toggleSecondaryPanel}
-      pluginActions={
-        <PluginThreadHeaderActions
-          threadId={thread.id}
-          projectId={thread.projectId}
-        />
-      }
-      thread={threadActionTarget}
-      threadTitle={threadTitle}
-      activityIndicator={getThreadDetailActivityIndicator(thread)}
-      needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
-      hasNativeTerminal={nativeTerminalThread != null}
-      providerId={thread.providerId}
-      provider={threadProviderInfo ?? null}
-      nativeTerminal={thread.nativeTerminal === true}
-      environmentIsWorktree={environment?.isWorktree === true}
-      nativeActivityTargetRef={setNativeActivityTarget}
-      checkTerminal={nativeTerminalThread?.terminal?.attention != null}
-      contextCardButton={<ThreadContextCardHeaderButton />}
-      workspaceOpenButton={workspaceOpenButton}
-    />
+      <ThreadDetailHeader
+        environmentId={thread.environmentId ?? null}
+        actionsMenu={({
+          includeResponsiveActions,
+          terminalSearchActions,
+          headerActions,
+          requestRename,
+          onCloseAutoFocus,
+        }) => (
+          <ThreadActionsMenu
+            thread={threadActionTarget}
+            trigger={(triggerProps) => (
+              <Button
+                {...triggerProps}
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  triggerProps.className,
+                  "rounded-md p-0",
+                  "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
+                  HEADER_ICON_BUTTON_CLASS,
+                )}
+                aria-label="Thread actions"
+                data-compact-touch="header"
+                onClick={(event) => {
+                  triggerProps.onClick?.(event);
+                  event.stopPropagation();
+                }}
+              >
+                <Icon
+                  name="MoreHorizontal"
+                  className={COARSE_POINTER_ICON_SIZE_CLASS}
+                />
+              </Button>
+            )}
+            inline={[
+              ...terminalSearchActions,
+              ...(includeResponsiveActions
+                ? [
+                    ...responsiveWorkspaceActions,
+                    ...headerActions.map(
+                      ({ key, action }): PluginThreadActionsInlineItem => ({
+                        key,
+                        group: THREAD_HEADER_ACTIONS_GROUP,
+                        action: { ...action, run: () => action.run() },
+                      }),
+                    ),
+                  ]
+                : []),
+            ]}
+            requestRename={requestRename}
+            onCloseAutoFocus={onCloseAutoFocus}
+          />
+        )}
+        isSecondaryPanelOpen={isSecondaryPanelOpen}
+        onClosePane={onRequestClose ?? undefined}
+        onToggleSecondaryPanel={toggleSecondaryPanel}
+        pluginActions={
+          <PluginThreadHeaderActions
+            threadId={thread.id}
+            projectId={thread.projectId}
+          />
+        }
+        thread={threadActionTarget}
+        threadTitle={threadTitle}
+        activityIndicator={getThreadDetailActivityIndicator(thread)}
+        needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
+        hasNativeTerminal={nativeTerminalThread != null}
+        providerId={thread.providerId}
+        provider={threadProviderInfo ?? null}
+        nativeTerminal={thread.nativeTerminal === true}
+        environmentIsWorktree={environment?.isWorktree === true}
+        nativeActivityTargetRef={setNativeActivityTarget}
+        checkTerminal={nativeTerminalThread?.terminal?.attention != null}
+        contextCardButton={<ThreadContextCardHeaderButton />}
+        workspaceOpenButton={workspaceOpenButton}
+      />
       <PluginThreadHeaderRows
         threadId={thread.id}
         projectId={thread.projectId}

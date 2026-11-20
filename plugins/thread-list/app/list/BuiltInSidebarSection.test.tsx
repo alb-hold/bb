@@ -197,9 +197,9 @@ describe("built-in sidebar section renderer", () => {
             ...SECTIONS.threads,
             collapsedThreads: [
               makeSidebarThread({
-                id: "thread-plan",
+                id: "thread-goal",
                 isUnread: false,
-                activity: { planMode: 1 },
+                activity: { goals: 1 },
               }),
             ],
           },

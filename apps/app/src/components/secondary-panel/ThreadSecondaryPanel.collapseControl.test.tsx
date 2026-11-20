@@ -780,7 +780,7 @@ describe("ThreadSecondaryPanel hide control glyph", () => {
     ).toBe(false);
   });
 
-  it("matches the page-header toggle's size, colour and corner inset in the drawer", () => {
+  it("matches the page-header toggle's size, colour and corner inset in the drawer (test-change-reason: the fork's drawer toolbar pads both sides with px-4 for the touch terminal resize control, which gives the same 1rem right inset upstream asserts as pr-4)", () => {
     const desktop = renderPanel({
       isConversationCollapsed: false,
       onToggleConversationCollapse: noop,
@@ -801,7 +801,7 @@ describe("ThreadSecondaryPanel hide control glyph", () => {
     expect(drawerControl.className).toBe(desktopClassName);
     expect(
       drawer.getByTestId("thread-secondary-panel-top-chrome").classList,
-    ).toContain("pr-4");
+    ).toContain("px-4");
   });
 });
 

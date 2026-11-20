@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/app";
+import { getCollapsedChildActivity } from "./thread-activity.js";
 
 import {
   buildSectionThreadList,
@@ -522,14 +522,11 @@ describe("buildProjectThreadGroups", () => {
       expect(node.stats.hiddenThreads.map((thread) => thread.id)).toEqual(
         expect.arrayContaining([...descendants]),
       );
-      expect(
-        experimental_resolveThreadStatus({
-          thread: node.thread,
-          hiddenThreads: node.stats.hiddenThreads,
-          hasUnsubmittedDraft: false,
-          rowStatus: null,
-        }),
-      ).toMatchObject({ indicator: "needs-input", isWorking: true });
+      expect(getCollapsedChildActivity(node.stats.hiddenThreads)).toMatchObject({
+        pending: true,
+        working: true,
+        runtimeWorking: true,
+      });
     }
   });
 

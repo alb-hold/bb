@@ -17,6 +17,7 @@ import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
 import {
   observeSharedResize,
+  settleAfterSharedResizeWrites,
 } from "@bb/shared-ui/lib/shared-resize-observer";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
@@ -499,28 +500,31 @@ export function TimelineWindowedItems({
       const key = node.getAttribute(WINDOW_KEY_ATTRIBUTE);
       if (key !== null) {
         nodesRef.current.set(key, node);
-        record(key, node.getBoundingClientRect().height);
       }
+      let observed = false;
       const unobserve = observeSharedResize(node, {
         read: (entry) => {
           const width = containerRef.current?.clientWidth ?? null;
           const widthChanged =
             observedWidthRef.current !== null &&
             width !== observedWidthRef.current;
-          observedWidthRef.current = width;
           const key = node.getAttribute(WINDOW_KEY_ATTRIBUTE);
           const height =
             entry?.borderBoxSize?.[0]?.blockSize ??
             node.getBoundingClientRect().height;
-          return { key, height, widthChanged };
+          return { key, height, width, widthChanged };
         },
-        write: ({ key, height, widthChanged }) => {
-          if (key === null || !record(key, height)) return;
+        write: ({ key, height, width, widthChanged }) => {
+          observedWidthRef.current = width;
+          if (key === null) return;
+          const changed = record(key, height);
+          if (!changed && observed) return;
+          observed = true;
           if (widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();
-          } else {
-            positionKeeper?.reconcile();
+          } else if (positionKeeper !== null) {
+            settleAfterSharedResizeWrites(positionKeeper.reconcileAfterLayout);
           }
         },
       });
@@ -644,27 +648,54 @@ export function TimelineWindowedItems({
           last < live.itemKeys.length - 1) ||
         (!mountToTop && visible.start - first > 3 * OVERSCAN_ITEMS) ||
         last - visible.end > 3 * OVERSCAN_ITEMS;
-      if (!uncovered && !nearEdge) return commitWidths();
+      const pending = frameCommitRef.current;
+      if (!uncovered && !nearEdge) {
+        pending.state = null;
+        return commitWidths();
+      }
       const window = windowAround(live.itemKeys, visible, mountToTop);
       const keys = window.keys;
       const heldKey = heldKeyOf(positionKeeper);
       if (heldKey !== null && live.indexByKey.has(heldKey)) keys.add(heldKey);
-      if (sameKeys(keys, live.windowKeys) || !takeFrameUpdate()) {
+      if (sameKeys(keys, live.windowKeys)) {
+        pending.state = null;
         return commitWidths();
       }
-      const heights = knownHeights(
-        live.itemKeys,
-        measurements,
-        live.renderedHeights,
-      );
-      const apply = () => {
-        applyWidths();
-        setWindowState({ ...window, keys, heights });
+      if (pending.state !== null && sameKeys(keys, pending.state.keys)) return;
+      if (!takeFrameUpdate()) return commitWidths();
+      const next: WindowState = {
+        ...window,
+        keys,
+        heights: knownHeights(
+          live.itemKeys,
+          measurements,
+          live.renderedHeights,
+        ),
       };
-      if (urgent && (uncovered || widthsChanged)) {
-        flushSync(apply);
+      if ((urgent && uncovered) || pending.frame !== null) {
+        pending.state = next;
+        if (pending.frame === null) {
+          pending.frame = requestAnimationFrame(() => {
+            pending.frame = null;
+            const state = pending.state;
+            pending.state = null;
+            if (state === null) return;
+            flushSync(() => {
+              applyWidths();
+              setWindowState(state);
+            });
+          });
+        }
+        return;
+      }
+      if (urgent && widthsChanged) {
+        flushSync(() => {
+          applyWidths();
+          setWindowState(next);
+        });
       } else {
-        apply();
+        applyWidths();
+        setWindowState(next);
       }
     },
     [measurements, positionKeeper, renderedModel, takeFrameUpdate],
@@ -747,18 +778,17 @@ export function TimelineWindowedItems({
       );
     }
     const renderedItem = renderItem(index, { windowingEnabled });
-    const item = (
-      <TimelineItemWithMeasurementRef item={renderedItem} itemRef={itemRef} />
-    );
     const overscanWidth = windowingEnabled
       ? overscanWidths.get(itemKeys[index] ?? "")
       : undefined;
-    children.push(
+    const styledItem =
       (typeof gap !== "number" || windowingEnabled) &&
-        isValidElement<{ style?: CSSProperties; children?: ReactNode }>(item)
-        ? cloneElement(item, {
+      isValidElement<{ style?: CSSProperties; children?: ReactNode }>(
+        renderedItem,
+      )
+        ? cloneElement(renderedItem, {
             style: {
-              ...item.props.style,
+              ...renderedItem.props.style,
               ...(typeof gap !== "number"
                 ? { marginTop: gapBefore(index) }
                 : {}),
@@ -774,13 +804,23 @@ export function TimelineWindowedItems({
                           : { width: overscanWidth }
                       }
                     >
-                      {item.props.children}
+                      {renderedItem.props.children}
                     </div>
                   ),
                 }
               : {}),
           })
-        : item,
+        : renderedItem;
+    children.push(
+      <TimelineItemWithMeasurementRef
+        key={
+          isValidElement(renderedItem) && renderedItem.key !== null
+            ? renderedItem.key
+            : (itemKeys[index] ?? index)
+        }
+        item={styledItem}
+        itemRef={itemRef}
+      />,
     );
     previous = index;
   }

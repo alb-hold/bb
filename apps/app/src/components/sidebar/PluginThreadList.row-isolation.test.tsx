@@ -63,8 +63,18 @@ function AppTitleMentionResources({ children }: { children: ReactNode }) {
 
 function prepareThreadList() {
   resetThreadActionRegistryForTest();
-  stubPluginRpcFetch((method) => ({
-    result: method === "listPreferences" ? { preferences: {} } : null,
+  stubPluginRpcFetch((method, body) => ({
+    result:
+      method === "listPreferences"
+        ? { preferences: {} }
+        : method === "pullRequests"
+          ? Object.fromEntries(
+              (JSON.parse(body).keys as string[]).map((key) => [
+                key,
+                { outcome: "absent" },
+              ]),
+            )
+          : null,
   }));
   vi.stubGlobal("IntersectionObserver", undefined);
   return seedSidebarQueryClient(60);
@@ -98,7 +108,7 @@ async function settle() {
   });
 }
 
-it("renders only the changed row on a thread update, and no row while typing an answer", async () => {
+it("renders only the changed row on a thread update, and no row while typing an answer (test-change-reason: the fork thread rows query pull requests through the keyed plugin RPC, so the stubbed backend answers that method with a valid empty map instead of null, which the output schema rejects and retries)", async () => {
   const queryClient = prepareThreadList();
   render(
     <SidebarThreadListHarness queryClient={queryClient}>

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   NativeTerminalMode,
@@ -17,7 +17,7 @@ import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
 import { lookupCachedThread } from "@/lib/cached-thread";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { useSidebarThreadEntries } from "@/lib/sidebar-thread-entries";
+import { useSidebarThreadEntriesStore } from "@/lib/sidebar-thread-entries";
 import { sdk } from "@/lib/sdk";
 
 type NativeTerminalModeState = "chat" | "terminal" | "terminalOnly" | "unknown";
@@ -37,7 +37,26 @@ export function useNativeTerminalModeData({
   threadIds,
 }: PluginThreadActionDataInput): NativeTerminalModeData {
   const queryClient = useQueryClient();
-  const entries = useSidebarThreadEntries();
+  const entries = useSidebarThreadEntriesStore();
+  const threadIdsKey = threadIds.join("\n");
+  const subscribeProviders = useCallback(
+    (listener: () => void) => {
+      const unsubscribers = (
+        threadIdsKey === "" ? [] : threadIdsKey.split("\n")
+      ).map((threadId) => entries.subscribe(threadId, listener));
+      return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+    },
+    [entries, threadIdsKey],
+  );
+  const readProviders = () =>
+    threadIds
+      .map((id) => `${id}:${entries.get(id)?.providerId ?? ""}`)
+      .join("\n");
+  const providersKey = useSyncExternalStore(
+    subscribeProviders,
+    readProviders,
+    readProviders,
+  );
   const providers = useSystemProviders().data;
   const nativeProvidersKey = (providers ?? [])
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
@@ -89,10 +108,24 @@ export function useNativeTerminalModeData({
     const nativeProviders = new Set(
       nativeProvidersKey === "" ? [] : nativeProvidersKey.split("\n"),
     );
+    const listedProviderIds = new Map(
+      (providersKey === "" ? [] : providersKey.split("\n")).map((entry) => {
+        const separator = entry.indexOf(":");
+        return [
+          entry.slice(0, separator),
+          entry.slice(separator + 1),
+        ] as const;
+      }),
+    );
     return {
-      providerIdOf: (threadId) =>
-        (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
-          ?.providerId ?? null,
+      providerIdOf: (threadId) => {
+        const listed = listedProviderIds.get(threadId);
+        if (listed !== undefined && listed !== "") return listed;
+        return (
+          (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
+            ?.providerId ?? null
+        );
+      },
       isNativeProvider: (providerId) => nativeProviders.has(providerId),
       modeOf: (threadId) => terminalModes.get(threadId) ?? "unknown",
       switchMode: async (threadId, mode, projectId) => {
@@ -107,7 +140,7 @@ export function useNativeTerminalModeData({
         await applyNativeTerminalModeSwitch({ queryClient, threadId, view });
       },
     };
-  }, [entries, nativeProvidersKey, queryClient, terminalThreadsKey]);
+  }, [entries, nativeProvidersKey, providersKey, queryClient, terminalThreadsKey]);
 }
 
 export function nativeTerminalModeItem({

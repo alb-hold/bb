@@ -837,8 +837,10 @@
   scrollbar-width: thin;
 }
 
-:where(.xterm) .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
+@media (pointer: fine) {
+  :where(.xterm) .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 :where([data-testid="root-compose-compact-scroll-viewport"][data-more-below]) {

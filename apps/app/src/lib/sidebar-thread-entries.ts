@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   hashKey,
   notifyManager,
@@ -15,6 +20,7 @@ import {
   archivedThreadsListQueryKey,
   sidebarNavigationQueryKey,
 } from "@/hooks/queries/query-keys";
+import { writeSidebarNavigation } from "@/hooks/cache-owners/query-cache";
 import { readCachedSidebarBootstrap } from "./sidebar-bootstrap-cache";
 
 type ArchivedThreadsData = InfiniteData<ThreadListResponse, number>;
@@ -192,7 +198,7 @@ export function SidebarThreadEntriesProvider({
   const queryClient = useQueryClient();
   useEffect(() => {
     if (navigation !== undefined) {
-      queryClient.setQueryData(sidebarNavigationQueryKey(), navigation);
+      writeSidebarNavigation(queryClient, navigation);
     }
   }, [navigation, queryClient]);
   return children;

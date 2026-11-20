@@ -25,9 +25,11 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { useSidebarThreadShortcut as useHostSidebarThreadShortcut } from "@/components/sidebar/sidebarThreadShortcuts";
 import {
+  resolveThreadTitleDisplayText,
   useThreadTitleMentionResources,
   type ThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
+import { getThreadDisplayTitle } from "./thread-title";
 import {
   usePromptDraftHasInput,
   usePromptDraftInputThreadIds,
@@ -53,6 +55,7 @@ import { toPluginSidebarThread } from "./plugin-sidebar-threads";
 import {
   useSidebarThreadEntries,
   useSidebarThreadEntriesStore,
+  useSidebarThreadEntry,
 } from "./sidebar-thread-entries";
 import { useSetRootComposeProjectId } from "./root-compose-selection";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -89,8 +92,8 @@ function hostNamesFor(
 const pluginSidebarThreadByEntry = new WeakMap<
   ThreadListEntry,
   {
-    hostNamesById: ReadonlyMap<string, string>;
-    titleResources: ThreadTitleMentionResources;
+    hostName: string | null;
+    displayTitle: string;
     nativeActivityKey: string;
     thread: PluginSidebarThread;
   }
@@ -102,6 +105,15 @@ function toPluginSidebarThreadCached(
   titleResources: ThreadTitleMentionResources,
   now: number,
 ): PluginSidebarThread {
+  const hostName =
+    entry.environmentHostId === null
+      ? null
+      : (hostNamesById.get(entry.environmentHostId) ??
+        entry.environmentHostId);
+  const displayTitle = resolveThreadTitleDisplayText(
+    getThreadDisplayTitle(entry),
+    titleResources,
+  );
   const cached = pluginSidebarThreadByEntry.get(entry);
   const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
     entry.runtime,
@@ -120,8 +132,8 @@ function toPluginSidebarThreadCached(
   const nativeActivityKey = `${nativeActivityUnconfirmed}:${evidenceKind}:${toolCallAgeMinutes}`;
   if (
     cached !== undefined &&
-    cached.hostNamesById === hostNamesById &&
-    cached.titleResources === titleResources &&
+    cached.hostName === hostName &&
+    cached.displayTitle === displayTitle &&
     cached.nativeActivityKey === nativeActivityKey
   ) {
     return cached.thread;
@@ -134,8 +146,8 @@ function toPluginSidebarThreadCached(
     nativeActivityUnconfirmed,
   );
   pluginSidebarThreadByEntry.set(entry, {
-    hostNamesById,
-    titleResources,
+    hostName,
+    displayTitle,
     nativeActivityKey,
     thread,
   });
@@ -262,12 +274,6 @@ export function useSidebarThreads(
 
 export function useThreadEntryMap(): ReadonlyMap<string, ThreadListEntry> {
   return useSidebarThreadEntries();
-}
-
-export function useSidebarThreadEntry(
-  threadId: string,
-): ThreadListEntry | null {
-  return useSidebarThreadEntries().get(threadId) ?? null;
 }
 
 export function useSidebarThreadActions(): PluginSidebarThreadActions {

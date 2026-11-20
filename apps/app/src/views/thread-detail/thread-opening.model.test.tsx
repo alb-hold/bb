@@ -39,7 +39,6 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 
 import { useThreadDetailThread } from "./useThreadDetailThread";
 
-
 const SEED_COUNT = Number(process.env.OPENING_MODEL_SEEDS ?? 40);
 
 const THREAD_ID = "thr_opening";
@@ -50,9 +49,7 @@ const COMPACT_SEGMENT_LIMIT = 8;
 
 const THRESHOLD_PX = 4;
 
-
 const viewport = vi.hoisted(() => ({ compact: false }));
-
 
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sdk")>();
@@ -62,17 +59,14 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
   };
 });
 
-
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useThreadDetailRealtimeSubscription: vi.fn(),
   useThreadTimelineRealtimeSubscription: vi.fn(),
 }));
 
-
 vi.mock("@/hooks/useServerConnectionState", () => ({
   useServerConnectionState: () => "connected",
 }));
-
 
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", async (importOriginal) => {
   const actual =
@@ -82,9 +76,7 @@ vi.mock("@bb/shared-ui/hooks/use-compact-viewport", async (importOriginal) => {
   return { ...actual, useIsCompactViewport: () => viewport.compact };
 });
 
-
 vi.mock("@/lib/user-activity", () => ({ useUserActive: () => true }));
-
 
 vi.mock("@/components/ui/height-transition", async (importOriginal) => {
   const actual =
@@ -94,7 +86,6 @@ vi.mock("@/components/ui/height-transition", async (importOriginal) => {
     AutoHeightContainer: ({ children }: { children: ReactNode }) => children,
   };
 });
-
 
 function createRandom(seed: number) {
   let state = seed >>> 0;
@@ -112,7 +103,6 @@ function createRandom(seed: number) {
   };
 }
 
-
 interface HistoryRow {
   row: TimelineRow;
   height: number;
@@ -120,24 +110,17 @@ interface HistoryRow {
   authoredByReader: boolean;
 }
 
-
 interface Pending {
   label: string;
   release: () => void;
 }
 
-
 function OpenedThread() {
   const timeline = useThreadTimelineController({ threadId: THREAD_ID });
-  const { unreadDividerState } = useThreadDetailThread(
-    THREAD_ID,
-    true,
-    "first-unread-row",
-    {
-      hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
-      isFocused: true,
-    },
-  );
+  const { unreadDividerState } = useThreadDetailThread(THREAD_ID, true, {
+    hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
+    isFocused: true,
+  });
   return (
     <BottomAnchoredScrollBody
       footer={null}
@@ -170,14 +153,11 @@ function OpenedThread() {
   );
 }
 
-
 function Host({ shown }: { shown: boolean }) {
   return shown ? <OpenedThread /> : <div data-testid="other-thread" />;
 }
 
-
 let restoreLayout: (() => void) | null = null;
-
 
 function getScrollElement() {
   const elements = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
@@ -193,7 +173,6 @@ function getScrollElement() {
   }
   return null;
 }
-
 
 function installOpeningLayout(
   viewportHeight: number,
@@ -215,7 +194,6 @@ function installOpeningLayout(
   return layout;
 }
 
-
 beforeEach(() => {
   vi.useFakeTimers({
     toFake: [
@@ -235,7 +213,6 @@ beforeEach(() => {
   });
 });
 
-
 afterEach(() => {
   cleanup();
   restoreLayout?.();
@@ -247,7 +224,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
-
 
 async function runSeed(seed: number): Promise<void> {
   const random = createRandom(seed);
@@ -630,7 +606,6 @@ async function runSeed(seed: number): Promise<void> {
   }
 }
 
-
 describe("thread opening model", () => {
   it("opens a confirmed native thread while environment bootstrap is pending", async () => {
     const nativeThread = makeThreadResponse({
@@ -646,8 +621,7 @@ describe("thread opening model", () => {
       const { thread, hasThreadDetailBootstrapSettled } = useThreadDetailThread(
         THREAD_ID,
         false,
-        "first-unread-row",
-            {
+        {
           hasUnseenTimelineEvents: false,
           isFocused: true,
           nativeTerminalReady: true,

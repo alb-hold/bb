@@ -1,4 +1,10 @@
-import { createContext, useContext, useLayoutEffect, useState } from "react";
+import {
+  createContext,
+  startTransition,
+  useContext,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { useSidebarContentElementRef } from "../ui/sidebar.js";
 import { observeSharedResize } from "@/lib/shared-resize-observer";
 
@@ -22,7 +28,8 @@ export function useSidebarListShown(): boolean {
       read: (entry) =>
         entry === undefined ? undefined : entry.contentRect.height > 0,
       write: (nextShown) => {
-        if (nextShown !== undefined) setShown(nextShown);
+        if (nextShown === undefined) return;
+        startTransition(() => setShown(nextShown));
       },
     });
   }, [visible, canObserve, scrollElementRef]);
