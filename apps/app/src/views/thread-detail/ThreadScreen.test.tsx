@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
@@ -31,7 +37,9 @@ const mocks = vi.hoisted(() => ({
   editMessageMutateAsync: vi.fn(),
 }));
 
-let activeScreenWrapper: ComponentType<{ children: ReactNode }> = ({ children }) => <>{children}</>;
+let activeScreenWrapper: ComponentType<{ children: ReactNode }> = ({
+  children,
+}) => <>{children}</>;
 
 vi.mock("@/components/ui/app-toast", async (importOriginal) => {
   const actual =
@@ -67,9 +75,20 @@ vi.mock("@/hooks/queries/system-queries", () => ({
 
 vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
   return {
-    useCreateThreadQueuedMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-    useEditThreadMessage: () => ({ mutateAsync: mocks.editMessageMutateAsync, isPending: false }),
-    useSendThreadMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useCreateThreadQueuedMessage: () => ({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn(),
+      isPending: false,
+    }),
+    useEditThreadMessage: () => ({
+      mutateAsync: mocks.editMessageMutateAsync,
+      isPending: false,
+    }),
+    useSendThreadMessage: () => ({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn(),
+      isPending: false,
+    }),
   };
 });
 
@@ -444,7 +463,10 @@ describe("ThreadScreen", () => {
         resolveEdit = resolve;
       }),
     );
-    const view = renderScreen({ kind: "page" }, timelineWithRowIds(["msg_1"]));
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
     startEditingMessage("msg_1");
     submitSentMessageEdit();
 
@@ -461,7 +483,10 @@ describe("ThreadScreen", () => {
   });
 
   it("discards an unsubmitted edit whose message leaves the timeline", () => {
-    const view = renderScreen({ kind: "page" }, timelineWithRowIds(["msg_1"]));
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
     startEditingMessage("msg_1");
 
     mocks.timeline = timelineWithRowIds(["msg_2"]);
@@ -480,7 +505,10 @@ describe("ThreadScreen", () => {
         rejectEdit = reject;
       }),
     );
-    const view = renderScreen({ kind: "page" }, timelineWithRowIds(["msg_1"]));
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
     startEditingMessage("msg_1");
     submitSentMessageEdit();
     mocks.timeline = timelineWithRowIds(["msg_2"]);

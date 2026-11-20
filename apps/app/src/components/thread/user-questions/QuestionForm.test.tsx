@@ -23,7 +23,8 @@ import type {
 import { ThreadQuestionFormHost } from "./ThreadQuestionFormHost";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { preloadPromptVoiceRuntime } from "@/components/promptbox/usePromptVoice";
-beforeAll(() => preloadPromptVoiceRuntime());
+import { settleLazyModules } from "@/test/lazy-modules";
+beforeAll(() => settleLazyModules(preloadPromptVoiceRuntime()));
 
 type InteractionPayload = { questions: Question[] };
 type InteractionResponse = { answers: Record<string, QuestionAnswer> };
@@ -401,6 +402,20 @@ describe("answering a single-select question", () => {
     } satisfies InteractionResponse);
   });
 
+  it("selects an option with its number-key shortcut", () => {
+    const submit = vi.fn<(value: InteractionResponse) => Promise<void>>(
+      async () => undefined,
+    );
+    const slot = render(singleSelect, { submit });
+
+    fireEvent.keyDown(window, { key: "2" });
+    fireEvent.click(getButtonByText(slot, "Submit answer"));
+
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0]?.[0]).toEqual({
+      answers: { q0: { selected: ["q0o1"] } },
+    } satisfies InteractionResponse);
+  });
   it("ignores number keys typed into the free-text box", () => {
     const slot = render(singleSelect);
     fireEvent.click(getButtonByText(slot, "Other…"));
@@ -720,6 +735,14 @@ describe("multi-select and multi-question flows", () => {
     } finally {
       composer.remove();
     }
+  });
+
+  it("cancels the request instead of submitting", () => {
+    const cancel = vi.fn(async () => undefined);
+    const slot = render(multi, { cancel });
+
+    fireEvent.click(getButtonByText(slot, "Cancel"));
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 
