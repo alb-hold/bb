@@ -658,7 +658,7 @@ describe("Rail", () => {
       vi.advanceTimersByTime(250);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "1 update available" }));
+    fireEvent.click(screen.getByRole("button", { name: "bb update available" }));
     act(() => {
       vi.advanceTimersByTime(250);
     });
