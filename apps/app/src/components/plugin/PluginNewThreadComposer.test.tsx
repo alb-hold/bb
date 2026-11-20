@@ -17,6 +17,7 @@ import {
 import { Provider } from "jotai";
 
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -236,9 +237,9 @@ vi.mock("@/components/promptbox/NewThreadPromptBox", async (importOriginal) => {
     >();
   function LivePromptBox(props: Record<string, any>) {
     const draft = useSyncExternalStore<PromptDraftState>(
-      props.draftSource.subscribe,
-      props.draftSource.getCurrent,
-      props.draftSource.getCurrent,
+      props.draft.subscribeDraft,
+      props.draft.getCurrent,
+      props.draft.getCurrent,
     );
     mocks.promptBoxProps.push({
       ...props,
@@ -264,7 +265,7 @@ vi.mock("@/components/promptbox/NewThreadPromptBox", async (importOriginal) => {
             {...(props as import("@/components/promptbox/NewThreadPromptBox").NewThreadPromptBoxProps)}
           />
         );
-      if (props.draftSource) return <LivePromptBox {...props} />;
+      if (props.draft) return <LivePromptBox {...props} />;
       mocks.promptBoxProps.push(props);
       return (
         <div data-testid="new-thread-prompt-box">
@@ -1167,7 +1168,9 @@ describe("PluginNewThreadComposer seeding", () => {
     const voice = vi.spyOn(voiceInput, "useVoiceInput");
     const { preloadPromptVoiceRuntime } =
       await import("@/components/promptbox/usePromptVoice");
-    await preloadPromptVoiceRuntime();
+    const preloaded = preloadPromptVoiceRuntime();
+    await settleLazyModules();
+    await preloaded;
     const submitted = vi.fn();
     render(
       <Provider>
