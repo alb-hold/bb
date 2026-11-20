@@ -194,7 +194,8 @@ describe("terminal visibility signals", () => {
   it("releases and reacquires sub-threshold visible slivers on scroll", () => {
     const state = setupVisibility();
     const parent = document.createElement("div");
-    parent.style.overflow = "hidden";
+    parent.style.overflowX = "hidden";
+    parent.style.overflowY = "hidden";
     document.body.append(parent);
     parent.append(state.root);
     const sliver = new DOMRect(10, 10, 1e-11, 1e-11);
@@ -237,7 +238,8 @@ describe("terminal visibility signals", () => {
       const state = setupVisibility(true, false, (root) => {
         if (kind === "hidden") root.style.visibility = "hidden";
         else {
-          parent.style.overflow = "hidden";
+          parent.style.overflowX = "hidden";
+          parent.style.overflowY = "hidden";
           document.body.append(parent);
           parent.append(root);
           vi.spyOn(parent, "getBoundingClientRect").mockReturnValue(
@@ -249,7 +251,8 @@ describe("terminal visibility signals", () => {
       });
       expect(state.createAddon).not.toHaveBeenCalled();
       state.root.style.visibility = "visible";
-      parent.style.overflow = "visible";
+      parent.style.overflowX = "visible";
+      parent.style.overflowY = "visible";
       state.observer.sync();
       expect(state.createAddon).not.toHaveBeenCalled();
       state.intersect(true, new DOMRect(10, 10, 0, 200));
@@ -280,7 +283,8 @@ describe("terminal visibility signals", () => {
   it("releases contexts clipped by a scroll container without IntersectionObserver", () => {
     const state = setupVisibility(false);
     const parent = document.createElement("div");
-    parent.style.overflow = "hidden";
+    parent.style.overflowX = "hidden";
+    parent.style.overflowY = "hidden";
     document.body.append(parent);
     parent.append(state.root);
     let parentBox = new DOMRect(400, 10, 300, 200);
