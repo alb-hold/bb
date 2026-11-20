@@ -22,6 +22,7 @@ import { runQueuedMessageDispatch } from "../../src/services/threads/queued-mess
 import {
   internalAuthHeaders,
   listQueuedThreadCommands,
+  reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import {
@@ -35,6 +36,20 @@ import {
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
+
+async function acceptSubmittedTurn(
+  harness: TestAppHarness,
+  threadId: string,
+): Promise<void> {
+  const submitted = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "turn.submit" && command.threadId === threadId,
+  );
+  await reportQueuedCommandSuccess(harness, submitted, {
+    trace: { spans: [] },
+  });
+}
 
 const PROVIDER_THREAD_ID = "provider-session";
 const TURN_ID = "turn-1";
@@ -704,6 +719,7 @@ describe("a provider process that exits under a running turn", () => {
           kind: "time-reached",
           now: (queuedRetry.sendAt ?? Date.now()) + 1,
         });
+        await acceptSubmittedTurn(harness, scenario.child.id);
         const retriedChild = getThread(harness.db, scenario.child.id);
         if (retriedChild === null) throw new Error("expected the child thread");
         seedTurnStarted(harness.deps, {

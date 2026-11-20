@@ -1002,7 +1002,14 @@ describe("holding sends while bb restarts to update", () => {
       continueAfterRestarts(harness, true);
       const fixture = seedHostWithProject(harness);
       const running = seedRunningThread(harness, fixture);
-      const idle = seedIdleThread(harness, fixture);
+      const idle = seedIdleThread(harness, {
+        ...fixture,
+        environment: seedEnvironment(harness.deps, {
+          hostId: fixture.host.id,
+          projectId: fixture.project.id,
+          path: `${WORKSPACE_PATH}-idle`,
+        }),
+      });
 
       createAppUpdateSendHold(harness.deps).hold();
       await sendMessage(harness, {

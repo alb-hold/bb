@@ -21,6 +21,7 @@ import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
 } from "../../../types.js";
+import { recordFinishedTurn } from "../../system/turn-telemetry.js";
 import { NotificationBuffer } from "../../lib/notification-buffer.js";
 import {
   appendSystemErrorEventInTransaction,
@@ -284,6 +285,9 @@ export function runThreadLifecycleInTransaction(
     } else {
       applyTransactionEffect(deps, written.thread, effect, appended);
     }
+  }
+  for (const move of transition.moves) {
+    recordFinishedTurn(deps.db, threadId, { type: move }, state.status);
   }
   if (appended.size > 0) {
     deps.hub.notifyThread(threadId, ["events-appended"], {

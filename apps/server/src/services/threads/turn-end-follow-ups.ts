@@ -1,6 +1,7 @@
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import {
   events as storedEvents,
+  getQueuedRetryOfTurnRequest,
   getThread,
   isStoredTurnContextCompactionOnly,
   isTurnAimedAtByEarlierStop,
@@ -15,7 +16,9 @@ import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
 } from "../../types.js";
+import { waitForPluginTurnFailed } from "../plugins/plugin-thread-events.js";
 import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
+import { loadFailedTurn, retryChain } from "./turn-failed.js";
 import { isParentNotifiableChildThread } from "./thread-parent.js";
 import {
   continueAfterEnvironmentDirectoryUpdate,
@@ -45,6 +48,19 @@ interface TurnKey {
   turnId: string;
 }
 
+export interface ParentTurnRetryContext {
+  failedRequestId: string;
+  originalRequestId: string;
+}
+
+type RetryAfterFailure =
+  | { kind: "queued"; sendAt: number | null }
+  | { kind: "dispatched" }
+  | null;
+
+const PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS = 10_000;
+const PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS = 2 * 60 * 1_000;
+
 interface AddParentTurnNotificationFollowUpArgs {
   failedParentNotificationThreadIds: Set<string>;
   followUps: TurnEndFollowUp[] | ParentTurnNotificationFollowUp[];
@@ -52,6 +68,7 @@ interface AddParentTurnNotificationFollowUpArgs {
   turnStatus: ThreadEventTurnStatus;
   turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
+  retry?: ParentTurnRetryContext;
 }
 
 export interface ParentTurnNotificationFollowUp {
@@ -63,6 +80,7 @@ export interface ParentTurnNotificationFollowUp {
   turnStatus: ThreadEventTurnStatus;
   turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
+  retry?: ParentTurnRetryContext;
 }
 
 interface QueuedMessageDispatchFollowUp {
@@ -202,6 +220,38 @@ function getTurnInterruption(
   );
 }
 
+export function parentTurnRetryContext(
+  db: AppDeps["db"],
+  threadId: string,
+): ParentTurnRetryContext | undefined {
+  const failed = loadFailedTurn(db, threadId);
+  if (failed === null) return undefined;
+  return {
+    failedRequestId: failed.request.requestId,
+    originalRequestId: retryChain(failed.request).originalRequestId,
+  };
+}
+
+function retryAfterFailure(
+  deps: Pick<AppDeps, "db">,
+  args: { threadId: string; retry: ParentTurnRetryContext },
+): RetryAfterFailure {
+  const queuedRetry = getQueuedRetryOfTurnRequest(deps.db, {
+    threadId: args.threadId,
+    retryOfTurnRequestId: args.retry.originalRequestId,
+  });
+  if (queuedRetry !== null) {
+    return { kind: "queued", sendAt: queuedRetry.sendAt };
+  }
+  const latest = loadFailedTurn(deps.db, args.threadId);
+  return latest !== null &&
+    latest.request.requestId !== args.retry.failedRequestId &&
+    retryChain(latest.request).originalRequestId ===
+      args.retry.originalRequestId
+    ? { kind: "dispatched" }
+    : null;
+}
+
 export function addParentTurnNotificationFollowUp(
   args: AddParentTurnNotificationFollowUpArgs,
 ): void {
@@ -221,6 +271,7 @@ export function addParentTurnNotificationFollowUp(
     parentThreadId: args.thread.parentThreadId,
     title: args.thread.title,
     turnStatus: args.turnStatus,
+    ...(args.retry ? { retry: args.retry } : {}),
     turnId: args.turnId,
     ...(args.interruption ? { interruption: args.interruption } : {}),
   });
@@ -233,6 +284,36 @@ export async function executeTurnEndFollowUpBestEffort(
   try {
     switch (followUp.kind) {
       case "parent-turn-notification":
+        if (followUp.turnStatus === "failed" && followUp.retry) {
+          await waitForPluginTurnFailed(
+            followUp.childThreadId,
+            PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS,
+          );
+          const retry = retryAfterFailure(deps, {
+            threadId: followUp.childThreadId,
+            retry: followUp.retry,
+          });
+          if (retry?.kind === "dispatched") return;
+          if (retry?.kind === "queued") {
+            const noticeThreshold =
+              Date.now() + PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS;
+            if (retry.sendAt === null || retry.sendAt <= noticeThreshold) {
+              return;
+            }
+            await queueChildThreadTurnNotificationBestEffort(deps, {
+              childThread: {
+                id: followUp.childThreadId,
+                projectId: followUp.projectId,
+                title: followUp.title,
+              },
+              parentThreadId: followUp.parentThreadId,
+              turnId: null,
+              turnStatus: followUp.turnStatus,
+              retryScheduledAt: retry.sendAt,
+            });
+            return;
+          }
+        }
         await queueChildThreadTurnNotificationBestEffort(deps, {
           childThread: {
             id: followUp.childThreadId,
@@ -349,12 +430,17 @@ export function planTurnEnd(
       !manuallyStopped &&
       !compactionOnly
     ) {
+      const retry =
+        args.status === "failed"
+          ? parentTurnRetryContext(deps.db, thread.id)
+          : undefined;
       addParentTurnNotificationFollowUp({
         failedParentNotificationThreadIds:
           args.failedParentNotificationThreadIds,
         followUps: parentNotifications,
         thread,
         turnStatus: args.status,
+        ...(retry ? { retry } : {}),
         turnId,
         ...(interruption ? { interruption } : {}),
       });

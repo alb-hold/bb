@@ -296,22 +296,49 @@ async function listInstalledPluginProviderInfos(
         hostId,
         providerId: registration.info.id,
       };
-      const probe = (probeBudget: ProviderListingBudget) =>
-        probeInstalledProvider(deps, {
+      const probe = async (probeBudget: ProviderListingBudget) => {
+        const result = await requestProviderHealth(deps, {
           hostId,
           providerId: registration.info.id,
           bridgeLaunch,
-          budget: probeBudget,
+          timeoutMs: probeBudget.remainingMs(),
         });
-      const cached = deps.providerRegistry.lookupInstalled(cacheKey);
+        return result.supported ? result.health.status : null;
+      };
+      const cachedInstalled = deps.providerRegistry.lookupInstalled(cacheKey);
+      const cachedStatus =
+        deps.providerRegistry.lookupProviderHealthStatus(cacheKey);
       try {
-        const installed = cached ?? probe(budget);
-        if (cached === undefined) {
+        const status =
+          cachedInstalled !== undefined
+            ? cachedInstalled.then((installed) =>
+                installed ? "ready" : "not_installed",
+              )
+            : (cachedStatus ?? probe(budget));
+        const installed = status.then(
+          (discovered) => discovered !== null && discovered !== "not_installed",
+        );
+        if (cachedStatus === undefined && cachedInstalled === undefined) {
+          deps.providerRegistry.rememberProviderHealthStatus(cacheKey, status);
+        }
+        if (cachedInstalled === undefined) {
           deps.providerRegistry.rememberInstalled(cacheKey, installed);
         } else {
-          void deps.providerRegistry.revalidateInstalled(cacheKey, () =>
-            probe(createProviderListingBudget()),
-          );
+          void deps.providerRegistry.revalidateInstalled(cacheKey, async () => {
+            const pending = probe(createProviderListingBudget());
+            deps.providerRegistry.rememberProviderHealthStatus(
+              cacheKey,
+              pending,
+            );
+            notifyWhenHealthSettles(
+              deps,
+              hostId,
+              registration.info.id,
+              pending,
+            );
+            const discovered = await pending;
+            return discovered !== null && discovered !== "not_installed";
+          });
         }
         return (await installed) ? registration.info : null;
       } catch (error) {

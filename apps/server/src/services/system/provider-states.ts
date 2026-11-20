@@ -248,6 +248,12 @@ async function getInstalledOnlyProviderState(
     omitInstalledProviderAfterError(deps, key, error);
     return null;
   }
+  if (result.supported && args.cwd === undefined) {
+    deps.providerRegistry.rememberProviderHealthStatus(
+      key,
+      Promise.resolve(result.health.status),
+    );
+  }
   if (!isInstalledProviderHealth(result)) return null;
   return await toProviderState(deps, { ...args, result }).catch(() =>
     unknownProviderState(

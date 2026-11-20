@@ -3,7 +3,11 @@ import {
   getThread,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
-import type { ResolvedThreadExecutionOptions, Thread } from "@bb/domain";
+import type {
+  ProjectExecutionDefaults,
+  ResolvedThreadExecutionOptions,
+  Thread,
+} from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import type {
   ThreadCreateServiceRequest,
@@ -74,6 +78,7 @@ function loadThreadParentExecution(
 export function loadThreadExecutionDefaults(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
   thread: Pick<Thread, "parentThreadId" | "projectId" | "providerId">,
+  projectDefaults?: ProjectExecutionDefaults | null,
 ): ThreadExecutionDefaults {
   return resolveThreadExecutionDefaults(deps.providerRegistry, {
     parent: loadThreadParentExecution(
@@ -82,9 +87,13 @@ export function loadThreadExecutionDefaults(
         ? null
         : getThread(deps.db, thread.parentThreadId),
     ),
-    projectDefaults: getProjectExecutionDefaults(deps.db, {
-      projectId: thread.projectId,
-    }),
+    projectDefaults:
+      projectDefaults === undefined
+        ? getProjectExecutionDefaults(deps.db, {
+            projectId: thread.projectId,
+            providerId: thread.providerId,
+          })
+        : projectDefaults,
     providerId: thread.providerId,
   });
 }

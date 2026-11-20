@@ -1,6 +1,5 @@
 import {
   getAppSettings,
-  getProjectExecutionDefaults,
   getQueuedThreadStartMessage,
   getThread,
   getThreadSpawner,
@@ -324,18 +323,11 @@ export async function resolveExistingThreadExecutionPlan(
 ): Promise<ExistingThreadExecutionPlan> {
   const thread = requireThread(deps, args.threadId);
   const lastExecution = getStoredThreadExecutionOptions(deps, thread);
-  const defaults = loadThreadExecutionDefaults(deps, thread);
-  const rawProjectExecution =
-    args.projectDefaults === undefined
-      ? getProjectExecutionDefaults(deps.db, {
-          projectId: thread.projectId,
-          providerId: thread.providerId,
-        })
-      : args.projectDefaults;
-  const projectExecution =
-    rawProjectExecution?.providerId === thread.providerId
-      ? rawProjectExecution
-      : null;
+  const defaults = loadThreadExecutionDefaults(
+    deps,
+    thread,
+    args.projectDefaults,
+  );
   const parentThread =
     thread.parentThreadId !== null
       ? getThread(deps.db, thread.parentThreadId)
@@ -376,7 +368,6 @@ export async function resolveExistingThreadExecutionPlan(
     thread.modelOverride ?? undefined,
     lastExecution?.model,
     args.defaultModel,
-    projectExecution?.model,
     defaults.model,
   ].find((value) => value !== undefined && value !== null);
   if (!model) {
@@ -401,7 +392,6 @@ export async function resolveExistingThreadExecutionPlan(
     inheritedParentReasoningLevel ??
     thread.reasoningLevelOverride ??
     lastExecution?.reasoningLevel ??
-    projectExecution?.reasoningLevel ??
     defaults.reasoningLevel;
   validateProviderReasoningLevel(
     deps.providerRegistry,

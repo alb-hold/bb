@@ -1,7 +1,9 @@
 import {
+  clearThreadRowStateAtOutputSeqs,
   getLatestThreadStopAim,
   getThread,
   hasThreadStartTurnRequest,
+  isNativeTerminalThread,
   type DbQueryConnection,
 } from "@bb/db";
 import { clientTurnRequestIdSchema, type Thread } from "@bb/domain";
@@ -23,6 +25,7 @@ import {
 import { queueChildThreadTurnNotificationBestEffort } from "../child-thread-notifications.js";
 import { isParentNotifiableChildThread } from "../thread-parent.js";
 import { requestQueuedMessageDispatch } from "../queued-message-dispatch.js";
+import { releaseWorkspaceForThread } from "../workspace-write-serialization.js";
 import { clearThreadProvisionSchedule } from "../thread-startup-store.js";
 import {
   buildThreadStopCommand,
@@ -211,6 +214,13 @@ export function announceThreadStatusChange(
   thread: Thread,
 ): void {
   resetActiveThreadEventPruningState(deps, thread.id);
+  if (thread.status === "idle" || thread.status === "error") {
+    deps.hub.clearDeviceHandoffTurnSubmitterForThread(thread.id);
+    if (!isNativeTerminalThread(deps.db, thread.id)) {
+      clearThreadRowStateAtOutputSeqs(deps.db, thread.id);
+      releaseWorkspaceForThread(deps, thread);
+    }
+  }
   deps.hub.notifyThread(
     thread.id,
     ["status-changed"],

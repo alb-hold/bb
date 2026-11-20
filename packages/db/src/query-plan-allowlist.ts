@@ -37,6 +37,10 @@ export const QUERY_PLAN_ALLOWLIST: readonly QueryPlanAllowlistEntry[] = [
     "The thread/type/sequence index preserves started-item order; the turn/type/item index places item_id before sequence and cannot satisfy ORDER BY without sorting",
   ),
   acceptedEventsIndex(
+    "apps/server/src/internal/archived-credential-revocation.ts#isArchivedCredentialRevocation",
+    "Runs once per failed turn completion of an archived thread; provider/error rows are a handful per turn, and the turn/type/item index places item_id before sequence so it cannot satisfy ORDER BY sequence DESC without sorting",
+  ),
+  acceptedEventsIndex(
     "apps/server/src/services/threads/environment-directory-continuation.ts#findEnvironmentDirectoryContinuation",
     "system/operation events are rare per thread",
   ),

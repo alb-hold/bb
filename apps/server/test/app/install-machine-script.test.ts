@@ -15,7 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import { basename, delimiter, dirname, join } from "node:path";
-import { createProcessLifeline } from "@bb/test-helpers";
+import {
+  createProcessLifeline,
+  killProcessesReferencingPath,
+} from "@bb/test-helpers";
 import { afterEach, describe, expect, it } from "vitest";
 
 const SCRIPT_PATH = new URL(
@@ -458,6 +461,9 @@ async function stopFixtureDaemons(
 afterEach(async () => {
   const roots = createdDirectories.splice(0);
   await stopFixtureDaemons(roots);
+  for (const root of roots) {
+    await killProcessesReferencingPath(root);
+  }
   const remaining = remainingFixtureProcesses(roots);
   for (const root of roots) {
     rmSync(root, { force: true, recursive: true });

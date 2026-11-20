@@ -19,6 +19,8 @@ import { retryFailedTurn } from "../../src/services/threads/turn-retry.js";
 import {
   internalAuthHeaders,
   listQueuedThreadCommands,
+  reportQueuedCommandSuccess,
+  waitForQueuedCommand,
 } from "../helpers/commands.js";
 import {
   seedEnvironment,
@@ -211,6 +213,20 @@ function parentNoticeTexts(
       ),
   );
   return [...dispatched, ...queued];
+}
+
+async function acceptSubmittedTurn(
+  harness: TestAppHarness,
+  threadId: string,
+): Promise<void> {
+  const submitted = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "turn.submit" && command.threadId === threadId,
+  );
+  await reportQueuedCommandSuccess(harness, submitted, {
+    trace: { spans: [] },
+  });
 }
 
 async function failFirstTurn(
@@ -571,6 +587,7 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
         },
       });
       expect(retry).toMatchObject({ delivery: "sent", attempt: 2 });
+      await acceptSubmittedTurn(harness, scenario.child.id);
       seedTurnStarted(harness.deps, {
         environmentId: child.environmentId,
         providerThreadId: PROVIDER_THREAD_ID,

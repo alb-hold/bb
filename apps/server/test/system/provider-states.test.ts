@@ -203,7 +203,7 @@ describe("getProviderStates", () => {
                 supported: true,
                 health: healthForInstalledOnlyProvider(
                   request.command.providerId,
-                  new Set(["acp-opencode"]),
+                  new Set(["acp-cursor", "acp-opencode"]),
                 ),
               },
             };
@@ -575,10 +575,7 @@ describe("getProviderStates", () => {
 
       expect(result.providers[0]?.providerId).toBe("codex");
       expect(primaryCalls).toBe(0);
-      expect(healthCwds.filter((cwd) => cwd === undefined)).toHaveLength(5);
-      expect(healthCwds.filter((cwd) => cwd !== undefined)).toEqual(
-        Array(3).fill(environment.path),
-      );
+      expect(healthCwds).toEqual(Array(8).fill(environment.path));
     });
   });
 

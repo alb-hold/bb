@@ -719,7 +719,7 @@ async function runDispatchAttempt(
     const workspaceOwnerThreadId = workspaceClaim.acquired
       ? activeWorkspaceNeighbourId
       : workspaceClaim.holderThreadId;
-    if (workspaceOwnerThreadId !== null) {
+    if (systemNotice === null && workspaceOwnerThreadId !== null) {
       const instruction: PromptInput = {
         type: "text",
         text: `${SHARED_WORKSPACE_ISOLATION_INSTRUCTION} The current shared-workspace owner is ${workspaceOwnerThreadId}.`,

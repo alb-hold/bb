@@ -21,7 +21,6 @@ import {
   getLatestSessionForHost,
   getLatestThreadSequence,
   getThread,
-  hasThreadPurgeBacklog,
   hasStoredProviderTurnCompletedSince,
   hasStoredThreadInterruptedSince,
   hasStoredTurnCompleted,
@@ -33,7 +32,6 @@ import {
   listThreadIdsWithTurnRequestsForHost,
   listPendingThreadStorageDeletions,
   listTurnStartDeadlineCandidates,
-  deleteThread,
   markThreadStorageDeleted,
   nextThreadStorageDeleteSeq,
   requeueThreadStorageDeletion,
@@ -59,6 +57,7 @@ import type {
 } from "../../types.js";
 import { cancelEnvironmentProvisioningForThreadStopInTransaction } from "../environments/environment-provisioning-cancellation.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import {
   emptyCommandResultSideEffects,
   type CommandResultPostCommitAction,
@@ -290,6 +289,12 @@ function turnRequestAnswer(
       }),
     message: report.errorMessage,
     scopeTurnId: expectedTurnId,
+    workspaceMessage: describeMissingWorkspace(deps.db, {
+      environmentId:
+        getThread(deps.db, command.threadId)?.environmentId ?? null,
+      errorCode: report.errorCode,
+      errorMessage: report.errorMessage,
+    }),
   };
 }
 
@@ -1298,13 +1303,6 @@ function finalizeDeletedThreadInTransaction(
     return;
   }
   if (providerEnvironmentHasPendingWork(deps.db, thread.id)) return;
-  if (!hasThreadPurgeBacklog(deps.db, thread.id)) {
-    deleteThread(deps.db, deps.hub, thread.id);
-    if (thread.environmentId !== null) {
-      refreshProviderRetirement(deps, thread.environmentId);
-    }
-    return;
-  }
   requestThreadPurge(deps.db, { now: Date.now(), threadId: thread.id });
   if (thread.environmentId !== null) {
     refreshProviderRetirement(deps, thread.environmentId);

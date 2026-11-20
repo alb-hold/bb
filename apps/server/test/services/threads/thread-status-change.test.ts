@@ -36,6 +36,7 @@ const providerRegistry = await createTestProviderRegistry();
 const NO_ACTIVITY = {
   activeBackgroundAgentCount: 0,
   activeBackgroundCommandCount: 0,
+  activeGoalCount: 0,
   activePlanModeCount: 0,
   activeWorkflowCount: 0,
 };
@@ -274,7 +275,11 @@ describe("applyLoggedThreadLifecycleEvent", () => {
     );
     expect(
       lastThreadListMessage(socket.messages).metadata?.statusChange?.activity,
-    ).toEqual({ ...NO_ACTIVITY, activePlanModeCount: 1 });
+    ).toEqual({
+      ...NO_ACTIVITY,
+      activeGoalCount: 1,
+      activePlanModeCount: 1,
+    });
 
     moveThreadStatus(
       { db, hub, providerRegistry },
@@ -284,7 +289,7 @@ describe("applyLoggedThreadLifecycleEvent", () => {
       lastThreadListMessage(socket.messages).metadata?.statusChange,
     ).toMatchObject({
       status: "idle",
-      activity: { ...NO_ACTIVITY, activePlanModeCount: 0 },
+      activity: { ...NO_ACTIVITY, activeGoalCount: 1, activePlanModeCount: 0 },
     });
     expect(getThreadRowState(db, threadId)).toEqual({
       statuses: {},

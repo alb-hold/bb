@@ -46,6 +46,7 @@ import {
 } from "@bb/domain";
 import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
+import { isArchivedCredentialRevocation } from "./archived-credential-revocation.js";
 import { dropForkUnreadEvents } from "./fork-unread-events.js";
 import type {
   AppDeps,
@@ -57,8 +58,10 @@ import {
   type ActiveThreadEventPruneRuntimeOptions,
 } from "../services/system/event-pruning.js";
 import {
+  addParentTurnNotificationFollowUp,
   executeTurnEndFollowUpBestEffort,
   idleFollowUpForTurnEnd,
+  parentTurnRetryContext,
   planTurnEnd,
   type TurnEndFollowUp,
 } from "../services/threads/turn-end-follow-ups.js";
@@ -72,10 +75,7 @@ import { deferAfterResponse } from "../services/lib/response-deferral.js";
 import { runtimeErrorLogFields } from "../services/lib/error-log-fields.js";
 import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
 import { rememberSessionModelCatalog } from "../services/providers/session-model-catalog.js";
-import {
-  applyGeneratedThreadTitle,
-  sanitizeGeneratedTitle,
-} from "../services/threads/title-generation.js";
+import { generateFromProviderThreadName } from "../services/threads/title-generation.js";
 import {
   getInactiveSessionLogFields,
   requireAuthenticatedDaemonSession,
@@ -88,7 +88,10 @@ import {
   type SpendRollupObservationSource,
 } from "../services/system/spend-rollup.js";
 import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
-import { appendThreadEvent } from "../services/threads/thread-events.js";
+import {
+  appendThreadEvent,
+  getActiveTurnId,
+} from "../services/threads/thread-events.js";
 import {
   observeStreamTraceEventBatch,
   observeTurnTraceEventBatch,
@@ -424,13 +427,10 @@ async function applyEventEffects(
 
       if (event.type === "thread/name/updated") {
         if (event.source === "agent") {
-          const title = sanitizeGeneratedTitle(event.threadName);
-          if (title !== null) {
-            applyGeneratedThreadTitle(deps, {
-              threadId: entry.threadId,
-              title,
-            });
-          }
+          void generateFromProviderThreadName(deps, {
+            threadId: entry.threadId,
+            title: event.threadName,
+          });
         }
         continue;
       }
@@ -481,16 +481,29 @@ async function applyEventEffects(
         if (aimedAtByStop && event.status !== "interrupted") {
           continue;
         }
+        const revokedAfterArchive =
+          event.status === "failed" &&
+          thread.archivedAt !== null &&
+          isArchivedCredentialRevocation(
+            deps.db,
+            entry.threadId,
+            turnId,
+            thread.archivedAt,
+          );
         const outcome = runThreadLifecycleTransaction(deps, entry.threadId, {
           type: "turn.completed",
           turnId,
-          status: event.status,
+          status: revokedAfterArchive ? "completed" : event.status,
         });
         const ended = outcome.effects.find(
           (effect) => effect.kind === "turn-ended",
         );
         await finishLifecycleFromEvents(deps, outcome, followUps);
-        if (ended === undefined || ended.kind !== "turn-ended") {
+        if (
+          revokedAfterArchive ||
+          ended === undefined ||
+          ended.kind !== "turn-ended"
+        ) {
           continue;
         }
         const plan = planTurnEnd(deps, {
@@ -542,7 +555,35 @@ async function applyEventEffects(
               ? findUnstartedTurnRequestId(deps, entry.threadId)
               : null,
         });
-        await finishLifecycleFromEvents(deps, outcome, followUps);
+        const failedThread = getThread(deps.db, entry.threadId);
+        const failureNotice = outcome.effects.find(
+          (effect) =>
+            effect.kind === "notify-parent" &&
+            effect.notice.turnStatus === "failed",
+        );
+        if (failureNotice !== undefined && failedThread !== null) {
+          const retry = parentTurnRetryContext(deps.db, failedThread.id);
+          addParentTurnNotificationFollowUp({
+            failedParentNotificationThreadIds,
+            followUps,
+            thread: failedThread,
+            turnStatus: "failed",
+            ...(retry ? { retry } : {}),
+            turnId: null,
+          });
+        }
+        await finishLifecycleFromEvents(
+          deps,
+          failureNotice === undefined
+            ? outcome
+            : {
+                ...outcome,
+                effects: outcome.effects.filter(
+                  (effect) => effect !== failureNotice,
+                ),
+              },
+          followUps,
+        );
         continue;
       }
     } catch (error) {
@@ -1094,6 +1135,24 @@ export function registerInternalEventRoutes(
             sessionId: session.id,
           },
           "Dropped orphan thread-state snapshot with no stored turn/started",
+        );
+      }
+      for (const index of appendResult.insertedInputIndexes) {
+        const entry = labelledEntries[index];
+        if (entry?.envelope.event.type !== "turn/input/accepted") continue;
+        const turnId = requireThreadEventScopeTurnId({
+          type: entry.envelope.event.type,
+          scope: entry.envelope.event.scope,
+        });
+        if (
+          getActiveTurnId({ db: deps.db }, entry.envelope.threadId) !== turnId
+        ) {
+          continue;
+        }
+        deps.hub.promoteDeviceHandoffTurnSubmitter(
+          entry.envelope.threadId,
+          entry.envelope.event.clientRequestId,
+          turnId,
         );
       }
       const committedAt = performance.now();

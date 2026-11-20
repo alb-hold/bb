@@ -46,6 +46,7 @@ export type TurnRequestAnswer =
       expectedTurnCompleted: boolean;
       message: string;
       scopeTurnId: string | null;
+      workspaceMessage: string | null;
     };
 
 export type StopAnswer =
@@ -193,6 +194,7 @@ export type ThreadLifecycleRefusal =
 
 export interface ThreadLifecycleTransition {
   effects: ThreadLifecycleEffect[];
+  moves: ThreadStatusMove[];
   next: StoredThreadRunState & { status: ThreadStatus };
   refusal: ThreadLifecycleRefusal | null;
   stopRoute: "live" | "pre-start" | "none";
@@ -216,6 +218,7 @@ export function nextThreadStatus(
 class Draft {
   readonly effects: ThreadLifecycleEffect[] = [];
   heldCompletion: HeldTurnCompletion | null;
+  readonly moves: ThreadStatusMove[] = [];
   refusal: ThreadLifecycleRefusal | null = null;
   requests: ThreadTurnRequestState[];
   status: ThreadStatus;
@@ -240,6 +243,7 @@ class Draft {
     );
     if (to === null) return false;
     this.status = to;
+    this.moves.push(move);
     return true;
   }
 
@@ -290,6 +294,7 @@ class Draft {
   finish(): ThreadLifecycleTransition {
     return {
       effects: this.effects,
+      moves: this.moves,
       next: {
         status: this.status,
         requests: this.requests,
@@ -621,6 +626,7 @@ function answerRequest(
         expectedTurnCompleted: true,
         message: "The turn this steer targeted already ended",
         scopeTurnId: null,
+        workspaceMessage: null,
       });
       releaseHeld(draft);
       return;
@@ -645,7 +651,7 @@ function refuseRequest(
       kind: "append-request-rejected",
       requestId: request.requestId,
       reason: answer.code,
-      message: answer.message,
+      message: answer.workspaceMessage ?? answer.message,
     });
     if (
       answer.code === COMPETING_TURN_ERROR_CODE &&
@@ -658,7 +664,8 @@ function refuseRequest(
   draft.effect({
     kind: "append-system-error",
     code: "thread_command_failed",
-    message: `Command ${answer.commandType} failed`,
+    message:
+      answer.workspaceMessage ?? `Command ${answer.commandType} failed`,
     detail: answer.message,
     turnId: answer.scopeTurnId,
   });

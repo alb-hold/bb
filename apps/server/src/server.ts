@@ -1014,8 +1014,10 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      const isAppClient = context.req.header("origin") !== undefined;
       return {
-        onOpen: (_event, socket) => onClientSocketOpen(deps.hub, socket),
+        onOpen: (_event, socket) =>
+          onClientSocketOpen(deps.hub, socket, isAppClient),
         onMessage: (event, socket) =>
           onClientSocketMessage(deps.hub, socket, event.data),
         onClose: (_event, socket) => onClientSocketClose(deps.hub, socket),

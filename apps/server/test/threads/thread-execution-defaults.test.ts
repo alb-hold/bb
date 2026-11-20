@@ -79,6 +79,7 @@ const childRecordedExecution = {
   serviceTier: "default",
 } as const;
 const piModel = "openai-codex/gpt-5.4";
+const claudeChildModel = "claude-sonnet-5-5";
 
 const cases: ExecutionDefaultsCase[] = [
   {
@@ -99,7 +100,11 @@ const cases: ExecutionDefaultsCase[] = [
     childProviderId: "claude-code",
     childRecordedPermissionMode: null,
     request: {},
-    expected: { ...parentExecution, permissionMode: "accept-edits" },
+    expected: {
+      ...parentExecution,
+      model: claudeChildModel,
+      permissionMode: "accept-edits",
+    },
   },
   {
     name: "inherits only the permission mode with an explicit other provider",
@@ -119,7 +124,11 @@ const cases: ExecutionDefaultsCase[] = [
     childProviderId: "claude-code",
     childRecordedPermissionMode: null,
     request: { providerId: "claude-code" },
-    expected: { ...parentExecution, permissionMode: "accept-edits" },
+    expected: {
+      ...parentExecution,
+      model: claudeChildModel,
+      permissionMode: "accept-edits",
+    },
   },
   {
     name: "honors explicit model and reasoning ahead of the parent",
@@ -173,7 +182,11 @@ const cases: ExecutionDefaultsCase[] = [
       reasoningLevel: "high",
       executionInputSources: {},
     },
-    expected: { ...parentExecution, permissionMode: "accept-edits" },
+    expected: {
+      ...parentExecution,
+      model: claudeChildModel,
+      permissionMode: "accept-edits",
+    },
   },
   {
     name: "falls back to project defaults when the parent provider is disabled",

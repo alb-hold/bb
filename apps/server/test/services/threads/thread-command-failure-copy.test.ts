@@ -8,6 +8,7 @@ import {
 } from "@bb/db";
 import type { HostDaemonCommandForType } from "../../../src/internal/command-result-side-effects.js";
 import { settleTurnSubmitCommandResult } from "../../../src/services/threads/thread-lifecycle.js";
+import { runThreadLifecycleTransaction } from "../../../src/services/threads/lifecycle/run.js";
 import { withTestHarness } from "../../helpers/test-app.js";
 
 async function runFailure(
@@ -42,7 +43,17 @@ async function runFailure(
       projectId: project.id,
       environmentId: environment.id,
       providerId: "codex",
-      status: "active",
+      status: "idle",
+    });
+    runThreadLifecycleTransaction(harness.deps, thread.id, {
+      type: "request.sent",
+      request: {
+        hostId: host.id,
+        kind: "new-turn",
+        requestId: "req-thread-command-failure-copy",
+        syncTitle: false,
+      },
+      now: Date.now(),
     });
     const command = {
       type: "turn.submit",
