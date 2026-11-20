@@ -46,6 +46,11 @@ interface IndexNameRow {
   tbl_name: string;
 }
 
+const forkRawSqlIndexNames = new Set([
+  "fork_events_file_change_truncation_idx",
+  "fork_events_item_completion_lookup_idx",
+]);
+
 function declaredTables(): SQLiteTable[] {
   return Object.values(schema).flatMap((value) =>
     value instanceof SQLiteTable ? [value] : [],
@@ -72,7 +77,11 @@ describe("db rebuild schema", () => {
         "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
       )
       .all()
-      .filter((index) => declaredTableNames.has(index.tbl_name))
+      .filter(
+        (index) =>
+          declaredTableNames.has(index.tbl_name) &&
+          !forkRawSqlIndexNames.has(index.name),
+      )
       .map((index) => index.name);
 
     expect(migratedIndexNames).toEqual(declaredIndexNames());
