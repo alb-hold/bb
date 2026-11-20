@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { PendingComposerSubmission } from "./PendingComposerSubmission";
 
@@ -77,3 +84,54 @@ it.each(["edit", "escape", "scope", "failure"] as const)(
     );
   },
 );
+
+it("does not retry a queued submission after it rejects", async () => {
+  let rejectSubmit: (() => void) | undefined;
+  const sent = vi.fn(
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        rejectSubmit = () => reject(new Error("send failed"));
+      }),
+  );
+  function Host() {
+    const [ready, setReady] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    return (
+      <>
+        <PendingComposerSubmission
+          text="queued message"
+          loading={!ready}
+          disabled={!ready}
+          failed={false}
+          isSubmitting={isSubmitting}
+          pendingUploads={false}
+          onSubmit={() => {
+            setIsSubmitting(true);
+            return sent().finally(() => setIsSubmitting(false));
+          }}
+        >
+          {(onBlockedSubmit) => (
+            <button onClick={onBlockedSubmit}>Try send</button>
+          )}
+        </PendingComposerSubmission>
+        <button onClick={() => setReady(true)}>Resolve options</button>
+        <span>{isSubmitting ? "Submitting" : "Ready"}</span>
+      </>
+    );
+  }
+
+  render(<Host />);
+  fireEvent.click(screen.getByRole("button", { name: "Try send" }));
+  fireEvent.click(screen.getByRole("button", { name: "Resolve options" }));
+  await waitFor(() => {
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Submitting")).not.toBeNull();
+  });
+
+  await act(async () => {
+    rejectSubmit?.();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(screen.getByText("Ready")).not.toBeNull());
+  expect(sent).toHaveBeenCalledTimes(1);
+});

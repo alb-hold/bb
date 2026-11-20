@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export function PendingComposerSubmission({
   children,
@@ -23,19 +23,31 @@ export function PendingComposerSubmission({
   disabledReason?: string;
   onSubmit: () => void | Promise<void>;
 }) {
-  const [pending, setPending] = useState<{
-    attempt: number;
-    text: string;
-    resetKey?: string | number;
-  } | null>(null);
+  const submitted = useRef<PendingIntent | null>(null);
+  const cancelled = useRef<PendingIntent | null>(null);
+  const [pending, setPending] = useState<PendingIntent | null>(null);
   const cancel = () => {
+    if (pending !== null) cancelled.current = pending;
     setPending(null);
   };
   useEffect(() => {
     if (pending === null) return;
-    if (pending.text !== text || pending.resetKey !== resetKey || failed) return;
+    if (pending.text !== text || pending.resetKey !== resetKey || failed) {
+      cancelled.current = pending;
+      queueMicrotask(() =>
+        setPending((current) => (current === pending ? null : current)),
+      );
+      return;
+    }
     if (loading || disabled || isSubmitting || pendingUploads) return;
-    void Promise.resolve(onSubmit()).catch(() => {});
+    if (submitted.current === pending || cancelled.current === pending) return;
+    submitted.current = pending;
+    void Promise.resolve()
+      .then(onSubmit)
+      .catch(() => {})
+      .finally(() =>
+        setPending((current) => (current === pending ? null : current)),
+      );
   }, [
     text,
     resetKey,
@@ -56,11 +68,7 @@ export function PendingComposerSubmission({
     >
       {children(() => {
         if (!loading || failed || isSubmitting || !text.trim()) return;
-        setPending((current) => ({
-          attempt: (current?.attempt ?? 0) + 1,
-          text,
-          resetKey,
-        }));
+        setPending({ text, resetKey });
       })}
       {pending !== null &&
         pending.text === text &&
@@ -75,3 +83,8 @@ export function PendingComposerSubmission({
     </div>
   );
 }
+
+type PendingIntent = {
+  text: string;
+  resetKey?: string | number;
+};

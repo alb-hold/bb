@@ -16,6 +16,7 @@ import {
   RecentThreadsSection,
   RECENT_THREAD_ROW_CLASS,
   RECENT_THREAD_BODY_CLASS,
+  recentThreadRowIndicatorState,
 } from "./RootComposeRecentRows";
 import {
   useCallback,
@@ -26,6 +27,10 @@ import {
 } from "react";
 import { useAtom } from "jotai";
 import type { ProviderInfo, ThreadListEntry } from "@bb/domain";
+import {
+  getThreadListIndicatorLabel,
+  resolveThreadListIndicator,
+} from "@bb/client-core";
 import { RouteAnchor } from "@/components/ui/app-route-anchor";
 import { ThreadActionsContextMenu } from "@/components/thread/ThreadActionsMenu";
 import { threadListEntryActionTarget } from "@/lib/thread-actions/thread-action-target";
@@ -40,7 +45,6 @@ import { findEnvironmentDisplayProvider } from "@/lib/environment-workspace-disp
 import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
-import { useThreadListEntryStatus } from "@/hooks/useThreadListEntryStatus";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
@@ -79,10 +83,12 @@ function MobileRecentThreadRow({
   const touchStartedBeforeLink = useRef(false);
   const { providers: environmentProviders } = useSystemEnvironmentProviders();
   const threadTitle = useThreadTitleDisplayText(getThreadDisplayTitle(thread));
-  const { indicator: indicatorKind, label: indicatorLabel } = useThreadListEntryStatus(
-    thread,
-    { threads: [], haveDraft: row.hasUnsubmittedDraft },
-    now,
+  const { indicatorState, trailingIndicatorState } =
+    recentThreadRowIndicatorState(row, now);
+  const indicatorKind = resolveThreadListIndicator(trailingIndicatorState);
+  const indicatorLabel = getThreadListIndicatorLabel(
+    indicatorKind,
+    indicatorState.queuedFailedCount,
   );
   const environmentProviderLookup = findEnvironmentDisplayProvider(
     environmentProviders,
@@ -156,7 +162,7 @@ function MobileRecentThreadRow({
             projectName={projectName}
             environmentProviderLookup={environmentProviderLookup}
             indicatorKind={indicatorKind}
-            queuedFailedCount={thread.queuedFailedCount}
+            queuedFailedCount={indicatorState.queuedFailedCount}
           />
         </RouteAnchor>
       </li>
