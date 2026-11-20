@@ -12,9 +12,14 @@ import { getDefaultStore } from "jotai";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
+import {
+  commandRow,
+  conversationRow,
+} from "@/test/fixtures/thread-timeline-rows";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
 import { ThreadScreen } from "@/views/thread-detail/ThreadScreen";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { ThreadProviderContext } from "../thread-provider-context";
 
 const THREAD_ID = "thr_landing";
@@ -57,6 +62,62 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
   };
 });
 
+const rows = [
+  conversationRow({
+    id: "user-100",
+    seq: 100,
+    role: "user",
+    text: "PROMPT",
+    createdAt: 100,
+    startedAt: 100,
+    turnId: "turn-1",
+  }),
+  ...[200, 300, 400].map((seq) =>
+    commandRow({
+      id: `command-${seq}`,
+      seq,
+      command: `echo ${seq}`,
+      createdAt: seq,
+      startedAt: seq,
+      turnId: "turn-1",
+    }),
+  ),
+  conversationRow({
+    id: "assistant-500",
+    seq: 500,
+    role: "assistant",
+    text: "ANSWER",
+    createdAt: 500,
+    startedAt: 500,
+    turnId: "turn-1",
+  }),
+];
+
+const TIMELINE = {
+  activeBackgroundCommands: [],
+  activePromptMode: null,
+  activeThinking: null,
+  activeWorkflows: [],
+  contextBoundarySeq: null,
+  contextWindowUsage: null,
+  goal: null,
+  hasOlderTimelineRows: false,
+  isCatchingUpTimeline: false,
+  isLoadingOlderTimelineRows: false,
+  loadOlderTimelineRows: async () => {},
+  modelFallback: null,
+  pendingTodos: null,
+  providerCommands: null,
+  sessionOptions: null,
+  timelineError: null,
+  timelineLoading: false,
+  timelineRows: rows,
+} as unknown as UseThreadTimelineControllerResult;
+
+vi.mock("@/components/thread/timeline", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/thread/timeline")>()),
+  useThreadTimelineController: () => TIMELINE,
+}));
 
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
@@ -109,7 +170,6 @@ afterEach(() => {
 function UnseenThread() {
   const { placement, hasUnseenTimelineEvents } = useThreadUnreadDividerState({
     routeThreadId: THREAD_ID,
-    anchor: "first-unread-row",
     bootstrapQuery: {
       dataUpdatedAt: 0,
       isFetchedAfterMount: false,

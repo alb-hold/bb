@@ -3,6 +3,7 @@ import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
+import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { ComposerMaxHeightContext } from "@/components/promptbox/composer-max-height";
 import { composerRootWithin } from "@/lib/pane-composer-focus";
 import {
@@ -10,8 +11,8 @@ import {
   MOBILE_RECENT_ROW_HEIGHT_PX,
 } from "./RootComposeMobileRecents";
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
-const COMPACT_HOME_COLUMN_CLASS = "mx-auto w-full max-w-[760px] px-4";
-const ROOT_COMPOSE_MAX_WIDTH_CLASS = "max-w-[760px]";
+const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
+const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
 const COMPACT_HOME_REST_BAND_PX =
   4.5 * MOBILE_RECENT_ROW_HEIGHT_PX + MOBILE_RECENT_LABEL_HEIGHT_PX;
 

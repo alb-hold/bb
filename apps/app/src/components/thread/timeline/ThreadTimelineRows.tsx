@@ -122,7 +122,10 @@ import {
   useScrollToSearchedMessage,
   useSearchMessageLocation,
 } from "./useScrollToSearchedMessage.js";
-import { joinSignatureParts, timelineRowRenderSignature } from "@bb/client-core";
+import {
+  joinSignatureParts,
+  timelineRowRenderSignature,
+} from "@bb/client-core";
 import { timelineDetailIdentity } from "./timeline-detail-identity.js";
 import {
   TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
@@ -973,7 +976,11 @@ function buildRowConsumerMessageActions(args: {
     }));
 }
 
-function ConversationRow({ row, showAssistantMessageActions, turnTokenSummary }: ConversationRowProps) {
+function ConversationRow({
+  row,
+  showAssistantMessageActions,
+  turnTokenSummary,
+}: ConversationRowProps) {
   const latestActionableAssistantMessageId = useContext(
     LatestActionableAssistantMessageIdContext,
   );
@@ -2161,7 +2168,7 @@ function findUnreadDividerIndex({
   const firstNewIndex = rows.findIndex((row) =>
     isNewRowAfterCutoff(row, cutoffAt),
   );
-  if (firstNewIndex === -1 || unreadDividerPlacement.anchor !== "turn-answer") {
+  if (firstNewIndex === -1) {
     return firstNewIndex;
   }
   const settledTurnReplyIndexes = findSettledTurnReplyIndexes(
@@ -2250,7 +2257,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length; ) {
+  for (let index = 0; index < rows.length;) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2619,8 +2626,7 @@ function TimelineRowsList({
         (current.row.kind === "turn" && current.row.status !== "pending");
       const nextIsUserMessage =
         next.row.kind === "conversation" && next.row.role === "user";
-      if (currentIsDisclosure && nextIsUserMessage)
-        return TURN_END_TO_USER_GAP;
+      if (currentIsDisclosure && nextIsUserMessage) return TURN_END_TO_USER_GAP;
       if (
         current.row.turnId !== next.row.turnId ||
         (current.row.kind === "conversation" && current.row.role === "user") ||
@@ -3024,66 +3030,64 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                     <TimelineWindowingMeasurementsContext.Provider
                       value={windowingMeasurements}
                     >
-                        <div className="relative">
-                          <AutoHeightContainer
-                            snapRevision={heightSnapRevision}
-                            animateGrowth={!scopeActive}
-                          >
-                            <TimelineRowsList
-                              hasOlderTimelineRows={props.hasOlderTimelineRows}
-                              isLoadingOlderTimelineRows={
-                                props.isLoadingOlderTimelineRows
-                              }
-                              navigationTargetRowId={
-                                props.timelineNavigationTargetRowId
-                              }
-                              onLoadOlderRows={props.onLoadOlderRows}
-                              rows={rows}
-                              flatTurnTokenSummaryThreadId={props.threadId}
-                              flatTurnTokenSummaryExcludedTurnId={
-                                shouldExcludeActiveTurnTokenSummary
-                                  ? rows.some((row) => row.kind === "turn")
-                                    ? (findActiveTurnId(
-                                        rows,
-                                        streamingAssistantMessageId,
-                                      ) ?? findNewestTurnId(rows))
-                                    : findNewestTurnId(rows)
-                                  : undefined
-                              }
-                              scopeActive={scopeActive}
-                              threadIsActive={
-                                shouldExcludeActiveTurnTokenSummary
-                              }
-                              showAssistantMessageActions={true}
-                              compactActivityIntents={false}
-                              spacing="top-level"
-                              unreadDividerAutoScroll={
-                                props.unreadDividerAutoScroll ??
-                                props.hasUnseenTimelineEvents !== true
-                              }
-                              unreadDividerPlacement={
-                                props.unreadDividerPlacement ?? null
-                              }
-                            />
-                          </AutoHeightContainer>
+                      <div className="relative">
+                        <AutoHeightContainer
+                          snapRevision={heightSnapRevision}
+                          animateGrowth={!scopeActive}
+                        >
+                          <TimelineRowsList
+                            hasOlderTimelineRows={props.hasOlderTimelineRows}
+                            isLoadingOlderTimelineRows={
+                              props.isLoadingOlderTimelineRows
+                            }
+                            navigationTargetRowId={
+                              props.timelineNavigationTargetRowId
+                            }
+                            onLoadOlderRows={props.onLoadOlderRows}
+                            rows={rows}
+                            flatTurnTokenSummaryThreadId={props.threadId}
+                            flatTurnTokenSummaryExcludedTurnId={
+                              shouldExcludeActiveTurnTokenSummary
+                                ? rows.some((row) => row.kind === "turn")
+                                  ? (findActiveTurnId(
+                                      rows,
+                                      streamingAssistantMessageId,
+                                    ) ?? findNewestTurnId(rows))
+                                  : findNewestTurnId(rows)
+                                : undefined
+                            }
+                            scopeActive={scopeActive}
+                            threadIsActive={shouldExcludeActiveTurnTokenSummary}
+                            showAssistantMessageActions={true}
+                            compactActivityIntents={false}
+                            spacing="top-level"
+                            unreadDividerAutoScroll={
+                              props.unreadDividerAutoScroll ??
+                              props.hasUnseenTimelineEvents !== true
+                            }
+                            unreadDividerPlacement={
+                              props.unreadDividerPlacement ?? null
+                            }
+                          />
+                        </AutoHeightContainer>
 
-                          {hasSelectionActions ? (
-                            <div
-                              ref={setSelectionMenuLayer}
-                              className="pointer-events-none absolute inset-0 z-10 [contain:layout]"
-                            />
-                          ) : null}
-                        </div>
-                      </TimelineWindowingMeasurementsContext.Provider>
-                      {hasSelectionActions ? (
-                        <TimelineSelectionMenu
-                          selection={activeSelection?.selection ?? null}
-                          onAddToChat={selectionAddToChatHandler}
-                          pluginActions={selectionPluginActions}
-                          onDismiss={dismissSelection}
-                          container={selectionMenuLayer}
-                        />
-                      ) : null}
+                        {hasSelectionActions ? (
+                          <div
+                            ref={setSelectionMenuLayer}
+                            className="pointer-events-none absolute inset-0 z-10 [contain:layout]"
+                          />
+                        ) : null}
+                      </div>
+                    </TimelineWindowingMeasurementsContext.Provider>
+                    {hasSelectionActions ? (
+                      <TimelineSelectionMenu
+                        selection={activeSelection?.selection ?? null}
+                        onAddToChat={selectionAddToChatHandler}
+                        pluginActions={selectionPluginActions}
+                        onDismiss={dismissSelection}
+                        container={selectionMenuLayer}
+                      />
+                    ) : null}
                   </TimelineTurnStateContext.Provider>
                 </StreamingAssistantMessageIdContext.Provider>
               </LatestActionableUserMessageIdContext.Provider>
