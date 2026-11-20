@@ -448,7 +448,7 @@ function tierToOnboard(payload: unknown): string | null {
     tier?.id == null ? [] : [tier],
   );
   const fallbacks = [parsed.data.paidTier?.id, parsed.data.currentTier?.id];
-  if (allowed.length === 0)
+  if (parsed.data.allowedTiers == null)
     return fallbacks.find((id) => id != null) ?? null;
   const allowedIds = new Set(allowed.map((tier) => tier.id));
   return (
