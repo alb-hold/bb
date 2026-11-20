@@ -67,6 +67,7 @@ const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
 interface HubSocket {
   close(code?: number, reason?: string): void;
   protocol?: string | null;
+  readyState?: number;
   raw?: { bufferedAmount: number };
   send(data: string, options?: { compress: boolean }): void;
 }
@@ -2138,6 +2139,9 @@ export class NotificationHub implements DbNotifier {
         if (recipients.size === 0) continue;
         for (const socket of recipients) {
           if (handoff.sentTo.has(socket)) continue;
+          if (socket.readyState !== undefined && socket.readyState !== 1) {
+            continue;
+          }
           socket.send(handoff.payload);
           handoff.sentTo.add(socket);
           handoff.ackableBy.add(socket);

@@ -513,6 +513,7 @@ function deletedThreadFinalizationSweep(
     list: () =>
       deps.db
         .select({
+          environmentId: threads.environmentId,
           id: threads.id,
           storageDeletedAt: threads.storageDeletedAt,
         })
@@ -520,7 +521,6 @@ function deletedThreadFinalizationSweep(
         .where(
           and(
             isNotNull(threads.deletedAt),
-            isNotNull(threads.storageDeletedAt),
             notExists(
               deps.db
                 .select({ threadId: threadPurges.threadId })
@@ -537,7 +537,16 @@ function deletedThreadFinalizationSweep(
       });
       if (thread.storageDeletedAt !== null) {
         finalizeStoppedThread(deps, { fence: false, threadId: thread.id });
+        return;
       }
+      retryThreadStorageDeletion(
+        deps,
+        thread,
+        thread.environmentId
+          ? getEnvironment(deps.db, thread.environmentId)
+          : null,
+        Date.now(),
+      );
     },
   });
 }

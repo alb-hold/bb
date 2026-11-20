@@ -4111,6 +4111,14 @@ describe("device handoff websocket acknowledgement", () => {
           if (command.type === "host.read_workspace_agent_context") {
             return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
           }
+          if (command.type === "thread.start") {
+            return {
+              ok: true,
+              result: {
+                providerThreadId: `provider-device-handoff-first-${creationKind}`,
+              },
+            };
+          }
           if (command.type === "turn.submit") {
             return { ok: true, result: { trace: { spans: [] } } };
           }

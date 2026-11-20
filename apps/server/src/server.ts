@@ -24,6 +24,11 @@ import {
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
 import {
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+} from "@bb/server-contract";
+import type { IncomingMessage } from "node:http";
+import {
   declineWebSocketCompression,
   WEB_SOCKET_COMPRESSION,
 } from "./ws/compression.js";
@@ -173,7 +178,27 @@ import {
 
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+type WebSocketProtocolOptions = {
+  options: {
+    handleProtocols?: (
+      protocols: Set<string>,
+      request: IncomingMessage,
+    ) => string | false;
+  };
+};
 type WebSocketCloseError = Error | undefined;
+
+function assertWebSocketProtocolOptions(
+  wss: NodeWebSocketServer,
+): asserts wss is NodeWebSocketServer & WebSocketProtocolOptions {
+  if (
+    !("options" in wss) ||
+    typeof wss.options !== "object" ||
+    wss.options === null
+  ) {
+    throw new Error("WebSocket server does not expose protocol options");
+  }
+}
 
 const nativeExitHandlingRegistered = new WeakSet<
   ServerAppDeps["terminalSessions"]
@@ -477,6 +502,16 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  assertWebSocketProtocolOptions(wss);
+  wss.options.handleProtocols = (
+    protocols: Set<string>,
+    _request: IncomingMessage,
+  ): string | false =>
+    protocols.has(TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL)
+      ? TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL
+      : protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+        ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+        : (protocols.values().next().value ?? false);
   wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
