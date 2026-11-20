@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   NativeTerminalMode,
@@ -38,6 +38,25 @@ export function useNativeTerminalModeData({
 }: PluginThreadActionDataInput): NativeTerminalModeData {
   const queryClient = useQueryClient();
   const entries = useSidebarThreadEntriesStore();
+  const threadIdsKey = threadIds.join("\n");
+  const subscribeProviders = useCallback(
+    (listener: () => void) => {
+      const unsubscribers = (
+        threadIdsKey === "" ? [] : threadIdsKey.split("\n")
+      ).map((threadId) => entries.subscribe(threadId, listener));
+      return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+    },
+    [entries, threadIdsKey],
+  );
+  const readProviders = () =>
+    threadIds
+      .map((id) => `${id}:${entries.get(id)?.providerId ?? ""}`)
+      .join("\n");
+  const providersKey = useSyncExternalStore(
+    subscribeProviders,
+    readProviders,
+    readProviders,
+  );
   const providers = useSystemProviders().data;
   const nativeProvidersKey = (providers ?? [])
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
@@ -107,7 +126,7 @@ export function useNativeTerminalModeData({
         await applyNativeTerminalModeSwitch({ queryClient, threadId, view });
       },
     };
-  }, [entries, nativeProvidersKey, queryClient, terminalThreadsKey]);
+  }, [entries, nativeProvidersKey, providersKey, queryClient, terminalThreadsKey]);
 }
 
 export function nativeTerminalModeItem({
