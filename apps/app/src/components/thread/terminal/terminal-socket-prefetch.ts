@@ -179,6 +179,7 @@ function attachUrl(url: string) {
 export function prefetchTerminalSocket(url: string): void {
   const key = attachUrl(url);
   if (pending.has(key) || active.has(key)) return;
+  console.log("DIAG prefetch", key, pending.size);
   if (pending.size >= 2) pending.values().next().value?.close();
   try {
     const socket = new BufferedTerminalSocket(
@@ -204,6 +205,7 @@ export function createPrefetchedTerminalSocket(
   protocols: string[],
 ): TerminalBrowserSocket {
   const socket = pending.get(url);
+  console.log("DIAG create-prefetched", url, socket?.readyState);
   if (socket && socket.readyState < 2) {
     socket.adopt();
     active.set(url, socket);

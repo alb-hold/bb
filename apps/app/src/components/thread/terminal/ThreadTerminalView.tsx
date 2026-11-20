@@ -2501,6 +2501,7 @@ export function ThreadTerminalView({
           updateGridVisibility();
         },
         (cols, rows) => {
+          console.log("DIAG onResize", cols, rows);
           containerElement.dataset.renderGridCols = String(cols);
           containerElement.dataset.renderGridRows = String(rows);
           updateGridVisibility();

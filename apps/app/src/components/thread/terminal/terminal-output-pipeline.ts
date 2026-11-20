@@ -83,6 +83,7 @@ export function createTerminalOutputPipeline(
           continue;
         }
         if (operation.type === "grid") {
+          console.log("DIAG pipe-grid-start", JSON.stringify(operation.grid), operation.resize, terminal.cols, terminal.rows);
           await lastWrite;
           if (operation.resize) {
             const changed =
@@ -94,6 +95,7 @@ export function createTerminalOutputPipeline(
             }
             onResize?.(operation.grid.cols, operation.grid.rows);
             if (changed) options.afterResize?.();
+            console.log("DIAG pipe-grid-done", terminal.cols, terminal.rows);
           }
           operation.callback?.();
           continue;
