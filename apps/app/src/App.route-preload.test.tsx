@@ -27,6 +27,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { AppRoutes, AuthCallbackRoute } from "./App";
 import { startSplitPreloading } from "./lib/split-prefetch";
+import { settleLazyModulesExcept } from "./test/lazy-modules";
 
 const downloads = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
@@ -164,6 +165,7 @@ it("test-change-reason: the held-import harness makes Testing Library waitFor wa
 
   fireEvent.click(screen.getByRole("button", { name: "Open personal thread" }));
   await vi.waitFor(() => expect(downloads.thread).toHaveBeenCalledTimes(1));
+  await settleLazyModulesExcept("./views/SplitWorkspaceRoute");
   await vi.waitFor(() =>
     expect(downloads.prefetch).toHaveBeenCalledWith("thr_example"),
   );
@@ -175,7 +177,7 @@ it("test-change-reason: the held-import harness makes Testing Library waitFor wa
   });
 });
 
-it("test-change-reason: vi.waitFor instead of Testing Library waitFor, as upstream; warms a thread reached through browser history without row intent", async () => {
+it("test-change-reason: vi.waitFor instead of Testing Library waitFor, as upstream, and the held thread-open-prefetch import is settled; warms a thread reached through browser history without row intent", async () => {
   downloads.prefetch.mockClear();
   function Back() {
     const navigate = useNavigate();
@@ -192,6 +194,7 @@ it("test-change-reason: vi.waitFor instead of Testing Library waitFor, as upstre
   );
   expect(downloads.prefetch).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Back to thread" }));
+  await settleLazyModulesExcept("./views/SplitWorkspaceRoute");
   await vi.waitFor(() =>
     expect(downloads.prefetch).toHaveBeenCalledWith("history"),
   );
