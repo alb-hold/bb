@@ -127,6 +127,36 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(google.calls[1]?.body).toMatchObject({ tierId: "g1-pro-tier" });
   });
 
+  it("onboards to the paid tier, not the free current tier, when Google marks no default", async () => {
+    const google = fakeCodeAssist({
+      loads: [
+        {
+          currentTier: { id: "free-tier" },
+          paidTier: { id: "g1-pro-tier" },
+          allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier" }],
+        },
+        {
+          cloudaicompanionProject: "proj-paid",
+          paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+        },
+      ],
+      onboard: {
+        name: "operations/onboard-3",
+        done: true,
+        response: { cloudaicompanionProject: "proj-paid" },
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-paid",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls[1]).toMatchObject({
+      method: "onboardUser",
+      body: { tierId: "g1-pro-tier" },
+    });
+  });
+
   it("names the onboarding stage when the operation is still pending past its deadline", async () => {
     const google = fakeCodeAssist({
       loads: [{ allowedTiers: [{ id: "g1-pro-tier", isDefault: true }] }],
