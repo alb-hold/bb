@@ -44,28 +44,6 @@ function hasLayoutBox(rect: DOMRectReadOnly): boolean {
   return rect.width > 0 || rect.height > 0;
 }
 
-function createWindowedItemRefCallback(
-  key: string,
-  wrapperByKeyRef: { current: Map<string, HTMLDivElement> },
-  keyByWrapperRef: { current: Map<Element, string> },
-  observerRef: { current: IntersectionObserver | null },
-): (node: HTMLDivElement | null) => void {
-  return (node) => {
-    const previous = wrapperByKeyRef.current.get(key);
-    if (previous && previous !== node) {
-      keyByWrapperRef.current.delete(previous);
-      observerRef.current?.unobserve(previous);
-    }
-    if (node) {
-      wrapperByKeyRef.current.set(key, node);
-      keyByWrapperRef.current.set(node, key);
-      observerRef.current?.observe(node);
-    } else {
-      wrapperByKeyRef.current.delete(key);
-    }
-  };
-}
-
 function mergeRealizedKeys(
   previous: ReadonlySet<string>,
   {
@@ -117,27 +95,19 @@ export function SidebarWindowedItems({
 
   const [realizedKeys, setRealizedKeys] =
     useState<ReadonlySet<string>>(EMPTY_KEY_SET);
-  const [measuredHeights, setMeasuredHeights] = useState<
-    ReadonlyMap<string, MeasuredItemHeight>
-  >(() => new Map());
-  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT_PX);
+  const measuredHeightsRef = useRef(new Map<string, MeasuredItemHeight>());
+  const rowHeightRef = useRef(DEFAULT_ROW_HEIGHT_PX);
   const wrapperByKeyRef = useRef(new Map<string, HTMLDivElement>());
   const keyByWrapperRef = useRef(new Map<Element, string>());
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const rowsByKeyRef = useRef(new Map<string, number>());
-  const [wrapperRefCallbacks, setWrapperRefCallbacks] = useState(() =>
-    new Map(
-      itemKeys.map((key) => [
-        key,
-        createWindowedItemRefCallback(
-          key,
-          wrapperByKeyRef,
-          keyByWrapperRef,
-          observerRef,
-        ),
-      ]),
-    ),
+  const wrapperRefCallbacksRef = useRef(
+    new Map<string, (node: HTMLDivElement | null) => void>(),
   );
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const alwaysMountedKeysRef = useRef(alwaysMountedKeys);
+  alwaysMountedKeysRef.current = alwaysMountedKeys;
+  const estimateRowsRef = useRef(estimateRows);
+  estimateRowsRef.current = estimateRows;
+  const rowsByKeyRef = useRef(new Map<string, number>());
 
   const keySignature = useMemo(() => itemKeys.join("\u0000"), [itemKeys]);
 
@@ -150,29 +120,28 @@ export function SidebarWindowedItems({
     target?.focus();
   }, [focusItemKey]);
 
-  useLayoutEffect(() => {
-    setWrapperRefCallbacks((previous) => {
-      const next = new Map(previous);
-      const keys = new Set(itemKeys);
-      for (const key of next.keys()) {
-        if (!keys.has(key)) next.delete(key);
-      }
-      for (const key of itemKeys) {
-        if (!next.has(key)) {
-          next.set(
-            key,
-            createWindowedItemRefCallback(
-              key,
-              wrapperByKeyRef,
-              keyByWrapperRef,
-              observerRef,
-            ),
-          );
+  const getWrapperRefCallback = useCallback((key: string) => {
+    const callbacks = wrapperRefCallbacksRef.current;
+    let callback = callbacks.get(key);
+    if (!callback) {
+      callback = (node: HTMLDivElement | null) => {
+        const previous = wrapperByKeyRef.current.get(key);
+        if (previous && previous !== node) {
+          keyByWrapperRef.current.delete(previous);
+          observerRef.current?.unobserve(previous);
         }
-      }
-      return next;
-    });
-  }, [itemKeys]);
+        if (node) {
+          wrapperByKeyRef.current.set(key, node);
+          keyByWrapperRef.current.set(node, key);
+          observerRef.current?.observe(node);
+        } else {
+          wrapperByKeyRef.current.delete(key);
+        }
+      };
+      callbacks.set(key, callback);
+    }
+    return callback;
+  }, []);
 
   const resolveScrollElement = useCallback((): Element | null => {
     const fromRef = scrollElementRef?.current ?? null;
@@ -190,15 +159,11 @@ export function SidebarWindowedItems({
       return;
     }
     const rows = rowsByKeyRef.current.get(key) ?? 0;
-    setMeasuredHeights((previous) => {
-      const next = new Map(previous);
-      next.set(key, { height, rows });
-      return next;
-    });
+    measuredHeightsRef.current.set(key, { height, rows });
     if (rows > 0) {
       const perRow = height / rows;
       if (perRow >= 20 && perRow <= 80) {
-        setRowHeight(perRow);
+        rowHeightRef.current = perRow;
       }
     }
   }, []);
@@ -212,28 +177,17 @@ export function SidebarWindowedItems({
     }
 
     const keySet = new Set(itemKeys);
-    for (const staleMap of [rowsByKeyRef.current] as const) {
+    for (const staleMap of [
+      measuredHeightsRef.current,
+      rowsByKeyRef.current,
+      wrapperRefCallbacksRef.current,
+    ] as const) {
       for (const key of staleMap.keys()) {
         if (!keySet.has(key)) {
           staleMap.delete(key);
         }
       }
     }
-    const measuredKeys = new Set(itemKeys);
-    setMeasuredHeights((previous) => {
-      const next = new Map(previous);
-      let changed = false;
-      for (const key of next.keys()) {
-        if (!measuredKeys.has(key)) {
-          next.delete(key);
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
-    });
-    rowsByKeyRef.current = new Map(
-      itemKeys.map((key, index) => [key, Math.max(1, estimateRows(index))]),
-    );
 
     const scrollElement = resolveScrollElement();
     const promoteAll =
@@ -265,17 +219,22 @@ export function SidebarWindowedItems({
       );
     };
 
-    let unobserveResize: (() => void) | null = null;
+    let resizeObserver: ResizeObserver | null = null;
     let frame: number | null = null;
     if (promoteAll) {
       promoteVisible();
     } else if (scrollElement && typeof ResizeObserver !== "undefined") {
-      unobserveResize = observeSharedResize(scrollElement, {
-        read: (entry) => entry !== undefined && entry.contentRect.height > 0,
-        write: (hasSize) => {
-          if (hasSize) promoteVisible();
-        },
+      resizeObserver = new ResizeObserver((entries) => {
+        if (
+          entries.some(
+            (entry) =>
+              entry.target === scrollElement && entry.contentRect.height > 0,
+          )
+        ) {
+          promoteVisible();
+        }
       });
+      resizeObserver.observe(scrollElement);
     } else {
       frame = requestAnimationFrame(() => {
         if (!scrollElement || scrollElement.clientHeight > 0) {
@@ -291,11 +250,11 @@ export function SidebarWindowedItems({
       }
     }
     return () => {
-      unobserveResize?.();
+      resizeObserver?.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
     };
     // oxlint-disable-next-line react/exhaustive-deps
-  }, [windowingEnabled, keySignature, itemKeys, estimateRows]);
+  }, [windowingEnabled, keySignature]);
 
   useEffect(() => {
     if (!windowingEnabled || typeof IntersectionObserver === "undefined") {
@@ -323,7 +282,7 @@ export function SidebarWindowedItems({
             if (entry.isIntersecting) {
               intended.set(key, true);
             } else if (
-              !alwaysMountedKeys.has(key) &&
+              !alwaysMountedKeysRef.current.has(key) &&
               hasLayoutBox(entry.boundingClientRect)
             ) {
               intended.set(key, false);
@@ -361,7 +320,7 @@ export function SidebarWindowedItems({
       observerRef.current = null;
       observer?.disconnect();
     };
-  }, [windowingEnabled, resolveScrollElement, recordMeasuredHeight, alwaysMountedKeys]);
+  }, [windowingEnabled, resolveScrollElement, recordMeasuredHeight]);
 
   return (
     <>
@@ -371,15 +330,16 @@ export function SidebarWindowedItems({
           realizedKeys.has(key) ||
           alwaysMountedKeys.has(key) ||
           focusItemKey === key;
-        const rows = Math.max(1, estimateRows(index));
+        const rows = Math.max(1, estimateRowsRef.current(index));
+        rowsByKeyRef.current.set(key, rows);
         let placeholderHeight: number | undefined;
         let navigationValue: string | undefined;
         if (!isRealized) {
-          const measured = measuredHeights.get(key);
+          const measured = measuredHeightsRef.current.get(key);
           placeholderHeight =
             measured && measured.rows === rows
               ? measured.height
-              : rows * rowHeight;
+              : rows * rowHeightRef.current;
           const entries = getNavigationEntries?.(index);
           navigationValue =
             entries && entries.length > 0
@@ -389,7 +349,7 @@ export function SidebarWindowedItems({
         return (
           <div
             key={key}
-            ref={wrapperRefCallbacks.get(key)}
+            ref={getWrapperRefCallback(key)}
             data-sidebar-windowed-item=""
             {...(navigationValue !== undefined
               ? { [SIDEBAR_WINDOWED_NAV_ATTRIBUTE]: navigationValue }
