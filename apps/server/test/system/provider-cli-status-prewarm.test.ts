@@ -15,7 +15,7 @@ import { seedHostSession } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 const PASS_FINISHED = "Provider CLI status prewarm pass finished";
-const INSTALLATION_PROVIDER_IDS = ["acp-cursor", "claude-code", "codex", "pi"];
+const INSTALLATION_PROVIDER_IDS = ["claude-code", "codex", "pi"];
 
 type StatusCommand = Extract<
   HostDaemonOnlineRpcRequestMessage["command"],
@@ -151,7 +151,7 @@ describe("provider CLI status prewarm", () => {
 
         harness.hub.notifyHost(host.hostId, ["host-connected"]);
         await vi.waitFor(() => expect(logLines(PASS_FINISHED)).toHaveLength(3));
-        expect(host.probedProviderIds()).toHaveLength(5);
+        expect(host.probedProviderIds()).toHaveLength(4);
       } finally {
         prewarm.stop();
         dateNow.mockRestore();
