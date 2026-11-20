@@ -20,6 +20,7 @@ import { usePluginId } from "@/components/plugin/plugin-context";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
@@ -248,7 +249,9 @@ describe("AppLayoutSidebar", () => {
     );
     settleMobileToggle();
     expect(screen.queryByTestId("settings-sidebar-body")).toBeNull();
-    await act(async () => { await import("@/components/tools/ResourceSidebar"); });
+    await act(async () => {
+      await settleLazyModules();
+    });
     expect(screen.getByTestId("plugins-sidebar-body")).toBeTruthy();
     expect(screen.queryByTestId("skills-sidebar-body")).toBeNull();
     expect(getAppSidebarBody().hidden).toBe(true);
@@ -304,7 +307,7 @@ describe("AppLayoutSidebar", () => {
     expect(screen.getByTestId("settings-sidebar-body")).toBeTruthy();
   });
 
-  it("keeps the rail and the app sidebar mounted while the body swaps on wide viewports", () => {
+  it("keeps the rail and the app sidebar mounted while the body swaps on wide viewports", async () => {
     render(
       <CompactViewportOverrideProvider isCompactViewport={false}>
         <SidebarProvider>
@@ -332,6 +335,9 @@ describe("AppLayoutSidebar", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Navigate to plugins" }),
     );
+    await act(async () => {
+      await settleLazyModules();
+    });
     expect(getRail()).toBe(rail);
     expect(screen.getByTestId("settings-footer").dataset.settingsActive).toBe(
       "false",
@@ -629,7 +635,7 @@ describe("navigation panel sidebar composition", () => {
     expect(getRail()).toBe(rail);
     expect(mountCounts.appSidebar).toBe(1);
   });
-  it("keeps settings/resources authoritative even if a stale plugin target is supplied", () => {
+  it("keeps settings/resources authoritative even if a stale plugin target is supplied", async () => {
     const { rerender } = render(
       panelSidebarTree({
         target: panelSidebar("inbox"),
@@ -643,6 +649,9 @@ describe("navigation panel sidebar composition", () => {
     rerender(
       panelSidebarTree({ target: panelSidebar("inbox"), pathname: "/plugins" }),
     );
+    await act(async () => {
+      await settleLazyModules();
+    });
     expect(screen.getByTestId("plugins-sidebar-body")).toBeTruthy();
     expect(
       screen.queryByRole("navigation", { name: "Home navigation" }),
