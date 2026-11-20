@@ -48,7 +48,7 @@ describe("loadPluginFrontend", () => {
       .__bbPluginRuntime;
   });
 
-  it("contains a Zod facade load failure before evaluating either plugin", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the load is settled; contains a Zod facade load failure before evaluating either plugin", async () => {
     vi.resetModules();
     vi.doMock(
       "../../../../packages/plugin-build/src/generated/zod-runtime.generated",
@@ -60,13 +60,15 @@ describe("loadPluginFrontend", () => {
     );
     const importModule = vi.fn();
     try {
-      const results = await Promise.all(
-        ["first", "second"].map((id) =>
-          loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
-            importModule,
-            prefetchModule: vi.fn(),
-            warn: vi.fn(),
-          }),
+      const results = await settleLazyModules(
+        Promise.all(
+          ["first", "second"].map((id) =>
+            loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+              importModule,
+              prefetchModule: vi.fn(),
+              warn: vi.fn(),
+            }),
+          ),
         ),
       );
       for (const result of results)
@@ -85,7 +87,7 @@ describe("loadPluginFrontend", () => {
     }
   });
 
-  it("awaits one generated Zod subset for concurrent plugins and preserves host schema and error identity", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the load is settled; awaits one generated Zod subset for concurrent plugins and preserves host schema and error identity", async () => {
     const hostZod = await import("zod");
     const runtime = installPluginRuntime();
     expect(runtime.zod).toBeUndefined();
@@ -97,13 +99,15 @@ describe("loadPluginFrontend", () => {
       expect(schema.parse("value")).toBe("value");
       return { default: {} };
     });
-    const results = await Promise.all(
-      ["first", "second"].map((id) =>
-        loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
-          importModule,
-          prefetchModule: vi.fn(),
-          warn: vi.fn(),
-        }),
+    const results = await settleLazyModules(
+      Promise.all(
+        ["first", "second"].map((id) =>
+          loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+            importModule,
+            prefetchModule: vi.fn(),
+            warn: vi.fn(),
+          }),
+        ),
       ),
     );
     expect(results.map((result) => result.status)).toEqual([
@@ -235,7 +239,7 @@ describe("installPluginRuntime", () => {
     expect((globalThis as RuntimeHost).__bbPluginRuntime).toBe(runtime);
   });
 
-  it("awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the load is settled; awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
     const runtime = installPluginRuntime();
     expect(runtime.radixSlot).toBeUndefined();
     const importModule = vi.fn(async () => {
@@ -243,15 +247,18 @@ describe("installPluginRuntime", () => {
       expect(runtime.radixCheckbox).toBeDefined();
       return { default: {} };
     });
-    const result = await loadPluginFrontend(
-      candidate("shared", { runtimeSlots: ["radixSlot"] }),
-      { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+    const result = await settleLazyModules(
+      loadPluginFrontend(candidate("shared", { runtimeSlots: ["radixSlot"] }), {
+        importModule,
+        prefetchModule: vi.fn(),
+        warn: vi.fn(),
+      }),
     );
     expect(result.status).toBe("loaded");
     expect(importModule).toHaveBeenCalledOnce();
   });
 
-  it("provides optional UI runtimes only for a bundle that requests them", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the load is settled; provides optional UI runtimes only for a bundle that requests them", async () => {
     installPluginRuntime();
     const runtime = (globalThis as RuntimeHost).__bbPluginRuntime as Record<
       string,
@@ -265,9 +272,11 @@ describe("installPluginRuntime", () => {
     });
     const prefetchModule = vi.fn();
     expect(runtime.radixMenubar).toBeUndefined();
-    await loadPluginFrontend(
-      candidate("menubar", { runtimeSlots: ["radixMenubar"] }),
-      { importModule, prefetchModule, warn: vi.fn() },
+    await settleLazyModules(
+      loadPluginFrontend(
+        candidate("menubar", { runtimeSlots: ["radixMenubar"] }),
+        { importModule, prefetchModule, warn: vi.fn() },
+      ),
     );
     expect(prefetchModule).toHaveBeenCalledOnce();
     expect(importModule).toHaveBeenCalledOnce();

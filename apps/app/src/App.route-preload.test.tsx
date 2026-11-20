@@ -14,7 +14,7 @@ import {
   useSystemMachineProviders,
 } from "./hooks/queries/machine-provider-queries";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import {
   act,
@@ -22,6 +22,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter, useNavigate } from "react-router-dom";
@@ -135,7 +136,7 @@ it("starts destination code before the workspace settles and keeps thread code o
     await new Promise((resolve) => setTimeout(resolve, 1200));
   });
   expect(downloads.thread).not.toHaveBeenCalled();
-  await vi.waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
   expect(machines).toHaveBeenCalledTimes(1);
   expect(providers).toHaveBeenCalledTimes(1);
   expect(screen.queryByText("Workspace ready")).toBeNull();

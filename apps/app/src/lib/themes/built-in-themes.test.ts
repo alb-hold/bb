@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { BUILTIN_THEME_IDS, builtInThemes } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import { resolveAppThemeCss } from "./index";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { defaultAppTheme } from "@bb/domain";
 
 const VENDORED_FONT_FAMILIES: Record<string, string> = {
@@ -12,11 +13,13 @@ const VENDORED_FONT_FAMILIES: Record<string, string> = {
 };
 
 async function cssFor(themeId: string): Promise<string> {
-  return resolveAppThemeCss({ ...defaultAppTheme, themeId });
+  return settleLazyModules(
+    resolveAppThemeCss({ ...defaultAppTheme, themeId }),
+  );
 }
 
 describe("built-in themes", () => {
-  it("every registered id has a stylesheet and a menu entry", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so each theme load is settled; every registered id has a stylesheet and a menu entry", async () => {
     for (const id of BUILTIN_THEME_IDS) {
       expect(typeof (await cssFor(id)), id).toBe("string");
       expect(

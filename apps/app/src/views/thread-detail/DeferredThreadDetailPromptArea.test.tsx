@@ -17,6 +17,8 @@ it.each([true, false])(
   "requests picker, voice and composer options after the timeline paints and becomes idle (native idle=%s) (test-change-reason: upstream 0.50.1 holds dynamic imports until settleLazyModules, so the composer import is settled explicitly)",
   async (nativeIdle) => {
     vi.resetModules();
+    const { gateReactLazy } = await import("@/test/lazy-modules");
+    gateReactLazy(await vi.importActual<typeof import("react")>("react"));
     vi.useFakeTimers();
     let finishDownload = () => {};
     const download = new Promise<void>((resolve) => {

@@ -880,6 +880,7 @@ function useCachedThreads(threadIds: readonly string[]): CachedThreads {
   return useSyncExternalStore(
     store?.subscribe ?? subscribeToNothing,
     store?.getSnapshot ?? getNoCachedThreads,
+    store?.getSnapshot ?? getNoCachedThreads,
   );
 }
 

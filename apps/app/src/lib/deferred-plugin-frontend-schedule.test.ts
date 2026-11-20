@@ -55,7 +55,6 @@ async function start(
   const { createDeferredPluginFrontendSchedule } =
     await import("./deferred-plugin-frontend-schedule");
   const { markHomeComposerReady } = await import("./home-composer-ready");
-  window.history.replaceState(null, "", "/projects/project-1/threads/thread-1");
   const schedule = createDeferredPluginFrontendSchedule();
   dispose = schedule.dispose;
   const module = {
@@ -100,9 +99,6 @@ async function start(
     ...schedule,
     ...overrides,
   };
-  const mountedRow = document.createElement("div");
-  mountedRow.setAttribute("data-timeline-row-id", "thread-1");
-  document.body.append(mountedRow);
   const done = reconcilePluginFrontends(
     createPluginFrontendReconcileState(),
     deps,
@@ -111,7 +107,7 @@ async function start(
   return { imports, prefetch, done, markHomeComposerReady };
 }
 
-it("keeps non-home plugin downloads behind ready and input-aware idle", async () => {
+it("test-change-reason: upstream removed route-content-paint, so the harness no longer marks it; keeps non-home plugin downloads behind ready and input-aware idle", async () => {
   const h = await start();
   expect(h.imports.mock.calls.flat()).toEqual(["/plugins/thread-list.js"]);
   await vi.advanceTimersByTimeAsync(12_000);

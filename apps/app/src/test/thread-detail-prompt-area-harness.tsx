@@ -6,6 +6,7 @@ import type {
   ResolvedThreadExecutionOptions,
   ThreadQueuedMessage,
   ThreadTimelineActivePromptMode,
+  ThreadTimelineGoal,
 } from "@bb/domain";
 import type {
   ExistingThreadExecutionInputSources,
@@ -260,6 +261,11 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         </div>
         <div data-testid="command-suggestions">
           {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
+        </div>
+        <div data-testid="builtin-commands">
+          {(typeahead.command.source.builtinCommands ?? [])
+            .map((command) => command.name)
+            .join(",")}
         </div>
         <div data-testid="selected-model" data-unavailable-model={execution.model.unavailableModel}>
           {execution.pending
@@ -565,6 +571,28 @@ vi.mock(
     };
   },
 );
+
+vi.mock("@/components/promptbox/banner/ThreadGoalCard", () => ({
+  ThreadGoalCard: ({
+    goal,
+    onClearGoal,
+  }: {
+    goal: ThreadTimelineGoal | null;
+    onClearGoal?: () => void;
+  }) =>
+    goal ? (
+      <div data-testid="composer-stack-item">
+        Goal banner
+        {onClearGoal ? (
+          <button
+            type="button"
+            aria-label="Clear active Goal"
+            onClick={onClearGoal}
+          />
+        ) : null}
+      </div>
+    ) : null,
+}));
 
 vi.mock("@/components/promptbox/banner/ThreadPromptModeCard", () => ({
   ThreadPromptModeCard: ({

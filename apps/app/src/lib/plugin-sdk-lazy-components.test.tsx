@@ -10,11 +10,12 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, it } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { ImageLightbox } from "./plugin-sdk-lazy-components";
 
 afterEach(cleanup);
 
-it("opens the lazy SDK lightbox and restores focus to its trigger after closing", async () => {
+it("test-change-reason: upstream holds tracked lazy imports, so the preload is settled; opens the lazy SDK lightbox and restores focus to its trigger after closing", async () => {
   function Preview() {
     const [open, setOpen] = useState(false);
     return (
@@ -34,7 +35,7 @@ it("opens the lazy SDK lightbox and restores focus to its trigger after closing"
   const trigger = screen.getByRole("button", { name: "Preview attachment" });
   trigger.focus();
   fireEvent.click(trigger);
-  await act(async () => ImageLightbox.preload());
+  await settleLazyModules(Promise.resolve(ImageLightbox.preload()));
   const dialog = screen.getByRole("dialog", {
     name: "Attachment preview",
   });

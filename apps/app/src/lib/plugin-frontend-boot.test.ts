@@ -77,7 +77,7 @@ function plugin(status: "starting" | "running") {
   };
 }
 
-it("re-checks the plugin list on its own while the server reports plugins starting", async () => {
+it("test-change-reason: upstream tracks lazy imports, so the boot is settled; re-checks the plugin list on its own while the server reports plugins starting", async () => {
   const fetchMock = vi.fn(
     async () =>
       new Response(
@@ -97,7 +97,7 @@ it("re-checks the plugin list on its own while the server reports plugins starti
   const lazy = await import("./plugin-frontend-lazy");
   const settled = renderHook(() => usePluginFrontendsSettled());
 
-  await lazy.bootPluginFrontends();
+  await settleLazyModules(lazy.bootPluginFrontends());
   settled.rerender();
   expect(settled.result.current).toBe(false);
 
@@ -133,7 +133,7 @@ it("keeps re-checking after a failed plugin-list request until plugins run", asy
   const bootState = await import("./plugin-frontend-boot-state");
   const lazy = await import("./plugin-frontend-lazy");
 
-  await lazy.bootPluginFrontends();
+  await settleLazyModules(lazy.bootPluginFrontends());
   expect(bootState.isServerPluginsStarting()).toBe(true);
 
   await vi.waitFor(
