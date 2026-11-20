@@ -10704,15 +10704,11 @@ describe("sequential pool recovery", () => {
     ]);
   });
 
-  it("sends new conversations to accounts past the switch threshold behind those below it until the provider refuses them", async () => {
+  it("skips an account at the switch threshold when routing a new conversation", async () => {
     const now = 1_800_000_000_000;
     const resetAt = String((now + 60 * 60 * 1_000) / 1_000);
     const attempts: Array<string | null> = [];
-    const refused = new Set<string>();
-    const utilization: Record<string, string> = {
-      "sk-first": "0.99",
-      "sk-second": "1",
-    };
+    let firstRequests = 0;
     const fixture = await createFixture({
       upstreamUrl: "https://upstream.example",
       apiKey: "sk-first",
@@ -10721,25 +10717,14 @@ describe("sequential pool recovery", () => {
         fetch: async (_input, init) => {
           const key = new Headers(init?.headers).get("x-api-key") ?? "";
           attempts.push(key);
-          if (refused.has(key))
-            return Response.json(
-              {},
-              {
-                status: 429,
-                headers: {
-                  "anthropic-ratelimit-unified-5h-status": "rejected",
-                  "anthropic-ratelimit-unified-5h-reset": resetAt,
-                },
-              },
-            );
           return Response.json(
             {},
             {
               headers:
-                key in utilization
+                key === "sk-first"
                   ? {
                       "anthropic-ratelimit-unified-5h-utilization":
-                        utilization[key] ?? "",
+                        firstRequests++ === 0 ? "0.97" : "0.98",
                       "anthropic-ratelimit-unified-5h-status": "allowed",
                       "anthropic-ratelimit-unified-5h-reset": resetAt,
                     }
@@ -10763,15 +10748,7 @@ describe("sequential pool recovery", () => {
     expect(await send()).toBe(200);
     expect(await send()).toBe(200);
     expect(await send()).toBe(200);
-    expect(attempts).toEqual(["sk-first", "sk-second", "sk-second"]);
-
-    refused.add("sk-second");
-    expect(await send()).toBe(200);
-    expect(attempts.slice(3)).toEqual(["sk-second", "sk-first"]);
-
-    await addApiAccount(fixture, "sk-third");
-    expect(await send()).toBe(200);
-    expect(attempts.at(-1)).toBe("sk-third");
+    expect(attempts).toEqual(["sk-first", "sk-first", "sk-second"]);
   });
 
   it("keeps a conversation on its account past the switch threshold until the provider refuses it", async () => {

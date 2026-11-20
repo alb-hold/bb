@@ -889,7 +889,7 @@ function QuotaDetail({
           {quota?.resetAt === null || quota === null
             ? ""
             : ` · ${resetLabel(quota.resetAt)}`}{" "}
-          · other accounts preferred from {Math.round(threshold * 100)}%
+          · skipped for new conversations from {Math.round(threshold * 100)}% unless extra usage is available
         </div>
       </div>
     </div>
