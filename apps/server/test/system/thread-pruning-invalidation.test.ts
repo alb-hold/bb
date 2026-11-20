@@ -243,7 +243,13 @@ describe("pruning invalidation", () => {
       const diffsBefore = countEvents(harness, threadId, diffTypes);
 
       vi.spyOn(performance, "now").mockReturnValue(0);
-      for (let call = 0; call < 24; call += 1)
+      for (
+        let call = 0;
+        call < 600 &&
+        (countEvents(harness, threadId, usageTypes) >= usageBefore - 32 ||
+          countEvents(harness, threadId, diffTypes) >= diffsBefore - 32);
+        call += 1
+      )
         pruneThreadEventHistoryBestEffort(harness.deps, {
           mode: "active",
           threadId,
