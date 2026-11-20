@@ -14,9 +14,10 @@ afterEach(() => {
 });
 
 it.each([true, false])(
-  "requests picker, voice and composer options after the timeline paints and becomes idle (native idle=%s) (test-change-reason: upstream 0.50.1 holds dynamic imports until settleLazyModules, so the composer import is settled explicitly)",
+  "requests picker, voice and composer options after the timeline paints and becomes idle (native idle=%s) (test-change-reason: upstream 0.50.1 holds dynamic imports until settleLazyModules, so the composer import is settled explicitly, and the test loads define-split fresh so the global define-split mock cached from the first case does not keep the first case's restored prepareSplitImport)",
   async (nativeIdle) => {
     vi.resetModules();
+    vi.doUnmock("@/lib/define-split");
     const { gateReactLazy } = await import("@/test/lazy-modules");
     gateReactLazy(await vi.importActual<typeof import("react")>("react"));
     vi.useFakeTimers();
