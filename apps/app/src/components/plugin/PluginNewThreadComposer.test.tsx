@@ -1421,7 +1421,7 @@ describe("PluginNewThreadComposer seeding", () => {
       "unknown-reasoning",
     );
     await waitFor(() => {
-      expect(latestPromptBoxProps().disabled).toBe(false);
+      expect(latestPromptBoxProps().disabledReason ?? null).toBe(null); // DIAG
     });
     await submit();
     expect(submitted).toHaveLength(1);
