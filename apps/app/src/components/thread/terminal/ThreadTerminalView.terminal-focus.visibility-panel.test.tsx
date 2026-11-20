@@ -14,10 +14,7 @@ import { createTerminalGridMarker } from "@bb/domain";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import {
-  waitForReadiness,
-  waitForReadinessCondition,
-} from "./ThreadTerminalView.terminal-focus-test-utils";
+import { waitForReadiness, waitForReadinessCondition, deferResizeDelivery } from "./ThreadTerminalView.terminal-focus-test-utils";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
@@ -871,7 +868,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
@@ -945,7 +946,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
@@ -1053,7 +1058,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
@@ -1319,7 +1328,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
               this as unknown as ResizeObserver,
             );
           notifySize.push(notify);
-          notify();
+          queueMicrotask(() => {
+            act(() => {
+              notify();
+            });
+          });
         }
 
         unobserve(): void {}
@@ -1591,7 +1604,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
 
         disconnect(): void {}
 

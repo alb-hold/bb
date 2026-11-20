@@ -34,8 +34,8 @@ function setupVisibility(
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(callback: () => void) {
-        resize = callback;
+      constructor(callback: ResizeObserverCallback) {
+        resize = () => callback([], this as unknown as ResizeObserver);
       }
       observe(element: Element) {
         observed.add(element);
@@ -357,7 +357,8 @@ describe("terminal visibility signals", () => {
     state.showDocument(true);
     state.intersect(true);
     expect(state.createAddon).toHaveBeenCalledTimes(4);
-    expect(state.disconnectResize).toHaveBeenCalledOnce();
+    expect(state.observed.size).toBe(0);
+    expect(state.disconnectResize).toHaveBeenCalled();
     expect(state.disconnectIntersection).toHaveBeenCalledOnce();
   });
 

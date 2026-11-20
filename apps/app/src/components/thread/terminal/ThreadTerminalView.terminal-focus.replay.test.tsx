@@ -19,10 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  waitForReadiness,
-  waitForReadinessCondition,
-} from "./ThreadTerminalView.terminal-focus-test-utils";
+import { waitForReadiness, waitForReadinessCondition, deferResizeDelivery } from "./ThreadTerminalView.terminal-focus-test-utils";
 import {
   REPAINT_RESTORE_DELAY_MS,
   TerminalWebSocketTransport,
@@ -276,7 +273,11 @@ function prepareMobileTerminal(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
@@ -343,7 +344,11 @@ function prepareFirstAttachFontMetricsHarness(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
