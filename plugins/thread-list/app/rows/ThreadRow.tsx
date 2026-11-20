@@ -1424,27 +1424,12 @@ function sameThreadRowOptions(
   return keys.every((key) => Object.is(previousRecord[key], nextRecord[key]));
 }
 
-export const ThreadRow = memo(ThreadRowComponent, (previous, next) => {
-  const same =
+export const ThreadRow = memo(
+  ThreadRowComponent,
+  (previous, next) =>
     previous.thread === next.thread &&
     previous.crossProjectId === next.crossProjectId &&
     previous.isActive === next.isActive &&
     previous.onProjectSelect === next.onProjectSelect &&
-    sameThreadRowOptions(previous.options, next.options);
-  if (!same) {
-    const previousRecord: Record<string, unknown> = { ...previous };
-    const nextRecord: Record<string, unknown> = { ...next };
-    const props = Object.keys(nextRecord).filter(
-      (key) => !Object.is(previousRecord[key], nextRecord[key]),
-    );
-    const previousOptions: Record<string, unknown> = { ...previous.options };
-    const nextOptions: Record<string, unknown> = { ...next.options };
-    const optionKeys = Object.keys(nextOptions).filter(
-      (key) => !Object.is(previousOptions[key], nextOptions[key]),
-    );
-    console.log(
-      "DIAG-ROW " + next.thread.id + " props=" + props.join(",") + " options=" + optionKeys.join(","),
-    );
-  }
-  return same;
-});
+    sameThreadRowOptions(previous.options, next.options),
+);
