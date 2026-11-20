@@ -34,14 +34,15 @@ export function useMeasureSidebarFooterCapacity(
       const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 0;
       return Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1);
     };
-    const apply = (capacity: number | null) => {
+    const apply = () => {
+      const capacity = measure();
       if (capacity !== null) setCapacity(capacity);
     };
     if (typeof ResizeObserver === "undefined") {
-      const frame = requestAnimationFrame(() => apply(measure()));
+      const frame = requestAnimationFrame(apply);
       return () => cancelAnimationFrame(frame);
     }
-    return observeSharedResize([row, more], { read: measure, write: apply });
+    return observeSharedResize([row, more], { read: apply, write: () => {} });
   }, [rowRef, moreRef, setCapacity]);
 }
 
