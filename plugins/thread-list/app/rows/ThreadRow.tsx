@@ -714,6 +714,17 @@ function ThreadRowComponent({
   });
   const customizeRowActions = useCustomizeThreadRowActions();
   const isCompactViewport = useIsCompactViewport();
+  const diag2Values: Record<string, unknown> = {
+    pullRequest, rowActionKeys, quickActions, customizeRowActions, isCompactViewport,
+  };
+  const diag2Previous = useRef<Record<string, unknown> | null>(null);
+  if (diag2Previous.current !== null) {
+    const changed2 = Object.keys(diag2Values).filter(
+      (key) => !Object.is(diag2Values[key], diag2Previous.current?.[key]),
+    );
+    console.log(`DIAG-RENDER2 ${thread.id} changed=${changed2.join(",")}`);
+  }
+  diag2Previous.current = diag2Values;
   const pendingMenuCustomize = useRef<(() => void) | null>(null);
   const inlineMenuActions: PluginThreadActionsInlineItem[] =
     customizeRowActions === null
