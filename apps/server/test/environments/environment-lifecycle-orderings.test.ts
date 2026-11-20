@@ -33,6 +33,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import type { ExperimentalHostEntry } from "@get-bb/plugin-sdk/host";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { setTestWorktreeHolderScan } from "../../../../plugins/environment-git-worktree/host.js";
 import {
   experimental_createHostEntryHarness,
   type ExperimentalHostEntryHarness,
@@ -1657,11 +1658,13 @@ const ORDERINGS: Ordering[] = [
 ];
 
 beforeEach(() => {
+  setTestWorktreeHolderScan({ status: "clear" });
   vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
   vi.setSystemTime(Date.now() + clockOffsetMs);
 });
 
 afterEach(() => {
+  setTestWorktreeHolderScan(undefined);
   clearAllThreadProvisionSchedules();
   setPluginEnvironmentProviderBridge(undefined);
   vi.useRealTimers();

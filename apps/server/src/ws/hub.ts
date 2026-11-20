@@ -866,6 +866,7 @@ export class NotificationHub implements DbNotifier {
   }
 
   private unlinkDeviceHandoffTerminalAttachment(socket: HubSocket): void {
+    console.error("DBGX unlink", new Error().stack);
     const owner = this.deviceHandoffOwnerByTerminalSocket.get(socket);
     if (owner === undefined) return;
     this.deviceHandoffOwnerByTerminalSocket.delete(socket);

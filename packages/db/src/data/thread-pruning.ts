@@ -56,6 +56,10 @@ export const PRUNABLE_THREAD_EVENT_TYPES = [
   "item/reasoning/textDelta",
   "item/backgroundTask/progress",
 ] as const satisfies readonly ThreadEventType[];
+const TIMELINE_PRESERVING_POLICIES: ReadonlySet<ThreadPruningPolicy> = new Set([
+  "usage",
+  "turn-diffs",
+]);
 const BATCH_SIZE = 500;
 const LIVE_BATCH_SIZE = 32;
 const CHUNK_SIZE = 16;
@@ -626,7 +630,11 @@ function advanceThreadPruningTransaction(
     },
     { behavior: "immediate" },
   );
-  if (result.removed > 0 && result.threadId !== null) {
+  if (
+    result.removed > 0 &&
+    result.threadId !== null &&
+    !TIMELINE_PRESERVING_POLICIES.has(policy)
+  ) {
     if (result.rewritesConversationOutline)
       bumpThreadEventRewriteGeneration(db, result.threadId);
     else
