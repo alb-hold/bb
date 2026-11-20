@@ -303,11 +303,12 @@ export function observeTerminalWebglVisibility({
     ) {
       parents.push(parent);
     }
-    unobserveResize?.();
+    const releasePrevious = unobserveResize;
     unobserveResize = observeSharedResize([root, ...parents], {
       read: () => undefined,
       write: syncGeometry,
     });
+    releasePrevious?.();
   };
   const applyVisibility = (visible: boolean) => {
     const becameVisible = visible && !wasVisible;

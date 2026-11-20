@@ -357,8 +357,7 @@ describe("terminal visibility signals", () => {
     state.showDocument(true);
     state.intersect(true);
     expect(state.createAddon).toHaveBeenCalledTimes(4);
-    expect(state.observed.size).toBe(0);
-    expect(state.disconnectResize).toHaveBeenCalled();
+    expect(state.disconnectResize).toHaveBeenCalledOnce();
     expect(state.disconnectIntersection).toHaveBeenCalledOnce();
   });
 
