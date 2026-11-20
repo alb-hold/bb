@@ -1412,4 +1412,24 @@ function ThreadRowComponent({
   );
 }
 
-export const ThreadRow = memo(ThreadRowComponent);
+function sameThreadRowOptions(
+  previous: ThreadRowOptions,
+  next: ThreadRowOptions,
+): boolean {
+  if (previous === next) return true;
+  const previousRecord: Record<string, unknown> = { ...previous };
+  const nextRecord: Record<string, unknown> = { ...next };
+  const keys = Object.keys(nextRecord);
+  if (keys.length !== Object.keys(previousRecord).length) return false;
+  return keys.every((key) => Object.is(previousRecord[key], nextRecord[key]));
+}
+
+export const ThreadRow = memo(
+  ThreadRowComponent,
+  (previous, next) =>
+    previous.thread === next.thread &&
+    previous.crossProjectId === next.crossProjectId &&
+    previous.isActive === next.isActive &&
+    previous.onProjectSelect === next.onProjectSelect &&
+    sameThreadRowOptions(previous.options, next.options),
+);
