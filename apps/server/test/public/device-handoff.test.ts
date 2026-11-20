@@ -2361,6 +2361,7 @@ describe("device handoff websocket acknowledgement", () => {
           origin: { terminalSessionId: terminal.id },
         }),
       });
+      console.error("DBGX responded", performance.now());
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 1 });
       expect(await delivered).toMatchObject({

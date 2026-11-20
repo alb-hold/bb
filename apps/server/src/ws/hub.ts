@@ -2002,7 +2002,14 @@ export class NotificationHub implements DbNotifier {
     pending.push(handoff);
     this.pendingDeviceHandoffsByOrigin.set(originKey, pending);
     this.enforcePendingDeviceHandoffLimit();
-    return this.deliverPendingDeviceHandoffs(request.origin, createdAt);
+    console.error("DBGX notify", performance.now(), JSON.stringify({
+      views: [...this.activeDeviceHandoffViewByClientSocket.values()],
+      pending: [...this.pendingDeviceHandoffsByOrigin.keys()],
+      createdAt,
+    }));
+    const dbgxDelivered = this.deliverPendingDeviceHandoffs(request.origin, createdAt);
+    console.error("DBGX notified", performance.now(), dbgxDelivered);
+    return dbgxDelivered;
   }
 
   private hasThreadView(socket: HubSocket, threadId: string): boolean {
