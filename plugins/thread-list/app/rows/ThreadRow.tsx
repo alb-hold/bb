@@ -1372,13 +1372,15 @@ function ThreadRowComponent({
       onClick={isEditing ? undefined : handleRowClick}
       onClickCapture={
         !isEditing && options.consumeClickSuppression
-        ? handleRowClickCapture
-        : undefined
+          ? handleRowClickCapture
+          : undefined
       }
       onSplitDragPointerDown={isEditing ? undefined : onSplitDragPointerDown}
       stickyLevel={parentOptions?.stickyLevel}
       style={rowStyle}
-    />
+    >
+      {rowContent}
+    </ThreadRowContainer>
   );
 
   const bulkMenuProps: Pick<

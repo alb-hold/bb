@@ -5,7 +5,7 @@ import {
 
 export function terminalClientProtocolOptions(
   origin: string | undefined,
-  protocol: string | undefined,
+  protocol: string | null | undefined,
 ): { rawReplay: boolean; resizeSeqEcho: boolean } {
   return {
     rawReplay: origin === undefined,
