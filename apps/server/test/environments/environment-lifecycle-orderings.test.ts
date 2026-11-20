@@ -33,7 +33,6 @@ import type {
 } from "@get-bb/plugin-sdk";
 import type { ExperimentalHostEntry } from "@get-bb/plugin-sdk/host";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { setTestWorktreeHolderScan } from "../../../../plugins/environment-git-worktree/host.js";
 import {
   experimental_createHostEntryHarness,
   type ExperimentalHostEntryHarness,
@@ -61,6 +60,21 @@ import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 const execFileAsync = promisify(execFile);
 const WORKTREE_PLUGIN_ID = "environment-git-worktree";
+
+const { setTestWorktreeHolderScan } = z
+  .object({
+    setTestWorktreeHolderScan: z.custom<
+      (scan: { status: "clear" } | undefined) => void
+    >((value) => typeof value === "function"),
+  })
+  .parse(
+    await import(
+      new URL(
+        "../../../../plugins/environment-git-worktree/host.ts",
+        import.meta.url,
+      ).href
+    ),
+  );
 const CHECKOUT_PLUGIN_ID = "environment-project-checkout";
 const WORKTREE_PROVIDER_ID = "git-worktree";
 const MINUTE_MS = 60_000;

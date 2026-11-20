@@ -268,6 +268,7 @@ describe("pruning invalidation", () => {
         served.rows,
       );
       expect(freshLatest(harness, threadId)).toEqual(served);
+      expect(compactions.notices()).toBe(0);
       compactions.stop();
     });
   });
