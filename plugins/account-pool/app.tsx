@@ -1907,7 +1907,7 @@ function AccountPoolSettings() {
               <ConfigFieldRow
                 label="Quota switch threshold"
                 control="field"
-                description="Prefer accounts below this quota fraction. Accounts above it still serve while the provider accepts them."
+                description="Stop selecting an account at this quota fraction."
                 error={configErrors.switchThreshold}
               >
                 <Input

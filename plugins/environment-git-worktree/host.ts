@@ -7,8 +7,15 @@ import {
   removalDeadlineReason,
 } from "bb-environment-provider-host/remove-timeout";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
-import { WorkspaceError } from "bb-environment-provider-host/git";
-import { resolveWorktreeBaseBranch } from "./host/base-branch.js";
+import {
+  ensureGitRepo,
+  readDefaultBranchRefs,
+  WorkspaceError,
+} from "bb-environment-provider-host/git";
+import {
+  resolveDefaultWorktreeBaseBranch,
+  resolveWorktreeBaseBranch,
+} from "./host/base-branch.js";
 import {
   resolveWorktreeChildPath,
   resolveRetainedRoot,
@@ -131,11 +138,14 @@ export function createWorktreeHostEntry() {
     experimental_signals: worktreeHostSignals,
     handlers: {
       async defaultBaseBranch(input) {
-        const resolved = await resolveWorktreeBaseBranch(input.sourcePath, {
-          kind: "default",
-        });
+        const repo = await ensureGitRepo(input.sourcePath);
+        const refs = await readDefaultBranchRefs(repo);
         return {
-          branch: resolved?.ref ?? null,
+          branch: resolveDefaultWorktreeBaseBranch({
+            defaultBranch: refs.defaultBranch ?? null,
+            originDefaultBranch: refs.originDefaultBranch ?? null,
+            defaultBranchRelation: refs.defaultBranchRelation ?? null,
+          }),
         };
       },
       async listWorktrees(input, context) {

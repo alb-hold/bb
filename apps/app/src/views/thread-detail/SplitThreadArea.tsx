@@ -422,6 +422,10 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   const [keyboardFocusRequest, setKeyboardFocusRequest] = useState<{
     paneId: string;
   } | null>(null);
+  const keyboardFocusObserverRef = useRef<MutationObserver | null>(null);
+  const keyboardFocusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   useEffect(() => {
     if (keyboardFocusRequest === null) return;
     const paneId = keyboardFocusRequest.paneId;
@@ -431,11 +435,12 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
       workspace?.querySelectorAll<HTMLElement>("[data-split-pane-id]") ?? [],
     ).find((element) => element.dataset.splitPaneId === paneId);
     if (!root || !pane || layout?.focusedPaneId !== paneId) return;
-    let observer: MutationObserver | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => {
-      observer?.disconnect();
-      clearTimeout(timeout);
+      keyboardFocusObserverRef.current?.disconnect();
+      keyboardFocusObserverRef.current = null;
+      if (keyboardFocusTimeoutRef.current !== null)
+        clearTimeout(keyboardFocusTimeoutRef.current);
+      keyboardFocusTimeoutRef.current = null;
     };
     const finish = () => {
       cancelAnimationFrame(frame);
@@ -444,6 +449,8 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
         current === keyboardFocusRequest ? null : current,
       );
     };
+    document.addEventListener("pointerdown", finish, true);
+    document.addEventListener("keydown", finish, true);
     const focus = () => {
       if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
         return false;
@@ -473,21 +480,27 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
               "input:not(:disabled), textarea:not(:disabled), [contenteditable='true'], button:not(:disabled), a[href], [tabindex='0']",
             );
       (control ?? root).focus({ preventScroll: true });
-      observer = new MutationObserver(() => {
+      keyboardFocusObserverRef.current = new MutationObserver(() => {
         if (document.activeElement !== root) {
           finish();
           return;
         }
         if (focus()) finish();
       });
-      observer.observe(root, {
+      keyboardFocusObserverRef.current.observe(root, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ["contenteditable", "disabled"],
       });
-      timeout = setTimeout(finish, 1000);
+      keyboardFocusTimeoutRef.current = setTimeout(finish, 1000);
     });
+    return () => {
+      cancelAnimationFrame(frame);
+      cancel();
+      document.removeEventListener("pointerdown", finish, true);
+      document.removeEventListener("keydown", finish, true);
+    };
   }, [keyboardFocusRequest, layout, preservedScrollWorkspaceRef]);
 
   const focusPane = useCallback(

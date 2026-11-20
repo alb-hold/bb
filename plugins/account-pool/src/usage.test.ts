@@ -99,4 +99,34 @@ describe("quotaFromUsage", () => {
     );
     expect(next?.limitWindows).toEqual(previous.limitWindows);
   });
+
+  it("keeps an unrefreshed window during a partial usage refresh", () => {
+    const previous = quota([
+      fiveHour(0.4, FUTURE_RESET, "allowed"),
+      {
+        ...fiveHour(0.7, SEVEN_DAY_RESET, "allowed"),
+        slot: "secondary",
+        windowMinutes: 10_080,
+      },
+    ]);
+    const next = quotaFromUsage(
+      ACCOUNT_ID,
+      { five_hour: { utilization: 0.6, resets_at: "2026-11-06T04:00:00Z" } },
+      previous,
+      NOW,
+    );
+
+    expect(next?.limitWindows).toEqual([
+      {
+        slot: "primary",
+        windowMinutes: 300,
+        utilization: 0.6,
+        resetAt: FUTURE_RESET,
+        status: "allowed",
+        observedAt: NOW,
+        source: "usage",
+      },
+      previous.limitWindows[1],
+    ]);
+  });
 });

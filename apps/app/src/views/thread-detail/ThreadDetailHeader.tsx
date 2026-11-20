@@ -255,7 +255,7 @@ export function ThreadDetailHeader({
         ?.getBoundingClientRect().width ?? 0;
     const available = titleWidth + (searchWidth > 0 ? searchWidth + 4 : 0);
     setSearchFits(available >= 120 + 44 + 4);
-  }, [hasNativeTerminal, searchInMenu]);
+  }, [hasNativeTerminal, measuredPaneWidth, searchInMenu]);
   const searchTerminal = () => {
     const pane =
       headerRef.current.closest("[data-split-pane-id]") ??

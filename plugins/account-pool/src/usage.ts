@@ -217,13 +217,23 @@ export function quotaFromUsage(
     const normalized = normalizeBucket(bucket, now);
     if (normalized !== null) familyWeekly[family] = normalized;
   }
-  const limitWindows =
-    data.five_hour === undefined && data.seven_day === undefined
-      ? previous.limitWindows.filter(window => window.resetAt === null || window.resetAt > now)
-      : [
-          usageWindow("primary", data.five_hour, now),
-          usageWindow("secondary", data.seven_day, now),
-        ].filter((window): window is LimitWindow => window !== null);
+  const previousWindows = new Map(
+    previous.limitWindows
+      .filter((window) => window.resetAt === null || window.resetAt > now)
+      .map((window) => [window.slot, window]),
+  );
+  const limitWindows = (
+    [
+      ["primary", data.five_hour],
+      ["secondary", data.seven_day],
+    ] as const
+  )
+    .map(([slot, bucket]) =>
+      bucket === undefined
+        ? (previousWindows.get(slot) ?? null)
+        : usageWindow(slot, bucket, now),
+    )
+    .filter((window): window is LimitWindow => window !== null);
   return {
     ...previous,
     accountId,

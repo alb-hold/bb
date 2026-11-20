@@ -216,6 +216,16 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
               onUpdateAll={updateAll}
               onRestartBb={restartBb}
               chip={chip}
+              updating={
+                chip.kind === "bb"
+                  ? model.bb?.restarting === true
+                  : model.rows.some(
+                      (row) =>
+                        (chip.kind === "providers"
+                          ? row.kind === "provider"
+                          : row.kind === "plugin") && row.state === "updating",
+                    )
+              }
             />
           ))}
           {appUpdateStart.confirmDialog}
@@ -238,6 +248,7 @@ interface SidebarUpdateButtonProps {
   onNavigate?: () => void;
   onUpdateAll: () => void;
   onRestartBb: () => void;
+  updating?: boolean;
   chip?: {
     kind: string;
     label: string;
@@ -254,16 +265,18 @@ export function SidebarUpdateButton({
   onUpdateAll,
   onRestartBb,
   chip,
+  updating: chipUpdating,
 }: SidebarUpdateButtonProps) {
   const { supportsHover } = useResponsiveOverlayBehavior();
   const [tapOpen, setTapOpen] = useState(false);
+  const updating = chipUpdating ?? model.updating;
   const label = chip?.label ?? sidebarUpdateButtonLabel(model);
   const icon = (
     <Icon
-      name={model.updating ? "Loading" : (chip?.icon ?? "Download")}
+      name={updating ? "Loading" : (chip?.icon ?? "Download")}
       className={cn(
         "size-4 text-muted-foreground",
-        model.updating && "animate-spin",
+        updating && "animate-spin",
       )}
     />
   );
@@ -292,7 +305,7 @@ export function SidebarUpdateButton({
                 ? `sidebar-updates-badge-${chip.kind}`
                 : "sidebar-update-button"
             }
-            data-updating={model.updating || undefined}
+            data-updating={updating || undefined}
             className={chip ? CHIP_CLASS : UPDATE_BUTTON_CLASS}
           >
             {icon}
@@ -329,7 +342,7 @@ export function SidebarUpdateButton({
                 ? `sidebar-updates-badge-${chip.kind}`
                 : "sidebar-update-button"
             }
-            data-updating={model.updating || undefined}
+            data-updating={updating || undefined}
           >
             {icon}
             {chip?.content}

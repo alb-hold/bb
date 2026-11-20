@@ -3325,7 +3325,7 @@ export class TerminalSessionLifecycle {
         type: "terminal.attach",
         requestId,
         terminalId: current.id,
-        sinceSeq: args.sinceSeq,
+        sinceSeq: this.outputSequenceRebase.toDaemon(current.id, args.sinceSeq),
         tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES,
       },
     );

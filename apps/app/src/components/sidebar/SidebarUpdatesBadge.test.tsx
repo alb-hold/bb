@@ -605,6 +605,11 @@ describe("SidebarUpdatesBadge", () => {
     );
     const spinner = button.querySelector('[data-icon="Loading"]');
     expect(spinner?.classList.contains("animate-spin")).toBe(true);
+    const providerChip = screen.getByTestId("sidebar-updates-badge-providers");
+    const pluginChip = screen.getByTestId("sidebar-updates-badge-plugins");
+    expect(providerChip.querySelector('[data-icon="Loading"]')).toBeTruthy();
+    expect(pluginChip.querySelector('[data-icon="Loading"]')).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-updates-badge-bb")).toBeNull();
     const card = await openCard();
     expect(rowStates(card).map(([, state]) => state)).toEqual([
       "updating",
@@ -720,6 +725,7 @@ describe("SidebarUpdatesBadge", () => {
     expect(updateButton().getAttribute("aria-label")).toBe(
       "bb update available",
     );
+    expect(updateButton().querySelector('[data-icon="Loading"]')).toBeTruthy();
     const card = await openCard();
     expect(card.textContent).toContain("Restarting into the update…");
     expect(within(card).queryByRole("button", { name: "Restart now" })).toBe(

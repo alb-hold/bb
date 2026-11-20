@@ -8,7 +8,7 @@ import {
   HARNESS_TMP_ROOT_PREFIX,
   integrationTmpBase,
 } from "./helpers/tmp-base.js";
-import { isTmpRootOwnerProcess } from "./helpers/tmp-owner.js";
+import { isTmpRootOwnerIdentityLive } from "./helpers/tmp-owner.js";
 import {
   killProcessesHoldingFilesUnder,
 } from "./helpers/tmp-root-processes.js";
@@ -30,11 +30,20 @@ async function hasLiveOwner(tmpRoot: string): Promise<boolean> {
   if (writer === null) return false;
   const recordedAt = (await fs.stat(pidFilePath)).mtimeMs;
   const identity = await readProcessIdentity(writer);
-  if (identity === null) return false;
-  return isTmpRootOwnerProcess(
-    identity.startedAt,
+  let pidIsAlive = false;
+  if (identity === null) {
+    try {
+      process.kill(writer, 0);
+      pidIsAlive = true;
+    } catch (error) {
+      pidIsAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  }
+  return isTmpRootOwnerIdentityLive(
+    identity?.startedAt ?? null,
     recordedAt,
     PS_START_TIME_RESOLUTION_MS,
+    pidIsAlive,
   );
 }
 

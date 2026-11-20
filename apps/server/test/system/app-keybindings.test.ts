@@ -88,6 +88,13 @@ describe("app keybindings", () => {
       ),
     ).toEqual([]);
   });
+
+  it("keeps Shift in the next terminal attention shortcut", () => {
+    const binding = DEFAULT_APP_KEYBINDINGS.find(
+      (candidate) => candidate.command === "terminal.attention.next",
+    );
+    expect(binding?.shortcut).toMatchObject({ key: "n", alt: true, shift: true });
+  });
   it.each(DEFAULT_KEYBINDING_CLIENTS)(
     "offers local logs only to desktop clients: $name",
     (client) => {

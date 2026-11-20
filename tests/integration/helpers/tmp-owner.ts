@@ -8,3 +8,14 @@ export function isTmpRootOwnerProcess(
     startedAt <= recordedAt + startTimeResolutionMs
   );
 }
+
+export function isTmpRootOwnerIdentityLive(
+  startedAt: number | null,
+  recordedAt: number,
+  startTimeResolutionMs: number,
+  pidIsAlive: boolean,
+): boolean {
+  return startedAt === null
+    ? pidIsAlive
+    : isTmpRootOwnerProcess(startedAt, recordedAt, startTimeResolutionMs);
+}
