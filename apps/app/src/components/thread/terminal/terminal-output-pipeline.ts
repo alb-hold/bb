@@ -89,10 +89,8 @@ export function createTerminalOutputPipeline(
               terminal.cols !== operation.grid.cols ||
               terminal.rows !== operation.grid.rows;
             if (changed) {
-              diagLog("pipeline resize", terminal.cols, terminal.rows, "->", operation.grid.cols, operation.grid.rows, terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
               options.beforeResize?.();
               terminal.resize(operation.grid.cols, operation.grid.rows);
-              diagLog("pipeline resized", terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
             }
             onResize?.(operation.grid.cols, operation.grid.rows);
             if (changed) options.afterResize?.();
@@ -164,15 +162,4 @@ export function createTerminalOutputPipeline(
       });
     },
   };
-}
-
-export function diagLog(...args: unknown[]): void {
-  const g = globalThis as unknown as { __diag?: string[] };
-  const log = (g.__diag ??= []);
-  if (log.length < 40) log.push(args.map((a) => String(a)).join(" "));
-  const count = ((g as { __diagCount?: number }).__diagCount ?? 0) + 1;
-  (g as { __diagCount?: number }).__diagCount = count;
-  if (count > 200) {
-    throw new Error("DIAG count=" + count + " first40=" + JSON.stringify(log));
-  }
 }

@@ -1109,7 +1109,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         ).toContainEqual({ type: "ack", nextSeq: 2 }),
       "live output was not acknowledged within 5000 ms",
     );
-    getTerminal().scrollToBottom();
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
     await waitForReadinessCondition(
       () =>
         expect(getTerminal().buffer.active.viewportY).toBe(
@@ -1151,7 +1151,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         expect(getTerminal().buffer.active.viewportY).toBe(
           getTerminal().buffer.active.baseY,
         ),
-      "typed-output client left the bottom after companion resize " + JSON.stringify((globalThis as unknown as { __diag?: string[] }).__diag) + " now=" + getTerminal().cols + "x" + getTerminal().rows + " y=" + getTerminal().buffer.active.viewportY + " base=" + getTerminal().buffer.active.baseY,
+      "typed-output client left the bottom after companion resize",
     );
   });
 
