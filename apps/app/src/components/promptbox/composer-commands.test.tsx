@@ -256,14 +256,14 @@ describe("composer commands", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("opens prompt search with Ctrl+R only in the focused composer that has history search", () => {
+  it("opens prompt search with Ctrl+R only in the focused composer that has history search", async () => {
     const { editorIn } = renderComposers({ searchHistory: true });
 
     press(editorIn("side"), "r");
     expect(screen.queryByRole("dialog")).toBeNull();
 
     press(editorIn("main"), "r");
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Search prompt history")).toBeTruthy();
   });
 

@@ -49,7 +49,7 @@ it("keeps the draft and mic usable after a cold download failure, then records o
   const mic = screen.getByRole("button", { name: "Mic" });
   mic.focus();
   fireEvent.click(mic);
-  await waitFor(() => expect(download.imports).toBe(1));
+  await vi.waitFor(() => expect(download.imports).toBe(1));
   await act(async () => download.reject(new Error("Offline")));
   await waitFor(() =>
     expect(appToast.error).toHaveBeenCalledWith(
