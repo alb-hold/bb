@@ -184,7 +184,7 @@ import {
   shouldAutoCopyOsc52,
 } from "./terminal-osc52-policy";
 import { parseTerminalProgressOsc } from "./terminal-progress";
-import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import { createTerminalOutputPipeline, diagLog } from "./terminal-output-pipeline";
 import {
   completeTerminalReplayPreview,
   createTerminalExitNoticeHandler,
@@ -2645,7 +2645,7 @@ export function ThreadTerminalView({
       );
       const restoreViewport = (afterGridResize = false) => {
         const activeBuffer = lifecycle.terminal?.buffer.active;
-        ((globalThis as any).__diagN = ((globalThis as any).__diagN ?? 0) + 1) <= 60 && console.log("DIAG restoreViewport", afterGridResize, liveBottomBeforeGridResize, JSON.stringify(lifecycle.savedViewportAnchor), activeBuffer?.viewportY, activeBuffer?.baseY, lifecycle.terminal?.cols, lifecycle.terminal?.rows, lifecycle.hasManualScrollIntent);
+        diagLog("restoreViewport", afterGridResize, liveBottomBeforeGridResize, JSON.stringify(lifecycle.savedViewportAnchor), activeBuffer?.viewportY, activeBuffer?.baseY, lifecycle.terminal?.cols, lifecycle.terminal?.rows, lifecycle.hasManualScrollIntent);
         if (!lifecycle.terminal || !activeBuffer) {
           return;
         }
