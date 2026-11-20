@@ -162,6 +162,14 @@ function createSidebarThreadEntriesStore(
       };
     },
     subscribeAll(listener) {
+      const diag = globalThis as unknown as { __subAll?: Set<string> };
+      (diag.__subAll ??= new Set()).add(
+        String(new Error().stack)
+          .split("\n")
+          .filter((line) => line.includes("/src/") && !line.includes("sidebar-thread-entries"))
+          .slice(0, 3)
+          .join(" <- "),
+      );
       connect();
       allListeners.add(listener);
       return () => {

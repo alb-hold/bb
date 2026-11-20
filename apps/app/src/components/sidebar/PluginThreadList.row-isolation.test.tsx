@@ -148,7 +148,14 @@ it("renders only the changed row on a thread update, and no row while typing an 
   });
   await settle();
   expect(screen.getByText("Renamed thread")).toBeTruthy();
-  expect([...renderedRows]).toEqual(["thr_1"]);
+  const diagBag = globalThis as unknown as {
+    __rowDiag?: Set<string>;
+    __subAll?: Set<string>;
+  };
+  expect(
+    [...renderedRows],
+    `DIAG props=${JSON.stringify([...(diagBag.__rowDiag ?? [])])} subAll=${JSON.stringify([...(diagBag.__subAll ?? [])])}`,
+  ).toEqual(["thr_1"]);
 
   const question = within(screen.getByRole("region", { name: "Question" }));
   fireEvent.click(question.getByRole("button", { name: /Other/ }));
