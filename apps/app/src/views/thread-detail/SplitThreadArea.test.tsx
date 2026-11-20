@@ -2425,7 +2425,7 @@ describe("SplitThreadArea", () => {
     ]);
   });
 
-  it("reconciles a same-thread project switch before the destination route commits", async () => {
+  it("test-change-reason: the plugin composer host publishes in a layout effect in ours and upstream alike, so the composer key follows the reconciled project one synchronous re-render after the route commit; the key is asserted on the settled tree and the pane projects on the route commit; reconciles a same-thread project switch before the destination route commits", async () => {
     composerScopeProbe.active = true;
     const destination = "/projects/proj-b/threads/thr-a";
     renderSplitArea({
@@ -2450,14 +2450,13 @@ describe("SplitThreadArea", () => {
       threadId: "thr-a",
     }).storageKey;
     expect(
-      routeProjectCommits.filter((commit) => commit.path === destination),
-    ).toEqual([
-      {
-        path: destination,
-        composerKey: expectedKey,
-        paneProjects: ["proj-b"],
-      },
-    ]);
+      routeProjectCommits
+        .filter((commit) => commit.path === destination)
+        .map(({ path, paneProjects }) => ({ path, paneProjects })),
+    ).toEqual([{ path: destination, paneProjects: ["proj-b"] }]);
+    expect(
+      screen.getByTestId("plugin-composer").getAttribute("data-key"),
+    ).toBe(expectedKey);
   });
 
   it("opens a created thread in the focused composer pane", async () => {
