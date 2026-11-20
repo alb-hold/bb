@@ -17,6 +17,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { settleLazyModules } from "@/test/lazy-modules";
 import {
   SidebarProvider,
   SidebarTrigger,
@@ -373,6 +374,7 @@ describe("Rail", () => {
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
     "gives %s a matching keyboard tooltip and accessible name", async (label) => {
       renderRail(THREAD_PATH);
+      await settleLazyModules();
       fireEvent.keyDown(document.body, { key: "Tab" });
       act(() => railButton(label).focus());
       expect((await screen.findByRole("tooltip")).textContent).toBe(label);
@@ -635,7 +637,7 @@ describe("Rail", () => {
       vi.advanceTimersByTime(250);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "1 update available" }));
+    fireEvent.click(screen.getByRole("button", { name: "bb update available" }));
     act(() => {
       vi.advanceTimersByTime(250);
     });
@@ -712,6 +714,7 @@ describe("Rail", () => {
     renderRail(THREAD_PATH, {
       visibleKeys: ["__bb__/new-thread", "__bb__/extensions"],
     });
+    await settleLazyModules();
 
     const more = railButton("More, Docs: 2 open pages");
     expect(more.querySelector('[data-nav-rail-badge="dot"]')).not.toBeNull();
@@ -830,6 +833,7 @@ describe("Rail", () => {
       },
     ]);
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     expect(railLabels()).not.toContain("New chat here");
 
     act(() => {
@@ -861,6 +865,7 @@ describe("Rail", () => {
 
   it("keeps hidden destinations reachable from More", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
     fireEvent.click(
@@ -872,6 +877,7 @@ describe("Rail", () => {
 
   it("dispatches Search threads from More with terminal focus restored", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     const terminal = document.createElement("textarea");
     terminal.className = "xterm-helper-textarea";
     const terminalRoot = document.createElement("div");
@@ -946,6 +952,7 @@ describe("Rail", () => {
 
   it("opens the customize sheet from More on a compact viewport", async () => {
     renderRail(THREAD_PATH, { isCompactViewport: true });
+    await settleLazyModules();
 
     fireEvent.click(railButton("More"));
     fireEvent.click(
@@ -982,6 +989,7 @@ describe("Rail", () => {
         visibleKeys: ["__bb__/skills"],
         isCompactViewport,
       });
+      await settleLazyModules();
       if (isCompactViewport) fireEvent.click(railButton("More"));
       else fireEvent.keyDown(railButton("More"), { key: "Enter" });
       fireEvent.click(
@@ -1010,6 +1018,7 @@ describe("Rail", () => {
 
   it("customizes the rail from a popover beside it without leaving Settings", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     fireEvent.click(railButton("Settings"));
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
@@ -1055,6 +1064,7 @@ describe("Rail", () => {
 
   it("opens the customize popover at the top of the navigation and keeps it there while More moves", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     let moreTop = 200;
     vi.spyOn(
       screen.getByTestId("sidebar-navigation-rail"),
@@ -1085,6 +1095,7 @@ describe("Rail", () => {
 
   it("opens the More menu beside the More button instead of at the top of the rail", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     vi.spyOn(railButton("Home"), "getBoundingClientRect").mockImplementation(
       () => new DOMRect(12, 40, 28, 28),
     );
@@ -1126,6 +1137,7 @@ describe("Rail", () => {
 
   it("offers no New thread row in Customize navigation", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
     fireEvent.click(

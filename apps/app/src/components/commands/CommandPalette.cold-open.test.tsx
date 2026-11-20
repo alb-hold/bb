@@ -20,10 +20,7 @@ import { CommandPalette } from "./CommandPalette";
 import { startSplitPreloading } from "@/lib/split-prefetch";
 import { settleLazyModules } from "@/test/lazy-modules";
 
-const body = vi.hoisted(() => ({
-  imports: 0,
-  release: async () => {},
-}));
+const body = vi.hoisted(() => ({ imports: 0 }));
 const calls = vi.hoisted(() => [] as AppCommandId[]);
 const searchImports = vi.hoisted(() => vi.fn());
 
@@ -34,16 +31,7 @@ vi.mock("./ThreadSearchPaletteMode", async (original) => {
 
 vi.mock("./CommandPaletteBody", async (importOriginal) => {
   body.imports += 1;
-  let release = () => {};
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const loaded = released.then(() => importOriginal());
-  body.release = async () => {
-    release();
-    await loaded;
-  };
-  return loaded;
+  return importOriginal();
 });
 
 function binding(
