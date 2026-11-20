@@ -1,4 +1,63 @@
 import { defineSplit } from "./define-split";
+import type { VoiceInputButton as VoiceInputButtonView } from "@/components/promptbox/VoiceInputButton";
+import type { VoiceInputTextarea as VoiceInputTextareaView } from "@/components/promptbox/VoiceInputTextarea";
+import { Button } from "@bb/shared-ui/button";
+import { useEffect, type ComponentProps } from "react";
+
+type VoiceInputButtonProps = ComponentProps<typeof VoiceInputButtonView>;
+type VoiceInputTextareaProps = ComponentProps<typeof VoiceInputTextareaView>;
+
+function VoiceInputButtonLoading({ warning, ...props }: VoiceInputButtonProps) {
+  return (
+    <Button
+      {...props}
+      aria-label={
+        warning
+          ? "Microphone warning: open voice preferences"
+          : props["aria-label"]
+      }
+    />
+  );
+}
+
+function VoiceInputTextareaLoading({
+  value,
+  onValueChange,
+  onVoiceInputActiveChange,
+  ...props
+}: VoiceInputTextareaProps) {
+  useEffect(() => {
+    onVoiceInputActiveChange?.(false);
+  }, [onVoiceInputActiveChange]);
+  return (
+    <textarea
+      {...props}
+      value={value}
+      onChange={(event) => onValueChange(event.target.value)}
+    />
+  );
+}
+
+export const PluginSdkVoiceInputButton = defineSplit<VoiceInputButtonProps>({
+  id: "sdk-VoiceInputButton",
+  load: () =>
+    import("@/components/promptbox/VoiceInputButton").then(
+      (module) => module.VoiceInputButton,
+    ),
+  loading: VoiceInputButtonLoading,
+  tier: "intent",
+});
+
+export const PluginSdkVoiceInputTextarea =
+  defineSplit<VoiceInputTextareaProps>({
+    id: "sdk-VoiceInputTextarea",
+    load: () =>
+      import("@/components/promptbox/VoiceInputTextarea").then(
+        (module) => module.VoiceInputTextarea,
+      ),
+    loading: VoiceInputTextareaLoading,
+    tier: "intent",
+  });
 
 export const PluginBranchPicker = defineSplit({
   id: "sdk-PluginBranchPicker",

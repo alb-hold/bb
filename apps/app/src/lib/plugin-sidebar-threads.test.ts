@@ -34,6 +34,18 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
 
 
 describe("toPluginSidebarThread", () => {
+  it("preserves the woke indicator for an idle automation entry", () => {
+    const entry = makeThread({
+      status: "idle",
+      runtime: { displayStatus: "idle" },
+    });
+
+    const mapped = toPluginSidebarThread({ ...entry, listIndicator: "woke" });
+
+    expect(mapped.indicator).toBe("woke");
+    expect(mapped.indicatorLabel).toBe("Woke");
+  });
+
   it.each([true, false])("preserves native terminal mode without live activity (%s)", (nativeTerminal) => {
     const mapped = toPluginSidebarThread(makeThread({ nativeTerminal }));
     expect(mapped.experimental_nativeTerminal).toBe(nativeTerminal);

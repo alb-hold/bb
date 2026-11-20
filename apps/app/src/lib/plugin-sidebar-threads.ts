@@ -4,8 +4,12 @@ import type {
   PluginSidebarThreadActivity,
   PluginThreadStatusThread,
 } from "@get-bb/plugin-sdk";
-import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
-import { isThreadRead } from "@bb/client-core";
+import {
+  getThreadListIndicatorLabel,
+  isThreadRead,
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
 import { withEffectiveDisplayStatus } from "@bb/domain";
 import {
   isNativeActivityUnconfirmed,
@@ -58,12 +62,21 @@ export function toPluginSidebarThread(
 ): PluginSidebarThread {
   entry = withEffectiveDisplayStatus(entry);
   const statusThread = toThreadStatusThread(entry, now);
-  const { indicator, label } = experimental_resolveThreadStatus({
-    thread: statusThread,
-    hiddenThreads: [],
-    hasUnsubmittedDraft: false,
-    rowStatus: null,
+  const indicatorState = threadListIndicatorStateForThread(
+    entry,
+    false,
+    now,
+    nativeActivityUnconfirmed,
+  );
+  const forkIndicator = resolveThreadListIndicator({
+    ...indicatorState,
+    isAutomationWoken:
+      indicatorState.isAutomationWoken || entry.listIndicator === "woke",
   });
+  const indicatorLabel = getThreadListIndicatorLabel(
+    forkIndicator,
+    entry.queuedFailedCount,
+  );
 
   return {
     ...statusThread,
@@ -102,8 +115,8 @@ export function toPluginSidebarThread(
             ),
           },
         }),
-    indicator,
-    indicatorLabel: label,
+    indicator: forkIndicator,
+    indicatorLabel,
     isPinned: entry.pinnedAt !== null,
     pinnedAt: entry.pinnedAt,
     pinSortKey: entry.pinSortKey,

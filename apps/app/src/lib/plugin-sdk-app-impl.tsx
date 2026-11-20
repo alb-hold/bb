@@ -4,6 +4,8 @@ import {
   ImageLightbox,
   PluginProviderModelPicker,
   PluginPermissionModePicker,
+  PluginSdkVoiceInputButton,
+  PluginSdkVoiceInputTextarea,
 } from "./plugin-sdk-lazy-components";
 import { applicationLinkApprovals } from "./application-url";
 import {
@@ -32,7 +34,6 @@ import {
   useComposerCommandSearch,
   useComposerMentionSearch,
 } from "@/components/promptbox/composer-search";
-import { VoiceInputButton } from "@/components/promptbox/VoiceInputButton";
 import { VoiceRecordingBar } from "@/components/promptbox/VoiceRecordingBar";
 import { FailedVoiceRecordings } from "@/components/promptbox/FailedVoiceRecordings";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
@@ -47,7 +48,6 @@ import {
   ThreadTitle as ThreadTitleText,
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
-import { VoiceInputTextarea } from "@/components/promptbox/VoiceInputTextarea";
 import { LazyPluginThreadChat } from "@/components/plugin/LazyPluginThreadChat";
 import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
@@ -188,7 +188,7 @@ export const pluginSdkAppImplementation = {
   experimental_useComposerMentionSearch: useComposerMentionSearch,
   experimental_useComposerCommandSearch: useComposerCommandSearch,
   experimental_ComposerRoot: ComposerRoot,
-  experimental_VoiceInputButton: VoiceInputButton,
+  experimental_VoiceInputButton: PluginSdkVoiceInputButton,
   experimental_VoiceRecordingBar: VoiceRecordingBar,
   experimental_FailedVoiceRecordings: FailedVoiceRecordings,
   experimental_ShortcutHint: AppCommandShortcutHint,
@@ -262,7 +262,7 @@ export const pluginSdkAppImplementation = {
   useSdk,
   experimental_useProviders: useProviders,
   experimental_useCodeTheme: useCodeTheme,
-  experimental_VoiceInputTextarea: VoiceInputTextarea,
+  experimental_VoiceInputTextarea: PluginSdkVoiceInputTextarea,
   experimental_copyToClipboard: copyToClipboard,
   experimental_saveFile: saveFile,
 } satisfies PluginSdkApp;
