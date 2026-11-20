@@ -443,9 +443,8 @@ function tierToOnboard(payload: unknown): string | null {
     tier?.id == null || tier.id === "" ? [] : [tier],
   );
   return (
-    parsed.data.currentTier?.id ??
     allowed.find((tier) => tier.isDefault === true)?.id ??
-    allowed[0]?.id ??
+    parsed.data.currentTier?.id ??
     null
   );
 }

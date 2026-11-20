@@ -92,6 +92,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     const google = fakeCodeAssist({
       loads: [
         {
+          currentTier: { id: "free-tier" },
           allowedTiers: [
             { id: "free-tier" },
             { id: "g1-pro-tier", isDefault: true },
@@ -147,6 +148,16 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       google.calls.filter((call) => call.method === "getOperation").length,
     ).toBeGreaterThan(1);
     expect(google.calls.filter((call) => call.method === "loadCodeAssist")).toHaveLength(1);
+  });
+
+  it("does not guess a tier when Google marks none as the default", async () => {
+    const google = fakeCodeAssist({
+      loads: [{ allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier" }] }],
+    });
+    await expect(google.adapter.importAccount()).rejects.toThrow(
+      /no project and tier.*stage: loadCodeAssist; tier id received: none/u,
+    );
+    expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
 
   it("adds an Ultra account the same way as before, with no onboarding", async () => {
