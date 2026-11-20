@@ -88,6 +88,24 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
 
+  it("records the paid tier even when only the free current tier has a name", async () => {
+    const google = fakeCodeAssist({
+      loads: [
+        {
+          cloudaicompanionProject: "proj-pro",
+          currentTier: { id: "free-tier", name: "Free" },
+          paidTier: { id: "g1-pro-tier" },
+        },
+      ],
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-pro",
+      subscriptionType: "g1-pro-tier",
+    });
+    expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
+  });
+
   it("onboards an account with no project yet, waits for the operation, then adds it", async () => {
     const google = fakeCodeAssist({
       loads: [

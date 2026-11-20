@@ -144,8 +144,8 @@ export function parseLoadCodeAssist(payload: unknown): GeminiProjectInfo | null 
     project: project === null || project === "" ? null : project,
     tier:
       parsed.data.paidTier?.name ??
-      parsed.data.currentTier?.name ??
       parsed.data.paidTier?.id ??
+      parsed.data.currentTier?.name ??
       parsed.data.currentTier?.id ??
       null,
     endpoint: parsed.data.paidTier?.usesGcpTos === true ? "prod" : "daily",
