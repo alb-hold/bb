@@ -56,6 +56,7 @@ import type {
 } from "@bb/domain";
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
+  listPromptBannerActivityCandidateRows,
   resolveThreadRuntimeState,
   toPluginThreadDtoFromThread,
   toThreadResponseFromThread,
@@ -1272,6 +1273,46 @@ describe("thread runtime display", () => {
     expect(activityByThreadId.get(claudePlan.thread.id)).toMatchObject({
       activePlanModeCount: 1,
     });
+  });
+
+  it("reads open accepted inputs only for threads that can show active plan mode", () => {
+    const { db, hostId, hub } = setup();
+    const active = createThreadWithEnvironment({ db, hostId });
+    const idle = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    const requestIds = new Map([
+      [active.thread.id, formatClientTurnRequestIdSuffix({ suffix: "23456789af" })],
+      [idle.thread.id, formatClientTurnRequestIdSuffix({ suffix: "23456789ag" })],
+    ]);
+    for (const { thread } of [active, idle]) {
+      const requestId = requestIds.get(thread.id) ?? "";
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: threadScope(),
+        type: "client/turn/requested",
+        data: turnRequestData({ input: planPromptInput, requestId }),
+      });
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: turnScope(`turn-${thread.id}`),
+        providerThreadId: `provider-${thread.id}`,
+        type: "turn/input/accepted",
+        data: {
+          providerThreadId: `provider-${thread.id}`,
+          clientRequestId: requestId,
+        },
+      });
+    }
+
+    const rows = listPromptBannerActivityCandidateRows(
+      { db, hub, providerRegistry },
+      [active.thread, idle.thread],
+      { kind: "ids", ids: [active.thread.id, idle.thread.id] },
+    );
+
+    expect(
+      rows.filter((row) => row.type === "turn/input/accepted").map((row) => row.threadId),
+    ).toEqual([active.thread.id]);
+    expect(rows.some((row) => row.threadId === idle.thread.id)).toBe(false);
   });
 });
 

@@ -1,4 +1,5 @@
-import type { DbConnection, DbTransaction } from "../connection.js";
+import type { DbConnection, DbQueryConnection } from "../connection.js";
+import { deleteThreadConversationOutlineRecord } from "./thread-conversation-outlines.js";
 
 const generationsByThreadId = new Map<string, number>();
 const conversationOutlineGenerationsByThreadId = new Map<string, number>();
@@ -13,11 +14,11 @@ export function getThreadConversationOutlineRewriteGeneration(
   return conversationOutlineGenerationsByThreadId.get(threadId) ?? 0;
 }
 
-export function bumpThreadEventRewriteGeneration(threadId: string): void;
-export function bumpThreadEventRewriteGeneration(db: DbConnection | DbTransaction, threadId: string): void;
-export function bumpThreadEventRewriteGeneration(dbOrThreadId: DbConnection | DbTransaction | string, maybeThreadId?: string): void {
-  const threadId = typeof dbOrThreadId === "string" ? dbOrThreadId : maybeThreadId;
-  if (threadId === undefined) throw new Error("Missing thread ID");
+export function bumpThreadEventRewriteGeneration(
+  db: DbQueryConnection,
+  threadId: string,
+): void {
+  deleteThreadConversationOutlineRecord(db, threadId);
   bumpThreadEventRewriteGenerationOutsideConversationOutline(threadId);
   conversationOutlineGenerationsByThreadId.set(
     threadId,

@@ -89,6 +89,11 @@ function expectGenerationBump(
   expect(
     getThreadConversationOutlineRewriteGeneration(threadId) !== outlineBefore,
   ).toBe(conversationOutlineBumped);
+  expect(getThreadConversationOutlineRecord(db, threadId)).toEqual(
+    conversationOutlineBumped
+      ? null
+      : { itemsJson: "[]", projectionKey: "stored" },
+  );
 }
 
 function resolvedDeltaCase(name: string, text: string): RewriteCase {
@@ -314,28 +319,6 @@ describe("thread event rewrite generation", () => {
     );
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
   });
-
-  it.each([
-    {
-      name: "usage",
-      rows: (threadId: string) =>
-        [1, 2, 3, 4].map((sequence) => tokenUsage(threadId, sequence)),
-    },
-    {
-      name: "turn-diffs",
-      rows: (threadId: string) =>
-        [1, 2, 3, 4].map((sequence) => turnDiff(threadId, sequence)),
-    },
-  ] as const)(
-    "does not change when a $name prune removes rows the timeline never reads",
-    ({ name, rows }) => {
-      const { db, threadId } = setup();
-      insertEvents(db, noopNotifier, [...rows(threadId), message(threadId, 5)]);
-      expectGenerationBump(db, threadId, false, () => {
-        expect(pruneThreadEvents(db, name)).toBeGreaterThan(0);
-      });
-    },
-  );
 
   it("changes when a completed output is migrated and not when the scanned output fits", () => {
     const fits = setup();

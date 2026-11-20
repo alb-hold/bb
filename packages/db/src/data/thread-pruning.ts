@@ -628,7 +628,7 @@ function advanceThreadPruningTransaction(
   );
   if (result.removed > 0 && result.threadId !== null) {
     if (result.rewritesConversationOutline)
-      bumpThreadEventRewriteGeneration(result.threadId);
+      bumpThreadEventRewriteGeneration(db, result.threadId);
     else
       bumpThreadEventRewriteGenerationOutsideConversationOutline(
         result.threadId,

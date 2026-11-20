@@ -345,6 +345,7 @@ describe("thread pruning", () => {
       source: { type: "local_path", hostId: host.id, path: "/tmp/pruning" },
     });
     const thread = createThread(db, noopNotifier, {
+      status: "idle",
       projectId: project.id,
       providerId: "codex",
     });
@@ -1911,13 +1912,16 @@ describe("thread pruning", () => {
         "usage",
         "resolved-items",
       ]);
-      insertUnqueuedDiffs(1, 3);
+      const keepRecent = THREAD_EVENT_KEEP_RECENT_BY_MODE.idle;
+      insertUnqueuedDiffs(1, 3 + keepRecent);
       expect(f.db.select().from(threadPruningWork).all()).toEqual([]);
       expect(getNextThreadPruningPolicy(f.db, others)).toBe("turn-diffs");
       cycle(f, "turn-diffs");
-      expect(fixtures.map(sequences)).toEqual([[3], [3]]);
+      expect(fixtures.map(sequences)).toEqual(
+        fixtures.map(() => range(4, 3 + keepRecent)),
+      );
 
-      insertUnqueuedDiffs(4, 6);
+      insertUnqueuedDiffs(4 + keepRecent, 6 + keepRecent);
       expect(getNextThreadPruningPolicy(f.db, others)).toBeNull();
       f.db
         .update(threadPruningCursors)
@@ -1926,7 +1930,9 @@ describe("thread pruning", () => {
         .run();
       expect(getNextThreadPruningPolicy(f.db, others)).toBe("turn-diffs");
       cycle(f, "turn-diffs");
-      expect(fixtures.map(sequences)).toEqual([[6], [6]]);
+      expect(fixtures.map(sequences)).toEqual(
+        fixtures.map(() => range(7, 6 + keepRecent)),
+      );
       expect(getNextThreadPruningPolicy(f.db, others)).toBeNull();
     } finally {
       f.db.$client.close();

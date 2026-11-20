@@ -658,7 +658,7 @@ function canThreadShowActivePlanMode(
   );
 }
 
-function listPromptBannerActivityCandidateRows(
+export function listPromptBannerActivityCandidateRows(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
   scope?: ThreadListEnrichmentScope,
@@ -676,7 +676,10 @@ function listPromptBannerActivityCandidateRows(
     .filter((thread) => canThreadShowActivePlanMode(deps, thread))
     .map((thread) => thread.id);
   const openAcceptedRows = scope
-    ? listOpenTurnInputAcceptedRowsByScope(deps.db, scope)
+    ? listOpenTurnInputAcceptedRowsByScope(deps.db, {
+        kind: "ids",
+        ids: eligibleThreadIds,
+      })
     : listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
         threadIds: eligibleThreadIds,
       });

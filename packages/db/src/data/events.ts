@@ -371,7 +371,7 @@ export function deleteThreadEventSuffixInTransaction(
     )
     .run();
   if (result.changes > 0) {
-    bumpThreadEventRewriteGeneration(args.threadId);
+    bumpThreadEventRewriteGeneration(db, args.threadId);
     rewindResolvedItemPruning(db, {
       threadId: args.threadId,
       beforeSequence: args.cutoffSequence,
@@ -600,7 +600,7 @@ export function insertEvents(
           retainedOutputBytes += insertResult.retainedOutputBytes;
           const highWaterMark = highWaterMarks[input.threadId];
           if (highWaterMark !== undefined && input.sequence <= highWaterMark) {
-            bumpThreadEventRewriteGeneration(input.threadId);
+            bumpThreadEventRewriteGeneration(tx, input.threadId);
             rewindResolvedItemPruning(tx, {
               threadId: input.threadId,
               beforeSequence: input.sequence,
