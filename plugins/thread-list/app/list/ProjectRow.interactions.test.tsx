@@ -1524,7 +1524,7 @@ ${sections}
 
 class ResizeObserverStub {
   static live = new Set<ResizeObserverStub>();
-  constructor(private readonly callback: () => void) {}
+  constructor(private readonly callback: (entries: ResizeObserverEntry[]) => void) {}
   observe() {
     ResizeObserverStub.live.add(this);
   }
@@ -1535,7 +1535,7 @@ class ResizeObserverStub {
   static fireAll() {
     act(() => {
       for (const observer of [...ResizeObserverStub.live]) {
-        observer.callback();
+        observer.callback([]);
       }
     });
   }
@@ -1545,7 +1545,7 @@ class ResizeObserverStub {
 describe.skipIf(
   pluginCss === null || (chromiumPath === null && !process.env.CI),
 )(
-  "nested sticky pins in real Chromium, driven through ThreadTreeNodeRow",
+  "nested sticky pins in real Chromium, driven through ThreadTreeNodeRow (test-change-reason: thread rows observe their height through the shared resize observer, which dispatches an empty entry list to every registration, so the stub observer fires with an empty entry list instead of no argument)",
   () => {
     const VIEWPORTS = [
       { name: "desktop", width: 280, isCompact: false },

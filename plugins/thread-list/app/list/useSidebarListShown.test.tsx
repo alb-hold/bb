@@ -17,7 +17,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("falls back to observer visibility when an older host omits visibility", () => {
+it("falls back to observer visibility when an older host omits visibility (test-change-reason: the shared resize observer applies observed visibility synchronously through flushSync inside the callback, so it is no longer still hidden inside the act that delivers it)", () => {
   let resize: ResizeObserverCallback | undefined;
   vi.stubGlobal(
     "ResizeObserver",
@@ -49,7 +49,6 @@ it("falls back to observer visibility when an older host omits visibility", () =
       ],
       {} as ResizeObserver,
     );
-    expect(screen.queryByText("pinned rows")).toBeNull();
   });
   expect(screen.getByText("pinned rows")).toBeTruthy();
   act(() => {
