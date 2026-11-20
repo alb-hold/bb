@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { ComposerMaxHeightContext } from "@/components/promptbox/composer-max-height";
@@ -43,34 +44,35 @@ function useCompactHomeMetrics(isCompact: boolean) {
           scrollViewport.scrollHeight - 1,
       );
     };
-    const measure = () => {
+    const readMetrics = () => {
       const composerRoot = composerRootWithin(composer);
-      if (composerRoot) {
-        const surroundingHeight =
-          composer.offsetHeight - composerRoot.offsetHeight;
-        setComposerMaxHeight(
-          region.offsetHeight -
-            COMPACT_HOME_CHROME_OFFSET_PX -
-            surroundingHeight,
-        );
-      }
       const composerHeight = composer.offsetHeight;
-      scrollViewport.style.bottom = `${composerHeight}px`;
+      return {
+        composerHeight,
+        maxHeight: composerRoot
+          ? region.offsetHeight -
+            COMPACT_HOME_CHROME_OFFSET_PX -
+            (composerHeight - composerRoot.offsetHeight)
+          : undefined,
+      };
+    };
+    const writeMetrics = (metrics: ReturnType<typeof readMetrics>) => {
+      if (metrics.maxHeight !== undefined) {
+        setComposerMaxHeight(metrics.maxHeight);
+      }
+      scrollViewport.style.bottom = `${metrics.composerHeight}px`;
       updateScrollCue();
     };
-    measure();
+    writeMetrics(readMetrics());
     scrollViewport.addEventListener("scroll", updateScrollCue, {
       passive: true,
     });
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(measure);
-    observer?.observe(region);
-    observer?.observe(composer);
-    observer?.observe(scrollContent);
+    const stopObserving = observeSharedResize(
+      [region, composer, scrollContent],
+      { read: readMetrics, write: writeMetrics },
+    );
     return () => {
-      observer?.disconnect();
+      stopObserving();
       scrollViewport.removeEventListener("scroll", updateScrollCue);
     };
   }, [isCompact]);
