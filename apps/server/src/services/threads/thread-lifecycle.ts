@@ -28,6 +28,7 @@ import {
   isThreadAwaitingTurnStartPastDeadline,
   listThreadIdsAwaitingTurnRequestAnswers,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
+  listNativeTerminalThreadIds,
   listThreadIdsWithOwedStopForHost,
   listThreadIdsWithTurnRequestsForHost,
   listPendingThreadStorageDeletions,
@@ -1443,8 +1444,18 @@ export async function reconcileDaemonReportedThreads(
           thread.status === "starting" ||
           thread.status === "stopping"),
     );
+  const survivingNativeThreadIds = args.sameDaemonInstance
+    ? listNativeTerminalThreadIds(
+        deps.db,
+        candidates
+          .filter((thread) => !running.has(thread.id))
+          .map((thread) => thread.id),
+      )
+    : new Set<string>();
   const threadIds = new Set([
-    ...candidates.map((thread) => thread.id),
+    ...candidates
+      .filter((thread) => !survivingNativeThreadIds.has(thread.id))
+      .map((thread) => thread.id),
     ...listThreadIdsWithTurnRequestsForHost(deps.db, { hostId: args.hostId }),
     ...listThreadIdsWithOwedStopForHost(deps.db, { hostId: args.hostId }),
   ]);
