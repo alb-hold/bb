@@ -63,10 +63,15 @@ const refreshResponseSchema = z
   })
   .passthrough();
 
+const tierText = z
+  .string()
+  .nullish()
+  .transform((value) => (value == null || value.trim() === "" ? null : value));
+
 const tierSchema = z
   .object({
-    id: z.string().nullish(),
-    name: z.string().nullish(),
+    id: tierText,
+    name: tierText,
     usesGcpTos: z.boolean().nullish(),
     isDefault: z.boolean().nullish(),
   })
