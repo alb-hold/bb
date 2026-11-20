@@ -26,7 +26,6 @@ export function onClientSocketMessage(
   socket: ClientSocket,
   raw: unknown,
 ): void {
-  console.error("DBGX clientMsg", performance.now(), String(raw).slice(0, 120));
   const parsed = parseSocketMessage(socket, raw, clientMessageSchema);
   if (parsed === null) {
     return;

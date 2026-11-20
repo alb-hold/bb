@@ -1338,7 +1338,7 @@ class World {
       this.violation(
         "unsettled-environment",
         this.environmentLabel(environment.id),
-        `still ${environment.status} after its grace passed (DBGX ${environment.teardownStatus} ${environment.teardownAttempt} ${environment.statusMessage} ${environment.teardownMessage})`,
+        `still ${environment.status} after its grace passed`,
       );
   }
 

@@ -1108,13 +1108,11 @@ export function createApp(
             socket,
             terminalId,
           }),
-        onClose: (_event, socket) => {
-          console.error("DBGX tclose", performance.now(), _event.code, _event.reason);
+        onClose: (_event, socket) =>
           onTerminalSocketClose(deps, {
             socket,
             terminalId,
-          });
-        },
+          }),
       };
     }),
   );
