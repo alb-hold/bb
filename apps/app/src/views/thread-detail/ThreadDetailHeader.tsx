@@ -46,7 +46,10 @@ import {
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
-import { usePluginThreadHeaderTitleSlot } from "@/components/plugin/PluginThreadHeaderTitle";
+import {
+  PluginThreadHeaderTitle,
+  usePluginThreadHeaderTitleSlot,
+} from "@/components/plugin/PluginThreadHeaderTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
@@ -143,7 +146,11 @@ export function ThreadDetailHeader({
   environmentIsWorktree = false,
 }: ThreadDetailHeaderProps) {
   const isWorktree = environmentIsWorktree && !nativeTerminal;
-  const ProviderMark = getProviderIconInfo("agent", providerId ?? "", provider)?.icon;
+  const ProviderMark = getProviderIconInfo(
+    "agent",
+    providerId ?? "",
+    provider,
+  )?.icon;
   const identityLeadingMark =
     providerId === null && !nativeTerminal && !environmentIsWorktree ? null : (
       <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
@@ -236,6 +243,8 @@ export function ThreadDetailHeader({
   const handleTitleDoubleClick = () => {
     if (!isEditing && pluginTitleSlot === null) startEditingFromDoubleClick();
   };
+  const coreTitle = <ThreadTitle title={threadTitle} />;
+  const TitleElement = pluginTitleSlot === null || isEditing ? "p" : "div";
   const [searchFits, setSearchFits] = useState<boolean | null>(null);
   const searchInMenu =
     actionsMenu !== null &&
@@ -294,7 +303,7 @@ export function ThreadDetailHeader({
         ) : null}
         {identityLeadingMark}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <p
+          <TitleElement
             data-thread-detail-header-title=""
             className={cn(
               "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
@@ -311,8 +320,20 @@ export function ThreadDetailHeader({
             onDoubleClick={handleTitleDoubleClick}
             onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
           >
-            {isEditing ? editor : <ThreadTitle title={threadTitle} />}
-          </p>
+            {isEditing ? (
+              editor
+            ) : pluginTitleSlot === null ? (
+              coreTitle
+            ) : (
+              <PluginThreadHeaderTitle
+                slot={pluginTitleSlot}
+                threadId={threadId}
+                projectId={thread.projectId}
+                environmentId={environmentId}
+                fallback={coreTitle}
+              />
+            )}
+          </TitleElement>
           {hasNativeTerminal ? (
             <div
               ref={nativeActivityTargetRef}

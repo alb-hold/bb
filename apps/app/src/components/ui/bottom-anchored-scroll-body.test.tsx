@@ -529,7 +529,7 @@ describe("BottomAnchoredScrollBody", () => {
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
-  it("keeps the reading row still when older rows load after post-touchend momentum", async () => {
+  it("keeps the reading row still when older rows load after post-touchend momentum (test-change-reason: upstream 0.50.1 installFakeFlowLayout owns requestAnimationFrame, so frames are flushed with layout.runFrameCallbacks)", () => {
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "performance"],
     });
@@ -561,11 +561,9 @@ describe("BottomAnchoredScrollBody", () => {
       scrollElement.dispatchEvent(new TouchEvent("touchend"));
     });
     for (const delta of [20, 20, 20]) {
-      await act(async () => {
+      act(() => {
         layout.layoutScrollTo(layout.scrollTop - delta);
-        await new Promise<void>((resolve) => {
-          window.requestAnimationFrame(() => resolve());
-        });
+        layout.runFrameCallbacks();
       });
     }
     act(() => vi.advanceTimersByTime(200));
