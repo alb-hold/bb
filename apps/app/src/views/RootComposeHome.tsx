@@ -106,7 +106,7 @@ export function RootComposeHome({
       className={
         isCompact
           ? "flex min-h-0 flex-1 flex-col"
-          : "min-h-0 flex-1 overflow-y-auto"
+          : "@container/page min-h-0 flex-1"
       }
       style={isCompact ? PAGE_SHELL_CONTENT_STYLE : undefined}
     >
@@ -114,7 +114,7 @@ export function RootComposeHome({
         className={
           isCompact
             ? "@container/page flex min-h-0 flex-1 flex-col"
-            : "@container/page grid min-h-full grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)]"
+            : "grid h-full overflow-y-auto grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)]"
         }
       >
         <div

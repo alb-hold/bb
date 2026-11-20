@@ -304,30 +304,34 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     [routeContent, routeThread],
   );
 
+  const [reconciliation, setReconciliation] = useState<{
+    content: PaneContent;
+    from: SplitLayout | null;
+    layout: SplitLayout;
+  } | null>(null);
+  let layout = storedLayout;
+  if (currentContent !== null) {
+    if (reconciliation?.content !== currentContent) {
+      const next = {
+        content: currentContent,
+        from: storedLayout,
+        layout: reconcileLayoutForContent(storedLayout, currentContent),
+      };
+      setReconciliation(next);
+      layout = next.layout;
+    } else if (storedLayout === reconciliation.from) {
+      layout = reconciliation.layout;
+    }
+  }
+
   useEffect(() => {
-    if (currentContent === null) {
+    if (reconciliation === null) {
       return;
     }
     setLayout((previous) =>
-      reconcileLayoutForContent(previous, currentContent),
+      reconcileLayoutForContent(previous, reconciliation.content),
     );
-  }, [currentContent, setLayout]);
-
-  const layout = useMemo(() => {
-    if (currentContent === null) return storedLayout;
-    if (storedLayout === null)
-      return reconcileLayoutForContent(null, currentContent);
-    const focusedContent = findPane(
-      storedLayout.root,
-      storedLayout.focusedPaneId,
-    )?.content;
-    return currentContent.kind === "thread" &&
-      focusedContent?.kind === "thread" &&
-      currentContent.threadId === focusedContent.threadId &&
-      currentContent.projectId !== focusedContent.projectId
-      ? reconcileLayoutForContent(storedLayout, currentContent)
-      : storedLayout;
-  }, [storedLayout, currentContent]);
+  }, [reconciliation, setLayout]);
 
   useTerminalMountGate(
     "terminal-split-layout",
