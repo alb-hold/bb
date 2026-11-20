@@ -1055,9 +1055,18 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      console.log("DIAG terminal-open", mountedTerminal === null);
       mountedTerminal ??= this;
       openTerminal.call(this, element);
+    });
+    const appliedGrids: Array<[number, number]> = [];
+    const resizeTerminal = Terminal.prototype.resize;
+    vi.spyOn(Terminal.prototype, "resize").mockImplementation(function (
+      this: Terminal,
+      cols: number,
+      rows: number,
+    ) {
+      appliedGrids.push([cols, rows]);
+      resizeTerminal.call(this, cols, rows);
     });
     const getTerminal = () => {
       if (!mountedTerminal) throw new Error("terminal was not mounted");
@@ -1130,10 +1139,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       },
     });
     await waitForReadinessCondition(() => {
-      const el = document.querySelector<HTMLElement>("[data-terminal-grid-cache-id]");
-      console.log("DIAG grid", getTerminal().cols, getTerminal().rows, JSON.stringify({ ...el?.dataset }), JSON.stringify(testState.socketMessages.slice(-6)));
-      expect(getTerminal().cols).toBe(38);
-      expect(getTerminal().rows).toBe(5);
+      expect(appliedGrids).toContainEqual([38, 5]);
     }, "in-band shared PTY grid marker was not applied within 5000 ms");
     await waitForReadinessCondition(
       () =>

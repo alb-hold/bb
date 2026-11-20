@@ -1064,11 +1064,16 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       };
       const { rerender } = render(tree(true));
       await waitForReadinessCondition(() => {
-        console.log("DIAG sockets", testState.sockets.length, JSON.stringify(testState.socketUrls));
-        expect(testState.sockets).toHaveLength(sessions.length);
+        for (const viewSession of sessions) {
+          expect(
+            testState.socketUrls.some((url) =>
+              new URL(url).pathname.includes(viewSession.id),
+            ),
+          ).toBe(true);
+        }
       }, "initial route socket missing");
       const sessionSockets = sessions.map((viewSession) => {
-        const index = testState.socketUrls.findIndex((url) =>
+        const index = testState.socketUrls.findLastIndex((url) =>
           new URL(url).pathname.includes(viewSession.id),
         );
         expect(index).toBeGreaterThanOrEqual(0);

@@ -1892,7 +1892,6 @@ export function ThreadTerminalView({
     });
     if (sessionStatusRef.current === "running")
       prefetchTerminalSocket(earlySocketUrl);
-    console.log("DIAG effect-run", session.id);
     const lifecycle = {
       disposed: false,
       activeElementAtMount: document.activeElement as Element | null,
@@ -2489,7 +2488,6 @@ export function ThreadTerminalView({
         lifecycle.terminal,
         (grid, apply) => {
           lifecycle.markerGridActive = true;
-          console.log("DIAG onGrid", JSON.stringify(grid), apply);
           if (apply && !lifecycle.hasReceivedInitialAttach) {
             lifecycle.latestPtyGrid = grid;
           }
@@ -2501,7 +2499,6 @@ export function ThreadTerminalView({
           updateGridVisibility();
         },
         (cols, rows) => {
-          console.log("DIAG onResize", cols, rows);
           containerElement.dataset.renderGridCols = String(cols);
           containerElement.dataset.renderGridRows = String(rows);
           updateGridVisibility();
@@ -4083,7 +4080,6 @@ export function ThreadTerminalView({
       setTerminalReady(false);
       setScrolledAboveBottom(false);
       setTerminalSearchAddon(null);
-      console.log("DIAG effect-cleanup", session.id);
       setTerminalSearchOpen(false);
       lifecycle.stopObservingFonts?.();
         lifecycle.stopWatchingLayout?.();
