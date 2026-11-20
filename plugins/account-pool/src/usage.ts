@@ -229,7 +229,7 @@ export function quotaFromUsage(
     ] as const
   )
     .map(([slot, bucket]) =>
-      bucket === undefined
+      bucket == null
         ? (previousWindows.get(slot) ?? null)
         : usageWindow(slot, bucket, now),
     )

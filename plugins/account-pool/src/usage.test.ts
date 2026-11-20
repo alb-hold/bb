@@ -49,7 +49,7 @@ const sevenDay = {
 };
 
 describe("quotaFromUsage", () => {
-  it("drops a rejected five-hour window when the account reports no five-hour limit", () => {
+  it("keeps an unexpired five-hour window when a partial refresh reports null", () => {
     const previous = quota([fiveHour(1, FUTURE_RESET, "rejected")]);
     const next = quotaFromUsage(
       ACCOUNT_ID,
@@ -58,6 +58,9 @@ describe("quotaFromUsage", () => {
       NOW,
     );
     expect(next?.limitWindows).toEqual([
+      {
+        ...previous.limitWindows[0],
+      },
       {
         slot: "secondary",
         windowMinutes: 10_080,
@@ -70,7 +73,7 @@ describe("quotaFromUsage", () => {
     ]);
     expect(isQuotaExhausted(previous, null, NOW)).toBe(true);
     expect(next === null ? null : isQuotaExhausted(next, null, NOW)).toBe(
-      false,
+      true,
     );
   });
 
