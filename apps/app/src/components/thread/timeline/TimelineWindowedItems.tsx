@@ -15,7 +15,10 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
-import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
+import {
+  observeSharedResize,
+  settleAfterSharedResizeWrites,
+} from "@bb/shared-ui/lib/shared-resize-observer";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 import { AutoHeightSnapContext } from "@/components/ui/height-transition";
@@ -498,6 +501,7 @@ export function TimelineWindowedItems({
       if (key !== null) {
         nodesRef.current.set(key, node);
       }
+      let observed = false;
       const unobserve = observeSharedResize(node, {
         read: (entry) => {
           const width = containerRef.current?.clientWidth ?? null;
@@ -512,12 +516,15 @@ export function TimelineWindowedItems({
         },
         write: ({ key, height, width, widthChanged }) => {
           observedWidthRef.current = width;
-          if (key === null || !record(key, height)) return;
+          if (key === null) return;
+          const changed = record(key, height);
+          if (!changed && observed) return;
+          observed = true;
           if (widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();
-          } else {
-            positionKeeper?.reconcile();
+          } else if (positionKeeper !== null) {
+            settleAfterSharedResizeWrites(positionKeeper.reconcileAfterLayout);
           }
         },
       });
