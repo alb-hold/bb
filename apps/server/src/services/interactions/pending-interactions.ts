@@ -504,7 +504,22 @@ export class PendingInteractionLifecycle {
           providerRequestId: interaction.providerRequestId,
         });
         if (!existing) {
-          return null;
+          const revived = reviveInterruptedProviderInteraction(tx, {
+            interruptionReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+            payload,
+            providerId: interaction.providerId,
+            providerRequestId: interaction.providerRequestId,
+            providerThreadId: interaction.providerThreadId,
+            threadId: interaction.threadId,
+            turnId: interaction.turnId,
+          });
+          return revived
+            ? {
+                outcome: "existing",
+                interaction: toPendingInteraction(revived),
+                revived: true,
+              }
+            : null;
         }
         if (existing.status !== "pending" && existing.status !== "resolving") {
           if (

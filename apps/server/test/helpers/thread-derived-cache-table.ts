@@ -174,6 +174,12 @@ export const THREAD_DATA_ROUTE_SURFACES: Record<
       path: ({ threadId }) => `/threads/${threadId}/default-execution-options`,
     },
   ],
+  "GET /threads/:id/spend-summary": {
+    excluded: "sums the thread's native spend rows in SQL; no thread-derived cache",
+  },
+  "GET /threads/:id/execution-profile": {
+    excluded: "resolves the thread's execution profile from settings; no thread-derived cache",
+  },
   "GET /threads/:id/thread-storage/files": {
     excluded: "lists files on the thread's host over RPC; no derived cache",
   },

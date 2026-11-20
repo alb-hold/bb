@@ -106,7 +106,10 @@ import {
   resolveRequestAccessRoute,
   resolveRequestAppSurface,
 } from "./request-context.js";
-import { runEventLoopWork } from "./services/system/event-loop-work.js";
+import {
+  getThreadListSlowApiRequestFields,
+  runEventLoopWork,
+} from "./services/system/event-loop-work.js";
 import { runWithTelemetryRequest } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
@@ -796,6 +799,9 @@ export function createApp(
           method: context.req.method,
           path,
           status: context.res.status,
+          ...(context.req.method === "GET" && path === "/api/v1/threads"
+            ? getThreadListSlowApiRequestFields(context)
+            : {}),
         },
         "Slow API request",
       );
