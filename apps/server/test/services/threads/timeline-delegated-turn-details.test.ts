@@ -167,6 +167,6 @@ describe("delegated turn details", () => {
       turnId: "root-turn",
     });
 
-    expect(sourceSequences(details.rows)).toEqual([4, 6, 7]);
+    expect(sourceSequences(details.rows)).toEqual([4, 6, 7, 8]);
   });
 });
