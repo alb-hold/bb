@@ -740,7 +740,9 @@ export function TimelineWindowedItems({
   }, [positionKeeper]);
 
   useLayoutEffect(() => {
-    mountHeldKey();
+    if (positionKeeper === null || mountHeldKey()) return;
+    positionKeeper.reconcile(false);
+    syncWindow(false);
   });
 
   const retainInteractedItem = useCallback(
