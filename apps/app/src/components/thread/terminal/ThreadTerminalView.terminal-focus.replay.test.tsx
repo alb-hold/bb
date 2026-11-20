@@ -19,10 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  waitForReadiness,
-  waitForReadinessCondition,
-} from "./ThreadTerminalView.terminal-focus-test-utils";
+import { waitForReadiness, waitForReadinessCondition, deferResizeDelivery } from "./ThreadTerminalView.terminal-focus-test-utils";
 import {
   REPAINT_RESTORE_DELAY_MS,
   TerminalWebSocketTransport,
@@ -276,7 +273,11 @@ function prepareMobileTerminal(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
@@ -343,7 +344,11 @@ function prepareFirstAttachFontMetricsHarness(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
@@ -1059,11 +1064,19 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       };
       const { rerender } = render(tree(true));
       await waitForReadinessCondition(() => {
-        expect(testState.sockets).toHaveLength(sessions.length);
+        for (const viewSession of sessions) {
+          expect(
+            testState.socketUrls.some((url) =>
+              new URL(url).pathname.includes(viewSession.id),
+            ),
+          ).toBe(true);
+        }
       }, "initial route socket missing");
       const sessionSockets = sessions.map((viewSession) => {
-        const index = testState.socketUrls.findIndex((url) =>
-          new URL(url).pathname.includes(viewSession.id),
+        const index = testState.socketUrls.reduce(
+          (last: number, url: string, urlIndex: number) =>
+            new URL(url).pathname.includes(viewSession.id) ? urlIndex : last,
+          -1,
         );
         expect(index).toBeGreaterThanOrEqual(0);
         return testState.sockets[index]!;

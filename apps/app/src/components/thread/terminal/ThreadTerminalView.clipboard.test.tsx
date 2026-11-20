@@ -71,6 +71,7 @@ async function mountTerminal(
     this: Terminal,
     parent: HTMLElement,
   ) {
+    terminals.push(this);
     open.call(this, parent);
   });
   const view = render(

@@ -247,12 +247,15 @@ it("leaves Ctrl+letter shell keys to the shell on Linux and finds with Ctrl+Shif
 
 it("clears a pending find focus request when the terminal session changes", async () => {
   const { textarea, switchSession } = await mount();
+  const previousHandler = state.onMessage;
   act(() => {
     fireEvent.keyDown(textarea, { key: "f", metaKey: true, keyCode: 70 });
     switchSession("term_next");
   });
-  const input = await screen.findByRole("searchbox", {
-    name: "Find in terminal",
-  });
-  expect(document.activeElement).not.toBe(input);
+  await waitFor(() => expect(state.onMessage).not.toBe(previousHandler));
+  await writeOutput(0, "next session\r\n");
+  expect(
+    screen.queryByRole("searchbox", { name: "Find in terminal" }),
+  ).toBeNull();
+  expect(document.activeElement?.tagName).not.toBe("INPUT");
 });

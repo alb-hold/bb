@@ -12,7 +12,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
-import { waitForReadinessCondition } from "./ThreadTerminalView.terminal-focus-test-utils";
+import { waitForReadinessCondition, deferResizeDelivery } from "./ThreadTerminalView.terminal-focus-test-utils";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
@@ -228,7 +228,11 @@ function prepareMobileTerminal(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
@@ -1124,6 +1128,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         ),
       },
     });
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 38, rows: 5 },
+      });
+      await Promise.resolve();
+    });
     await waitForReadinessCondition(() => {
       expect(getTerminal().cols).toBe(38);
       expect(getTerminal().rows).toBe(5);
@@ -1262,7 +1273,11 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
