@@ -500,6 +500,7 @@ export function TimelineWindowedItems({
       const key = node.getAttribute(WINDOW_KEY_ATTRIBUTE);
       if (key !== null) {
         nodesRef.current.set(key, node);
+        record(key, node.getBoundingClientRect().height);
       }
       const unobserve = observeSharedResize(node, {
         read: (entry) => {
@@ -737,9 +738,7 @@ export function TimelineWindowedItems({
   }, [positionKeeper]);
 
   useLayoutEffect(() => {
-    if (positionKeeper === null || mountHeldKey()) return;
-    positionKeeper.reconcile(false);
-    syncWindow(false);
+    mountHeldKey();
   });
 
   const retainInteractedItem = useCallback(
