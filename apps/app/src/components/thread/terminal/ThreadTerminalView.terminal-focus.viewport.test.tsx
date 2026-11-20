@@ -1055,6 +1055,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
+      console.log("DIAG terminal-open", mountedTerminal === null);
       mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
