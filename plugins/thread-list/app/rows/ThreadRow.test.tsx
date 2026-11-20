@@ -2157,10 +2157,10 @@ describe("ThreadRow", () => {
       }),
     },
     {
-      label: "plan mode + pending input",
+      label: "goal + pending input",
       thread: createThread({
         hasPendingInteraction: true,
-        activity: activity({ planMode: 1 }),
+        activity: activity({ goals: 1 }),
       }),
     },
     {
@@ -2241,13 +2241,10 @@ describe("ThreadRow", () => {
         isCompact: false,
         isCollapsed: true,
         childCount: 1,
-        hiddenThreads: [
-          createThread({
-            id: "thr_hidden_child",
-            parentThreadId: "thr_test",
-            activity: activity({ workflows: 1 }),
-          }),
-        ],
+        childActivity: {
+          ...NO_COLLAPSED_CHILD_ACTIVITY,
+          workflow: true,
+        },
         onToggleCollapsed: vi.fn(),
       },
       thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }),
@@ -2587,7 +2584,7 @@ describe("ThreadRow", () => {
           isCompact: false,
           isCollapsed,
           childCount: 1,
-          hiddenThreads: [],
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
           onToggleCollapsed,
         },
       });
@@ -2794,7 +2791,7 @@ describe("ThreadRow", () => {
 
   it("routes a click on other plugins' metadata like the rest of the row", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
-    const slot = renderThreadRow({});
+    const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
     const link = screen.getByRole("link", { name: "Open Thread" });
     const row = link.closest("[data-sidebar-rename-row]");
     const items = row?.querySelector("[data-thread-row-metadata]");
@@ -2841,7 +2838,7 @@ describe("ThreadRow", () => {
         isCompact: false,
         isCollapsed: false,
         childCount: 1,
-        hiddenThreads: [],
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
         onToggleCollapsed: vi.fn(),
       },
     });
@@ -2870,7 +2867,7 @@ describe("ThreadRow", () => {
           isCompact: false,
           isCollapsed,
           childCount: 1,
-          hiddenThreads: [],
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
           onToggleCollapsed: vi.fn(),
         },
       });
@@ -2892,7 +2889,7 @@ describe("ThreadRow", () => {
         isCompact: false,
         isCollapsed: false,
         childCount: 1,
-        hiddenThreads: [],
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
         stickyLevel: 1,
         onToggleCollapsed: vi.fn(),
       },
@@ -3042,13 +3039,11 @@ describe("ThreadRow", () => {
           isCompact: false,
           isCollapsed: true,
           childCount: 1,
-          hiddenThreads: [
-            createThread({
-              id: "thr_hidden_child",
-              parentThreadId: "thr_test",
-              activity: activity({ [flag]: 1 }),
-            }),
-          ],
+          childActivity: {
+            ...NO_COLLAPSED_CHILD_ACTIVITY,
+            working: true,
+            [flag]: true,
+          },
           onToggleCollapsed: vi.fn(),
         },
       });
@@ -3067,13 +3062,13 @@ describe("ThreadRow", () => {
         isCompact: false,
         isCollapsed: true,
         childCount: 1,
-        hiddenThreads: [
-          createThread({
-            id: "thr_hidden_child",
-            parentThreadId: "thr_test",
-            activity: activity({ planMode: 1 }),
-          }),
-        ],
+        childActivity: {
+          ...NO_COLLAPSED_CHILD_ACTIVITY,
+          threadIds: ["thr_hidden_child"],
+          working: true,
+          planMode: true,
+          goal: true,
+        },
         onToggleCollapsed: vi.fn(),
       },
     });
@@ -3090,13 +3085,11 @@ describe("ThreadRow", () => {
         isCompact: false,
         isCollapsed: false,
         childCount: 1,
-        hiddenThreads: [
-          createThread({
-            id: "thr_hidden_child",
-            parentThreadId: "thr_test",
-            activity: activity({ workflows: 1 }),
-          }),
-        ],
+        childActivity: {
+          ...NO_COLLAPSED_CHILD_ACTIVITY,
+          working: true,
+          workflow: true,
+        },
         onToggleCollapsed: vi.fn(),
       },
     });

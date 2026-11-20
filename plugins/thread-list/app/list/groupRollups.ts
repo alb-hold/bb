@@ -1,13 +1,16 @@
 import { useMemo } from "react";
 import {
-  experimental_resolveThreadStatus,
   useSidebarSplitLayout,
   useSidebarThreadRowStatuses,
   type PluginSidebarSplitPane,
   type PluginSidebarThreadRowStatus,
-  type PluginThreadStatus,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import {
+  getCollapsedChildActivity,
+  resolveThreadListIndicator,
+  type ThreadListIndicatorKind,
+} from "../model/thread-activity.js";
 import { useThreadsHaveDraft } from "./sidebarDraftPresence.js";
 
 export interface ThreadSplitIndicatorTarget {
@@ -61,19 +64,40 @@ export function usePluginThreadRowStatusForThreads(
 
 export const NO_HIDDEN_THREADS: readonly SidebarThread[] = [];
 
+export interface HiddenThreadsStatus {
+  indicator: ThreadListIndicatorKind;
+  rowStatus: PluginSidebarThreadRowStatus | null;
+  isWorking: boolean;
+}
+
 export function useHiddenThreadsStatus(
   threads: readonly SidebarThread[],
   rowStatus: PluginSidebarThreadRowStatus | null,
-): PluginThreadStatus {
+): HiddenThreadsStatus {
   const hasUnsubmittedDraft = useThreadsHaveDraft(threads);
-  return useMemo(
-    () =>
-      experimental_resolveThreadStatus({
-        thread: null,
-        hiddenThreads: threads,
-        hasUnsubmittedDraft,
-        rowStatus,
-      }),
-    [hasUnsubmittedDraft, rowStatus, threads],
-  );
+  return useMemo(() => {
+    const activity = getCollapsedChildActivity(threads);
+    const indicator = resolveThreadListIndicator({
+      hasPendingInteraction: activity.pending,
+      hasTerminalAttention: activity.terminalAttention,
+      hasUnsubmittedDraft,
+      hasUnreadError: activity.unreadError,
+      hasUnreadSuccess: activity.unread,
+      isAutomationWoken: false,
+      isBackgroundAgentActive: activity.backgroundAgent,
+      isBackgroundCommandActive: activity.backgroundCommand,
+      isGoalActive: activity.goal,
+      isActivityUnreported: false,
+      queuedFailedCount: 0,
+      queuedWork: "none",
+      isPlanModeActive: activity.planMode,
+      isRuntimeActive: activity.runtimeWorking,
+      isWorkflowActive: activity.workflow,
+    });
+    return {
+      indicator,
+      rowStatus,
+      isWorking: activity.working || rowStatus?.tone === "running",
+    };
+  }, [hasUnsubmittedDraft, rowStatus, threads]);
 }
