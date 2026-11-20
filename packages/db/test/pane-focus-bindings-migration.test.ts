@@ -14,8 +14,11 @@ import {
   dropThreadParentNotificationsColumn,
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
-  dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
+  dropQueuedMessageDeliveryColumns,
+  dropThreadStatusChangedAtColumn,
+  dropThreadRunStateTables,
+  dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
 
 const migrationTimestamp = 1790738477751;
@@ -59,7 +62,10 @@ function upgradeDatabase(overrides: AppKeybindingOverrides | undefined) {
   dropThreadParentNotificationsColumn(db);
   dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
   db.$client
     .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
     .run(migrationTimestamp);

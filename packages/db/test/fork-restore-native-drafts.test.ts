@@ -26,6 +26,10 @@ import {
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   rewindThreadPruningWork,
+  dropQueuedMessageDeliveryColumns,
+  dropThreadStatusChangedAtColumn,
+  dropThreadRunStateTables,
+  dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
 
 const THREAD_DRAFTS_MIGRATION_TIMESTAMP = 1790322211064;
@@ -81,6 +85,10 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
     dropThreadParentNotificationsColumn(db);
     dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
+    dropQueuedMessageDeliveryColumns(db);
+    dropThreadStatusChangedAtColumn(db);
+    dropThreadRunStateTables(db);
+    dropPluginFailureLabelColumns(db);
     db.$client
       .prepare(
         "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -210,6 +218,10 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     dropThreadParentNotificationsColumn(db);
     dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
+    dropQueuedMessageDeliveryColumns(db);
+    dropThreadStatusChangedAtColumn(db);
+    dropThreadRunStateTables(db);
+    dropPluginFailureLabelColumns(db);
     db.$client
       .prepare(
         "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -338,6 +350,10 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     dropThreadParentNotificationsColumn(db);
     dropThreadStorageDeleteSeqColumn(db);
     dropTerminalDefaultColorsColumn(db);
+    dropQueuedMessageDeliveryColumns(db);
+    dropThreadStatusChangedAtColumn(db);
+    dropThreadRunStateTables(db);
+    dropPluginFailureLabelColumns(db);
     db.$client
       .prepare(
         "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",

@@ -2922,6 +2922,7 @@ describe("slow query index plans", () => {
           threadId,
         }),
       seek: "(thread_id=? AND turn_id=? AND type=? AND item_id=?)",
+      searchCount: () => 1,
     },
     {
       name: "listStoredBufferedTextDeltaRowsByItems",
@@ -2932,10 +2933,11 @@ describe("slow query index plans", () => {
           threadId,
         }),
       seek: "(thread_id=? AND turn_id=? AND type=? AND item_id=? AND sequence<?)",
+      searchCount: (itemCount: number) => itemCount,
     },
   ])(
     "$name seeks each item's turn instead of walking the thread",
-    ({ run, seek }) => {
+    ({ run, seek, searchCount }) => {
       const { db, thread } = setup();
       const items: ScopedItemRef[] = [
         { itemId: "item-1", scopeKind: "turn", turnId: "turn-1" },
@@ -2952,7 +2954,8 @@ describe("slow query index plans", () => {
             .split("\n")
             .filter((detail) => detail.startsWith("SEARCH"));
           expect(searches).toEqual(
-            scopedItems.map(
+            Array.from(
+              { length: searchCount(scopedItems.length) },
               () =>
                 `SEARCH events USING INDEX events_thread_turn_type_item_sequence_idx ${seek}`,
             ),

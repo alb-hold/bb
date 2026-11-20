@@ -11,8 +11,11 @@ import {
   dropThreadParentNotificationsColumn,
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
-  dropQueuedMessageDeliveryModeColumn,
   rewindQueuedMessageStateMigration,
+  dropQueuedMessageDeliveryColumns,
+  dropThreadStatusChangedAtColumn,
+  dropThreadRunStateTables,
+  dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
 
 interface LegacyQueuedRow {
@@ -62,7 +65,10 @@ function rewoundDatabase(): { db: DbConnection; threadId: string } {
   dropThreadParentNotificationsColumn(db);
   dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
   return { db, threadId: thread.id };
 }
 

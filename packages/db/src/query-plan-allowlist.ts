@@ -151,4 +151,8 @@ export const QUERY_PLAN_ALLOWLIST: readonly QueryPlanAllowlistEntry[] = [
     caller: "packages/db/src/data/threads.ts#listThreadSearchMatchRows",
     reason: "Automatic index over the search CTE, bounded by matching threads",
   },
+  boundedCorrelatedEvents(
+    "packages/db/src/fork-restore-native-drafts.ts#restoreNativeThreadDraftsToDraftsQueue",
+    "Runs once per upgrade for each native draft that has no queued rows or project defaults; each correlated lookup seeks one sibling thread's newest turn request through the thread/type/sequence index",
+  ),
 ];

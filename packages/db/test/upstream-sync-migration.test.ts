@@ -44,6 +44,46 @@ const addedMigrations = [
     createdAt: 1794850000000,
     hash: "1ce3a6abd66762f4f34121e0135ea50b009d270e0400d2dbc1434bfd36c27f22",
   },
+  {
+    createdAt: 1794850000001,
+    hash: "fe99416903f17d99c87cfb9a0c26861e798cccf6d65be93fada0741bda361963",
+  },
+  {
+    createdAt: 1794850000002,
+    hash: "11156322dda88868d864492e85877c973c3edf1404b3bc521d0710989a120436",
+  },
+  {
+    createdAt: 1794850000003,
+    hash: "f1329637cde53d7c05fee85a748bc6b1a74c6dd25de5b16af66e6b2bc7eec4d6",
+  },
+  {
+    createdAt: 1794850000004,
+    hash: "081722dd0217e0714a1168809f5117405d5585150f6ecaf7770ca4cc2310cd06",
+  },
+  {
+    createdAt: 1794850000005,
+    hash: "3988923282f618cff346fcc057b7eb9a5b79f6af8f39332385a898ca46660336",
+  },
+  {
+    createdAt: 1794850000006,
+    hash: "56cc25956150a5875f257d690109c2d7a042421efdc0f182df8e1f43bb6ec818",
+  },
+  {
+    createdAt: 1794850000007,
+    hash: "1253dfa5ae43984d194d94d4e518c6ca7454c8363074b091e2158067c8ece5e4",
+  },
+  {
+    createdAt: 1794850000008,
+    hash: "31f31680cf2f00fe4dbb4d26570882656a366f940a2f70f2bcbbf4c6e2232b3d",
+  },
+  {
+    createdAt: 1794850000009,
+    hash: "865ec374e7ac1cc542d6032ef7c01121abcde4580e8ea2e9ea23de04f33c57fb",
+  },
+  {
+    createdAt: 1794850000010,
+    hash: "4c8e84e29bc1778b76edc9ff5bcb60938b3e5c8e46bb395ee91a962f8741a70f",
+  },
 ];
 const ignoredIndexName = "fork_events_item_completion_lookup_idx";
 

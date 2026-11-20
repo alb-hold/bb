@@ -6,7 +6,7 @@ import {
   restoreDiffViewedFilesTable,
 } from "./helpers/rewind.js";
 
-const handoffMigrationWhen = 1793738260717;
+const handoffMigrationWhen = 1794850000003;
 
 function databaseBeforeHandoff(
   marks: readonly [string, string, string, string, number][],

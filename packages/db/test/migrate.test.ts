@@ -15,9 +15,9 @@ import {
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
   restoreDiffViewedFilesTable,
-  dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
   rewindQueuedMessageStateMigration,
+  dropQueuedMessageDeliveryColumns,
 } from "./helpers/rewind.js";
 import { defaultAppSettings } from "@bb/domain";
 import {
@@ -266,14 +266,14 @@ const threadStatusChangedAtMigrationWhen = (
   JSON.parse(
     readFileSync(resolve(__dirname, "../drizzle/meta/_journal.json"), "utf-8"),
   ) as { entries: { tag: string; when: number }[] }
-).entries.find((entry) => entry.tag === "0150_thread_status_changed_at")!.when;
+).entries.find((entry) => entry.tag === "0155_thread_status_changed_at")!.when;
 
 const projectSourcesDefaultIndexMigrationWhen = (
   JSON.parse(
     readFileSync(resolve(__dirname, "../drizzle/meta/_journal.json"), "utf-8"),
   ) as { entries: { tag: string; when: number }[] }
 ).entries.find(
-  (entry) => entry.tag === "0155_declare_project_sources_default_index",
+  (entry) => entry.tag === "0160_declare_project_sources_default_index",
 )!.when;
 
 function restoreWideExperimentsTable(db: DbConnection): void {
@@ -513,7 +513,7 @@ const smallStorageCleanupsMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
-  "0152_small_storage_cleanups.sql",
+  "0157_small_storage_cleanups.sql",
 );
 const providerUsagePluginIdMigrationPath = resolve(
   __dirname,
@@ -763,7 +763,10 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
   dropThreadParentNotificationsColumn(db);
   dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_insert");
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_immutable");
   db.$client.exec("DROP INDEX IF EXISTS threads_lifecycle_owner_idx");
@@ -813,7 +816,10 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
   dropThreadParentNotificationsColumn(db);
   dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
   const columns = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)")
     .all();
@@ -895,7 +901,10 @@ function rewindMachineProvidersMigration(db: DbConnection): void {
   dropThreadParentNotificationsColumn(db);
   dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TABLE IF EXISTS ui_preference_defaults");
   const queuedDispatchOrigin = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)")
@@ -1833,7 +1842,7 @@ describe("migrate", () => {
             __dirname,
             "..",
             "drizzle",
-            "0158_resume_threads_general_setting.sql",
+            "0163_resume_threads_general_setting.sql",
           ),
         });
         const row = db.$client
@@ -3534,7 +3543,10 @@ describe("migrate", () => {
       dropThreadParentNotificationsColumn(db);
       dropThreadStorageDeleteSeqColumn(db);
       dropTerminalDefaultColorsColumn(db);
-      dropQueuedMessageDeliveryModeColumn(db);
+      dropQueuedMessageDeliveryColumns(db);
+      dropThreadStatusChangedAtColumn(db);
+      dropThreadRunStateTables(db);
+      dropPluginFailureLabelColumns(db);
       db.$client.prepare("DROP INDEX projects_deleted_idx").run();
       db.$client.prepare("ALTER TABLE projects DROP COLUMN deleted_at").run();
       db.$client.prepare("ALTER TABLE events ADD producer_event_id text").run();

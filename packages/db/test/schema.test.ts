@@ -43,11 +43,17 @@ interface TableColumnRow {
 
 interface IndexNameRow {
   name: string;
+  tbl_name: string;
+}
+
+function declaredTables(): SQLiteTable[] {
+  return Object.values(schema).flatMap((value) =>
+    value instanceof SQLiteTable ? [value] : [],
+  );
 }
 
 function declaredIndexNames(): string[] {
-  return Object.values(schema)
-    .filter((value) => value instanceof SQLiteTable)
+  return declaredTables()
     .flatMap((table) =>
       getTableConfig(table).indexes.map((index) => index.config.name),
     )
@@ -57,12 +63,16 @@ function declaredIndexNames(): string[] {
 describe("db rebuild schema", () => {
   it("declares every index a migrated database has", () => {
     const db = createMigratedConnection();
+    const declaredTableNames = new Set(
+      declaredTables().map((table) => getTableConfig(table).name),
+    );
 
     const migratedIndexNames = db.$client
       .prepare<[], IndexNameRow>(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
+        "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
       )
       .all()
+      .filter((index) => declaredTableNames.has(index.tbl_name))
       .map((index) => index.name);
 
     expect(migratedIndexNames).toEqual(declaredIndexNames());

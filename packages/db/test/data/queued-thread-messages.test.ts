@@ -873,9 +873,14 @@ describe("queued thread messages", () => {
       if (!unownedClaim || !protectedClaim) {
         throw new Error("Expected queued message claims");
       }
-      db.$client
-        .prepare("UPDATE queued_thread_messages SET claim_token = NULL WHERE id = ?")
-        .run(unownedMessage.id);
+      db.$client.pragma("ignore_check_constraints = ON");
+      try {
+        db.$client
+          .prepare("UPDATE queued_thread_messages SET claim_token = NULL WHERE id = ?")
+          .run(unownedMessage.id);
+      } finally {
+        db.$client.pragma("ignore_check_constraints = OFF");
+      }
 
       nowSpy.mockReturnValue(10_000);
       expect(
