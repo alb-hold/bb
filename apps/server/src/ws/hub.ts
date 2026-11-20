@@ -682,6 +682,7 @@ export class NotificationHub implements DbNotifier {
     if (owner === null) return false;
     this.unlinkDeviceHandoffTerminalAttachment(terminalSocket);
     this.deviceHandoffOwnerByTerminalSocket.set(terminalSocket, owner);
+    console.error("DBGX linkset", performance.now(), owner);
     const sockets =
       this.deviceHandoffTerminalSocketsByDeviceHash.get(owner) ??
       new Set<HubSocket>();
@@ -866,7 +867,7 @@ export class NotificationHub implements DbNotifier {
   }
 
   private unlinkDeviceHandoffTerminalAttachment(socket: HubSocket): void {
-    console.error("DBGX unlink", new Error().stack);
+    console.error("DBGX unlink", performance.now(), this.deviceHandoffOwnerByTerminalSocket.get(socket) ?? null);
     const owner = this.deviceHandoffOwnerByTerminalSocket.get(socket);
     if (owner === undefined) return;
     this.deviceHandoffOwnerByTerminalSocket.delete(socket);
@@ -2085,7 +2086,7 @@ export class NotificationHub implements DbNotifier {
     now: number,
   ): boolean {
     const owner = this.deviceHandoffDeviceHashByClientSocket.get(clientSocket);
-    console.error("DBGX linked?", JSON.stringify({
+    console.error("DBGX linked?", performance.now(), JSON.stringify({
       owner: owner ?? null,
       termSockets: [...(this.deviceHandoffTerminalSocketsByDeviceHash.get(owner ?? "") ?? [])].map((t) => ({
         ownerMatches: this.deviceHandoffOwnerByTerminalSocket.get(t) === owner,

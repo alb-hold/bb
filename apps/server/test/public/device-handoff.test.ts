@@ -2340,6 +2340,7 @@ describe("device handoff websocket acknowledgement", () => {
       await terminalPong;
       expect(linkedAttachment).toHaveBeenCalledTimes(1);
       expect(linkedAttachment.mock.results[0]?.value).toBe(true);
+      console.error("DBGX prePOST", performance.now(), token);
       const delivered = nextRealtimeMessage(socket, "device-handoff");
       const forgedFrame = nextRealtimeMessage(forged, "device-handoff");
       const response = await server.app.request("/api/v1/device-handoff", {
