@@ -2318,6 +2318,12 @@ describe("device handoff websocket acknowledgement", () => {
         threadId: null,
         terminalSessionId: terminal.id,
       });
+      const viewsApplied = [socket, forged].map((viewer) => {
+        const pong = nextRealtimeMessage(viewer, "pong");
+        sendRealtime(viewer, { type: "ping" });
+        return pong;
+      });
+      await Promise.all(viewsApplied);
       const attached = nextSocketMessage(terminalReader, "attached");
       const attach = await daemonAttach;
       expect(attach).not.toHaveProperty("handoffOwnerToken");
