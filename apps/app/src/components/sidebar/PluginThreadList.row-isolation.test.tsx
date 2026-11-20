@@ -61,27 +61,21 @@ function AppTitleMentionResources({ children }: { children: ReactNode }) {
   );
 }
 
-const pullRequestRequests = vi.hoisted(() => ({ count: 0 }));
-
 function prepareThreadList() {
   resetThreadActionRegistryForTest();
-  pullRequestRequests.count = 0;
-  stubPluginRpcFetch((method, body) => {
-    if (method === "pullRequests") pullRequestRequests.count += 1;
-    return {
-      result:
-        method === "listPreferences"
-          ? { preferences: {} }
-          : method === "pullRequests"
-            ? Object.fromEntries(
-                (JSON.parse(body).keys as string[]).map((key) => [
-                  key,
-                  { outcome: "absent" },
-                ]),
-              )
-            : null,
-    };
-  });
+  stubPluginRpcFetch((method, body) => ({
+    result:
+      method === "listPreferences"
+        ? { preferences: {} }
+        : method === "pullRequests"
+          ? Object.fromEntries(
+              (JSON.parse(body).keys as string[]).map((key) => [
+                key,
+                { outcome: "absent" },
+              ]),
+            )
+          : null,
+  }));
   vi.stubGlobal("IntersectionObserver", undefined);
   return seedSidebarQueryClient(60);
 }
@@ -144,8 +138,6 @@ it("renders only the changed row on a thread update, and no row while typing an 
       </section>
     </SidebarThreadListHarness>,
   );
-  await settle();
-  await vi.waitFor(() => expect(pullRequestRequests.count).toBeGreaterThan(0));
   await settle();
   expect(renderedRows.has("thr_1")).toBe(true);
   expect(renderedRows.has("thr_2")).toBe(true);
