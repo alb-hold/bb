@@ -226,6 +226,21 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
 
+  it("does not onboard to a paid tier that Google does not list as allowed", async () => {
+    const google = fakeCodeAssist({
+      loads: [
+        {
+          paidTier: { id: "g1-pro-tier" },
+          allowedTiers: [{ id: "free-tier" }],
+        },
+      ],
+    });
+    await expect(google.adapter.importAccount()).rejects.toThrow(
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier id received: g1-pro-tier/u,
+    );
+    expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
+  });
+
   it("adds an Ultra account the same way as before, with no onboarding", async () => {
     const google = fakeCodeAssist({
       loads: [

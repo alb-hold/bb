@@ -445,12 +445,15 @@ function tierToOnboard(payload: unknown): string | null {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success) return null;
   const allowed = (parsed.data.allowedTiers ?? []).flatMap((tier) =>
-    tier?.id == null || tier.id === "" ? [] : [tier],
+    tier?.id == null ? [] : [tier],
   );
+  const fallbacks = [parsed.data.paidTier?.id, parsed.data.currentTier?.id];
+  if (allowed.length === 0)
+    return fallbacks.find((id) => id != null) ?? null;
+  const allowedIds = new Set(allowed.map((tier) => tier.id));
   return (
     allowed.find((tier) => tier.isDefault === true)?.id ??
-    parsed.data.paidTier?.id ??
-    parsed.data.currentTier?.id ??
+    fallbacks.find((id) => id != null && allowedIds.has(id)) ??
     null
   );
 }
