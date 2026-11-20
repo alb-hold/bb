@@ -1058,16 +1058,6 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
-    const appliedGrids: Array<[number, number]> = [];
-    const resizeTerminal = Terminal.prototype.resize;
-    vi.spyOn(Terminal.prototype, "resize").mockImplementation(function (
-      this: Terminal,
-      cols: number,
-      rows: number,
-    ) {
-      appliedGrids.push([cols, rows]);
-      resizeTerminal.call(this, cols, rows);
-    });
     const getTerminal = () => {
       if (!mountedTerminal) throw new Error("terminal was not mounted");
       return mountedTerminal;
@@ -1139,7 +1129,8 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       },
     });
     await waitForReadinessCondition(() => {
-      expect(appliedGrids).toContainEqual([38, 5]);
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
     }, "in-band shared PTY grid marker was not applied within 5000 ms");
     await waitForReadinessCondition(
       () =>
