@@ -15,7 +15,10 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
-import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
+import {
+  observeSharedResize,
+  settleAfterSharedResizeWrites,
+} from "@bb/shared-ui/lib/shared-resize-observer";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 import { AutoHeightSnapContext } from "@/components/ui/height-transition";
@@ -483,6 +486,7 @@ export function TimelineWindowedItems({
 
   const unobserveByNodeRef = useRef(new Map<Element, () => void>());
   const observedWidthRef = useRef<number | null>(null);
+  const observedNodesRef = useRef(new WeakSet<Element>());
   useLayoutEffect(
     () => () => {
       for (const unobserve of unobserveByNodeRef.current.values()) unobserve();
@@ -512,12 +516,16 @@ export function TimelineWindowedItems({
         },
         write: ({ key, height, width, widthChanged }) => {
           observedWidthRef.current = width;
-          if (key === null || !record(key, height)) return;
+          if (key === null) return;
+          const changed = record(key, height);
+          const observed = observedNodesRef.current.has(node);
+          if (!changed && observed) return;
+          observedNodesRef.current.add(node);
           if (widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();
-          } else {
-            positionKeeper?.reconcile();
+          } else if (positionKeeper !== null) {
+            settleAfterSharedResizeWrites(positionKeeper.reconcileAfterLayout);
           }
         },
       });

@@ -28,6 +28,8 @@ import { threadListQueryKey, threadQueryKey } from "@/hooks/queries/query-keys";
 
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
 
+import { settleLazyModules } from "@/test/lazy-modules";
+
 import {
   makeThreadResponse,
   makeThreadTimelineResponse,
@@ -371,6 +373,7 @@ async function runSeed(seed: number): Promise<void> {
       layout.flushResizeObservers();
       await vi.advanceTimersByTimeAsync(0);
     });
+    await settleLazyModules();
   };
   const releaseAll = async (onRelease?: () => Promise<void>) => {
     for (let guard = 0; guard < 200; guard += 1) {
@@ -606,7 +609,7 @@ async function runSeed(seed: number): Promise<void> {
   }
 }
 
-describe("thread opening model", () => {
+describe("thread opening model (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so the model settles them after each flush)", () => {
   it("opens a confirmed native thread while environment bootstrap is pending", async () => {
     const nativeThread = makeThreadResponse({
       id: THREAD_ID,
@@ -709,6 +712,7 @@ describe("thread opening model", () => {
         await vi.advanceTimersByTimeAsync(4_000);
         layout.flushResizeObservers();
       });
+      await settleLazyModules();
     };
     const divider = () =>
       document.querySelector<HTMLElement>(

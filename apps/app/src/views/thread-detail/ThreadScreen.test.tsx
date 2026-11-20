@@ -309,6 +309,7 @@ beforeEach(() => {
   mocks.surfaceProps = [];
   mocks.timeline = null;
   mocks.editMessageMutateAsync.mockReset();
+  mocks.toastWarning.mockReset();
 });
 
 it("includes an idle signaled child in the parent banner", () => {
