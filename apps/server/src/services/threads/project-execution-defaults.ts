@@ -142,13 +142,14 @@ export function resolveProjectExecutionDefaultsForCreate(
           : undefined),
       storedDefaults,
     });
+  const defaults = resolveThreadExecutionDefaults(deps.providerRegistry, {
+    parent,
+    projectDefaults: storedDefaults,
+    providerId,
+  });
 
   return {
-    defaultModel: resolveThreadExecutionDefaults(deps.providerRegistry, {
-      parent,
-      projectDefaults: storedDefaults,
-      providerId,
-    }).model,
+    defaultModel: defaults.model,
     providerId,
     providerFallbackCandidates,
     requestedModel: requestedModel ?? null,

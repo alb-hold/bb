@@ -21,6 +21,7 @@ import {
   getLatestSessionForHost,
   getLatestThreadSequence,
   getThread,
+  hasThreadPurgeBacklog,
   hasStoredProviderTurnCompletedSince,
   hasStoredThreadInterruptedSince,
   hasStoredTurnCompleted,
@@ -30,9 +31,12 @@ import {
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadIdsWithOwedStopForHost,
   listThreadIdsWithTurnRequestsForHost,
+  listPendingThreadStorageDeletions,
   listTurnStartDeadlineCandidates,
+  deleteThread,
   markThreadStorageDeleted,
   nextThreadStorageDeleteSeq,
+  requeueThreadStorageDeletion,
   requestThreadPurge,
   threadPurges,
   threads,
@@ -48,6 +52,7 @@ import type {
   Thread,
   ThreadStatus,
 } from "@bb/domain";
+import { createRefusalLogOnce } from "@bb/domain";
 import type {
   LoggedPendingInteractionWorkSessionDeps,
   LoggedWorkSessionDeps,
@@ -77,7 +82,7 @@ import {
   type ThreadStartCommandArgs,
 } from "./thread-commands.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
-import { ApiError } from "../../errors.js";
+import { ApiError, apiErrorRefusalKey } from "../../errors.js";
 import { isHostUnavailableApiError } from "../hosts/online-rpc.js";
 import {
   HOST_CONNECTION_LOST_ERROR_CODE,
@@ -103,10 +108,17 @@ import { preservePathPluginsInside } from "../plugins/path-plugin-preservation.j
 import { joinHostPathSegments } from "../lib/host-path.js";
 import {
   admitThreadStorageDelete,
+  claimThreadStorageDelete,
   forgetThreadStorageDelete,
+  isFirstThreadStorageDeleteSendFailure,
+  isThreadStorageDeleteInFlight,
   orderThreadStorageDeletesForDispatch,
+  recordThreadStorageDeleteRequeueFailed,
+  recordThreadStorageDeleteRequeued,
   recordThreadStorageDeleteRefused,
+  releaseThreadStorageDelete,
   resolveThreadStorageDeletesHeldAtTail,
+  returnThreadStorageDeleteSlot,
   type ThreadStorageDeleteGate,
 } from "./thread-storage-delete-retries.js";
 import type {
@@ -190,50 +202,17 @@ interface StopEnvironment {
 
 const AWAITED_THREAD_STOP_TIMEOUT_MS = 60_000;
 const MAX_EXPLICIT_THREAD_STOP_ROUNDS = 4;
-const MAX_THREAD_STORAGE_DELETES_PER_HOST = 4;
 const SEND_STOP_SKIPPED: ReadonlySet<"send-stop"> = new Set(["send-stop"]);
 
 export const TURN_START_DEADLINE_MS = 5 * 60_000;
 export const TURN_START_DEADLINE_RECONNECT_GRACE_MS = 60_000;
 
-const threadStorageDeletesInFlight = new Set<string>();
 const liveThreadStartsInFlight = new Set<string>();
+const threadStorageRefusalLog = createRefusalLogOnce();
 
 export function hasLiveThreadStartInFlight(threadId: string): boolean {
   return liveThreadStartsInFlight.has(threadId);
 }
-const threadStorageDeleteSlotsByHostId = new Map<
-  string,
-  { running: number; waiting: (() => void)[] }
->();
-
-async function withThreadStorageDeleteSlot(
-  hostId: string,
-  task: () => Promise<void>,
-): Promise<void> {
-  let slots = threadStorageDeleteSlotsByHostId.get(hostId);
-  if (slots === undefined) {
-    slots = { running: 0, waiting: [] };
-    threadStorageDeleteSlotsByHostId.set(hostId, slots);
-  }
-  if (slots.running >= MAX_THREAD_STORAGE_DELETES_PER_HOST) {
-    await new Promise<void>((resolve) => slots.waiting.push(resolve));
-  } else {
-    slots.running += 1;
-  }
-  try {
-    await task();
-  } finally {
-    const next = slots.waiting.shift();
-    if (next === undefined) {
-      slots.running -= 1;
-      if (slots.running === 0) threadStorageDeleteSlotsByHostId.delete(hostId);
-    } else {
-      next();
-    }
-  }
-}
-
 function lifecyclePostCommit(
   outcome: ThreadLifecycleOutcome,
 ): CommandResultPostCommitAction {
@@ -601,7 +580,7 @@ function dispatchThreadStorageDeletion(
     );
     return;
   }
-  if (threadStorageDeletesInFlight.has(thread.id)) {
+  if (isThreadStorageDeleteInFlight(deps.db, thread.id)) {
     return;
   }
   if (
@@ -614,70 +593,127 @@ function dispatchThreadStorageDeletion(
   ) {
     return;
   }
-  threadStorageDeletesInFlight.add(thread.id);
-  void withThreadStorageDeleteSlot(environment.hostId, () =>
-    deleteThreadStorageKeepingPlugins(deps, {
-      environment,
-      gate: args.gate,
-      threadId: thread.id,
-      now: args.now,
-    }),
-  ).finally(() => {
-    threadStorageDeletesInFlight.delete(thread.id);
-  });
-}
-
-async function deleteThreadStorageKeepingPlugins(
-  deps: CommandResultSideEffectsDeps,
-  args: {
-    environment: StopEnvironment;
-    gate: ThreadStorageDeleteGate;
-    now: number;
-    threadId: string;
-  },
-): Promise<void> {
-  const session = getLatestSessionForHost(deps.db, {
-    hostId: args.environment.hostId,
-  });
-  try {
-    if (session !== null) {
-      await preservePathPluginsInside(
-        deps.db,
-        joinHostPathSegments(session.dataDir, "thread-storage", args.threadId),
-      );
-    }
-  } catch (error) {
-    recordThreadStorageDeleteRefused(deps.db, {
-      now: args.now,
-      threadId: args.threadId,
+  claimThreadStorageDelete(deps.db, thread.id);
+  void (async () => {
+    const session = getLatestSessionForHost(deps.db, {
+      hostId: environment.hostId,
     });
-    deps.logger.warn(
-      { err: error, threadId: args.threadId },
-      "Thread storage deletion skipped: plugins installed from it could not be kept",
-    );
-    return;
-  }
-  await runLiveHostCommand(deps, {
-    command: buildThreadStorageDeleteCommand({
-      environmentId: args.environment.id,
-      threadId: args.threadId,
-    }),
-    hostId: args.environment.hostId,
-    timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-  })
-    .then(() => {
-      forgetThreadStorageDelete(deps.db, args.threadId);
-    })
-    .catch((error) => {
-      recordThreadStorageDeleteRefused(deps.db, {
+    try {
+      if (session !== null) {
+        await preservePathPluginsInside(
+          deps.db,
+          joinHostPathSegments(session.dataDir, "thread-storage", thread.id),
+        );
+      }
+    } catch (error) {
+      const refused = recordThreadStorageDeleteRefused(deps.db, {
         now: Date.now(),
-        threadId: args.threadId,
+        threadId: thread.id,
       });
       deps.logger.warn(
-        { err: error, threadId: args.threadId },
-        "Thread storage deletion command failed",
+        {
+          err: error,
+          refusals: refused.refusals,
+          retryAt: refused.retryAt,
+          threadId: thread.id,
+        },
+        "Thread storage deletion skipped: plugins installed from it could not be kept",
       );
-    });
+      requeueUnsuccessfulThreadStorageDeletion(deps, thread.id);
+      releaseThreadStorageDelete(deps.db, thread.id);
+      return;
+    }
+    let sent: ReturnType<typeof runLiveHostCommand>;
+    try {
+      sent = runLiveHostCommand(deps, {
+        command: buildThreadStorageDeleteCommand({
+          environmentId: environment.id,
+          threadId: thread.id,
+        }),
+        hostId: environment.hostId,
+        timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+      });
+    } catch (error) {
+      releaseThreadStorageDelete(deps.db, thread.id);
+      returnThreadStorageDeleteSlot(deps.db, {
+        gate: args.gate,
+        hostId: environment.hostId,
+        now: args.now,
+      });
+      if (isFirstThreadStorageDeleteSendFailure(deps.db, thread.id)) {
+        deps.logger.warn(
+          { err: error, threadId: thread.id },
+          "Thread storage deletion could not be sent",
+        );
+      }
+      return;
+    }
+    void sent
+      .then(() => {
+        forgetThreadStorageDelete(deps.db, thread.id);
+      })
+      .catch((error) => {
+        const refused = recordThreadStorageDeleteRefused(deps.db, {
+          now: Date.now(),
+          threadId: thread.id,
+        });
+        requeueUnsuccessfulThreadStorageDeletion(deps, thread.id);
+        const refusalKey = apiErrorRefusalKey(error);
+        const level =
+          refusalKey === undefined ||
+          threadStorageRefusalLog.isNewRefusal(refusalKey)
+            ? "warn"
+            : "debug";
+        deps.logger[level](
+          {
+            err: error,
+            refusals: refused.refusals,
+            retryAt: refused.retryAt,
+            threadId: thread.id,
+            ...(refusalKey === undefined ? {} : { refusalKey }),
+          },
+          "Thread storage deletion command failed",
+        );
+        if (
+          error instanceof ApiError &&
+          error.body.code === "path_in_use" &&
+          thread.environmentId !== null
+        ) {
+          refreshProviderRetirement(deps, thread.environmentId);
+        }
+      })
+      .finally(() => {
+        releaseThreadStorageDelete(deps.db, thread.id);
+      });
+  })();
+}
+
+function requeueUnsuccessfulThreadStorageDeletion(
+  deps: CommandResultSideEffectsDeps,
+  threadId: string,
+): void {
+  try {
+    requeueThreadStorageDeletion(deps.db, { threadId });
+    recordThreadStorageDeleteRequeued(deps.db, threadId);
+  } catch (error) {
+    const queuedAtSeq = nextSeqOrQueueTail(deps);
+    if (
+      recordThreadStorageDeleteRequeueFailed(deps.db, { queuedAtSeq, threadId })
+    ) {
+      deps.logger.warn(
+        { err: error, queuedAtSeq, threadId },
+        "Thread storage deletion could not be re-queued",
+      );
+    }
+  }
+}
+
+function nextSeqOrQueueTail(deps: CommandResultSideEffectsDeps): number {
+  try {
+    return nextThreadStorageDeleteSeq(deps.db);
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 function dispatchThreadStartInTransaction(
@@ -1262,6 +1298,13 @@ function finalizeDeletedThreadInTransaction(
     return;
   }
   if (providerEnvironmentHasPendingWork(deps.db, thread.id)) return;
+  if (!hasThreadPurgeBacklog(deps.db, thread.id)) {
+    deleteThread(deps.db, deps.hub, thread.id);
+    if (thread.environmentId !== null) {
+      refreshProviderRetirement(deps, thread.environmentId);
+    }
+    return;
+  }
   requestThreadPurge(deps.db, { now: Date.now(), threadId: thread.id });
   if (thread.environmentId !== null) {
     refreshProviderRetirement(deps, thread.environmentId);
@@ -1325,7 +1368,6 @@ export async function reconcileDaemonReportedThreads(
     args.exceptThreadIds?.has(threadId) === true;
   const deletedThreads = deps.db
     .select({
-      environmentId: environments.id,
       id: threads.id,
       storageDeletedAt: threads.storageDeletedAt,
     })
@@ -1348,12 +1390,19 @@ export async function reconcileDaemonReportedThreads(
     if (isExcepted(thread.id)) continue;
     if (thread.storageDeletedAt !== null) {
       finalizeStoppedThread(deps, { fence: false, threadId: thread.id });
-      continue;
     }
-    requestThreadStorageDeletion(deps, thread, {
-      hostId: args.hostId,
-      id: thread.environmentId,
-    });
+  }
+  for (const thread of orderPendingThreadStorageDeletes(
+    deps,
+    listPendingThreadStorageDeletions(deps.db, { hostId: args.hostId }),
+  )) {
+    if (thread.environmentId === null) continue;
+    dispatchThreadStorageDeletion(
+      deps,
+      thread,
+      { hostId: args.hostId, id: thread.environmentId },
+      { gate: "cap", now: Date.now() },
+    );
   }
 
   const running = new Set(args.activeThreadIds);
@@ -1379,7 +1428,8 @@ export async function reconcileDaemonReportedThreads(
     .all()
     .filter(
       (thread) =>
-        !isExcepted(thread.id) &&
+        (!isExcepted(thread.id) ||
+          (thread.status === "error" && running.has(thread.id))) &&
         (running.has(thread.id) ||
           thread.status === "active" ||
           thread.status === "starting" ||

@@ -106,6 +106,15 @@ interface FailedRequest {
   path: string;
 }
 
+export function apiErrorRefusalKey(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || error.body.code !== "path_in_use")
+    return undefined;
+  const details = error.body.details;
+  if (typeof details !== "object" || details === null) return undefined;
+  const refusalKey = (details as { refusalKey?: unknown }).refusalKey;
+  return typeof refusalKey === "string" ? refusalKey : undefined;
+}
+
 export function createServerErrorHandler(logger: ServerLogger): ErrorHandler {
   const refusalLog = createRefusalLogOnce();
   return (error, context) =>

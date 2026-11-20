@@ -172,11 +172,50 @@ export function createDaemonSocketEvents(
   serverMove?: Pick<ServerMoveCoordinator, "handleProgress">,
 ): DaemonSocketEvents {
   let channel: DaemonChannel | null = null;
+  const messageQueue =
+    createDaemonSocketMessageQueue<HostDaemonDaemonWsMessage>({
+      handle: (message) =>
+        onDaemonSocketMessage(
+          deps,
+          {
+            acceptedAtArrival: true,
+            hostId: target.hostId,
+            message,
+            sessionId: target.sessionId,
+            socket: channel ?? { close() {}, send() {} },
+          },
+          plugins,
+          serverMove,
+        ),
+      onError: (error) => {
+        deps.logger.warn(
+          {
+            hostId: target.hostId,
+            sessionId: target.sessionId,
+            ...runtimeErrorLogFields(deps.config, error),
+          },
+          "Daemon message queue failed",
+        );
+      },
+    });
   return {
     onOpen: (socket) => {
       if (target.kind === "open") {
         channel = new DaemonChannel(socket);
-        onDaemonSocketOpen(deps, { ...target, socket: channel });
+        void onDaemonSocketOpen(deps, { ...target, socket: channel }).then(
+          () => messageQueue.release(),
+          (error: unknown) => {
+            messageQueue.release();
+            deps.logger.warn(
+              {
+                hostId: target.hostId,
+                sessionId: target.sessionId,
+                ...runtimeErrorLogFields(deps.config, error),
+              },
+              "Daemon socket open reconciliation failed",
+            );
+          },
+        );
         return;
       }
       if (
@@ -197,25 +236,34 @@ export function createDaemonSocketEvents(
       channel = target.channel;
       channel.resume(socket, target.resumeFrom);
       onDaemonSocketResumed(deps, target);
+      messageQueue.release();
     },
     onMessage: (socket, raw) => {
       const received = channel?.receive(socket, raw);
       if (!channel || !received) {
         return;
       }
-      onDaemonSocketMessage(
-        deps,
-        {
-          hostId: target.hostId,
-          raw: JSON.stringify(received.message),
-          sessionId: target.sessionId,
-          socket: channel,
-        },
-        plugins,
-        serverMove,
-      );
+      enqueueDaemonSocketFrame({
+        authorize: (messageType) =>
+          authorizeDaemonArrival(deps, {
+            hostId: target.hostId,
+            messageType,
+            sessionId: target.sessionId,
+            socket: channel!,
+          }),
+        enqueue: (message, priority) => messageQueue.enqueue(message, priority),
+        onInvalid: (rejection) =>
+          logDroppedDaemonFrame(
+            deps.logger,
+            { hostId: target.hostId, sessionId: target.sessionId },
+            rejection,
+          ),
+        raw: JSON.stringify(received.message),
+        recordActivity: () => deps.hub.recordDaemonActivity(target.sessionId),
+      });
     },
     onClose: (socket, reason) => {
+      messageQueue.close();
       if (channel === null) {
         return;
       }
@@ -584,6 +632,16 @@ export function onDaemonSocketMessage(
   };
 
   try {
+    if (
+      message.type === "terminal.output" &&
+      !deps.hub.hasTerminalClients(message.terminalId)
+    ) {
+      getSessionForDispatch();
+      if (!args.acceptedAtArrival) {
+        deps.hub.recordDaemonActivity(args.sessionId);
+      }
+      return;
+    }
     const work = runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
       const session = getSessionForDispatch();
       if (!args.acceptedAtArrival) {

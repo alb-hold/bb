@@ -3581,9 +3581,6 @@ export class TerminalSessionLifecycle {
           args.sessionId,
           args.message.chunk.seq,
         );
-        if (!this.options.hub.hasTerminalClients(args.message.terminalId)) {
-          return;
-        }
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,

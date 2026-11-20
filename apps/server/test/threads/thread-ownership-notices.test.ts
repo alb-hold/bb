@@ -182,10 +182,14 @@ describe("ownership notices", () => {
           },
         }),
       ]);
-      expect(promptText(deliveredSystemTurns(fixture.harness, b!)[0]!)).toBe(
+      expect(
+        promptText(deliveredSystemTurns(fixture.harness, b!)[0]!),
+      ).toContain(
         `[bb system]\n\n@thread:${child} is now a child of this thread.`,
       );
-      expect(promptText(deliveredSystemTurns(fixture.harness, a!)[0]!)).toBe(
+      expect(
+        promptText(deliveredSystemTurns(fixture.harness, a!)[0]!),
+      ).toContain(
         `[bb system]\n\n@thread:${child} is no longer a child of this thread.`,
       );
     });

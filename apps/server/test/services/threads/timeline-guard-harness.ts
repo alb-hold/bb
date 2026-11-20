@@ -1285,7 +1285,7 @@ export function createThreadLog(args: CreateThreadLogArgs): ThreadLog {
         .get()?.expiresAt;
       const deadline = Number(deadlineValue);
       if (!Number.isFinite(deadline)) return false;
-      now = deadline + 1;
+      now = Math.max(now, deadline) + 1;
       vi.setSystemTime(now);
       return true;
     },

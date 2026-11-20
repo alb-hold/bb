@@ -1,5 +1,6 @@
 import {
   claimQueuedThreadMessageGroup,
+  getQueuedMessageDispatchRetry,
   listQueuedThreadMessages,
   setThreadExecutionOverride,
   updateQueuedThreadMessage,
@@ -336,12 +337,17 @@ describe("notice durability", () => {
       });
 
       expect(turnRequests(harness, parent.id)).toHaveLength(before);
-      expect(queuedRows(harness, parent.id)).toEqual([
+      const [row] = queuedRows(harness, parent.id);
+      expect(row).toEqual(
+        expect.objectContaining({ initiator: "system", state: "queued" }),
+      );
+      expect(getQueuedMessageDispatchRetry(harness.db, row!.id)).toEqual(
         expect.objectContaining({
-          initiator: "system",
-          state: "failed_retrying",
+          attempt: 1,
+          lastError: expect.stringContaining("message.dispatch hook failed"),
+          nextAttemptAt: expect.any(Number),
         }),
-      ]);
+      );
     });
   });
 

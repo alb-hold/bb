@@ -61,6 +61,7 @@ function openRestartedSession(
       localApiPort: null,
       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
       activeThreads: [],
+      openThreadWork: [],
       ...extra,
     }),
   });

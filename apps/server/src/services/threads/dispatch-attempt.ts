@@ -876,6 +876,7 @@ async function runDispatchAttempt(
       payload: resolvedPayload,
       thread,
       trigger: args.trigger,
+      ...(systemNotice !== null ? { systemNotice } : {}),
       onTurnRequestCreated: args.onTurnRequestCreated,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       beforeAppendInTransaction: ({ tx }) => {

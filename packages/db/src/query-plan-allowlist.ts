@@ -3,6 +3,7 @@ import type { QueryPlanAllowlistEntry } from "./query-plan-guard.js";
 const EVENTS = "packages/db/src/data/events.ts";
 const QUEUED = "packages/db/src/data/queued-thread-messages.ts";
 const THREADS = "packages/db/src/data/threads.ts";
+const TERMINALS = "packages/db/src/data/terminal-sessions.ts";
 
 function acceptedEventsIndex(
   caller: string,
@@ -32,6 +33,10 @@ export const QUERY_PLAN_ALLOWLIST: readonly QueryPlanAllowlistEntry[] = [
     "turn/completed is one per turn, so the type index reads at most one row per turn",
   ),
   acceptedEventsIndex(
+    "packages/db/src/data/fork-adopted-open-items.ts#listUncompletedTurnItemRows",
+    "The thread/type/sequence index preserves started-item order; the turn/type/item index places item_id before sequence and cannot satisfy ORDER BY without sorting",
+  ),
+  acceptedEventsIndex(
     "apps/server/src/services/threads/environment-directory-continuation.ts#findEnvironmentDirectoryContinuation",
     "system/operation events are rare per thread",
   ),
@@ -43,6 +48,46 @@ export const QUERY_PLAN_ALLOWLIST: readonly QueryPlanAllowlistEntry[] = [
     `${EVENTS}#queryBatch`,
     "ORDER BY sequence DESC LIMIT 1 reads one index entry per requested thread",
   ),
+  boundedCorrelatedEvents(
+    `${EVENTS}#listLatestThreadStateEventRowsByScope`,
+    "Each correlated lookup seeks the newest matching state event for one requested thread using the thread/type/sequence index",
+  ),
+  boundedCorrelatedEvents(
+    `${EVENTS}#listOpenTurnInputAcceptedRowsByScope`,
+    "Each correlated lookup is bounded to accepted inputs for one requested open turn and uses the thread/turn/type index",
+  ),
+  boundedCorrelatedEvents(
+    "packages/db/src/data/thread-spend.ts#listSpendBackfillThreads",
+    "The correlated latest-event lookups are bounded to candidate threads selected for spend backfill",
+  ),
+  {
+    rule: "full-scan",
+    table: "events",
+    caller: "packages/db/src/data/thread-spend.ts#listSpendBackfillThreads",
+    reason:
+      "One-time legacy token-usage backfill discovers candidate threads by scanning the existing covering event index; the current schema has no type-leading token-usage index",
+  },
+  {
+    rule: "weaker-index",
+    table: "events",
+    caller: `${EVENTS}#listItemEventSpansByItems`,
+    reason:
+      "The query aggregates matching item lifecycle events across turns, so turn_id is not an equality predicate; the three-term item/type lookup is the usable scoped index",
+  },
+  {
+    rule: "automatic-index",
+    table: "fork_thread_spend_daily",
+    caller: "packages/db/src/data/thread-spend.ts#getSpendCoverage",
+    reason:
+      "The runtime-created daily rollup table has an explicit thread_id index for the correlated coverage lookup",
+  },
+  {
+    rule: "weaker-index",
+    table: "terminal_sessions",
+    caller: `${TERMINALS}#listTerminalSessions`,
+    reason:
+      "Thread, environment, and daemon-session scopes use their leading equality indexes; the status index cannot satisfy the visible-status OR and expiry subqueries",
+  },
   boundedCorrelatedEvents(
     `${EVENTS}#listThreadIdsWithLatestHostDaemonRestartInterruption`,
     "MAX(sequence) on the unique thread/sequence index reads one entry, once per thread",

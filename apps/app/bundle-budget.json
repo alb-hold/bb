@@ -221,24 +221,24 @@
     "is unchanged.",
     "",
     "On 2026-11-20 the desktop-v0.50.1 sync re-baselined these limits to the",
-    "exact two-run hsrpc measurement of sync head afd54a7d after the SDK voice",
-    "split. Upstream's 2026-11-03 grouping by page journey in",
+    "exact hsrpc measurement of sync head 06730337 after the SDK voice split",
+    "Upstream's 2026-11-03 grouping by page journey in",
     "vite-journey-chunks.ts changed what each closure measures, so the old and",
     "new closure sizes are not directly comparable.",
     "",
     "Closure size in KB (raw / brotli):",
     "| Closure | ours 10deef32 | upstream limit | new baseline |",
     "|---|---:|---:|---:|",
-    "| boot | 1597.8 / 395.9 | 1682.1 / 419.1 | 1684.8 / 417.5 |",
-    "| PluginFrontend | 237.6 / 85.0 (old grouping) | 964.0 / 254.0 | 376.0 / 106.2 |",
-    "| ThreadPage | 1259.6 / 383.9 (old grouping) | 2372.0 / 682.6 | 1477.7 / 391.2 |",
-    "| NewThreadPage | 575.2 / 197.9 (old grouping) | 1431.7 / 421.4 | 740.8 / 206.5 |",
+    "| boot | 1597.8 / 395.9 | 1682.1 / 419.1 | 1680.8 / 416.3 |",
+    "| PluginFrontend | 237.6 / 85.0 (old grouping) | 964.0 / 254.0 | 379.4 / 106.9 |",
+    "| ThreadPage | 1259.6 / 383.9 (old grouping) | 2372.0 / 682.6 | 1481.7 / 392.3 |",
+    "| NewThreadPage | 575.2 / 197.9 (old grouping) | 1431.7 / 421.4 | 744.3 / 207.3 |",
     "",
-    "Boot is 21.6 KB brotli over ours. BOOT-WINBACK-0501 takes boot back to",
+    "Boot is 20.4 KB brotli over ours. BOOT-WINBACK-0501 takes boot back to",
     "at most 396.0 KB brotli after the sync merges."
   ],
-  "maxBootBytes": 1725279,
-  "maxBootBrotliBytes": 427500,
+  "maxBootBytes": 1721126,
+  "maxBootBrotliBytes": 426287,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -541,8 +541,8 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 385014,
-      "maxBrotliBytes": 108716,
+      "maxBytes": 388537,
+      "maxBrotliBytes": 109501,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
         "@radix-ui/react-menubar",
@@ -561,8 +561,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 1513124,
-      "maxBrotliBytes": 400591,
+      "maxBytes": 1517259,
+      "maxBrotliBytes": 401748,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -597,8 +597,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 758584,
-      "maxBrotliBytes": 211484,
+      "maxBytes": 762196,
+      "maxBrotliBytes": 212270,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

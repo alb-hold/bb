@@ -11,6 +11,7 @@ import {
   getThread,
   getThreadSpawner,
   holdQueuedThreadMessageForEdit,
+  isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
   releaseQueuedMessageClaim,
@@ -45,6 +46,7 @@ import type {
 import { ApiError } from "../../errors.js";
 import { isCommandTimeoutError } from "../lib/error-log-fields.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
+import { dispatchClaimedNativeTerminalMessages } from "./native-terminal-admission.js";
 import {
   parseStoredQueuedThreadMessageSystemNotice,
   parseStoredQueuedThreadMessageWaitingOn,
@@ -565,6 +567,15 @@ async function sendClaimedQueuedMessageForThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendClaimedQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
+  if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
+      thread: args.thread,
+      claimed: args.queuedMessages,
+      sendNow: args.sendNow,
+    });
+    assertSendNowDispatched(args, outcome);
+    return toThreadQueuedMessage(args.queuedMessages[0]!);
+  }
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
   const inputGroups = queuedMessages.map(
@@ -625,6 +636,26 @@ async function sendClaimedQueuedMessageForThread(
     );
   }
   return queuedMessage;
+}
+
+function assertSendNowDispatched(
+  args: SendClaimedQueuedMessageForThreadArgs,
+  outcome:
+    | { kind: "dispatched" }
+    | { kind: "queued"; entry: ThreadQueuedMessage },
+): void {
+  if (
+    args.sendNow &&
+    args.mode !== "steer" &&
+    outcome.kind === "queued" &&
+    outcome.entry.waitingOn?.kind !== "stopping"
+  ) {
+    throw new ApiError(
+      409,
+      "queued_message_still_waiting",
+      `This message cannot be sent yet: ${describeCoreWait(outcome.entry.waitingOn)}.`,
+    );
+  }
 }
 
 function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {
