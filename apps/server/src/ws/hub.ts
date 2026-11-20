@@ -783,6 +783,7 @@ export class NotificationHub implements DbNotifier {
   }
 
   unregisterClient(socket: HubSocket): void {
+    console.error("DBGX unregisterClient", performance.now(), new Error().stack);
     const deviceHash = this.deviceHandoffDeviceHashByClientSocket.get(socket);
     if (deviceHash !== undefined) {
       const sockets = this.deviceHandoffClientSocketsByHash.get(deviceHash);
@@ -1323,6 +1324,7 @@ export class NotificationHub implements DbNotifier {
     threadId: string | null,
     terminalSessionId: string | null = null,
   ): void {
+    console.error("DBGX setView", performance.now(), threadId, terminalSessionId);
     this.registerClient(socket);
     const previous = this.activeDeviceHandoffViewByClientSocket.get(socket);
     if (
