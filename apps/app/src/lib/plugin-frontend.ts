@@ -47,6 +47,7 @@ import {
   retainPluginCss,
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
+import { whenScreenPainted } from "./screen-paint";
 import { prefetchPluginModule } from "./plugin-module-preload";
 import { lazyRuntimeGroups } from "./plugin-lazy-runtime-groups";
 import {
@@ -446,6 +447,7 @@ export interface PluginFrontendReconcileDeps {
   waitForDeferredLoad?: (
     candidatePluginIds: ReadonlySet<string>,
   ) => Promise<void>;
+  whenScreenPainted?: () => Promise<void>;
   waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
   downloadDeferredModule?: (url: string) => Promise<void>;
@@ -797,7 +799,7 @@ async function reconcileCandidates(
   const hasDeferredCandidates = ordered.some(
     (candidate) => !priorityPluginIds.includes(candidate.pluginId),
   );
-  const deferredReady =
+  const afterPriorityLoads =
     deps.waitForDeferredLoad && hasDeferredCandidates
       ? priorityReady.then(() =>
           deps.waitForDeferredLoad?.(
@@ -805,6 +807,9 @@ async function reconcileCandidates(
           ),
         )
       : Promise.resolve();
+  const deferredReady = deps.whenScreenPainted
+    ? deps.whenScreenPainted().then(() => afterPriorityLoads)
+    : afterPriorityLoads;
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
     if (pendingPriority > 0) return;
@@ -1170,6 +1175,7 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   prefetchModule: prefetchPluginModule,
   retainCss: retainPluginCss,
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
+  whenScreenPainted,
   waitForComposerPaint: async () => {
     if (window.location.pathname !== "/") return;
     await whenHomeComposerReady();
