@@ -572,7 +572,10 @@ export class PendingInteractionLifecycle {
       "revived" in registered.existing &&
       registered.existing.revived === true
     ) {
-      this.announceCreatedInteraction(thread, registered.existing.interaction);
+      notifyInteractionChanged({
+        deps: this.deps,
+        threadId: registered.existing.interaction.threadId,
+      });
     }
 
     return registered.outcome === "existing"
