@@ -63,12 +63,17 @@ function AppTitleMentionResources({ children }: { children: ReactNode }) {
 
 function prepareThreadList() {
   resetThreadActionRegistryForTest();
-  stubPluginRpcFetch((method) => ({
+  stubPluginRpcFetch((method, body) => ({
     result:
       method === "listPreferences"
         ? { preferences: {} }
         : method === "pullRequests"
-          ? {}
+          ? Object.fromEntries(
+              (JSON.parse(body).keys as string[]).map((key) => [
+                key,
+                { outcome: "absent" },
+              ]),
+            )
           : null,
   }));
   vi.stubGlobal("IntersectionObserver", undefined);
