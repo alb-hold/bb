@@ -371,33 +371,6 @@ afterEach(() => {
 });
 
 describe("Rail", () => {
-  it("DIAG more menu", async () => {
-    renderRail(THREAD_PATH);
-    const more = railButton("More");
-    const log: unknown[] = [];
-    const snap = (tag: string) =>
-      log.push({
-        tag,
-        expanded: more.getAttribute("aria-expanded"),
-        state: more.getAttribute("data-state"),
-        connected: more.isConnected,
-        menus: document.querySelectorAll('[role="menu"]').length,
-        wrappers: document.querySelectorAll("[data-radix-popper-content-wrapper]").length,
-        drawers: document.querySelectorAll("[data-bb-portaled-overlay]").length,
-        body: document.body.getAttribute("style"),
-      });
-    snap("before");
-    fireEvent.keyDown(more, { key: "Enter" });
-    snap("sync");
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    });
-    snap("after300");
-    await settleLazyModules();
-    snap("settled");
-    throw new Error("DIAG " + JSON.stringify(log));
-  });
-
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
     "gives %s a matching keyboard tooltip and accessible name", async (label) => {
       renderRail(THREAD_PATH);
@@ -974,6 +947,7 @@ describe("Rail", () => {
 
   it("opens the customize sheet from More on a compact viewport", async () => {
     renderRail(THREAD_PATH, { isCompactViewport: true });
+    await settleLazyModules();
 
     fireEvent.click(railButton("More"));
     fireEvent.click(
@@ -1010,6 +984,7 @@ describe("Rail", () => {
         visibleKeys: ["__bb__/skills"],
         isCompactViewport,
       });
+      await settleLazyModules();
       if (isCompactViewport) fireEvent.click(railButton("More"));
       else fireEvent.keyDown(railButton("More"), { key: "Enter" });
       fireEvent.click(
@@ -1038,6 +1013,7 @@ describe("Rail", () => {
 
   it("customizes the rail from a popover beside it without leaving Settings", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     fireEvent.click(railButton("Settings"));
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
@@ -1083,6 +1059,7 @@ describe("Rail", () => {
 
   it("opens the customize popover at the top of the navigation and keeps it there while More moves", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     let moreTop = 200;
     vi.spyOn(
       screen.getByTestId("sidebar-navigation-rail"),
@@ -1113,6 +1090,7 @@ describe("Rail", () => {
 
   it("opens the More menu beside the More button instead of at the top of the rail", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
     vi.spyOn(railButton("Home"), "getBoundingClientRect").mockImplementation(
       () => new DOMRect(12, 40, 28, 28),
     );
@@ -1154,6 +1132,7 @@ describe("Rail", () => {
 
   it("offers no New thread row in Customize navigation", async () => {
     renderRail(THREAD_PATH);
+    await settleLazyModules();
 
     fireEvent.keyDown(railButton("More"), { key: "Enter" });
     fireEvent.click(
