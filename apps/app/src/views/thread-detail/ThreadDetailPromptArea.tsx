@@ -2335,6 +2335,7 @@ export function ThreadDetailPromptArea({
           onToggle={() => setIsBackgroundCommandsExpanded((value) => !value)}
         />
         {shouldHideComposer ? null : activePromptModeCard}
+        {shouldHideComposer ? null : activeGoalCard}
         <ThreadTodoCard
           pendingTodos={
             thread.archivedAt === null && environmentGoneStatus === null
@@ -2473,6 +2474,7 @@ export function ThreadDetailPromptArea({
       isUnarchiveCurrentThreadPending,
       isQueueMutationPending,
       queuedMessageEditor,
+      activeGoalCard,
       activePromptModeCard,
       isTodoExpanded,
       activeWorkflows,

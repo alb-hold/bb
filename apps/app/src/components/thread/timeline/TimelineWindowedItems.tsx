@@ -486,7 +486,6 @@ export function TimelineWindowedItems({
 
   const unobserveByNodeRef = useRef(new Map<Element, () => void>());
   const observedWidthRef = useRef<number | null>(null);
-  const observedNodesRef = useRef(new WeakSet<Element>());
   useLayoutEffect(
     () => () => {
       for (const unobserve of unobserveByNodeRef.current.values()) unobserve();
@@ -518,9 +517,7 @@ export function TimelineWindowedItems({
           observedWidthRef.current = width;
           if (key === null) return;
           const changed = record(key, height);
-          const observed = observedNodesRef.current.has(node);
-          if (!changed && observed) return;
-          observedNodesRef.current.add(node);
+          if (!changed) return;
           if (widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();
