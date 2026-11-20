@@ -379,8 +379,8 @@ describe("Rail", () => {
     const button = railButton("Home");
     act(() => button.focus());
     await new Promise((resolve) => setTimeout(resolve, 300));
-    console.log(
-      "DIAG",
+    throw new Error(
+      "DIAG " +
       JSON.stringify({
         before,
         afterKey,
@@ -389,7 +389,7 @@ describe("Rail", () => {
         focused: document.activeElement === button,
         tooltips: document.querySelectorAll('[role="tooltip"]').length,
         portals: document.querySelectorAll("[data-bb-portaled-overlay]").length,
-      }),
+      })
     );
   });
 
