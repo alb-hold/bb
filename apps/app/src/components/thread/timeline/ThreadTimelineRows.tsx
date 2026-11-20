@@ -128,7 +128,6 @@ import {
 } from "@bb/client-core";
 import {
   TimelineDetailSourceContext,
-  timelineDetailIdentity,
   useTimelineDetailIdentity,
 } from "./timeline-detail-identity.js";
 import {
@@ -1299,7 +1298,7 @@ function TimelineExpandableBody(props: TimelineExpandableBodyProps) {
     preloadBody();
   }, [preloadBody]);
   const deferred = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, itemId ?? ""),
+    useTimelineDetailIdentity(row, threadId, itemId ?? ""),
     itemId !== null,
   );
   const resolved =
@@ -1553,7 +1552,7 @@ function LazyTurnRowBody({
 }: TurnRowBodyProps) {
   const { getViewRows, threadId } = useTimelineRendererStaticContext();
   const detail = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, null),
+    useTimelineDetailIdentity(row, threadId, null),
     true,
   );
   const rows = detail.rows
@@ -1632,7 +1631,7 @@ function DeferredDelegationChildRows({
 }) {
   const { getViewRows, threadId } = useTimelineRendererStaticContext();
   const detail = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, row.callId),
+    useTimelineDetailIdentity(row, threadId, row.callId),
     true,
   );
   const loadedRows = detail.rows
