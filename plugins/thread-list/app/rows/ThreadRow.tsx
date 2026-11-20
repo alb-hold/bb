@@ -1412,15 +1412,4 @@ function ThreadRowComponent({
   );
 }
 
-export const ThreadRow = memo(ThreadRowComponent, (previous, next) => {
-  const changed = Object.keys(next).filter(
-    (key) =>
-      !Object.is(
-        (previous as Record<string, unknown>)[key],
-        (next as Record<string, unknown>)[key],
-      ),
-  );
-  const bag = globalThis as unknown as { __rowDiag?: Set<string> };
-  for (const key of changed) (bag.__rowDiag ??= new Set()).add(key);
-  return changed.length === 0;
-});
+export const ThreadRow = memo(ThreadRowComponent);
