@@ -218,10 +218,27 @@
     "(+10), 219 rendered bytes in all. Storage and server-only inbox helpers",
     "moved behind domain subpaths first; what remains is the feature's wire and",
     "UI surface. P6 approved the raise on 2026-11-17, capped at 0.2 KB; Brotli",
-    "is unchanged."
+    "is unchanged.",
+    "",
+    "On 2026-11-20 the desktop-v0.50.1 sync re-baselined these limits to the",
+    "exact two-run hsrpc measurement of sync head afd54a7d after the SDK voice",
+    "split. Upstream's 2026-11-03 grouping by page journey in",
+    "vite-journey-chunks.ts changed what each closure measures, so the old and",
+    "new closure sizes are not directly comparable.",
+    "",
+    "Closure size in KB (raw / brotli):",
+    "| Closure | ours 10deef32 | upstream limit | new baseline |",
+    "|---|---:|---:|---:|",
+    "| boot | 1597.8 / 395.9 | 1682.1 / 419.1 | 1684.8 / 417.5 |",
+    "| PluginFrontend | 237.6 / 85.0 (old grouping) | 964.0 / 254.0 | 376.0 / 106.2 |",
+    "| ThreadPage | 1259.6 / 383.9 (old grouping) | 2372.0 / 682.6 | 1477.7 / 391.2 |",
+    "| NewThreadPage | 575.2 / 197.9 (old grouping) | 1431.7 / 421.4 | 740.8 / 206.5 |",
+    "",
+    "Boot is 21.6 KB brotli over ours. BOOT-WINBACK-0501 takes boot back to",
+    "at most 396.0 KB brotli after the sync merges."
   ],
-  "maxBootBytes": 1636205,
-  "maxBootBrotliBytes": 405500,
+  "maxBootBytes": 1725279,
+  "maxBootBrotliBytes": 427500,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -524,8 +541,8 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 255000,
-      "maxBrotliBytes": 92000,
+      "maxBytes": 385014,
+      "maxBrotliBytes": 108716,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
         "@radix-ui/react-menubar",
@@ -544,8 +561,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 1302000,
-      "maxBrotliBytes": 400000,
+      "maxBytes": 1513124,
+      "maxBrotliBytes": 400591,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -580,8 +597,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 608000,
-      "maxBrotliBytes": 211000,
+      "maxBytes": 758584,
+      "maxBrotliBytes": 211484,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
