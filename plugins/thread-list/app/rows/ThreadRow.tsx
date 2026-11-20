@@ -675,6 +675,24 @@ function ThreadRowComponent({
     multiSelection === null ? undefined : { dragThreadIds: multiSelection },
   );
   const miniMap = split.layout?.panes ?? null;
+  const diagValues: Record<string, unknown> = {
+    thread, options, isActive, crossProjectId, onProjectSelect, sdk, openThreadInSplit,
+    selectionStore, isSelected, selectionHidesActive, multiSelection, selectionMenu,
+    showProviderIcons, rowMetadataEnabled, showRowMetadata, providers, shortcut,
+    pluginThreadRowStatus, hasComposerDraft, crossProjectName, projectName,
+    visibilityGroup, rename, finishCustomizingActions, split,
+  };
+  const diagPrevious = useRef<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    console.log(`DIAG-MOUNT ${thread.id}`);
+  }, [thread.id]);
+  if (diagPrevious.current !== null) {
+    const changed = Object.keys(diagValues).filter(
+      (key) => !Object.is(diagValues[key], diagPrevious.current?.[key]),
+    );
+    console.log(`DIAG-RENDER ${thread.id} changed=${changed.join(",")}`);
+  }
+  diagPrevious.current = diagValues;
   const isOpenInSplit = miniMap !== null;
   const { startedAt: automationStartedAt, elapsedMinutes } =
     useAutomationWokeAt(
