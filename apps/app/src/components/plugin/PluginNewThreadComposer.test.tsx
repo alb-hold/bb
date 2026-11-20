@@ -17,6 +17,7 @@ import {
 import { Provider } from "jotai";
 
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -176,6 +177,7 @@ const mocks = vi.hoisted(() => ({
   serverAccessReady: true,
   machineProviders: [] as SystemMachineProvider[],
   modelsLoading: false,
+  modelsLoadingListeners: new Set<() => void>(),
   hostPermissionCeiling: "full" as "auto" | "accept-edits" | "full",
   permissionCeiling: undefined as "accept-edits" | "auto" | "full" | undefined,
   modelSessionOptions: undefined as ThreadSessionOption[] | undefined,
@@ -184,6 +186,28 @@ const mocks = vi.hoisted(() => ({
     | Array<{ id: string; capabilities: { supportsNativeTerminal?: boolean } }>
     | undefined,
 }));
+
+function subscribeToModelsLoading(onChange: () => void) {
+  mocks.modelsLoadingListeners.add(onChange);
+  return () => {
+    mocks.modelsLoadingListeners.delete(onChange);
+  };
+}
+
+function useModelsLoadingOrDisabled(enabled: boolean | undefined): boolean {
+  const loading = useSyncExternalStore(
+    subscribeToModelsLoading,
+    () => mocks.modelsLoading,
+  );
+  return enabled === false || loading;
+}
+
+function setModelsLoading(loading: boolean) {
+  act(() => {
+    mocks.modelsLoading = loading;
+    for (const listener of mocks.modelsLoadingListeners) listener();
+  });
+}
 
 
 vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
@@ -236,9 +260,9 @@ vi.mock("@/components/promptbox/NewThreadPromptBox", async (importOriginal) => {
     >();
   function LivePromptBox(props: Record<string, any>) {
     const draft = useSyncExternalStore<PromptDraftState>(
-      props.draftSource.subscribe,
-      props.draftSource.getCurrent,
-      props.draftSource.getCurrent,
+      props.draft.subscribeDraft,
+      props.draft.getCurrent,
+      props.draft.getCurrent,
     );
     mocks.promptBoxProps.push({
       ...props,
@@ -264,7 +288,7 @@ vi.mock("@/components/promptbox/NewThreadPromptBox", async (importOriginal) => {
             {...(props as import("@/components/promptbox/NewThreadPromptBox").NewThreadPromptBoxProps)}
           />
         );
-      if (props.draftSource) return <LivePromptBox {...props} />;
+      if (props.draft) return <LivePromptBox {...props} />;
       mocks.promptBoxProps.push(props);
       return (
         <div data-testid="new-thread-prompt-box">
@@ -442,7 +466,7 @@ vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
     },
   }),
   useSystemExecutionOptions: ({ enabled }: { enabled?: boolean } = {}) =>
-    enabled === false || mocks.modelsLoading
+    useModelsLoadingOrDisabled(enabled)
       ? {
           data: undefined,
           isLoading: enabled !== false,
@@ -1167,7 +1191,9 @@ describe("PluginNewThreadComposer seeding", () => {
     const voice = vi.spyOn(voiceInput, "useVoiceInput");
     const { preloadPromptVoiceRuntime } =
       await import("@/components/promptbox/usePromptVoice");
-    await preloadPromptVoiceRuntime();
+    const preloaded = preloadPromptVoiceRuntime();
+    await settleLazyModules();
+    await preloaded;
     const submitted = vi.fn();
     render(
       <Provider>
@@ -3889,11 +3915,11 @@ describe("NewThreadComposer setSelection", () => {
       ),
     );
     const renders = mocks.rootCompositionRenders.mock.calls.length;
-    act(() => latestPromptBoxProps().onChange("a", []));
+    act(() => typeInPromptBox("a"));
     expect(latestPromptBoxProps().value).toBe("a");
     expect(latestPromptBoxProps().disabled).toBe(false);
     expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
-    act(() => latestPromptBoxProps().onChange("", []));
+    act(() => typeInPromptBox(""));
     expect(latestPromptBoxProps().disabled).toBe(true);
     expect(mocks.rootCompositionRenders).toHaveBeenCalledTimes(renders);
   });
@@ -4092,7 +4118,7 @@ describe("NewThreadComposer setSelection", () => {
 
   it("waits for the model catalog before reporting, bounded by the settle timeout", async () => {
     mocks.modelsLoading = true;
-    const view = render(rootLikeElement("proj_1"));
+    render(rootLikeElement("proj_1"));
     let result: ExperimentalComposerSelection | null = null;
     void currentHost().setSelection!({ permissionMode: "accept-edits" }).then(
       (value) => {
@@ -4106,8 +4132,7 @@ describe("NewThreadComposer setSelection", () => {
     });
     expect(result).toBeNull();
 
-    mocks.modelsLoading = false;
-    view.rerender(rootLikeElement("proj_1"));
+    setModelsLoading(false);
     await waitFor(() => {
       expect(result).not.toBeNull();
     });
@@ -4118,8 +4143,7 @@ describe("NewThreadComposer setSelection", () => {
     });
 
     setComposerSelectionSettleTimeoutForTest(150);
-    mocks.modelsLoading = true;
-    view.rerender(rootLikeElement("proj_1"));
+    setModelsLoading(true);
     const bounded = await settled(
       currentHost().setSelection!({ permissionMode: "full" }),
       2_000,

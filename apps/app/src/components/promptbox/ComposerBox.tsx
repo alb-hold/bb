@@ -223,6 +223,11 @@ export type ComposerBoxProps = Omit<
 
 const COMPOSER_SLOT_KIND = "composer";
 
+interface RetiredComposerRendererMembers {
+  view: ComposerView;
+  key: string;
+}
+
 const ComposerRendererContext =
   createContext<ExperimentalComposerRendererApi | null>(null);
 
@@ -379,7 +384,7 @@ function useComposerRendererHostApi({
   history,
   ...input
 }: ComposerBoxProps): {
-  api: ExperimentalComposerRendererApi;
+  api: ExperimentalComposerRendererApi & RetiredComposerRendererMembers;
   view: ComposerView;
   boxHost: PluginComposerHost;
   rootHost: ComposerRootHost;
@@ -564,7 +569,7 @@ function useComposerRendererHostApi({
 
   const mentionTriggers =
     typeahead.mention.triggers ?? DEFAULT_MENTION_TRIGGERS;
-  const api: ExperimentalComposerRendererApi = {
+  const api: ExperimentalComposerRendererApi & RetiredComposerRendererMembers = {
     input: {
       ...input,
       ...(maxHeight === undefined ? {} : { maxHeight }),
@@ -584,6 +589,8 @@ function useComposerRendererHostApi({
       ),
       internal_DO_NOT_USE_composerSizing: sizing,
     },
+    view: liveView,
+    key,
     inputLocked,
     focusComposerShortcut,
     decorationSources,

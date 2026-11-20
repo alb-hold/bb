@@ -91,6 +91,7 @@ export function ControlledComposerBox({
           entries: history.entries,
           onSelectEntry: history.onSelectEntry,
           resetKey: history.resetKey,
+          promptHistorySearch: history.promptHistorySearch,
         };
   return (
     <ComposerBox

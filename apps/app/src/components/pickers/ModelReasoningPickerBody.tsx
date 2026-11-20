@@ -140,6 +140,7 @@ export function ModelReasoningPickerBody({
     initialPreviewProviderId,
   );
   const [showMoreModels, setShowMoreModels] = useState(false);
+  const [moreModelsOpen, setMoreModelsOpen] = useState(false);
   const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
     useState(selectedProviderId);
   const [browsingHandoff, setHandoffMode] = useState(false);
@@ -158,6 +159,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
+    setMoreModelsOpen(false);
     setSearchQuery("");
     setActiveIndex(-1);
   }
@@ -197,14 +199,15 @@ export function ModelReasoningPickerBody({
     ...providerRouting,
     providerId: isPreviewing ? previewProviderId : undefined,
   });
+  const previewProviders = previewQuery.data?.providers;
   const previewProvider = useMemo(
     () =>
       isPreviewing
-        ? previewQuery.data?.providers.find(
+        ? previewProviders?.find(
             (provider) => provider.id === previewProviderId,
           )
         : undefined,
-    [isPreviewing, previewProviderId, previewQuery.data],
+    [isPreviewing, previewProviderId, previewProviders],
   );
   const previewCatalogIsVerified =
     isPreviewing &&
@@ -393,6 +396,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
+    setMoreModelsOpen(false);
     setSearchQuery("");
     setActiveIndex(-1);
   }, []);
@@ -421,9 +425,11 @@ export function ModelReasoningPickerBody({
             (isPreviewing ? previewSelection?.reasoningLevel : undefined) ??
             reasoningValue,
         });
+        setMoreModelsOpen(false);
         return;
       }
       onModelChange(model);
+      setMoreModelsOpen(false);
       setPreviewProviderId(null);
     },
     [
@@ -448,6 +454,7 @@ export function ModelReasoningPickerBody({
       );
       setHandoffReasoningLevel(null);
       setShowMoreModels(false);
+      setMoreModelsOpen(false);
       setSearchQuery("");
       setActiveIndex(-1);
     },
@@ -505,6 +512,7 @@ export function ModelReasoningPickerBody({
       }
       onReasoningChange(level);
       setPreviewProviderId(null);
+      setMoreModelsOpen(false);
     },
     [
       handoffMode,
@@ -842,6 +850,9 @@ export function ModelReasoningPickerBody({
         isSearching={isSearching}
         showMoreModels={showMoreModels}
         onToggleMoreModels={toggleShowMoreModels}
+        moreModelOptions={filteredMoreModelOptions}
+        moreModelsOpen={moreModelsOpen}
+        onMoreModelsOpenChange={setMoreModelsOpen}
         isPreviewing={isPreviewing}
         modelValue={modelValue}
         selectionBlocked={previewSelectionBlocked}

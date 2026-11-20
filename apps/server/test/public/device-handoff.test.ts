@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -2908,6 +2916,16 @@ describe("device handoff websocket acknowledgement", () => {
           { mode: 0o755 },
         );
         await chmod(join(shimDirectory, "bb"), 0o755);
+        const stubDirectory = join(shimDirectory, "opener-stubs");
+        const stubLog = join(stubDirectory, "calls.log");
+        await mkdir(stubDirectory);
+        for (const name of ["open", "xdg-open", "sensible-browser"]) {
+          await writeFile(
+            join(stubDirectory, name),
+            `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> '${stubLog}'\nexit 1\n`,
+            { mode: 0o755 },
+          );
+        }
         const cliUrl = "https://example.com/cold-start-device-handoff";
         const phoneCliHandoff = nextRealtimeMessage(
           coldStartPhone.socket,
@@ -2969,14 +2987,14 @@ describe("device handoff websocket acknowledgement", () => {
         }
         const cliEnv: NodeJS.ProcessEnv = {
           ...process.env,
-          PATH: `${shimDirectory}:${process.env.PATH ?? ""}`,
+          PATH: `${shimDirectory}:${stubDirectory}:${process.env.PATH ?? ""}`,
+          DISPLAY: ":0",
           BB_CLI_REEXEC: "1",
           BB_DATA_DIR: join(shimDirectory, "data"),
           BB_SERVER_URL: `http://127.0.0.1:${cliProxyAddress.port}`,
           BB_THREAD_ID: thread.id,
           BB_TURN_ID: phoneTurnId!,
         };
-        delete cliEnv.DISPLAY;
         delete cliEnv.WAYLAND_DISPLAY;
         const cliResult = await new Promise<{
           code: number;
@@ -3015,6 +3033,9 @@ describe("device handoff websocket acknowledgement", () => {
           code: 0,
           stderr: "",
         });
+        const openerCalls = await readFile(stubLog, "utf8").catch(() => "");
+        const openerName = process.platform === "darwin" ? "open" : "xdg-open";
+        expect(openerCalls).toBe(`${openerName} ${cliUrl}\n`);
         expect(cliResponses).toEqual([{ status: 200, body: { delivered: 1 } }]);
         expect(
           notifyDeviceHandoff.mock.calls.map((call, index) => ({

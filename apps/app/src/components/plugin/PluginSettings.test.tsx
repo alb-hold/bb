@@ -134,13 +134,12 @@ describe("PluginSettingsForm", () => {
     );
 
     fireEvent.blur(greeting);
-    await completed.promise;
-    const put = requests.find((candidate) => candidate.init?.method === "PUT");
-    expect(put).toBeDefined();
-    await flushNotifications("hi there");
-    expect(put?.url).toBe("/api/v1/plugins/demo/settings");
-    expect(JSON.parse(String(put?.init?.body))).toEqual({
-      values: { greeting: "hi there" },
+    const put = await vi.waitFor(() => {
+      const request = requests.find(
+        (candidate) => candidate.init?.method === "PUT",
+      );
+      expect(request).toBeDefined();
+      return request;
     });
     saveResponse.resolve(
       jsonOk({
@@ -148,6 +147,12 @@ describe("PluginSettingsForm", () => {
         values: { ...SETTINGS_VIEW.values, greeting: "hi there" },
       }),
     );
+    await completed.promise;
+    await flushNotifications("hi there");
+    expect(put?.url).toBe("/api/v1/plugins/demo/settings");
+    expect(JSON.parse(String(put?.init?.body))).toEqual({
+      values: { greeting: "hi there" },
+    });
     await vi.waitFor(() => {
       expect(
         queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),

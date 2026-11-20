@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -262,11 +261,6 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   onComposerLayoutChange,
   onFocusCommand,
 }: DefaultNewThreadComposerProps) {
-  const promptDraft = useSyncExternalStore(
-    draft.subscribeDraft,
-    draft.getCurrent,
-    draft.getCurrent,
-  );
   const isProjectlessPrompt = project?.value === null;
   const providerLabel = execution.provider.options?.find(
     (option) => option.value === execution.provider.selectedId,
@@ -308,7 +302,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         </ComposerBannersSlot>
       </div>
       <PendingComposerSubmission
-        text={promptDraft.text}
+        draft={draft}
         resetKey={history.resetKey}
         loading={Boolean(execution.pending || execution.model.isLoading)}
         disabled={disabled}

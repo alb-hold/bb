@@ -61,7 +61,6 @@ const warmPicker = () => {
   void ModelReasoningPickerBody.preload();
   void ModelReasoningMenu.preload();
 };
-export type MoreModelsOpenedBy = "hover" | "activation";
 export {
   buildModelNavRows,
   type ModelNavRow,

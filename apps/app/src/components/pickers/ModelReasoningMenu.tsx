@@ -1,5 +1,8 @@
 import {
   Fragment,
+  useCallback,
+  useEffect,
+  useRef,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -12,6 +15,7 @@ import {
 } from "@bb/domain";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { COARSE_POINTER_ICON_SIZE_SHRINK_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
+import { Popover, PopoverAnchor, PopoverContent } from "@bb/shared-ui/popover";
 import { Switch } from "@bb/shared-ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@bb/shared-ui/toggle-group";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
@@ -33,7 +37,11 @@ import {
 import type { PickerOption } from "./OptionPicker";
 import { PickerLoadingRows } from "./PickerLoadingRows";
 import { Skeleton } from "@bb/shared-ui/skeleton";
-import { splitModelLabelTag } from "./model-picker-menu";
+import type { ModelPickerOption } from "./model-picker-option";
+import {
+  MODEL_PICKER_MENU_WIDTH_CLASS_NAME,
+  splitModelLabelTag,
+} from "./model-picker-menu";
 import {
   formatModelLoadErrorTitle,
   ModelLoadErrorMessage,
@@ -63,6 +71,9 @@ export interface ModelReasoningMenuProps {
   isSearching: boolean;
   showMoreModels: boolean;
   onToggleMoreModels: () => void;
+  moreModelOptions: readonly ModelPickerOption[];
+  moreModelsOpen: boolean;
+  onMoreModelsOpenChange: (open: boolean) => void;
   isPreviewing: boolean;
   modelValue: string;
   selectionBlocked: boolean;
@@ -97,6 +108,9 @@ export function ModelReasoningMenu({
   isSearching,
   showMoreModels,
   onToggleMoreModels,
+  moreModelOptions,
+  moreModelsOpen,
+  onMoreModelsOpenChange,
   isPreviewing,
   modelValue,
   selectionBlocked,
@@ -125,6 +139,9 @@ export function ModelReasoningMenu({
   )
     ? serviceTierValue
     : DEFAULT_SERVICE_TIER;
+  const openSub = useCallback(() => {
+    onMoreModelsOpenChange(true);
+  }, [onMoreModelsOpenChange]);
 
   return (
     <MenuHoverProvider>
@@ -181,6 +198,20 @@ export function ModelReasoningMenu({
                   />
                 );
               })}
+              {!isCompactViewport &&
+              !isSearching &&
+              moreModelOptions.length > 0 ? (
+                <MoreModelsSubmenu
+                  open={moreModelsOpen}
+                  onOpenChange={onMoreModelsOpenChange}
+                  openSub={openSub}
+                  activeBrandPrefix={brandPrefix}
+                  isPreviewing={isPreviewing}
+                  modelValue={modelValue}
+                  options={moreModelOptions}
+                  onSelect={onModelSelect}
+                />
+              ) : null}
               {isSearching && navRows.length === 0 ? (
                 <div
                   className={cn(
@@ -514,6 +545,117 @@ function MoreModelsToggleRow({
         className="size-3.5 shrink-0"
       />
     </button>
+  );
+}
+
+function MoreModelsSubmenu({
+  open,
+  onOpenChange,
+  openSub,
+  activeBrandPrefix,
+  isPreviewing,
+  modelValue,
+  options,
+  onSelect,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  openSub: () => void;
+  activeBrandPrefix: string | undefined;
+  isPreviewing: boolean;
+  modelValue: string;
+  options: readonly ModelPickerOption[];
+  onSelect: (value: string) => void;
+}) {
+  const { isLastHovered, hoverProps } = useMenuItemHover();
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const focusFirstSubItem = useCallback(() => {
+    window.setTimeout(() => {
+      contentRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }, 0);
+  }, []);
+
+  useEffect(() => {
+    if (open && !isLastHovered) {
+      onOpenChange(false);
+    }
+  }, [open, isLastHovered, onOpenChange]);
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverAnchor asChild>
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={openSub}
+          onPointerEnter={(event) => {
+            hoverProps.onPointerEnter(event);
+            openSub();
+          }}
+          onKeyDown={(event) => {
+            hoverProps.onKeyDown(event);
+
+            if (
+              event.key === "Enter" ||
+              event.key === " " ||
+              event.key === "Spacebar" ||
+              event.key === "ArrowRight"
+            ) {
+              event.preventDefault();
+              openSub();
+              focusFirstSubItem();
+              return;
+            }
+
+            if (event.key === "Escape" || event.key === "ArrowLeft") {
+              event.preventDefault();
+              onOpenChange(false);
+            }
+          }}
+          className={cn(
+            "relative flex w-full cursor-default select-none items-center gap-1 rounded-sm px-2 py-[0.3125rem] text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground",
+            LIST_HOVER_TRANSITION,
+            MENU_ITEM_LAST_HOVERED_CLASS,
+          )}
+          data-last-hovered={hoverProps["data-last-hovered"]}
+        >
+          <span>More models</span>
+          <Icon name="ChevronRight" className="size-3.5 shrink-0" />
+        </button>
+      </PopoverAnchor>
+      <PopoverContent
+        ref={contentRef}
+        side="right"
+        align="start"
+        sideOffset={6}
+        className={cn(
+          "max-h-[min(20rem,var(--radix-popover-content-available-height),calc(100dvh-0.5rem))] overflow-y-auto overscroll-contain p-1 data-[state=closed]:animate-none",
+          MODEL_PICKER_MENU_WIDTH_CLASS_NAME,
+        )}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" || event.key === "ArrowLeft") {
+            event.preventDefault();
+            onOpenChange(false);
+            triggerRef.current?.focus();
+          }
+        }}
+      >
+        <MenuHoverProvider>
+          {options.map((option) => (
+            <MenuRowButton
+              key={option.value}
+              label={stripModelBrandPrefix(option.label, activeBrandPrefix)}
+              qualifier={option.routeProviderId}
+              selected={!isPreviewing && option.value === modelValue}
+              onClick={() => onSelect(option.value)}
+            />
+          ))}
+        </MenuHoverProvider>
+      </PopoverContent>
+    </Popover>
   );
 }
 
