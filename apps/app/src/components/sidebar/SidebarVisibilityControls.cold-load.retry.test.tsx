@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
 const download = await vi.hoisted(async () => {
@@ -58,6 +59,7 @@ it("retries the failed import and updates sidebar visibility", async () => {
   await act(async () => {
     await retryLoaded.promise;
   });
+  await settleLazyModules();
   fireEvent.click(screen.getByRole("checkbox", { name: "Show Review in sidebar" }));
   expect(onVisibleChange).toHaveBeenCalledWith("section:review", true);
   expect(screen.queryByRole("alert")).toBeNull();

@@ -212,8 +212,10 @@ function subscribeToSearchResponse(listener: () => void): () => void {
 }
 
 function setSearchResponse(response: ThreadSearchResponse): void {
-  modeState.searchResponse = response;
-  for (const listener of modeState.searchListeners) listener();
+  act(() => {
+    modeState.searchResponse = response;
+    for (const listener of modeState.searchListeners) listener();
+  });
 }
 
 const routeNavigateMock = vi.hoisted(() => vi.fn());
@@ -645,6 +647,7 @@ describe("CommandPalette", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Search threads" }),
     );
+    await settleLazyModules();
     await flushAnimationFrames();
 
     expect(document.activeElement?.getAttribute("aria-label")).toBe(
