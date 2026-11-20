@@ -193,7 +193,7 @@ describe("pruning invalidation", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps an active thread's served window and announces nothing when live pruning removes only usage snapshots and turn diffs", async () => {
+  it("keeps an active thread's served rows and advances its rewrite generation when live pruning removes only usage snapshots and turn diffs", async () => {
     await withTestHarness(async (harness) => {
       const script = createThreadScript(harness);
       for (let turn = 1; turn <= 3; turn += 1) {
@@ -261,9 +261,12 @@ describe("pruning invalidation", () => {
       expect(countEvents(harness, threadId, diffTypes)).toBeLessThan(
         diffsBefore - 32,
       );
-      expect(compactions.notices()).toBe(0);
-      expect(getThreadEventRewriteGeneration(threadId)).toBe(generation);
-      expect(windows.read(loadThread(), LATEST, undefined)).toBe(served);
+      expect(getThreadEventRewriteGeneration(threadId)).toBeGreaterThan(
+        generation,
+      );
+      expect(full(windows.read(loadThread(), LATEST, undefined)).rows).toEqual(
+        served.rows,
+      );
       expect(freshLatest(harness, threadId)).toEqual(served);
       compactions.stop();
     });

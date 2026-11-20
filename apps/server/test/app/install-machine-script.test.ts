@@ -461,10 +461,10 @@ async function stopFixtureDaemons(
 afterEach(async () => {
   const roots = createdDirectories.splice(0);
   await stopFixtureDaemons(roots);
+  const remaining = remainingFixtureProcesses(roots);
   for (const root of roots) {
     await killProcessesReferencingPath(root);
   }
-  const remaining = remainingFixtureProcesses(roots);
   for (const root of roots) {
     rmSync(root, { force: true, recursive: true });
   }
