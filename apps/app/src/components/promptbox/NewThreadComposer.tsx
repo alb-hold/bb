@@ -336,6 +336,7 @@ function LiveDraftNewThreadPromptBox({
   allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
+  "use no memo";
   const draftStore = useMemo<ComposerDraftStore>(
     () => ({
       getCurrent: promptDraft.getCurrent,

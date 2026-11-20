@@ -28,6 +28,7 @@ const getRuntime = () => runtime !== null;
 const loadVoiceRecordingStore = () => import("@/lib/voice-recording-store");
 
 function LoadedPromptVoiceRuntime(props: ComponentProps<Runtime>) {
+  "use no memo";
   const RuntimeComponent = runtime;
   return RuntimeComponent === null ? null : <RuntimeComponent {...props} />;
 }
