@@ -8,6 +8,7 @@ import {
   type PluginFrontendCandidate,
   type PluginFrontendReconcileDeps,
 } from "./plugin-frontend";
+import { settleLazyModules } from "../test/lazy-modules";
 
 const preloads = vi.hoisted(() => vi.fn(async (_url: string) => true));
 vi.mock("./plugin-module-preload", () => ({
@@ -237,11 +238,13 @@ it("gates cache-busting retries after input during a failed import", async () =>
   expect(fetch).not.toHaveBeenCalled();
 });
 
-it("keeps deferred runtime-slot bundles out of eager modulepreload compilation", async () => {
+it("test-change-reason: the held-import harness holds the lazy radix runtime group the fork loads before the bundle, so it is settled before waiting for the imports; keeps deferred runtime-slot bundles out of eager modulepreload compilation", async () => {
   const h = await start({}, ["radixCheckbox"]);
   h.markHomeComposerReady();
   await vi.advanceTimersByTimeAsync(100);
   expect(h.prefetch).not.toHaveBeenCalled();
+  await settleLazyModules();
+  await vi.advanceTimersByTimeAsync(100);
   await vi.waitFor(() => expect(h.imports).toHaveBeenCalledTimes(3), {
     timeout: 10_000,
   });
