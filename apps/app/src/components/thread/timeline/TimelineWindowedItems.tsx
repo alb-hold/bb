@@ -359,6 +359,7 @@ export function TimelineWindowedItems({
           ? model.total - viewportHeight
           : 0;
     const visible = visibleRange(model, localTop, viewportHeight);
+    console.log(`DIAG-INIT n=${itemKeys.length} pinnedToEnd=${pinnedToEnd} anchor=${anchorIndex} viewport=${viewportHeight} total=${model.total} localTop=${localTop} visible=${JSON.stringify(visible)}`);
     return {
       ...windowAround(
         itemKeys,

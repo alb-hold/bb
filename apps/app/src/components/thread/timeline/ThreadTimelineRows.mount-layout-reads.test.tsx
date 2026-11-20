@@ -44,7 +44,10 @@ function recordLayoutReads() {
   const reads: string[] = [];
   let recording = false;
   const note = (name: string) => {
-    if (recording) reads.push(name);
+    if (recording) {
+      reads.push(name);
+      console.log(`DIAG-READ ${name} ${(new Error().stack ?? "").split("\n").slice(2, 7).join(" | ")}`);
+    }
   };
   for (const [prototype, name] of LAYOUT_GETTERS) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
