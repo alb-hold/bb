@@ -374,6 +374,7 @@ describe("Rail", () => {
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
     "gives %s a matching keyboard tooltip and accessible name", async (label) => {
       renderRail(THREAD_PATH);
+      await settleLazyModules();
       fireEvent.keyDown(document.body, { key: "Tab" });
       act(() => railButton(label).focus());
       expect((await screen.findByRole("tooltip")).textContent).toBe(label);
