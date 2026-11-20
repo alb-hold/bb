@@ -108,10 +108,24 @@ export function useNativeTerminalModeData({
     const nativeProviders = new Set(
       nativeProvidersKey === "" ? [] : nativeProvidersKey.split("\n"),
     );
+    const listedProviderIds = new Map(
+      (providersKey === "" ? [] : providersKey.split("\n")).map((entry) => {
+        const separator = entry.indexOf(":");
+        return [
+          entry.slice(0, separator),
+          entry.slice(separator + 1),
+        ] as const;
+      }),
+    );
     return {
-      providerIdOf: (threadId) =>
-        (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
-          ?.providerId ?? null,
+      providerIdOf: (threadId) => {
+        const listed = listedProviderIds.get(threadId);
+        if (listed !== undefined && listed !== "") return listed;
+        return (
+          (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
+            ?.providerId ?? null
+        );
+      },
       isNativeProvider: (providerId) => nativeProviders.has(providerId),
       modeOf: (threadId) => terminalModes.get(threadId) ?? "unknown",
       switchMode: async (threadId, mode, projectId) => {

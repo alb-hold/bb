@@ -1421,6 +1421,24 @@ export const ThreadRow = memo(ThreadRowComponent, (previous, next) => {
       ),
   );
   const bag = globalThis as unknown as { __rowDiag?: Set<string> };
-  for (const key of changed) (bag.__rowDiag ??= new Set()).add(key);
+  for (const key of changed) {
+    const set = (bag.__rowDiag ??= new Set());
+    if (key === "thread") {
+      set.add(`thread:${next.thread.id}`);
+    } else if (key === "options") {
+      const before = previous.options as unknown as Record<string, unknown>;
+      const after = next.options as unknown as Record<string, unknown>;
+      for (const optionKey of new Set([
+        ...Object.keys(before),
+        ...Object.keys(after),
+      ])) {
+        if (!Object.is(before[optionKey], after[optionKey])) {
+          set.add(`options.${optionKey}`);
+        }
+      }
+    } else {
+      set.add(key);
+    }
+  }
   return changed.length === 0;
 });
