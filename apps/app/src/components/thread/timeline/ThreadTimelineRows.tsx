@@ -126,7 +126,11 @@ import {
   joinSignatureParts,
   timelineRowRenderSignature,
 } from "@bb/client-core";
-import { timelineDetailIdentity } from "./timeline-detail-identity.js";
+import {
+  TimelineDetailSourceContext,
+  timelineDetailIdentity,
+  useTimelineDetailIdentity,
+} from "./timeline-detail-identity.js";
 import {
   TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
   timelineRowContainmentStyle,
@@ -1684,6 +1688,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
   const { projectId, resolveUserAttachmentImageSrc } =
     useTimelineRendererStaticContext();
   const delegationActive = row.status === "pending";
+  const detailIdentity = useTimelineDetailIdentity(row, row.threadId, null);
   const [lastInlineChildRows, setLastInlineChildRows] = useState(row.childRows);
   if (row.childRows !== null && row.childRows !== lastInlineChildRows) {
     setLastInlineChildRows(row.childRows);
@@ -1695,40 +1700,42 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
       streaming={delegationActive}
       className={NESTED_TIMELINE_GROUP_LINE_CLASS_NAME}
     >
-      <div className="flex flex-col gap-3">
-        {row.childRows === null ? (
-          <DeferredDelegationChildRows
-            fallbackRows={lastInlineChildRows}
-            row={row}
-          />
-        ) : row.childRows.length > 0 ? (
-          <TimelineRowsList
-            rows={row.childRows}
-            scopeActive={delegationActive}
-            showAssistantMessageActions={false}
-            compactActivityIntents={false}
-            spacing="nested"
-            threadIsActive={false}
-            unreadDividerPlacement={null}
-          />
-        ) : null}
-        {row.output.trim().length > 0 ? (
-          <ConversationMessageContent
-            attachments={null}
-            id={row.id}
-            projectId={projectId}
-            resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
-            role="assistant"
-            showActions={false}
-            mobileActionDisplay="overflow"
-            streaming={delegationActive}
-            text={row.output}
-            timestamp={row.startedAt}
-            threadId={row.threadId}
-            turnId={row.turnId}
-          />
-        ) : null}
-      </div>
+      <TimelineDetailSourceContext.Provider value={detailIdentity}>
+        <div className="flex flex-col gap-3">
+          {row.childRows === null ? (
+            <DeferredDelegationChildRows
+              fallbackRows={lastInlineChildRows}
+              row={row}
+            />
+          ) : row.childRows.length > 0 ? (
+            <TimelineRowsList
+              rows={row.childRows}
+              scopeActive={delegationActive}
+              showAssistantMessageActions={false}
+              compactActivityIntents={false}
+              spacing="nested"
+              threadIsActive={false}
+              unreadDividerPlacement={null}
+            />
+          ) : null}
+          {row.output.trim().length > 0 ? (
+            <ConversationMessageContent
+              attachments={null}
+              id={row.id}
+              projectId={projectId}
+              resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
+              role="assistant"
+              showActions={false}
+              mobileActionDisplay="overflow"
+              streaming={delegationActive}
+              text={row.output}
+              timestamp={row.startedAt}
+              threadId={row.threadId}
+              turnId={row.turnId}
+            />
+          ) : null}
+        </div>
+      </TimelineDetailSourceContext.Provider>
     </TimelineDetailScroll>
   );
 }
