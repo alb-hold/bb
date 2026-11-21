@@ -1180,7 +1180,18 @@ describe("worktree host entry", () => {
             baseBranch: storedBaseBranch ?? created.baseBranch,
           },
         });
-      return { harness, path: created.path, remove };
+      const releaseUnpublishedCheckout = async () => {
+        const head = (await git(created.path, "rev-parse", "HEAD")).trim();
+        const retained = await remove();
+        expect(retained).toMatchObject({
+          status: "retained",
+          message: expect.stringContaining("not reachable from any remote-tracking branch"),
+        });
+        expect((await git(created.path, "rev-parse", "HEAD")).trim()).toBe(head);
+        expect((await git(sourcePath, "rev-parse", `refs/heads/${branchName}`)).trim()).toBe(head);
+        await git(sourcePath, "worktree", "remove", created.path);
+      };
+      return { harness, path: created.path, remove, releaseUnpublishedCheckout };
     }
 
     it("deletes the branch it created and its config when nothing else would be lost", async ({
@@ -1224,6 +1235,7 @@ describe("worktree host entry", () => {
       const { clone, dataDir } = await createClonedRepository(onTestFinished);
       const owned = await createOwned(clone, dataDir, "bb/unpushed-thr_3");
       const head = await commitIn(owned.path, "local-only.txt");
+      await owned.releaseUnpublishedCheckout();
       expect(await owned.remove()).toEqual(expectedRemoved());
       expect(existsSync(owned.path)).toBe(false);
       expect(
@@ -1242,6 +1254,7 @@ describe("worktree host entry", () => {
       const owned = await createOwned(clone, dataDir, "bb/copied-thr_9");
       const head = await commitIn(owned.path, "copied.txt");
       await git(clone, "branch", "my-copy", head);
+      await owned.releaseUnpublishedCheckout();
       expect(await owned.remove()).toEqual(expectedRemoved());
       expect(
         (await git(clone, "rev-parse", "refs/heads/bb/copied-thr_9")).trim(),
@@ -1249,7 +1262,7 @@ describe("worktree host entry", () => {
       await owned.harness.experimental_dispose();
     });
 
-    it("deletes the branch it created when a post-checkout hook fails the create", async ({
+    it("preserves the branch after a failed Git add (test-change-reason: the fork has no confirmed branch ownership on failed creation)", async ({
       onTestFinished,
     }) => {
       const { root, sourcePath, dataDir } =
@@ -1275,10 +1288,10 @@ describe("worktree host entry", () => {
       expect(
         await git(sourcePath, "worktree", "list", "--porcelain"),
       ).not.toContain("bb/failed-thr_10");
-      expect(await branchExists(sourcePath, "bb/failed-thr_10")).toBe(false);
-      expect(progressText(harness)).toContain(
-        "Deleted branch bb/failed-thr_10",
+      expect((await git(sourcePath, "rev-parse", "refs/heads/bb/failed-thr_10")).trim()).toBe(
+        (await git(sourcePath, "rev-parse", "HEAD")).trim(),
       );
+      expect(progressText(harness)).not.toContain("Deleted branch bb/failed-thr_10");
     });
 
     it.for([
@@ -1307,6 +1320,7 @@ describe("worktree host entry", () => {
         if (scenario === "squash-merged then extended") {
           await commitIn(owned.path, "three.txt");
         }
+        await owned.releaseUnpublishedCheckout();
         expect(await owned.remove()).toEqual(expectedRemoved());
         expect(await branchExists(clone, branch)).toBe(!deleted);
         await owned.harness.experimental_dispose();
@@ -1326,6 +1340,7 @@ describe("worktree host entry", () => {
       await git(sourcePath, "commit", "-m", "Squash (#2)");
       await git(sourcePath, "branch", "-D", branch);
       await git(clone, "fetch", "--prune", "origin");
+      await owned.releaseUnpublishedCheckout();
       expect(await owned.remove()).toEqual(expectedRemoved());
       expect(await branchExists(clone, branch)).toBe(false);
       await owned.harness.experimental_dispose();
@@ -1437,6 +1452,7 @@ describe("worktree host entry", () => {
       const { clone, dataDir } = await createClonedRepository(onTestFinished);
       const owned = await createOwned(clone, dataDir, "bb/kept-thr_8");
       const head = await commitIn(owned.path, "kept.txt");
+      await owned.releaseUnpublishedCheckout();
       await owned.remove();
       expect(
         (

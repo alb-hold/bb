@@ -210,7 +210,7 @@ describe("useEnvironmentPullRequest refreshes", () => {
     });
     expect(
       fake.harness.experimental_hostRpcCalls.map((call) => call.method),
-    ).toEqual(["upstream", "views"]);
+    ).toEqual(["views"]);
     await fake.harness.dispose();
   });
 

@@ -1068,8 +1068,12 @@ export class WorkspaceReads {
       ? mergeBaseData.baseRef
       : null;
     const committedPaths =
-      mergeBaseData?.fileCount === mergeBaseData?.files.length &&
-      mergeBaseData?.lineStatsComplete &&
+      committedBaseRef !== null &&
+      snapshot.parsed.entries.length > 0 &&
+      mergeBaseData !== null &&
+      mergeBaseData.fileCount > 0 &&
+      mergeBaseData.fileCount === mergeBaseData.files.length &&
+      mergeBaseData.lineStatsComplete &&
       mergeBaseData.files.every((file) => file.status === "M")
         ? new Set(mergeBaseData.files.map((file) => file.path))
         : null;
