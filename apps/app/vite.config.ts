@@ -34,6 +34,7 @@ export const sharedViteConfig = {
       "plugin-zod-runtime":
         "packages/plugin-build/src/generated/zod-runtime.generated.ts",
       "plugin-radix-runtime": "src/lib/plugin-radix-runtime.ts",
+      "plugin-toast-runtime": "src/lib/plugin-toast-runtime.ts",
       "plugin-alert-runtime": "@radix-ui/react-alert-dialog/dist/index.mjs",
       "plugin-hover-runtime": "@radix-ui/react-hover-card/dist/index.mjs",
       "plugin-menubar-runtime": "@radix-ui/react-menubar/dist/index.mjs",
@@ -69,6 +70,8 @@ export const sharedViteConfig = {
   cacheDir: "node_modules/.vite/app",
   build: {
     reportCompressedSize: false,
+    minify: "terser",
+    terserOptions: { compress: { passes: 2 } },
     assetsInlineLimit: (filePath) =>
       filePath.includes("/workspace-open-target-icons/") ? false : undefined,
     rolldownOptions: {

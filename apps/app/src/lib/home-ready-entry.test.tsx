@@ -39,7 +39,7 @@ vi.mock("../components/ApplicationUrlDialog", () => ({
   ApplicationUrlDialog: () => null,
 }));
 vi.mock("../components/AppToaster", () => ({ AppToaster: () => null }));
-vi.mock("../components/provider-cli/provider-cli-install-store", () => ({
+vi.mock("../components/provider-cli/provider-cli-install-state", () => ({
   registerProviderCliInstallQueryClient: vi.fn(),
 }));
 vi.mock("../hooks/useTheme", () => ({ initializePreferredTheme: vi.fn() }));
@@ -80,7 +80,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-it("marks visible home before a parallel route boundary finishes suspending", async () => {
+it("test-change-reason: boot subscribes to installer state separately from job execution; marks visible home before a parallel route boundary finishes suspending", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("CSS", {});

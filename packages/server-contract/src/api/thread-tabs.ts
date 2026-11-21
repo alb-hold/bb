@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { terminalCreateTargetSchema } from "./terminals.js";
+import { terminalCreateTargetSchema } from "./terminal-create-target.js";
 
 const THREAD_TAB_ID_MAX_LENGTH = 4_194_304;
 const THREAD_TAB_PATH_MAX_LENGTH = 32_768;

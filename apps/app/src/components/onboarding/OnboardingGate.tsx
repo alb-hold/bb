@@ -7,7 +7,7 @@ import {
   useHostProviderCliStatus,
   useSystemConfig,
 } from "@/hooks/queries/system-queries";
-import { operationFailureReason } from "./onboarding-model";
+import { operationFailureReason } from "./operation-failure-reason";
 import { recordTelemetryEvent } from "./onboarding-telemetry";
 import { OnboardingErrorTelemetry } from "./OnboardingErrorTelemetry";
 

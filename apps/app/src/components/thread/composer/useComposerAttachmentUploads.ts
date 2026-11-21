@@ -4,7 +4,7 @@ import {
   usePendingAttachmentUploads,
   type PendingAttachmentUpload,
 } from "@/components/promptbox/usePendingAttachmentUploads";
-import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
+import { useUploadPromptAttachment } from "@/hooks/mutations/prompt-attachment-mutation";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
 import { PromptAttachmentSizeError } from "@/lib/prompt-attachment-size";
 import { BbHttpError } from "@/lib/sdk";

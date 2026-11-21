@@ -39,12 +39,7 @@ export async function fetchRegistrySkillDetail(args: {
   });
 }
 
-export async function fetchRegistrySkillEntry(
-  id: string,
-  signal?: AbortSignal,
-): Promise<RegistrySkill> {
-  return sdk.skills.registry.get({ registrySkillId: id, signal });
-}
+export { fetchRegistrySkillEntry } from "./registry-skill-entry";
 
 export async function fetchRegistrySkillEntries(
   ids: readonly string[],

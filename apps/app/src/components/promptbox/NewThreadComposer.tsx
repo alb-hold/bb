@@ -11,7 +11,7 @@ import { useInitialPromptDraft } from "./mentions/initial-prompt-draft";
 import { ProviderRequirementBanner } from "./banner/ProviderRequirementBanner";
 import { Button } from "@bb/shared-ui/button";
 import { recordTelemetryEvent } from "@/components/onboarding/onboarding-telemetry";
-import { operationFailureReason } from "@/components/onboarding/onboarding-model";
+import { operationFailureReason } from "@/components/onboarding/operation-failure-reason";
 import {
   getComposerCreateData,
   clearSubmittedComposerCreateData,
@@ -97,7 +97,7 @@ import {
 import { newThreadEnvironmentArgsToSeed } from "@/components/plugin/new-thread-environment-seed";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import { usePluginSlotKind } from "@/lib/plugin-slots";
-import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
+import { useUploadPromptAttachment } from "@/hooks/mutations/prompt-attachment-mutation";
 import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { usePluginList } from "@/hooks/queries/plugin-settings-queries";

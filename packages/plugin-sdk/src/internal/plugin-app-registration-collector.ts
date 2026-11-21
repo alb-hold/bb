@@ -1,3 +1,5 @@
+import { createThreadContextSegmentCollector } from "./thread-context-segment-collector.js";
+import { collectPanelAction, createThreadSlotCollector } from "./thread-slot-collector.js";
 import type { ComponentType } from "react";
 import { z } from "zod";
 import type {
@@ -56,6 +58,7 @@ import {
   requireMessageDirectiveId,
   requireNonEmptyString,
   requireOptionalString,
+  requireOptionalOrder,
   requireProviderId,
   requireSlotId,
   requireTimelineRendererKind,
@@ -355,17 +358,6 @@ export interface CollectedSidebarNavigationRegistration extends ExperimentalSide
   placement: ExperimentalSidebarNavigationPlacement;
 }
 
-function requireOptionalOrder(
-  kind: string,
-  order: number | undefined,
-): { order?: number } {
-  if (order === undefined) return {};
-  if (!Number.isFinite(order)) {
-    throw new Error(`${kind}: "order" must be a finite number`);
-  }
-  return { order };
-}
-
 function collectTitledComponent<C>(
   kind: string,
   seen: Set<string>,
@@ -391,58 +383,12 @@ function collectTitledComponent<C>(
   };
 }
 
-function collectPanelAction<C, Run>(
-  kind: string,
-  seen: Set<string>,
-  registration: {
-    id: string;
-    title: string;
-    icon?: string;
-    component: C;
-    layout?: "padded" | "flush";
-    run?: Run;
-  },
-): {
-  id: string;
-  title: string;
-  icon?: string;
-  component: C;
-  layout?: "padded" | "flush";
-  run?: Run;
-} {
-  const id = requireSlotId(kind, registration?.id);
-  requireUniqueId(kind, seen, id);
-  if (
-    registration.run !== undefined &&
-    typeof registration.run !== "function"
-  ) {
-    throw new Error(`${kind}: "run" must be a function when set`);
-  }
-  if (
-    registration.layout !== undefined &&
-    registration.layout !== "padded" &&
-    registration.layout !== "flush"
-  ) {
-    throw new Error(`${kind}: "layout" must be "padded" or "flush"`);
-  }
-  return {
-    id,
-    title: requireNonEmptyString(kind, "title", registration.title),
-    ...(registration.icon !== undefined
-      ? { icon: requireNonEmptyString(kind, "icon", registration.icon) }
-      : {}),
-    component: requireComponent<C>(kind, registration.component),
-    ...(registration.layout !== undefined
-      ? { layout: registration.layout }
-      : {}),
-    ...(registration.run !== undefined ? { run: registration.run } : {}),
-  };
-}
-
 export function collectPluginAppRegistrations(
   definition: PluginAppDefinition,
   onWarning: (message: string) => void = (message) => console.warn(message),
 ): CollectedPluginAppRegistrations {
+  const segments = createThreadContextSegmentCollector();
+  const threadSlots = createThreadSlotCollector();
   const commandShortcutSchema = createCommandShortcutSchema();
   const sidebarFooterItems: CollectedSidebarFooterItem[] = [];
   const collected: CollectedPluginAppRegistrations = {
@@ -451,7 +397,7 @@ export function collectPluginAppRegistrations(
     appOverlays: [],
     setupGuideSections: [],
     navPanels: [],
-    tabs: [],
+    tabs: threadSlots.tabs,
     get threadPanelActions() {
       return this.tabs.filter(
         (
@@ -470,7 +416,7 @@ export function collectPluginAppRegistrations(
     threadLists: [],
     experimentalSidebarNavigations: [],
     threadHeaderActions: [],
-    threadContextSegments: [],
+    threadContextSegments: segments.threadContextSegments,
     threadInfoRows: [],
     threadRowMetadata: [],
     threadInfoSections: [],
@@ -487,7 +433,7 @@ export function collectPluginAppRegistrations(
     messageDirectives: [],
     codeFenceRenderers: [],
     messageActions: [],
-    messageMetadata: [],
+    messageMetadata: threadSlots.messageMetadata,
     commandPaletteActions: [],
     providerIcons: [],
     icons: [],
@@ -503,7 +449,6 @@ export function collectPluginAppRegistrations(
     appOverlay: new Set<string>(),
     setupGuideSection: new Set<string>(),
     navPanel: new Set<string>(),
-    tab: new Set<string>(),
     newThreadPanelAction: new Set<string>(),
     composerCustomization: new Set<string>(),
     composerPopup: new Set<string>(),
@@ -513,7 +458,6 @@ export function collectPluginAppRegistrations(
     sidebarNavigation: new Set<string>(),
     sidebarHeader: new Set<string>(),
     threadHeaderAction: new Set<string>(),
-    threadContextSegment: new Set<string>(),
     threadInfoRow: new Set<string>(),
     threadRowMetadata: new Set<string>(),
     threadInfoSection: new Set<string>(),
@@ -531,7 +475,6 @@ export function collectPluginAppRegistrations(
     codeFenceRenderer: new Set<string>(),
     codeFenceLanguage: new Set<string>(),
     messageAction: new Set<string>(),
-    messageMetadata: new Set<string>(),
     command: new Set<string>(),
     providerIcon: new Set<string>(),
     timelineRenderer: new Set<string>(),
@@ -539,75 +482,6 @@ export function collectPluginAppRegistrations(
     machineProviderInputs: new Set<string>(),
     contentScript: new Set<string>(),
   };
-
-  function collectTab(value: unknown, legacy = false): void {
-    const registration = value as ExperimentalTabRegistration;
-    const kind = "slots.experimental_tab";
-    const id = requireSlotId(kind, registration?.id);
-    const context = registration.context;
-    if (context?.kind !== "thread" && context?.kind !== "nav-panel") {
-      throw new Error(`${kind}: context must be thread or nav-panel`);
-    }
-    if (context.kind === "nav-panel") requireSlotId(kind, context.panelId);
-    const availability = registration.availability;
-    if (availability !== "fixed" && availability !== "action") {
-      throw new Error(`${kind}: availability must be fixed or action`);
-    }
-    requireUniqueId(
-      kind,
-      seenIds.tab,
-      `${context.kind}/${context.kind === "nav-panel" ? context.panelId : ""}/${id}`,
-    );
-    if (
-      registration.useVisible !== undefined &&
-      typeof registration.useVisible !== "function"
-    ) {
-      throw new Error(`${kind}: useVisible must be a function`);
-    }
-    if (
-      availability === "fixed" &&
-      (registration.run !== undefined || registration.params !== undefined)
-    ) {
-      throw new Error(`${kind}: run and params require action availability`);
-    }
-    const target = registration.experimental_target;
-    if (
-      target !== undefined &&
-      (availability !== "fixed" || typeof target?.validate !== "function")
-    ) {
-      throw new Error(
-        `${kind}: experimental_target requires a fixed tab and a validate function`,
-      );
-    }
-    const validated = {
-      ...registration,
-      ...collectPanelAction<
-        ExperimentalTabRegistration["component"],
-        ExperimentalTabRegistration["run"]
-      >(kind, new Set(), {
-        ...registration,
-        icon:
-          legacy && registration.icon === "" ? undefined : registration.icon,
-      }),
-      icon:
-        legacy && registration.icon === ""
-          ? ""
-          : requireNonEmptyString(kind, "icon", registration.icon),
-      ...(registration.tooltip === undefined
-        ? {}
-        : {
-            tooltip: requireNonEmptyString(
-              kind,
-              "tooltip",
-              registration.tooltip,
-            ),
-          }),
-      ...(availability === "action" && registration.params !== undefined
-        ? { params: z.json().parse(registration.params) }
-        : {}),
-    };
-    collected.tabs.push(validated as ExperimentalTabRegistration);
-  }
 
   function collectCommand(
     kind: string,
@@ -669,14 +543,13 @@ export function collectPluginAppRegistrations(
           new Set(),
           registration,
         );
-        collectTab(
+        threadSlots.collectLegacyTab(
           {
             ...action,
             icon: action.icon ?? "",
             context: { kind: "thread" },
             availability: "action",
           },
-          true,
         );
       } catch (error) {
         onWarning(`Legacy threadPanelAction ignored: ${String(error)}`);
@@ -847,13 +720,12 @@ export function collectPluginAppRegistrations(
                 ? { experimental_target: value.experimental_target }
                 : {}),
             };
-            collectTab(
+            threadSlots.collectLegacyTab(
               {
                 ...tab,
                 context: { kind: "nav-panel", panelId },
                 availability: "fixed",
               },
-              true,
             );
             fixedTabs.push(tab);
           } catch (error) {
@@ -896,9 +768,7 @@ export function collectPluginAppRegistrations(
             : {}),
         });
       },
-      experimental_tab(registration: unknown) {
-        collectTab(registration);
-      },
+      experimental_tab: threadSlots.slots.experimental_tab,
       experimental_newThreadPanelAction(registration) {
         collected.newThreadPanelActions.push(
           collectPanelAction(
@@ -972,44 +842,7 @@ export function collectPluginAppRegistrations(
           ...(headerComponent !== undefined ? { headerComponent } : {}),
         });
       },
-      experimental_threadContextSegment(registration) {
-        const kind = "slots.experimental_threadContextSegment";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.threadContextSegment, id);
-        const optionalComponent = (field: "action" | "details") => {
-          const value = registration[field];
-          if (value === undefined) return {};
-          if (typeof value !== "function") {
-            throw new Error(
-              `${kind}: "${field}" must be a React component function`,
-            );
-          }
-          return { [field]: value };
-        };
-        if (typeof registration.summary !== "function") {
-          throw new Error(
-            `${kind}: "summary" must be a React component function`,
-          );
-        }
-        if (
-          registration.useVisible !== undefined &&
-          typeof registration.useVisible !== "function"
-        ) {
-          throw new Error(`${kind}: "useVisible" must be a function`);
-        }
-        collected.threadContextSegments.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          group: requireNonEmptyString(kind, "group", registration.group),
-          ...requireOptionalOrder(kind, registration.order),
-          summary: registration.summary,
-          ...optionalComponent("action"),
-          ...optionalComponent("details"),
-          ...(registration.useVisible !== undefined
-            ? { useVisible: registration.useVisible }
-            : {}),
-        });
-      },
+      experimental_threadContextSegment: segments.slots.experimental_threadContextSegment,
       experimental_threadRowMetadata(registration) {
         const kind = "slots.experimental_threadRowMetadata";
         const id = requireSlotId(kind, registration?.id);
@@ -1263,22 +1096,7 @@ export function collectPluginAppRegistrations(
           run: registration.run,
         });
       },
-      experimental_messageMetadata(registration) {
-        const kind = "slots.experimental_messageMetadata";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.messageMetadata, id);
-        const placement = registration.placement ?? "above";
-        if (placement !== "above" && placement !== "actionRow") {
-          throw new Error(
-            `${kind}: "placement" must be "above" or "actionRow"`,
-          );
-        }
-        collected.messageMetadata.push({
-          id,
-          placement,
-          component: requireComponent(kind, registration.component),
-        });
-      },
+      experimental_messageMetadata: threadSlots.slots.experimental_messageMetadata,
       commandPaletteAction(registration) {
         registerCommand(registration);
       },

@@ -8,7 +8,7 @@ import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
 import { usePluginCatalogSearch } from "@/hooks/queries/plugin-catalog-queries";
 import { projectSkillsQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
-import { fetchRegistrySkillEntry } from "@/lib/skills-registry";
+import { fetchRegistrySkillEntry } from "@/lib/registry-skill-entry";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import {
   PLUGIN_DETAIL_ROUTE_PATH,

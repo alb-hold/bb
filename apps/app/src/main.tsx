@@ -7,7 +7,7 @@ import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { ApplicationUrlDialog } from "./components/ApplicationUrlDialog";
 import { AppToaster } from "./components/AppToaster";
-import { registerProviderCliInstallQueryClient } from "./components/provider-cli/provider-cli-install-store";
+import { registerProviderCliInstallQueryClient } from "./components/provider-cli/provider-cli-install-state";
 import { initializePreferredTheme } from "./hooks/useTheme";
 import { applyCachedAppThemeCss } from "./lib/app-theme-css";
 import { initializeContentMeasure } from "./lib/content-measure";

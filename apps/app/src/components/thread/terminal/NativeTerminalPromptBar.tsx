@@ -29,7 +29,7 @@ import {
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
 import { appToast } from "@/components/ui/app-toast";
-import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
+import { useUploadPromptAttachment } from "@/hooks/mutations/prompt-attachment-mutation";
 import { useSendNativeTerminalMessage } from "@/hooks/queries/native-terminal-queries";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useWritingAssistanceView } from "@/hooks/queries/writing-assistance-queries";

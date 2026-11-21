@@ -13,10 +13,7 @@ import {
   type ThreadContextSegmentEntry,
   type ThreadContextSegmentPart,
 } from "@/components/plugin/PluginThreadContextSegments";
-import {
-  collectPluginAppRegistrations,
-  definePluginApp,
-} from "@/lib/plugin-app-definition";
+import { createThreadContextSegmentCollector } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 import {
   machineRemovalDescriptions,
   machineRemovalLabels,
@@ -970,24 +967,23 @@ export function ThreadChildThreadsBanner({
 
 const SEGMENT_GROUPS = experimental_THREAD_CONTEXT_SEGMENT_GROUPS;
 
+const app = createThreadContextSegmentCollector();
+app.slots.experimental_threadContextSegment({
+  id: "parent-thread",
+  title: "Parent thread",
+  group: SEGMENT_GROUPS.thread,
+  order: 10,
+  summary: ParentThreadSummary,
+  details: ParentThreadDetails,
+  useVisible: () => {
+    const { parentThread } = useCoreThreadContext();
+    const kind = useThreadContextKind();
+    return parentThread !== null && kind === "banner";
+  },
+});
+
 const coreThreadContextSegments: readonly CoreThreadContextSegment[] =
-  collectPluginAppRegistrations(
-    definePluginApp((app) => {
-      app.slots.experimental_threadContextSegment({
-        id: "parent-thread",
-        title: "Parent thread",
-        group: SEGMENT_GROUPS.thread,
-        order: 10,
-        summary: ParentThreadSummary,
-        details: ParentThreadDetails,
-        useVisible: () => {
-          const { parentThread } = useCoreThreadContext();
-          const kind = useThreadContextKind();
-          return parentThread !== null && kind === "banner";
-        },
-      });
-    }),
-  ).threadContextSegments.map((slot) => ({
+  app.threadContextSegments.map((slot) => ({
     ...slot,
     pluginId: CORE_THREAD_CONTEXT_OWNER,
   }));

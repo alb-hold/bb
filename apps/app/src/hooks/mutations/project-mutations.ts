@@ -4,11 +4,8 @@ import type {
   CreateProjectSourceRequest,
   ReorderProjectRequest,
   UpdateProjectRequest,
-  UploadedPromptAttachment,
 } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
-import { registerLocalAttachmentPreview } from "@/lib/attachment-local-previews";
-import { uploadWithinPromptAttachmentLimit } from "@/lib/prompt-attachment-size";
 import {
   applyProjectCreateResult,
   applyProjectDeleteResult,
@@ -43,11 +40,6 @@ interface UpdateProjectMutationRequest extends UpdateProjectRequest {
 
 interface ReorderProjectMutationRequest extends ReorderProjectRequest {
   id: string;
-}
-
-interface UploadPromptAttachmentRequest {
-  projectId: string;
-  file: File;
 }
 
 export function useCreateProject() {
@@ -205,25 +197,5 @@ export function useDeleteLocalProjectSource() {
         queryClient,
       });
     },
-  });
-}
-
-export function useUploadPromptAttachment() {
-  return useMutation({
-    meta: {
-      errorMessage: "Failed to upload attachment.",
-      showErrorToast: false,
-    },
-    mutationFn: async ({
-      projectId,
-      file,
-    }: UploadPromptAttachmentRequest): Promise<UploadedPromptAttachment> => {
-      const uploaded = await uploadWithinPromptAttachmentLimit(file, () =>
-        sdk.projects.attachments.upload({ projectId, clientFile: file }),
-      );
-      registerLocalAttachmentPreview(uploaded.path, file);
-      return uploaded;
-    },
-    retry: false,
   });
 }

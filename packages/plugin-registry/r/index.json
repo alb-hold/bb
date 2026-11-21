@@ -86,6 +86,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "compact-relative-time",
+      "type": "registry:lib"
+    },
+    {
       "name": "composer-attachment-preview",
       "type": "registry:ui"
     },
