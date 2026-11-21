@@ -233,7 +233,8 @@ export function useThreadUnreadDividerState({
           landOnDivider:
             placement !== null &&
             (currentSnapshotValue?.threadId !== threadId ||
-              currentSnapshotValue.isOpening),
+              currentSnapshotValue.isOpening ||
+              replacedPlaceholder),
           placement,
           threadId,
         };

@@ -13,6 +13,7 @@ interface DividerThread {
 }
 
 interface DividerQuery {
+  bootstrapRefreshed?: boolean;
   isFetchedAfterMount: boolean;
   isPlaceholderData: boolean;
 }
@@ -32,8 +33,8 @@ function renderDividerState(
       const state = useThreadUnreadDividerState({
         bootstrapQuery: {
           dataUpdatedAt: 0,
-          isFetchedAfterMount: false,
-          isSuccess: false,
+          isFetchedAfterMount: query.bootstrapRefreshed === true,
+          isSuccess: query.bootstrapRefreshed === true,
         },
         threadQuery: { ...query, isError: false },
         hasUnseenTimelineEvents: false,
@@ -169,6 +170,24 @@ describe("useThreadUnreadDividerState", () => {
     expect(result.current.placement).toEqual({
       cutoffAt: 300,
     });
+    expect(result.current.landOnDivider).toBe(true);
+  });
+
+  it("lands on fresh unread data when bootstrap refreshed before the thread placeholder was replaced", () => {
+    const read = { id: "thr_a", lastReadAt: 300, latestAttentionAt: 200 };
+    const cached = { isFetchedAfterMount: false, isPlaceholderData: true };
+    const { result, show } = renderDividerState(read, cached);
+
+    show(read, { ...cached, bootstrapRefreshed: true });
+    expect(result.current.ready).toBe(false);
+    expect(result.current.landOnDivider).toBe(false);
+
+    show({ ...read, latestAttentionAt: 400 }, {
+      ...SETTLED_QUERY,
+      bootstrapRefreshed: true,
+    });
+    expect(result.current.ready).toBe(true);
+    expect(result.current.placement).toEqual({ cutoffAt: 300 });
     expect(result.current.landOnDivider).toBe(true);
   });
 
