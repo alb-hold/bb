@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render, screen } from "@testing-library/react";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { createStore, Provider, useAtomValue } from "jotai";
 import { useRef } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -54,15 +55,22 @@ it("measures capacity at observer delivery before paint without a commit geometr
   );
   expect(geometry).not.toHaveBeenCalled();
   expect(store.get(sidebarFooterCapacityAtom)).toBeNull();
+  const readCapacity = vi.fn(() => store.get(sidebarFooterCapacityAtom));
+  const release = observeSharedResize(screen.getByRole("button"), {
+    read: readCapacity,
+    write: () => {},
+  });
   act(() => {
     deliver([], {} as ResizeObserver);
     expect(screen.getByRole("status").textContent).toBe("unmeasured");
   });
+  expect(readCapacity).toHaveReturnedWith(null);
   expect(store.get(sidebarFooterCapacityAtom)).toBe(4);
   expect(screen.getByRole("status").textContent).toBe("4");
   geometry.mockImplementation(() => new DOMRect());
   act(() => deliver([], {} as ResizeObserver));
   expect(store.get(sidebarFooterCapacityAtom)).toBe(4);
+  release();
   view.unmount();
   expect(disconnect).toHaveBeenCalledOnce();
 });

@@ -1,6 +1,9 @@
 import { type RefObject, useLayoutEffect, useState } from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
-import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
+import {
+  observeSharedResize,
+  settleAfterSharedResizeWrites,
+} from "@bb/shared-ui/lib/shared-resize-observer";
 import {
   usePluginSlotKind,
   type PluginSidebarFooterItemSlot,
@@ -34,15 +37,17 @@ export function useMeasureSidebarFooterCapacity(
       const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 0;
       return Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1);
     };
-    const apply = () => {
-      const capacity = measure();
+    const apply = (capacity: number | null) => {
       if (capacity !== null) setCapacity(capacity);
     };
     if (typeof ResizeObserver === "undefined") {
-      const frame = requestAnimationFrame(apply);
+      const frame = requestAnimationFrame(() => apply(measure()));
       return () => cancelAnimationFrame(frame);
     }
-    return observeSharedResize([row, more], { read: apply, write: () => {} });
+    return observeSharedResize([row, more], {
+      read: measure,
+      write: (capacity) => settleAfterSharedResizeWrites(() => apply(capacity)),
+    });
   }, [rowRef, moreRef, setCapacity]);
 }
 
