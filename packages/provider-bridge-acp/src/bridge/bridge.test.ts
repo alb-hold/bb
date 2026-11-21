@@ -1813,7 +1813,7 @@ describe("acp bridge", () => {
       const envVars = {
         FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
         FAKE_ACP_AUTH_OPTIONAL: "1",
-        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: `${noMethodSelected} source-agent-marker`,
         FAKE_ACP_FORK_SESSION: "1",
         FAKE_ACP_FORK_AUTH_REQUIRED: "1",
         FAKE_ACP_RESUME_SESSION: "1",
@@ -1835,7 +1835,8 @@ describe("acp bridge", () => {
       );
 
       expect(response.result).toBeUndefined();
-      expect(response.error).toBeDefined();
+      expect(response.error?.message).toContain("Authentication required");
+      expect(response.error?.message).toContain("source-agent-marker");
       expect(authenticateMethods(requestLog)).toEqual([]);
       expect(
         loggedAcpRequests(requestLog).filter(
@@ -1846,6 +1847,48 @@ describe("acp bridge", () => {
       expect(pids).toHaveLength(2);
       await vi.waitFor(() => {
         expect(pids.filter(isAlive)).toEqual([pids[0]]);
+      });
+    });
+
+    it("retries a fork with no live source on the process that completed Google sign-in", async () => {
+      const launchLog = join(workspaceDir, "fork-signin-launches.txt");
+      const requestLog = join(workspaceDir, "fork-signin-requests.jsonl");
+      const response = await waitForResponse(
+        sendRequest("thread/fork", {
+          threadId: "thread-fork-signin",
+          cwd: workspaceDir,
+          instructionMode: "append",
+          options: executionOptions({
+            providerOptions: {
+              acpLaunchSpec: acpLaunchSpec({
+                envVars: {
+                  FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+                  FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+                  FAKE_ACP_FORK_SESSION: "1",
+                  FAKE_ACP_LAUNCH_LOG: launchLog,
+                  FAKE_ACP_REQUEST_LOG: requestLog,
+                },
+              }),
+            },
+          }),
+          sourceProviderThreadId: "source-not-running-here",
+        }),
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(authenticateMethods(requestLog)).toEqual(["oauth-personal"]);
+      expect(
+        loggedAcpRequests(requestLog).filter(
+          (request) => request.method === "session/fork",
+        ),
+      ).toHaveLength(2);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      expect(providerThreadIdOf(response)).toMatch(
+        new RegExp(`^fake-fork-${pids[1]}-`, "u"),
+      );
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([pids[1]]);
       });
     });
 
