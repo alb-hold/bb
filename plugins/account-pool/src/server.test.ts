@@ -9890,7 +9890,7 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual(["sk-second"]);
     });
 
-    it("keeps an affinity until its account crosses a quota threshold and reports a different next pick", async () => {
+    it("test-change-reason: included usage keeps an affinity beyond the threshold until quota is exhausted, even with a different next pick", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -9928,7 +9928,14 @@ describe("Account Pool plugin", () => {
         sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
       });
       await pool.send("thr_balancer_affinity", "session-affinity");
-      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-second"]);
+      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-first"]);
+
+      setQuota(pool.fixture, pool.fixture.account.id, {
+        sevenDayUtilization: 1,
+        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+      });
+      await pool.send("thr_balancer_affinity", "session-affinity");
+      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-first", "sk-second"]);
     });
 
     it("returns the binding for the requested thread when another thread was used later", async () => {
