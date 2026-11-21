@@ -502,7 +502,7 @@ export function TimelineWindowedItems({
         nodesRef.current.set(key, node);
         record(key, node.getBoundingClientRect().height);
       }
-      let observed = false;
+      const observation = { received: false };
       const unobserve = observeSharedResize(node, {
         read: (entry) => {
           const width = containerRef.current?.clientWidth ?? null;
@@ -519,8 +519,8 @@ export function TimelineWindowedItems({
           observedWidthRef.current = width;
           if (key === null) return;
           const changed = record(key, height);
-          const firstObservation = !observed;
-          observed = true;
+          const firstObservation = !observation.received;
+          observation.received = true;
           if (changed && widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();

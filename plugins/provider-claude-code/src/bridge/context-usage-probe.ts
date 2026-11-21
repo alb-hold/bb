@@ -27,6 +27,7 @@ export async function readIsolatedClaudeContextUsage(args: {
   const strictMcpConfig = strictMcpConfigUnlessManaged();
   const end = new AbortController();
   const pinned = applyPinnedSettings({
+    ...strictMcpConfig,
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     model: options.model,

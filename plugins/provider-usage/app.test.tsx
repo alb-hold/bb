@@ -313,7 +313,7 @@ function selectMachine(
 }
 
 describe("provider usage footer disclosure", () => {
-  it("aggregates every machine", async () => {
+  it("aggregates every machine (test-change-reason: provider icons follow the fork’s account display order)", async () => {
     const { item, slot, fetchMock } = await setupUsageDisclosure();
     expect(slot.getByRole("tabpanel").parentElement!.className).toContain(
       "max-md:pointer-coarse:h-48",
@@ -361,7 +361,7 @@ describe("provider usage footer disclosure", () => {
             .querySelector('[data-provider-kind="agent"]')
             ?.getAttribute("data-provider-id"),
         ),
-    ).toEqual(["codex", "codex", "claude-code"]);
+    ).toEqual(["claude-code", "claude-code", "codex"]);
     await waitFor(() =>
       expect(fetchMock.mock.calls).toEqual(
         expect.arrayContaining([

@@ -49,6 +49,6 @@ export default async function setup(project: TestProject) {
       { timeout: 120_000 },
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }

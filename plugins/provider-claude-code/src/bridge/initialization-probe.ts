@@ -41,6 +41,7 @@ async function withInitializedClaude<T>(
   const strictMcpConfig = strictMcpConfigUnlessManaged();
   const promptEnd = new AbortController();
   const pinned = applyPinnedSettings({
+    ...strictMcpConfig,
     cwd: args.cwd,
     env: args.env,
     persistSession: false,
