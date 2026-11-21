@@ -208,6 +208,7 @@ export function ModelReasoningMenu({
                   activeBrandPrefix={brandPrefix}
                   isPreviewing={isPreviewing}
                   modelValue={modelValue}
+                  selectionBlocked={selectionBlocked}
                   options={moreModelOptions}
                   onSelect={onModelSelect}
                 />
@@ -555,6 +556,7 @@ function MoreModelsSubmenu({
   activeBrandPrefix,
   isPreviewing,
   modelValue,
+  selectionBlocked,
   options,
   onSelect,
 }: {
@@ -564,6 +566,7 @@ function MoreModelsSubmenu({
   activeBrandPrefix: string | undefined;
   isPreviewing: boolean;
   modelValue: string;
+  selectionBlocked: boolean;
   options: readonly ModelPickerOption[];
   onSelect: (value: string) => void;
 }) {
@@ -572,7 +575,9 @@ function MoreModelsSubmenu({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const focusFirstSubItem = useCallback(() => {
     window.setTimeout(() => {
-      contentRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+      contentRef.current
+        ?.querySelector<HTMLButtonElement>("button:enabled")
+        ?.focus();
     }, 0);
   }, []);
 
@@ -650,6 +655,8 @@ function MoreModelsSubmenu({
               label={stripModelBrandPrefix(option.label, activeBrandPrefix)}
               qualifier={option.routeProviderId}
               selected={!isPreviewing && option.value === modelValue}
+              disabled={selectionBlocked || option.disabled === true}
+              disabledReason={option.disabledReason}
               onClick={() => onSelect(option.value)}
             />
           ))}

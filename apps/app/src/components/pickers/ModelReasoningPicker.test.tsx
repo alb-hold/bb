@@ -1738,7 +1738,7 @@ describe("ModelReasoningPicker service tiers", () => {
     expect(screen.queryByRole("switch")).toBeNull();
   });
 
-  it("greys out a model the chosen options rule out and never selects it", () => {
+  it("greys out a model the chosen options rule out and never selects it", async () => {
     const { onModelChange } = renderPicker({
       modelOptions: [
         { value: "gpt-5.5", label: "GPT-5.5" },
@@ -1749,6 +1749,14 @@ describe("ModelReasoningPicker service tiers", () => {
           disabledReason: "Turn off Daybreak to use this model",
         },
         { value: "o3", label: "o3" },
+      ],
+      moreModelOptions: [
+        {
+          value: "legacy",
+          label: "Legacy",
+          disabled: true,
+          disabledReason: "Turn off Daybreak to use Legacy",
+        },
       ],
     });
     const trigger = screen.getByRole("button", {
@@ -1763,6 +1771,13 @@ describe("ModelReasoningPicker service tiers", () => {
       .closest("button");
     expect(blocked?.disabled).toBe(true);
     if (blocked) fireEvent.click(blocked);
+    fireEvent.pointerOver(screen.getByRole("button", { name: "More models" }));
+    const legacy = await screen.findByRole("button", {
+      name: "Legacy",
+    });
+    expect(legacy.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTitle("Turn off Daybreak to use Legacy")).toBeTruthy();
+    fireEvent.click(legacy);
     expect(onModelChange).toHaveBeenCalledTimes(1);
   });
 
