@@ -882,7 +882,7 @@ describe("Account Pool settings", () => {
     expect(slot.queryByText("No usage limits observed yet.")).toBeNull();
   });
 
-  it("dates an exhausted account by the latest threshold-exhausted or refused window", async () => {
+  it("test-change-reason: the included-usage ruling dates exhaustion only by refused windows", async () => {
     const slot = render([
       account({
         status: "exhausted",
@@ -899,7 +899,7 @@ describe("Account Pool settings", () => {
       }),
     ]);
     expect(await slot.findByText("Used up")).toBeTruthy();
-    expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
+    expect(slot.getByText("· back in 2h 0m")).toBeTruthy();
   });
 
   it("renders only the windows a Codex account reports and no Fable slot", async () => {

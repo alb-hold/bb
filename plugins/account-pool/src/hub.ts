@@ -1747,7 +1747,7 @@ export class AccountPoolHub {
             reason: "priority tie-break",
           };
     const selectedBound =
-      bound !== undefined && unattempted.includes(bound) ? bound : null;
+      bound !== undefined && isUnattempted(bound) ? bound : null;
     const anchorId = previousAccountId ?? boundAccountId ?? active?.accountId;
     const anchorIndex = accounts.findIndex(
       (account) => account.id === anchorId,

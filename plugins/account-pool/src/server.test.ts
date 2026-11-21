@@ -315,12 +315,12 @@ describe("Explicit subscription routing", () => {
   );
 
   it.each(["disabled", "exhausted", "removed"])(
-    "never switches away from a selected %s subscription",
+    "test-change-reason: the included-usage ruling requires exhausted quota — never switches away from a selected %s subscription",
     async (state) => {
       const { fixture, second, seen, key, request } = await twoSubscriptions();
       if (state === "exhausted") {
         setQuota(fixture, second.id, {
-          sevenDayUtilization: 0.98,
+          sevenDayUtilization: 1,
           sevenDayResetAt: Date.now() + 3_600_000,
         });
       } else {
@@ -9966,13 +9966,13 @@ describe("Account Pool plugin", () => {
       expect(second).toMatchObject({ boundAccountId: pool.second.id });
     });
 
-    it("reports all enabled accounts in binding headroom when none are eligible", async () => {
+    it("test-change-reason: the included-usage ruling requires exhausted quota — reports all enabled accounts in binding headroom when none are eligible", async () => {
       const pool = await fixtureWithAccounts();
       for (const accountId of [pool.fixture.account.id, pool.second.id])
         setQuota(pool.fixture, accountId, {
-          fiveHourUtilization: 0.98,
+          fiveHourUtilization: 1,
           fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-          sevenDayUtilization: 0.98,
+          sevenDayUtilization: 1,
           sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         });
 
