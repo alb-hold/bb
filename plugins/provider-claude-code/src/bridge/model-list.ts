@@ -192,6 +192,8 @@ const sharedCatalogEntrySchema = z.object({
   discoveredModels: modelRowsSchema,
 });
 
+const sharedCatalogFileSchema = sharedCatalogEntrySchema.extend({ version: z.literal(1) });
+
 export type SharedClaudeCodeModelCatalogEntry = z.infer<
   typeof sharedCatalogEntrySchema
 >;
@@ -213,10 +215,12 @@ export function createSharedClaudeCodeModelCatalogFile(
   return {
     read: async () => {
       try {
-        const parsed = sharedCatalogEntrySchema.safeParse(
+        const parsed = sharedCatalogFileSchema.safeParse(
           JSON.parse(await fs.readFile(filePath, "utf8")),
         );
-        return parsed.success ? parsed.data : null;
+        if (!parsed.success) return null;
+        const { savedAt, discoveredModels } = parsed.data;
+        return { savedAt, discoveredModels };
       } catch {
         return null;
       }
@@ -224,7 +228,7 @@ export function createSharedClaudeCodeModelCatalogFile(
     write: async (entry) => {
       const temporaryPath = `${filePath}.${process.pid}.tmp`;
       await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(temporaryPath, JSON.stringify(entry), "utf8");
+      await fs.writeFile(temporaryPath, JSON.stringify({ ...entry, version: 1 }), "utf8");
       await fs.rename(temporaryPath, filePath);
     },
   };

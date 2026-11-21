@@ -201,20 +201,22 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     const file = join(directory, "catalog.json");
     const catalogA = { accountModels: discovered("claude-opus-5[1m]") };
     const catalogB = { accountModels: discovered("claude-sonnet-5") };
-    writeFileSync(file, JSON.stringify({ savedAt: 10_000, discoveredModels: catalogA }));
     const options = {
       now: () => 10_000,
       ttlMs: 120_000,
       shared: () => createSharedClaudeCodeModelCatalogFile(file),
       renewalDue: () => Promise.resolve(false),
     };
-    for (const catalog of [catalogB, catalogA]) {
-      const probe = vi.fn(async () => catalog);
-      const list = createClaudeCodeBridgeModelListMemo({ ...options, probe });
-      await expect(list()).resolves.toEqual(buildClaudeCodeModels(catalog));
-      await expect(list()).resolves.toEqual(buildClaudeCodeModels(catalog));
-      expect(probe).toHaveBeenCalledOnce();
-      await expect(options.shared().read()).resolves.toBeNull();
+    for (const oldDiscovery of [catalogA.accountModels, catalogA]) {
+      writeFileSync(file, JSON.stringify({ savedAt: 10_000, discoveredModels: oldDiscovery }));
+      for (const catalog of [catalogB, catalogA]) {
+        const probe = vi.fn(async () => catalog);
+        const list = createClaudeCodeBridgeModelListMemo({ ...options, probe });
+        await expect(list()).resolves.toEqual(buildClaudeCodeModels(catalog));
+        await expect(list()).resolves.toEqual(buildClaudeCodeModels(catalog));
+        expect(probe).toHaveBeenCalledOnce();
+        await expect(options.shared().read()).resolves.toBeNull();
+      }
     }
   });
 
