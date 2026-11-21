@@ -5,7 +5,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
-import type { SidebarBootstrapResponse } from "@bb/server-contract";
+import { mergeSidebarBootstrapPages, type SidebarBootstrapResponse } from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
 import { request, requestOptions } from "@/lib/api";
@@ -44,7 +44,6 @@ export async function fetchSidebarNavigation({
 }): Promise<SidebarBootstrapResponse> {
   const previewKey = sidebarNavigationPreviewQueryKey();
   const seenCursors = new Set<string>();
-  const threadsByProject = new Map<string, Map<string, ThreadListEntry>>();
   let cursor: string | undefined;
   let preview: SidebarBootstrapResponse | undefined;
   try {
@@ -60,25 +59,9 @@ export async function fetchSidebarNavigation({
         },
       );
       signal.throwIfAborted();
-      const combine = (
-        project: SidebarBootstrapResponse["personalProject"],
-      ) => {
-        let rows = threadsByProject.get(project.id);
-        if (!rows) {
-          rows = new Map();
-          threadsByProject.set(project.id, rows);
-        }
-        for (const thread of project.threads) rows.set(thread.id, thread);
-        return { ...project, threads: [...rows.values()] };
-      };
-      const snapshot =
-        cursor === undefined && !next
-          ? page
-          : {
-              sections: page.sections,
-              projects: page.projects.map(combine),
-              personalProject: combine(page.personalProject),
-            };
+      const snapshot = cursor === undefined && !next
+        ? page
+        : mergeSidebarBootstrapPages(preview, page);
       if (!next) {
         writeCachedSidebarBootstrap(snapshot);
         return snapshot;
