@@ -953,18 +953,32 @@ describe("@bb/sdk", () => {
           const url = new URL(String(input));
           urls.push(url);
           const first = !url.searchParams.has("cursor");
-          return Response.json({
-            sections: [],
-            projects: [],
-            personalProject: { id: "personal", threads: [{ id: first ? "one" : "two" }] },
-          }, { headers: first ? { "X-BB-Next-Cursor": "continue" } : {} });
+          return Response.json(
+            {
+              sections: [],
+              projects: [],
+              personalProject: {
+                id: "personal",
+                threads: [{ id: first ? "one" : "two" }],
+              },
+            },
+            { headers: first ? { "X-BB-Next-Cursor": "continue" } : {} },
+          );
         },
       }),
     });
     const navigation = await sdk.projects.sidebarBootstrap();
-    expect(navigation.personalProject.threads.map((thread) => thread.id)).toEqual(["one", "two"]);
-    expect(urls.map((url) => [url.searchParams.get("limit"), url.searchParams.get("cursor")])).toEqual([
-      ["100", null], ["100", "continue"],
+    expect(
+      navigation.personalProject.threads.map((thread) => thread.id),
+    ).toEqual(["one", "two"]);
+    expect(
+      urls.map((url) => [
+        url.searchParams.get("limit"),
+        url.searchParams.get("cursor"),
+      ]),
+    ).toEqual([
+      ["100", null],
+      ["100", "continue"],
     ]);
   });
 

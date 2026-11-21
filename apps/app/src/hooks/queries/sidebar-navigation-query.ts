@@ -1,4 +1,8 @@
-import { clearSidebarPreview, publishSidebarPreview, sidebarNavigationPreviewQueryKey } from "../cache-owners/sidebar-preview-cache";
+import {
+  clearSidebarPreview,
+  publishSidebarPreview,
+  sidebarNavigationPreviewQueryKey,
+} from "../cache-owners/sidebar-preview-cache";
 import {
   queryOptions,
   useQuery,
@@ -6,7 +10,10 @@ import {
 } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
-import { mergeSidebarBootstrapPages, type SidebarBootstrapResponse } from "@bb/server-contract";
+import {
+  mergeSidebarBootstrapPages,
+  type SidebarBootstrapResponse,
+} from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
 import { request, requestOptions } from "@/lib/api";
@@ -25,7 +32,6 @@ import {
 } from "@/lib/sidebar-bootstrap-cache";
 
 const SIDEBAR_PAGE_SIZE = 25;
-
 
 export function useSidebarNavigationPreview() {
   return useQuery<SidebarBootstrapResponse | null>({

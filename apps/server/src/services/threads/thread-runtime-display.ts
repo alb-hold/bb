@@ -876,10 +876,9 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
-  const attentionThreadIds = nativeTerminalAttentionThreadIds(
-    deps.db,
-    [...nativeTerminalThreadsById.keys()],
-  );
+  const attentionThreadIds = nativeTerminalAttentionThreadIds(deps.db, [
+    ...nativeTerminalThreadsById.keys(),
+  ]);
   const intendedHosts = listIntendedThreadHosts(deps, args.threads);
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({

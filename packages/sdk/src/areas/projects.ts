@@ -24,7 +24,10 @@ import type {
   WorkspacePathListResponse,
   WorkspaceFileListResponse,
 } from "@bb/server-contract";
-import { mergeSidebarBootstrapPages, uploadedPromptAttachmentSchema } from "@bb/server-contract";
+import {
+  mergeSidebarBootstrapPages,
+  uploadedPromptAttachmentSchema,
+} from "@bb/server-contract";
 import type { ProjectExecutionDefaults, ProjectSource } from "@bb/domain";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
@@ -646,7 +649,8 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
         const nextCursor = response.headers.get("X-BB-Next-Cursor");
         snapshot = mergeSidebarBootstrapPages(snapshot, page);
         if (!nextCursor) return snapshot;
-        if (cursors.has(nextCursor)) throw new Error("Sidebar returned a repeated continuation");
+        if (cursors.has(nextCursor))
+          throw new Error("Sidebar returned a repeated continuation");
         cursors.add(nextCursor);
         cursor = nextCursor;
       }

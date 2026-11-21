@@ -685,7 +685,7 @@ function RootComposeSurface({
 
   const recentNavigation = sidebarNavigationComplete
     ? sidebarNavigation
-    : navigationPreview ?? sidebarNavigation;
+    : (navigationPreview ?? sidebarNavigation);
   const mobileRecentThreads = useMemo(
     () =>
       buildMobileRecentThreads({
