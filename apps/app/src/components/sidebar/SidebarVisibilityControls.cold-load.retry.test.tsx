@@ -18,7 +18,11 @@ const retryLoaded = await vi.hoisted(async () => {
 
 vi.mock("./SidebarVisibilityCustomize", async () => {
   await download.promise;
-  throw new Error("module initialization failed");
+  return {
+    get SidebarVisibilityCustomize() {
+      throw new Error("module initialization failed");
+    },
+  };
 });
 
 afterEach(() => {
@@ -26,7 +30,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("retries the failed import and updates sidebar visibility", async () => {
+it("retries the failed import and updates sidebar visibility (test-change-reason: fail the fork’s split loader on export access)", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onVisibleChange = vi.fn();
   render(
@@ -46,7 +50,7 @@ it("retries the failed import and updates sidebar visibility", async () => {
     </CompactViewportOverrideProvider>,
   );
   await act(async () => {
-    download.reject(new Error("module initialization failed"));
+    download.resolve();
   });
   expect(await screen.findByRole("alert")).toBeDefined();
   vi.resetModules();

@@ -16,14 +16,18 @@ import { appToast } from "@/components/ui/app-toast";
 
 const download = vi.hoisted(() => ({
   imports: 0,
-  reject: (_error: Error) => {},
+  finish: () => {},
 }));
 vi.mock("./usePromptVoiceRuntime", async () => {
   download.imports++;
-  await new Promise<void>((_resolve, reject) => {
-    download.reject = reject;
+  await new Promise<void>((resolve) => {
+    download.finish = resolve;
   });
-  throw new Error("Voice download failed");
+  return {
+    get PromptVoiceRuntime() {
+      throw new Error("Offline");
+    },
+  };
 });
 vi.mock("@/components/ui/app-toast", () => ({ appToast: { error: vi.fn() } }));
 
@@ -44,13 +48,13 @@ function Composer() {
   );
 }
 
-it("keeps the draft and mic usable after a cold download failure, then records on one retry", async () => {
+it("keeps the draft and mic usable after a cold download failure, then records on one retry (test-change-reason: reject the fork’s cold voice loader on export access)", async () => {
   render(<Composer />);
   const mic = screen.getByRole("button", { name: "Mic" });
   mic.focus();
   fireEvent.click(mic);
   await vi.waitFor(() => expect(download.imports).toBe(1));
-  await act(async () => download.reject(new Error("Offline")));
+  await act(async () => download.finish());
   await waitFor(() =>
     expect(appToast.error).toHaveBeenCalledWith(
       "Voice input couldn't load. Try again.",
