@@ -655,7 +655,7 @@ function threadWithPendingInteractionBaseQuery(db: DbConnection) {
       environmentName: environments.name,
       environmentPath: environments.path,
       environmentProviderId: environments.environmentProviderId,
-      hasPendingInteraction: sql<number>`EXISTS (SELECT 1 FROM ${pendingInteractions} WHERE ${pendingInteractions.threadId} = ${threads.id} AND ${pendingInteractions.status} = 'pending')`,
+      hasPendingInteraction: sql<number>`EXISTS (SELECT 1 FROM ${pendingInteractions} WHERE ${pendingInteractions.threadId} = ${threads.id} AND ${pendingInteractions.status} = 'pending')`.mapWith(Boolean),
     })
     .from(threads)
     .leftJoin(environments, eq(threads.environmentId, environments.id));
@@ -667,8 +667,7 @@ export function listActiveVisiblePinnedThreadRootsWithPendingInteractionState(
   const pinnedThreads = threadWithPendingInteractionBaseQuery(db)
     .where(liveThreads(pinnedThreadWhere()))
     .orderBy(asc(threads.pinSortKey), asc(threads.id))
-    .all()
-    .map(toThreadWithPendingInteractionState);
+    .all();
 
   return filterVisiblePinnedThreadRoots({ pinnedThreads });
 }
@@ -699,15 +698,6 @@ export interface ThreadWithPendingInteractionState extends ThreadRow {
   hasPendingInteraction: boolean;
 }
 
-interface ThreadWithPendingInteractionStateRow extends ThreadRow {
-  environmentBranchName: string | null;
-  environmentHostId: string | null;
-  environmentIsWorktree: boolean | null;
-  environmentName: string | null;
-  environmentPath: string | null;
-  environmentProviderId: string | null;
-  hasPendingInteraction: number;
-}
 
 export interface ListLiveThreadsInEnvironmentArgs {
   environmentId: string;
@@ -911,31 +901,6 @@ function buildListThreadsOrderBy(options: ListThreadsOptions) {
     return [desc(threads.archivedAt), desc(threads.id)];
   }
   return buildActiveProjectThreadOrderBy();
-}
-
-function toThreadWithPendingInteractionState(
-  row: ThreadWithPendingInteractionStateRow,
-): ThreadWithPendingInteractionState {
-  const {
-    environmentBranchName,
-    environmentHostId,
-    environmentIsWorktree,
-    environmentName,
-    environmentPath,
-    environmentProviderId,
-    hasPendingInteraction,
-    ...thread
-  } = row;
-  return {
-    ...thread,
-    environmentBranchName,
-    environmentHostId,
-    environmentIsWorktree,
-    environmentName,
-    environmentPath,
-    environmentProviderId,
-    hasPendingInteraction: hasPendingInteraction > 0,
-  };
 }
 
 function listThreadSearchQueryTokens(query: string): string[] {
@@ -1291,7 +1256,6 @@ function hydrateThreadSearchGroup(
     threadWithPendingInteractionBaseQuery(db)
       .where(nonDeletedThreads(inArray(threads.id, threadIds)))
       .all()
-      .map(toThreadWithPendingInteractionState)
       .map((thread) => [thread.id, thread]),
   );
 
@@ -1609,9 +1573,7 @@ export function listThreadsWithPendingInteractionState(
   if (options.offset !== undefined) {
     query = query.offset(options.offset);
   }
-  const rows = query.all();
-
-  return rows.map(toThreadWithPendingInteractionState);
+  return query.all();
 }
 
 export function hasActiveThreadAttention(db: DbConnection): boolean {
@@ -1650,7 +1612,7 @@ export function listThreadsWithPendingInteractionStateForProjects(
     return [];
   }
 
-  const rows = threadWithPendingInteractionBaseQuery(db)
+  return threadWithPendingInteractionBaseQuery(db)
     .where(
       and(
         inArray(threads.projectId, [...options.projectIds]),
@@ -1659,8 +1621,6 @@ export function listThreadsWithPendingInteractionStateForProjects(
     )
     .orderBy(...buildListThreadsOrderBy(options))
     .all();
-
-  return rows.map(toThreadWithPendingInteractionState);
 }
 
 export function listLiveThreadsInEnvironment(
