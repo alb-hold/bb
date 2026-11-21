@@ -1821,6 +1821,10 @@ describe("acp bridge", () => {
         FAKE_ACP_LAUNCH_LOG: launchLog,
         FAKE_ACP_REQUEST_LOG: requestLog,
       };
+      const forkEnvVars = {
+        ...envVars,
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: `${noMethodSelected} fork-process-marker`,
+      };
       const source = await startThread({ envVars });
       const response = await waitForResponse(
         sendRequest("thread/fork", {
@@ -1828,7 +1832,9 @@ describe("acp bridge", () => {
           cwd: workspaceDir,
           instructionMode: "append",
           options: executionOptions({
-            providerOptions: { acpLaunchSpec: acpLaunchSpec({ envVars }) },
+            providerOptions: {
+              acpLaunchSpec: acpLaunchSpec({ envVars: forkEnvVars }),
+            },
           }),
           sourceProviderThreadId: source.providerThreadId,
         }),
@@ -1837,6 +1843,7 @@ describe("acp bridge", () => {
       expect(response.result).toBeUndefined();
       expect(response.error?.message).toContain("Authentication required");
       expect(response.error?.message).toContain("source-agent-marker");
+      expect(response.error?.message).not.toContain("fork-process-marker");
       expect(authenticateMethods(requestLog)).toEqual([]);
       expect(
         loggedAcpRequests(requestLog).filter(
