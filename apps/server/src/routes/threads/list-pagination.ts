@@ -24,7 +24,7 @@ export function parseThreadCursor(cursor: string, archiveOrder: boolean) {
 }
 
 export function finishThreadPage(
-  context: Context,
+  context: Pick<Context, "header">,
   rows: z.infer<typeof cursorRowSchema>[],
   limit: number,
   archiveOrder: boolean,

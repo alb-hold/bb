@@ -86,7 +86,7 @@ export async function fetchSidebarNavigation({
       if (seenCursors.has(next))
         throw new Error("Sidebar returned a repeated continuation");
       seenCursors.add(next);
-      preview = client.setQueryData(previewKey, snapshot);
+      preview = client.setQueryData<SidebarBootstrapResponse>(previewKey, snapshot);
       cursor = next;
     }
   } finally {

@@ -226,7 +226,7 @@ function buildProjectsWithThreadsResponse(
 }
 
 interface SidebarPage {
-  context: Context;
+  context: Pick<Context, "header">;
   limit: number;
   after?: ReturnType<typeof parseThreadCursor>;
 }
