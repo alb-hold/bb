@@ -191,6 +191,7 @@ describe("installPluginRuntime", () => {
   const LAZY_RUNTIME_SLOTS = new Set([
     "pierreDiffs",
     "pierreDiffsReact",
+    "sonner",
     "zod",
     "radixCheckbox",
     "radixSlot",
@@ -209,7 +210,7 @@ describe("installPluginRuntime", () => {
     delete (globalThis as RuntimeHost).__bbPluginRuntime;
   });
 
-  it("exposes the app's eager runtime modules, exactly once", () => {
+  it("test-change-reason: toast support follows the plugin manifest; exposes the app's eager runtime modules, exactly once", () => {
     installPluginRuntime();
     const runtime = (globalThis as RuntimeHost).__bbPluginRuntime as Record<
       string,
@@ -266,15 +267,17 @@ describe("installPluginRuntime", () => {
     >;
     const importModule = vi.fn(async () => {
       expect(runtime.radixMenubar).toBeDefined();
+      expect(runtime.sonner).toMatchObject({ toast: expect.any(Function) });
       expect(runtime.radixSelect).toBeUndefined();
       expect(runtime.vaul).toBeUndefined();
       return { default: {} };
     });
     const prefetchModule = vi.fn();
     expect(runtime.radixMenubar).toBeUndefined();
+    expect(runtime.sonner).toBeUndefined();
     await settleLazyModules(
       loadPluginFrontend(
-        candidate("menubar", { runtimeSlots: ["radixMenubar"] }),
+        candidate("menubar", { runtimeSlots: ["radixMenubar", "sonner"] }),
         { importModule, prefetchModule, warn: vi.fn() },
       ),
     );

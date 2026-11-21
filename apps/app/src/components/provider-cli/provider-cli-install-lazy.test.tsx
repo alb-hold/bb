@@ -19,7 +19,7 @@ const state = vi.hoisted(() => ({
   close: vi.fn(),
 }));
 
-vi.mock("./provider-cli-install-store", () => ({
+vi.mock("./provider-cli-install-state", () => ({
   getProviderCliInstallSnapshot: () => state.snapshot,
   subscribeProviderCliInstalls: (listener: () => void) => {
     state.listeners.add(listener);
@@ -42,7 +42,7 @@ vi.mock("@/components/dialogs/ProviderCliInstallLogDialog", () => {
 
 afterEach(cleanup);
 
-it("loads setup logs on first open and retains the surface after closing", async () => {
+it("test-change-reason: boot subscribes to installer state separately from job execution; loads setup logs on first open and retains the surface after closing", async () => {
   render(<ProviderCliInstallLogDialogHost />);
   expect(state.loaded).not.toHaveBeenCalled();
   act(() => {
