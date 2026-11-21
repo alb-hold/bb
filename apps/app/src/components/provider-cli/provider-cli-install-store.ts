@@ -1,4 +1,18 @@
-import type { QueryClient } from "@tanstack/react-query";
+import {
+  getInstallQueryClient,
+  getProviderCliInstallSnapshot,
+  openProviderCliInstallLog,
+  resetInstallSnapshot,
+  setSnapshot,
+} from "./provider-cli-install-state";
+
+export {
+  closeProviderCliInstallLog,
+  getProviderCliInstallSnapshot,
+  openProviderCliInstallLog,
+  registerProviderCliInstallQueryClient,
+  subscribeProviderCliInstalls,
+} from "./provider-cli-install-state";
 import type {
   ProviderCliInstallActionKind,
   ProviderCliInstallEvent,
@@ -59,13 +73,6 @@ export interface ProviderCliInstallFailure {
   logDialogState: ProviderCliInstallLogDialogState;
 }
 
-interface ProviderCliInstallSnapshot {
-  runningJobKey: string | null;
-  queuedJobKeys: ReadonlySet<string>;
-  logDialogState: ProviderCliInstallLogDialogState | null;
-  failuresByJobKey: ReadonlyMap<string, ProviderCliInstallFailure>;
-}
-
 const PROVIDER_CLI_TITLE_TEMPLATES = {
   failure: {
     install: (displayName) => `${displayName} install failed`,
@@ -80,32 +87,8 @@ const PROVIDER_CLI_TITLE_TEMPLATES = {
   Record<ProviderCliInstallActionKind, ProviderCliTitleTemplate>
 >;
 
-const EMPTY_QUEUED_JOB_KEYS: ReadonlySet<string> = new Set();
-const EMPTY_FAILURES_BY_JOB_KEY: ReadonlyMap<
-  string,
-  ProviderCliInstallFailure
-> = new Map();
-
-const INITIAL_SNAPSHOT: ProviderCliInstallSnapshot = {
-  runningJobKey: null,
-  queuedJobKeys: EMPTY_QUEUED_JOB_KEYS,
-  logDialogState: null,
-  failuresByJobKey: EMPTY_FAILURES_BY_JOB_KEY,
-};
-
-let snapshot: ProviderCliInstallSnapshot = INITIAL_SNAPSHOT;
 let queuedJobs: ProviderCliInstallJob[] = [];
 let trackedServerJobIds = new Set<string>();
-let queryClient: QueryClient | null = null;
-const listeners = new Set<() => void>();
-
-function setSnapshot(patch: Partial<ProviderCliInstallSnapshot>): void {
-  snapshot = { ...snapshot, ...patch };
-  for (const listener of listeners) {
-    listener();
-  }
-}
-
 export function providerCliJobKey(
   hostId: string,
   provider: ProviderCliKey,
@@ -113,38 +96,11 @@ export function providerCliJobKey(
   return `${hostId}:${provider}`;
 }
 
-export function subscribeProviderCliInstalls(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-export function getProviderCliInstallSnapshot(): ProviderCliInstallSnapshot {
-  return snapshot;
-}
-
-export function registerProviderCliInstallQueryClient(
-  client: QueryClient,
-): void {
-  queryClient = client;
-}
-
-export function openProviderCliInstallLog(
-  logDialogState: ProviderCliInstallLogDialogState,
-): void {
-  setSnapshot({ logDialogState });
-}
-
-export function closeProviderCliInstallLog(): void {
-  setSnapshot({ logDialogState: null });
-}
-
 function setQueuedJobKey(jobKey: string, queued: boolean): void {
-  if (queued === snapshot.queuedJobKeys.has(jobKey)) {
+  if (queued === getProviderCliInstallSnapshot().queuedJobKeys.has(jobKey)) {
     return;
   }
-  const next = new Set(snapshot.queuedJobKeys);
+  const next = new Set(getProviderCliInstallSnapshot().queuedJobKeys);
   if (queued) {
     next.add(jobKey);
   } else {
@@ -222,7 +178,7 @@ function setProviderCliInstallFailure(args: {
   failure: ProviderCliInstallFailure;
   jobKey: string;
 }): void {
-  const failuresByJobKey = new Map(snapshot.failuresByJobKey);
+  const failuresByJobKey = new Map(getProviderCliInstallSnapshot().failuresByJobKey);
   failuresByJobKey.delete(args.jobKey);
   failuresByJobKey.set(args.jobKey, args.failure);
   while (failuresByJobKey.size > PROVIDER_CLI_FAILURE_MAX_ENTRIES) {
@@ -301,7 +257,7 @@ function runInstall(job: ProviderCliInstallJob): void {
   };
   recordOutcome("started");
 
-  const failuresByJobKey = new Map(snapshot.failuresByJobKey);
+  const failuresByJobKey = new Map(getProviderCliInstallSnapshot().failuresByJobKey);
   failuresByJobKey.delete(jobKey);
   setSnapshot({ failuresByJobKey, runningJobKey: jobKey });
   const failureToastId = `provider-cli-install-failure:${jobKey}`;
@@ -336,6 +292,7 @@ function runInstall(job: ProviderCliInstallJob): void {
 
       if (completedEvent?.success) {
         recordOutcome("succeeded");
+        const queryClient = getInstallQueryClient();
         if (queryClient !== null) {
           void invalidateHostProviderCliStatus({ queryClient, hostId });
           void invalidateSystemExecutionOptions({ queryClient, hostId });
@@ -380,7 +337,7 @@ function runInstall(job: ProviderCliInstallJob): void {
       });
     })
     .finally(() => {
-      if (snapshot.runningJobKey === jobKey) {
+      if (getProviderCliInstallSnapshot().runningJobKey === jobKey) {
         setSnapshot({ runningJobKey: null });
       }
       processNextInstall();
@@ -413,7 +370,7 @@ async function runServerInstall(
 }
 
 function processNextInstall(): void {
-  if (snapshot.runningJobKey !== null) {
+  if (getProviderCliInstallSnapshot().runningJobKey !== null) {
     return;
   }
   const nextJob = queuedJobs.shift();
@@ -439,7 +396,7 @@ export function adoptProviderCliInstall(args: {
 
 export function startProviderCliInstall(job: ProviderCliInstallJob): void {
   const jobKey = providerCliJobKey(job.hostId, job.issue.provider);
-  if (snapshot.runningJobKey === jobKey) {
+  if (getProviderCliInstallSnapshot().runningJobKey === jobKey) {
     return;
   }
   if (
@@ -450,7 +407,7 @@ export function startProviderCliInstall(job: ProviderCliInstallJob): void {
   ) {
     return;
   }
-  if (snapshot.runningJobKey !== null) {
+  if (getProviderCliInstallSnapshot().runningJobKey !== null) {
     queuedJobs.push(job);
     setQueuedJobKey(jobKey, true);
     return;
@@ -460,9 +417,7 @@ export function startProviderCliInstall(job: ProviderCliInstallJob): void {
 }
 
 export function resetProviderCliInstallStoreForTests(): void {
-  snapshot = INITIAL_SNAPSHOT;
+  resetInstallSnapshot();
   queuedJobs = [];
   trackedServerJobIds = new Set();
-  queryClient = null;
-  listeners.clear();
 }
