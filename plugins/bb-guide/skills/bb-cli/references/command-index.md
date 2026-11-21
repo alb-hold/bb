@@ -164,7 +164,7 @@ Use `--selected-model <model-id>` to discover its reasoning choices and include 
 - `bb terminal start`
 - `bb terminal run`
 - `bb terminal show`
-- `bb terminal attach`
+- `bb terminal attach` — see `bb guide terminals` for input, detach keys and window resizing.
 - `bb terminal send`
 - `bb terminal colors`
 - `bb terminal resize`

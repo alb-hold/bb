@@ -770,7 +770,11 @@ export function registerTerminalCommands(
   terminal
     .command("attach <terminalId>")
     .description("Attach to a running terminal session")
-    .option("--json", "Print machine-readable JSON output")
+    .addHelpText(
+      "after",
+      "\nType or paste to send input. Press Ctrl-B, then lowercase d, to detach and leave the session running. The session uses your terminal size on attach and when your window resizes.",
+    )
+    .option("--json", "Print session metadata without attaching")
     .action(
       action(async (terminalId: string, opts: TerminalJsonOptions) => {
         if (opts.json) {
