@@ -245,7 +245,10 @@ export class ScrollPositionKeeper {
         this.handleScroll();
         return;
       }
-      if (this.layoutScrollPending && this.position.kind !== "bottom") {
+      if (
+        this.position.kind !== "bottom" &&
+        (this.layoutScrollPending || window.performance.now() < this.restoreHoldUntil)
+      ) {
         this.handleScroll();
         return;
       }
@@ -372,7 +375,10 @@ export class ScrollPositionKeeper {
       if (this.pointerMoved) this.extendInput(SESSION_EXTENSION_MS);
     };
     const onWheel = (event: WheelEvent) => {
-      console.log("DIAG-wheel", scrollElement.scrollTop, event.deltaY);
+      const row = scrollElement.querySelector("[data-timeline-items] > [data-timeline-row-id]");
+      for (let node = row; node && node !== scrollElement; node = node.parentElement) {
+        console.log("DIAG-box", node.tagName, node.className, node.getAttribute("style"), node.getBoundingClientRect().height);
+      }
       this.pointerPressReleasedWithoutMove = false;
       this.extendInput(WHEEL_SESSION_MS);
       if (event.deltaY > 0) this.attachIfAtEnd();

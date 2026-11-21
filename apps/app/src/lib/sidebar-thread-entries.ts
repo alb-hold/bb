@@ -114,7 +114,6 @@ function createSidebarThreadEntriesStore(
         changed.push(...listeners);
       }
     }
-    console.log(`DIAG-ENTRY-CHANGED n=${changed.length}`);
     for (const listener of changed) listener();
     for (const listener of [...allListeners]) listener();
   };
@@ -155,13 +154,9 @@ function createSidebarThreadEntriesStore(
         listeners = new Set();
         threadListeners.set(threadId, listeners);
       }
-      const diagWrapped = () => {
-        console.log(`DIAG-ENTRY-NOTIFY ${threadId}`);
-        listener();
-      };
-      listeners.add(diagWrapped);
+      listeners.add(listener);
       return () => {
-        listeners.delete(diagWrapped);
+        listeners.delete(listener);
         if (listeners.size === 0) threadListeners.delete(threadId);
         releaseIfIdle();
       };
