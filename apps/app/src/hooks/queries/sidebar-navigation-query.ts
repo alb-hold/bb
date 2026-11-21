@@ -59,9 +59,7 @@ export async function fetchSidebarNavigation({
         },
       );
       signal.throwIfAborted();
-      const snapshot = cursor === undefined && !next
-        ? page
-        : mergeSidebarBootstrapPages(preview, page);
+      const snapshot = mergeSidebarBootstrapPages(preview, page);
       if (!next) {
         writeCachedSidebarBootstrap(snapshot);
         return snapshot;

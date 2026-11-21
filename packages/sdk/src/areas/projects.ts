@@ -18,14 +18,13 @@ import type {
   PromptHistoryQuery,
   ReorderProjectRequest,
   SidebarBootstrapResponse,
-  mergeSidebarBootstrapPages,
   UpdateProjectRequest,
   UpdateProjectSourceRequest,
   UploadedPromptAttachment,
   WorkspacePathListResponse,
   WorkspaceFileListResponse,
 } from "@bb/server-contract";
-import { uploadedPromptAttachmentSchema } from "@bb/server-contract";
+import { mergeSidebarBootstrapPages, uploadedPromptAttachmentSchema } from "@bb/server-contract";
 import type { ProjectExecutionDefaults, ProjectSource } from "@bb/domain";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
@@ -635,19 +634,16 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
     async sidebarBootstrap(input = {}) {
       const read = (cursor?: string) =>
         transport.api.v1["sidebar-bootstrap"].$get(
-          { query: cursor === undefined ? {} : { cursor } },
+          { query: { limit: "100", cursor } },
           ...signalRequestArgs(input.signal),
         );
       let snapshot: SidebarBootstrapResponse | undefined;
       let cursor: string | undefined;
       const cursors = new Set<string>();
       for (;;) {
-        const response = await transport.resolve(read(snapshot ? cursor : undefined));
+        const response = await transport.resolve(read(cursor));
         const page = await transport.readJson(Promise.resolve(response));
         const nextCursor = response.headers.get("X-BB-Next-Cursor");
-        if (!response.headers.has("X-BB-Pagination") && snapshot === undefined) {
-          return page;
-        }
         snapshot = mergeSidebarBootstrapPages(snapshot, page);
         if (!nextCursor) return snapshot;
         if (cursors.has(nextCursor)) throw new Error("Sidebar returned a repeated continuation");
