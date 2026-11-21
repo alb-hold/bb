@@ -1,3 +1,4 @@
+import { clearSidebarPreview, publishSidebarPreview, sidebarNavigationPreviewQueryKey } from "../cache-owners/sidebar-preview-cache";
 import {
   queryOptions,
   useQuery,
@@ -24,8 +25,7 @@ import {
 } from "@/lib/sidebar-bootstrap-cache";
 
 const SIDEBAR_PAGE_SIZE = 25;
-export const sidebarNavigationPreviewQueryKey = () =>
-  ["sidebarNavigationPreview"] as const;
+
 
 export function useSidebarNavigationPreview() {
   return useQuery<SidebarBootstrapResponse | null>({
@@ -42,7 +42,6 @@ export async function fetchSidebarNavigation({
   client: QueryClient;
   signal: AbortSignal;
 }): Promise<SidebarBootstrapResponse> {
-  const previewKey = sidebarNavigationPreviewQueryKey();
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let preview: SidebarBootstrapResponse | undefined;
@@ -67,12 +66,11 @@ export async function fetchSidebarNavigation({
       if (seenCursors.has(next))
         throw new Error("Sidebar returned a repeated continuation");
       seenCursors.add(next);
-      preview = client.setQueryData<SidebarBootstrapResponse>(previewKey, snapshot);
+      preview = publishSidebarPreview(client, snapshot);
       cursor = next;
     }
   } finally {
-    if (preview && client.getQueryData(previewKey) === preview)
-      client.setQueryData(previewKey, null);
+    if (preview) clearSidebarPreview(client, preview);
   }
 }
 
