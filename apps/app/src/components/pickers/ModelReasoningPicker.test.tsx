@@ -520,6 +520,9 @@ describe("ModelReasoningPicker", () => {
     const legacy = screen.getByRole("button", { name: "Legacy" });
     expect(dialog.contains(legacy)).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(legacy));
+    fireEvent.keyDown(legacy, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(legacy);
+    expect(onReasoningChange).not.toHaveBeenCalled();
     fireEvent.keyDown(legacy, { key: "ArrowLeft" });
     expect(document.activeElement).toBe(moreModels);
     expect(onReasoningChange).not.toHaveBeenCalled();
