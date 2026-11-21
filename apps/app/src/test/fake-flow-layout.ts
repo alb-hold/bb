@@ -67,15 +67,11 @@ export function installFakeFlowLayout({
     snapshot?: Map<Element, number>,
   ): { height: number; bottom: number } => {
     const declaredHeight = ownHeight(element);
-    let height = declaredHeight;
     const style = inlineStyle(element);
+    let used = 0;
     let bottom = top;
-    if (height === null && style !== null && style.height !== "") {
-      height = pixels(style.height);
-    }
     if (declaredHeight === null || snapshot !== undefined) {
       const gap = declaredHeight === null && style !== null ? pixels(style.gap) : 0;
-      let used = 0;
       let first = true;
       for (
         let child = element.firstElementChild;
@@ -88,8 +84,8 @@ export function installFakeFlowLayout({
         used += measured.height + marginBottom(child);
         first = false;
       }
-      height ??= used;
     }
+    const height = declaredHeight ?? (style?.height ? pixels(style.height) : used);
     snapshot?.set(element, height);
     return { height, bottom: Math.max(bottom, top + height) };
   };
