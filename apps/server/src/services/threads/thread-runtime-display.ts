@@ -74,7 +74,7 @@ import {
   type ThreadMessageEditPolicyDeps,
 } from "./thread-message-edit-policy.js";
 import { toThreadEventWithMeta } from "./timeline.js";
-import { intendedThreadHostId } from "./dispatch-attempt.js";
+import { listIntendedThreadHosts } from "./dispatch-attempt.js";
 
 type ThreadRuntimeDisplayHub = Pick<
   NotificationHub,
@@ -880,6 +880,7 @@ export function toThreadListEntryResponses(
     deps.db,
     [...nativeTerminalThreadsById.keys()],
   );
+  const intendedHosts = listIntendedThreadHosts(deps, args.threads);
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
       deps,
@@ -906,7 +907,7 @@ export function toThreadListEntryResponses(
       entry.environmentHostId === null &&
       (thread.status === "pending" || thread.status === "starting")
     ) {
-      entry.environmentHostId = intendedThreadHostId(deps, thread.id);
+      entry.environmentHostId = intendedHosts.get(thread.id) ?? null;
     }
     entry.listIndicator = resolveThreadListIndicator({
       ...threadListIndicatorStateForThread(entry, false, args.now),

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   requestQueuedMachineReadiness,
 } from "./queued-message-dispatch.js";
@@ -7,6 +8,8 @@ import {
 } from "../machines/lifecycle.js";
 import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
+  environments,
+  getThreadStartupContext,
   getEnvironment,
   getAppSettings,
   hasLiveQueuedRetry,
@@ -18,6 +21,7 @@ import {
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
   type RunningThreadRow,
+  type ThreadWithPendingInteractionState,
 } from "@bb/db";
 import {
   createStandaloneBuiltinCompactCommandInput,
@@ -87,7 +91,7 @@ import {
   threadProvisionEnvironmentIntentSchema,
 } from "./thread-startup-store.js";
 import {
-  readThreadProvisionContext,
+  persistedThreadProvisionContextSchema,
   readThreadStartupContextOfKind,
 } from "./thread-startup-store.js";
 import {
@@ -174,15 +178,50 @@ function toPluginEnvironmentIntent(
   }
 }
 
+const startupIntentSchema = z.discriminatedUnion("kind", [
+  pendingThreadStartContextSchema.extend({ kind: z.literal("pending") }),
+  persistedThreadProvisionContextSchema.extend({ kind: z.literal("provisioning") }),
+  z.object({ kind: z.literal("dispatched") }),
+]);
+
+function storedEnvironmentIntent(stored: string | null) {
+  if (stored === null) return null;
+  const context = startupIntentSchema.parse(JSON.parse(stored));
+  if (context.kind === "dispatched") return null;
+  return context.kind === "pending" ? context.environmentIntent : context.request.environmentIntent;
+}
+
 function intendedThreadIntent(
   deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
   threadId: string,
-): PendingThreadStartContext["environmentIntent"] | null {
-  return (
-    readThreadProvisionContext(deps.db, threadId)?.request.environmentIntent ??
-    readPendingThreadStartContext(deps, threadId)?.environmentIntent ??
-    null
-  );
+) {
+  return storedEnvironmentIntent(getThreadStartupContext(deps.db, threadId));
+}
+
+export function listIntendedThreadHosts(
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
+  threads: readonly ThreadWithPendingInteractionState[],
+): Map<string, string> {
+  const hosts = new Map<string, string>();
+  const reused = new Map<string, string>();
+  for (const thread of threads) {
+    if (thread.environmentHostId !== null || (thread.status !== "pending" && thread.status !== "starting")) continue;
+    const intent = storedEnvironmentIntent(thread.startupContext);
+    if (intent?.type === "reuse") reused.set(thread.id, intent.environmentId);
+    else if (intent?.machine.type === "existing") hosts.set(thread.id, intent.machine.hostId);
+  }
+  if (reused.size === 0) return hosts;
+  const ids = JSON.stringify([...new Set(reused.values())]);
+  const rows = deps.db.select({ id: environments.id, hostId: environments.hostId })
+    .from(environments)
+    .where(sql`${environments.id} IN (SELECT value FROM json_each(${ids}))`)
+    .all();
+  const byEnvironment = new Map(rows.map(row => [row.id, row.hostId]));
+  for (const [threadId, environmentId] of reused) {
+    const hostId = byEnvironment.get(environmentId);
+    if (hostId !== undefined) hosts.set(threadId, hostId);
+  }
+  return hosts;
 }
 
 export function intendedThreadEnvironmentIntent(
