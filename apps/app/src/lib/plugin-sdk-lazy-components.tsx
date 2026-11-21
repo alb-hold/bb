@@ -110,3 +110,23 @@ export const PluginPermissionModePicker = defineSplit({
     ),
   loading: () => null,
 });
+
+export const ExperimentalFilePreview = defineSplit({
+  id: "sdk-ExperimentalFilePreview",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/ExperimentalFilePreview").then(
+      (module) => module.ExperimentalFilePreview,
+    ),
+  loading: () => null,
+});
+
+export const CollapsibleStackCard = defineSplit({
+  id: "sdk-CollapsibleStackCard",
+  tier: "intent",
+  load: () =>
+    import("@/components/promptbox/banner/CollapsibleStackCard").then(
+      (module) => module.CollapsibleStackCard,
+    ),
+  loading: () => null,
+});

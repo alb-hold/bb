@@ -12,11 +12,25 @@ import {
 } from "react";
 import type {
   ComposerSelection,
+  ExperimentalComposerRendererApi,
   ComposerView,
   PluginComposerScope,
 } from "@get-bb/plugin-sdk";
 import { isComposerDraftEmpty } from "@get-bb/plugin-sdk/internal/composer-view";
 import type { PromptDraftState } from "@bb/client-core";
+
+export const ComposerRendererContext =
+  createContext<ExperimentalComposerRendererApi | null>(null);
+
+export function useComposerRendererApi(): ExperimentalComposerRendererApi {
+  const api = useContext(ComposerRendererContext);
+  if (api === null) {
+    throw new Error(
+      "experimental_useComposerRenderer() is only available inside an experimental_composer component.",
+    );
+  }
+  return api;
+}
 
 export interface PluginComposerHost {
   scope: PluginComposerScope;

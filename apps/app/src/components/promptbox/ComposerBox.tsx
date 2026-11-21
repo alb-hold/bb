@@ -1,7 +1,6 @@
 import { ProgressiveComposer } from "./ProgressiveComposerSplit";
 import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
-  createContext,
   useCallback,
   useContext,
   useEffect,
@@ -50,6 +49,7 @@ import {
   resetCrashedPluginSlots,
 } from "@/components/plugin/PluginSlotMount";
 import {
+  ComposerRendererContext,
   composerViewDraft,
   PluginComposerHostProvider,
   PluginComposerViewProvider,
@@ -221,24 +221,13 @@ export type ComposerBoxProps = Omit<
   focusEndKey?: string | number;
 };
 
+export { useComposerRendererApi } from "@/components/plugin/plugin-composer-host";
+
 const COMPOSER_SLOT_KIND = "composer";
 
 interface RetiredComposerRendererMembers {
   view: ComposerView;
   key: string;
-}
-
-const ComposerRendererContext =
-  createContext<ExperimentalComposerRendererApi | null>(null);
-
-export function useComposerRendererApi(): ExperimentalComposerRendererApi {
-  const api = useContext(ComposerRendererContext);
-  if (api === null) {
-    throw new Error(
-      "experimental_useComposerRenderer() is only available inside an experimental_composer component.",
-    );
-  }
-  return api;
 }
 
 function composerVoice(

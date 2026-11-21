@@ -98,12 +98,10 @@ export const sharedViteConfig = {
             ...journeyChunkGroups(appDir, [
               {
                 name: "workspace-route",
-                entriesAware: true,
                 entries: ["src/views/SplitWorkspaceRoute.tsx"],
               },
               {
                 name: "plugin-frontend",
-                entriesAware: true,
                 entries: ["src/lib/plugin-frontend.ts"],
               },
               {

@@ -14,11 +14,9 @@ interface ModuleGraph {
 export interface JourneyChunk {
   name: string;
   entries: readonly string[];
-  entriesAware?: boolean;
 }
 
 export interface JourneyChunkGroup {
-  entriesAware?: boolean;
   name: (moduleId: string, graph: ModuleGraph) => string | null;
 }
 
@@ -246,8 +244,7 @@ export function journeyChunkGroups(
     assignment ??= assignJourneyChunks(graph, absolute);
     return assignment.get(moduleId);
   };
-  return journeys.map(({ name, entriesAware }) => ({
-    entriesAware,
+  return journeys.map(({ name }) => ({
     name: (moduleId, graph) =>
       chunkOf(moduleId, graph) === name ? name : null,
   }));

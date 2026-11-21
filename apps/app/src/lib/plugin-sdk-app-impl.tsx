@@ -1,4 +1,6 @@
 import {
+  ExperimentalFilePreview,
+  CollapsibleStackCard,
   PluginBranchPicker,
   PluginNewThreadComposer,
   ImageLightbox,
@@ -25,7 +27,7 @@ import {
   usePluginBranches,
   usePluginCheckoutState,
 } from "@/components/plugin/usePluginBranchPickerState";
-import { useComposerRendererApi } from "@/components/promptbox/ComposerBox";
+import { useComposerRendererApi } from "@/components/plugin/plugin-composer-host";
 import {
   ComposerRoot,
   useComposerContributions,
@@ -53,9 +55,7 @@ import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
-import { ExperimentalFilePreview } from "@/components/plugin/ExperimentalFilePreview";
 import { usePluginId } from "@/components/plugin/plugin-context";
-import { CollapsibleStackCard } from "@/components/promptbox/banner/CollapsibleStackCard";
 import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
 import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
 import { definePluginApp } from "./plugin-app-definition";
