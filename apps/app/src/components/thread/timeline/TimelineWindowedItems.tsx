@@ -596,9 +596,13 @@ export function TimelineWindowedItems({
         positionKeeper.getViewportHeight() || scrollElement.clientHeight;
       if (viewportHeight <= 0) return;
       const model = renderedModel();
-      const localTop =
+      const measuredTop =
         scrollElement.getBoundingClientRect().top -
         container.getBoundingClientRect().top;
+      const localTop =
+        positionKeeper.isAttached() && !positionKeeper.hasUserScrolled()
+          ? Math.max(measuredTop, model.total - viewportHeight)
+          : measuredTop;
       const visible = visibleRange(model, localTop, viewportHeight);
       if (visible.end < visible.start) return;
       const nextWidths = new Map<string, number>();
