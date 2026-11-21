@@ -34,7 +34,7 @@ only app clients viewing the calling thread, including when it opens a different
 thread, and `--all` sends to every open app client.
 
 `bb terminal attach <id>` forwards typed and pasted input. Press Ctrl-B, then
-lowercase d, to detach and leave the session running. Attach takes size control
+lowercase d, to detach and leave the session running. If both keys arrive in one input chunk, bb forwards them. Attach takes size control
 on connection and when your window resizes. With `--json`, it prints session
 metadata without attaching.
 
