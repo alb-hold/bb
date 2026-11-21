@@ -19,3 +19,4 @@ export {
   type CollectedSidebarNavigationRegistration,
   collectPluginAppRegistrations,
 } from "./plugin-app-registration-collector.js";
+export { createThreadSlotCollector } from "./thread-slot-collector.js";

@@ -1,9 +1,6 @@
 import type { ExperimentalMessageMetadataProps } from "@get-bb/plugin-sdk";
 import { defineSplit } from "@/lib/define-split";
-import {
-  collectPluginAppRegistrations,
-  definePluginApp,
-} from "@/lib/plugin-app-definition";
+import { createThreadSlotCollector } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 const InlineMessageTime = defineSplit<ExperimentalMessageMetadataProps>({
   id: "inline-message-time",
   load: () =>
@@ -12,12 +9,11 @@ const InlineMessageTime = defineSplit<ExperimentalMessageMetadataProps>({
   tier: "intent",
 });
 
-export const coreMessageMetadata = collectPluginAppRegistrations(
-  definePluginApp((app) => {
-    app.slots.experimental_messageMetadata({
-      id: "time",
-      placement: "actionRow",
-      component: InlineMessageTime,
-    });
-  }),
-).messageMetadata.map((slot) => ({ ...slot, pluginId: "core", generation: 0 }));
+const app = createThreadSlotCollector();
+app.slots.experimental_messageMetadata({
+  id: "time",
+  placement: "actionRow",
+  component: InlineMessageTime,
+});
+
+export const coreMessageMetadata = app.messageMetadata.map((slot) => ({ ...slot, pluginId: "core", generation: 0 }));
