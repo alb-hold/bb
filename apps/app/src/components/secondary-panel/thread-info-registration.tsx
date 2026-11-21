@@ -19,4 +19,8 @@ app.slots.experimental_tab({
   component: ThreadInfoFixedTabContent,
 });
 
-export const coreTabs = app.tabs.map((slot) => ({ ...slot, pluginId: "core", generation: 0 }));
+export const coreTabs = app.tabs.map((slot) => ({
+  ...slot,
+  pluginId: "core",
+  generation: 0,
+}));

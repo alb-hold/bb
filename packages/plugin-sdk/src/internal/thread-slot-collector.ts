@@ -1,6 +1,7 @@
 import type {
   ExperimentalMessageMetadataRegistration,
   ExperimentalTabRegistration,
+  PluginAppDefinition,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -133,30 +134,34 @@ export function createThreadSlotCollector() {
     tabs.push(validated as ExperimentalTabRegistration);
   }
 
+  const slots: Pick<
+    Parameters<PluginAppDefinition["setup"]>[0]["slots"],
+    "experimental_tab" | "experimental_messageMetadata"
+  > = {
+    experimental_tab(value: unknown) {
+      collectTab(value);
+    },
+    experimental_messageMetadata(registration) {
+      const kind = "slots.experimental_messageMetadata";
+      const id = requireSlotId(kind, registration?.id);
+      requireUniqueId(kind, metadataIds, id);
+      const placement = registration.placement ?? "above";
+      if (placement !== "above" && placement !== "actionRow") {
+        throw new Error(
+          `${kind}: "placement" must be "above" or "actionRow"`,
+        );
+      }
+      messageMetadata.push({
+        id,
+        placement,
+        component: requireComponent(kind, registration.component),
+      });
+    },
+  };
   return {
+    slots,
     tabs,
     messageMetadata,
     collectLegacyTab: (value: unknown) => collectTab(value, true),
-    slots: {
-      experimental_tab(value: ExperimentalTabRegistration) {
-        collectTab(value);
-      },
-      experimental_messageMetadata(registration: ExperimentalMessageMetadataRegistration) {
-        const kind = "slots.experimental_messageMetadata";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, metadataIds, id);
-        const placement = registration.placement ?? "above";
-        if (placement !== "above" && placement !== "actionRow") {
-          throw new Error(
-            `${kind}: "placement" must be "above" or "actionRow"`,
-          );
-        }
-        messageMetadata.push({
-          id,
-          placement,
-          component: requireComponent(kind, registration.component),
-        });
-      },
-    },
   };
 }

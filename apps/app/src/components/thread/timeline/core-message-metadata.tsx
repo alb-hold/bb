@@ -1,6 +1,7 @@
 import type { ExperimentalMessageMetadataProps } from "@get-bb/plugin-sdk";
 import { defineSplit } from "@/lib/define-split";
 import { createThreadSlotCollector } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
+
 const InlineMessageTime = defineSplit<ExperimentalMessageMetadataProps>({
   id: "inline-message-time",
   load: () =>
@@ -16,4 +17,8 @@ app.slots.experimental_messageMetadata({
   component: InlineMessageTime,
 });
 
-export const coreMessageMetadata = app.messageMetadata.map((slot) => ({ ...slot, pluginId: "core", generation: 0 }));
+export const coreMessageMetadata = app.messageMetadata.map((slot) => ({
+  ...slot,
+  pluginId: "core",
+  generation: 0,
+}));
