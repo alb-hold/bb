@@ -11,6 +11,7 @@ import {
   desc,
   eq,
   getTableColumns,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -521,6 +522,7 @@ export interface ListThreadsOptions {
   threadIds?: readonly string[];
   limit?: number;
   offset?: number;
+  after?: Pick<ThreadRow, "id" | "projectId" | "createdAt" | "pinnedAt" | "pinSortKey" | "archivedAt">;
   includeHidden?: boolean;
 }
 
@@ -760,6 +762,22 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
   return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
+function afterThreadListCursor(options: ListThreadsOptions) {
+  const row = options.after;
+  if (!row) return undefined;
+  if (options.archived === true && row.archivedAt !== null) {
+    return sql`(${threads.archivedAt}, ${threads.id}) < (${row.archivedAt}, ${row.id})`;
+  }
+  const laterInProject = row.pinnedAt === null
+    ? and(isNull(threads.pinnedAt), sql`(${threads.createdAt}, ${threads.id}) < (${row.createdAt}, ${row.id})`)
+    : or(
+        isNull(threads.pinnedAt),
+        row.pinSortKey === null ? isNotNull(threads.pinSortKey) : gt(threads.pinSortKey, row.pinSortKey),
+        and(sql`${threads.pinSortKey} IS ${row.pinSortKey}`, gt(threads.id, row.id)),
+      );
+  return or(gt(threads.projectId, row.projectId), and(eq(threads.projectId, row.projectId), laterInProject));
+}
+
 function buildListThreadsFilters(
   options: ListThreadsOptions,
   threadIdsFilter = options.threadIds === undefined
@@ -767,6 +785,7 @@ function buildListThreadsFilters(
     : inArray(threads.id, [...options.threadIds]),
 ) {
   return [
+    afterThreadListCursor(options),
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
     options.environmentId
       ? eq(threads.environmentId, options.environmentId)

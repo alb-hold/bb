@@ -54,8 +54,8 @@ Listing:
     --parent <id|none>                     Count one thread's children, or 'none' for threads with no parent
     --by <dimension>                       Group the count by host, provider, or project
 
-  Counting happens in the database, so use it instead of listing threads and
-  counting rows: `bb thread list` pages a bounded window and would miscount
+  Counting happens in the database. Use it to get totals without downloading
+  and counting every matching thread
   (SDK: `threads.count({ status, hostId, providerId, projectId, parentThreadId, groupBy })`).
   Archived, deleted, and hidden threads are excluded. Without --by the command
   prints one number; with --by it prints a count per group (threads with no

@@ -1561,7 +1561,7 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true",
+        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true&limit=100",
       },
     ]);
   });
@@ -2156,7 +2156,7 @@ describe("@bb/sdk", () => {
     });
 
     expect(queue.requests[0]?.url).toBe(
-      "http://bb.test/api/v1/threads?includeHidden=true",
+      "http://bb.test/api/v1/threads?includeHidden=true&limit=100",
     );
     expect(JSON.parse(queue.requests[1]?.bodyText ?? "{}")).toEqual({
       visibility: "hidden",

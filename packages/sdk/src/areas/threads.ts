@@ -1465,14 +1465,45 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     queue,
     interactions,
     async list(input) {
-      return transport
-        .readJson(
-          transport.api.v1.threads.$get(
-            { query: listQuery(input) },
-            ...signalRequestArgs(input?.signal),
-          ),
-        )
-        .then((threads) => threads.map(withEffectiveDisplayStatus));
+      const query = listQuery(input);
+      const read = (params: ThreadListQuery) =>
+        transport.api.v1.threads.$get(
+          { query: params },
+          ...signalRequestArgs(input?.signal),
+        );
+      if (input?.limit !== undefined || input?.threadIds !== undefined) {
+        return (await transport.readJson(read(query))).map(
+          withEffectiveDisplayStatus,
+        );
+      }
+      const pageSize = 100;
+      const pages: ThreadListResult = [];
+      const seenCursors = new Set<string>();
+      let params: ThreadListQuery = { ...query, limit: String(pageSize) };
+      for (;;) {
+        const response = await transport.resolve(read(params));
+        const rows = await transport.readJson(Promise.resolve(response));
+        if (
+          !response.headers.has("X-BB-Pagination") &&
+          rows.length === pageSize
+        ) {
+          return (await transport.readJson(read(query))).map(
+            withEffectiveDisplayStatus,
+          );
+        }
+        pages.push(...rows.map(withEffectiveDisplayStatus));
+        const cursor = response.headers.get("X-BB-Next-Cursor");
+        if (!cursor) return pages;
+        if (seenCursors.has(cursor))
+          throw new Error("Thread list returned a repeated cursor");
+        seenCursors.add(cursor);
+        params = {
+          ...query,
+          offset: undefined,
+          limit: String(pageSize),
+          cursor,
+        };
+      }
     },
     async markRead(input) {
       return transport

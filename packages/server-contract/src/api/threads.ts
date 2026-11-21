@@ -1105,6 +1105,7 @@ export const threadListQuerySchema = z.object({
     )
     .optional(),
   limit: z.string().regex(/^\d+$/).optional(),
+  cursor: z.string().min(1).max(8192).optional(),
   offset: z.string().regex(/^\d+$/).optional(),
 });
 export type ThreadListQuery = z.infer<typeof threadListQuerySchema>;
