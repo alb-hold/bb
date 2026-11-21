@@ -11801,7 +11801,7 @@ it("drains a streamed response before disposing the owned transport", async () =
   }
 });
 
-it("publishes pooled subscription usage without a display plugin and does not invent unobserved utilization", async () => {
+it("publishes pooled subscription usage without a display plugin and does not invent unobserved utilization (test-change-reason: the fork reports observed usage for routed API-key accounts)", async () => {
   const upstream = await startUpstream((_request, response) => {
     response.end();
   });
@@ -11815,6 +11815,15 @@ it("publishes pooled subscription usage without a display plugin and does not in
     },
   });
   const apiKeyAccount = await addApiAccount(fixture, "sk-pay-as-you-go");
+  const measurement = await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+    resourceId: apiKeyAccount.id,
+    refresh: false,
+  });
+  expect(measurement).toMatchObject({
+    observedAt: null,
+    usage: { status: "error", message: "Usage has not been observed for this account." },
+  });
+  await fixture.host.harness.behavior.callRpc("account.disable", { id: apiKeyAccount.id });
   const inventory = usageResourceListSchema.parse(
     await fixture.host.harness.behavior.callRpc(usageListMethod, {}),
   );

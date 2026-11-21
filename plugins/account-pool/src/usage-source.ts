@@ -111,7 +111,7 @@ export function registerUsageSource(
         );
         const accounts = foldSubscriptions(
           routed
-            .filter(({ account, enabled }) => enabled && account.enabled && account.kind === "oauth")
+            .filter(({ account, enabled }) => enabled && account.enabled)
             .map(({ account }) => account)
             .sort((left, right) => left.priority - right.priority),
         );
@@ -145,24 +145,26 @@ export function registerUsageSource(
             reject(error);
           }, 30_000);
         });
-        const read = async () => {
+        const getAccount = async () => {
+          const account = (await hub.status(signal)).accounts.find(
+            (account) => account.id === resourceId,
+          );
           if (
-            !(await hub.status(signal)).accounts.some(
-              (account) => account.kind === "oauth" && account.id === resourceId,
-            )
+            account === undefined ||
+            (account.kind !== "oauth" &&
+              (!account.enabled || !(await isRoutingEnabled(account.provider))))
           )
             throw new Error("Usage resource no longer exists.");
+          return account;
+        };
+        const read = async () => {
+          await getAccount();
           signal.throwIfAborted();
           if (!(await hub.refreshUsage(resourceId, refresh, signal)) && refresh)
             throw new Error("Could not refresh account usage. Try again.");
           signal.throwIfAborted();
-          const { accounts: allAccounts } = await hub.status(signal);
+          const accounts = [await getAccount()];
           signal.throwIfAborted();
-          const accounts = allAccounts.filter(
-            (account) => account.id === resourceId,
-          );
-          if (accounts.length === 0)
-            throw new Error("Usage resource no longer exists.");
           const display = await hub.display(signal);
           signal.throwIfAborted();
           const resources: UsageResource[] = accounts.map((account) => {
@@ -270,7 +272,7 @@ export function registerUsageSource(
     {
       experimental_discoverable: true,
       experimental_description:
-        "Usage windows for enabled signed-in subscription accounts with Account Pooler routing enabled. API-key accounts have no usage windows and are not listed.",
+        "Usage windows for enabled, routed Account Pooler accounts. API-key accounts report quota observed from provider responses.",
     },
   );
 }
