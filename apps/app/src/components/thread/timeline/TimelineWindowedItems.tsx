@@ -589,6 +589,7 @@ export function TimelineWindowedItems({
           setScrollRootUsable(usable);
         }
       }
+      console.log(`DIAG-SYNC urgent=${urgent} enabled=${live.windowingEnabled} keeper=${positionKeeper !== null} container=${containerRef.current !== null} scrollEl=${positionKeeper?.getScrollElement() != null} vh=${positionKeeper?.getViewportHeight()} ch=${positionKeeper?.getScrollElement()?.clientHeight} attached=${positionKeeper?.isAttached()} user=${positionKeeper?.hasUserScrolled()}`);
       if (!live.windowingEnabled || positionKeeper === null) return;
       const container = containerRef.current;
       const scrollElement = positionKeeper.getScrollElement();

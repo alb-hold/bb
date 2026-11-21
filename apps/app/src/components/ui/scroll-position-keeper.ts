@@ -1265,7 +1265,7 @@ export class ScrollPositionKeeper {
 
   private write(scrollElement: HTMLElement, target: number): void {
     if (Math.abs(scrollElement.scrollTop - target) >= MIN_WRITE_PX) {
-      console.log(`DIAG-PIN from=${scrollElement.scrollTop} to=${target} kind=${this.position.kind} stack=${(new Error().stack ?? "").split("\n").slice(2, 5).map((l) => l.trim().replace(/\(.*\//, "(")).join(" < ")}`);
+      console.log(`DIAG-PIN from=${scrollElement.scrollTop} to=${target} kind=${this.position.kind} stack=${(new Error().stack ?? "").split("\n").slice(2, 10).map((l) => l.trim().replace(/\(.*\//, "(")).join(" < ")}`);
       scrollElement.scrollTop = target;
     }
     this.ownScrollTop = scrollElement.scrollTop;
