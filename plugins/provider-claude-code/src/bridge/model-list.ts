@@ -3,7 +3,7 @@ import path from "node:path";
 import { type AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
 import { type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { buildClaudeCodeModels } from "../model-list.js";
+import { buildClaudeCodeModels, type ClaudeModelDiscovery } from "../model-list.js";
 import { afterClaudeRenewalSettles } from "./claude-refresh-lock.js";
 import { probeClaudeInitialization } from "./initialization-probe.js";
 
@@ -95,7 +95,7 @@ export async function listAccountModels(
 export function preferAccountModels(
   cliModels: readonly ModelInfo[],
   accountModels: readonly ModelInfo[],
-): ModelInfo[] {
+): { accountModels: ModelInfo[] } {
   const available = new Set(accountModels.map((model) => model.value));
   const defaultModel = cliModels.find(
     (model) => model.value === "default",
@@ -109,18 +109,20 @@ export function preferAccountModels(
     ...model,
     description: descriptions.get(model.value) ?? model.description,
   }));
-  return [
-    ...rows.filter((model) => model.value === defaultModel),
-    ...rows.filter((model) => model.value !== defaultModel),
-    ...cliModels.filter((model) =>
-      available.has(model.resolvedModel ?? model.value),
-    ),
-  ];
+  return {
+    accountModels: [
+      ...rows.filter((model) => model.value === defaultModel),
+      ...rows.filter((model) => model.value !== defaultModel),
+      ...cliModels.filter((model) =>
+        available.has(model.resolvedModel ?? model.value),
+      ),
+    ],
+  };
 }
 
 export async function probeClaudeCodeDiscoveredModels(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<ModelInfo[]> {
+): Promise<ClaudeModelDiscovery> {
   const initialization = await probeClaudeInitialization({
     env,
     cwd: process.cwd(),
@@ -174,19 +176,20 @@ type ClaudeCodeModelCatalog = Awaited<
   ReturnType<typeof listClaudeCodeBridgeModels>
 >;
 
+const modelRowsSchema = z.array(
+  z.object({
+    value: z.string(),
+    resolvedModel: z.string().optional(),
+    displayName: z.string(),
+    description: z.string(),
+    supportedEffortLevels: z
+      .array(z.enum(["low", "medium", "high", "xhigh", "max"]))
+      .optional(),
+  }),
+);
 const sharedCatalogEntrySchema = z.object({
   savedAt: z.number(),
-  discoveredModels: z.array(
-    z.object({
-      value: z.string(),
-      resolvedModel: z.string().optional(),
-      displayName: z.string(),
-      description: z.string(),
-      supportedEffortLevels: z
-        .array(z.enum(["low", "medium", "high", "xhigh", "max"]))
-        .optional(),
-    }),
-  ),
+  discoveredModels: z.union([modelRowsSchema, z.object({ accountModels: modelRowsSchema })]),
 });
 
 export type SharedClaudeCodeModelCatalogEntry = z.infer<
@@ -228,7 +231,7 @@ export function createSharedClaudeCodeModelCatalogFile(
 }
 
 interface ClaudeCodeBridgeModelListMemoOptions {
-  probe: (envVars: Readonly<Record<string, string>>) => Promise<ModelInfo[]>;
+  probe: (envVars: Readonly<Record<string, string>>) => Promise<ClaudeModelDiscovery>;
   now: () => number;
   ttlMs: number;
   shared: () => SharedClaudeCodeModelCatalog;

@@ -711,6 +711,7 @@ export function ThreadTableOfContents({
 
     return () => {
       scrollElement.removeEventListener("scroll", onScroll);
+      if (scheduled.timeout !== null) window.clearTimeout(scheduled.timeout);
       if (scrollTimeout.current !== null)
         window.clearTimeout(scrollTimeout.current);
       unobserveResize?.();
