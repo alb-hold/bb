@@ -720,11 +720,9 @@ function buildThreadPromptBannerActivityByThreadId(
 
   const result = new Map<string, PromptBannerActivityState>();
   for (const thread of threads) {
-    const activity = getThreadPromptBannerActivityState(
-      deps,
-      thread,
-      eventsByThreadId.get(thread.id) ?? [],
-    );
+    const events = eventsByThreadId.get(thread.id);
+    if (!events) continue;
+    const activity = getThreadPromptBannerActivityState(deps, thread, events);
     if (activity.activeGoalCount > 0 || activity.activePlanModeCount > 0) {
       result.set(thread.id, activity);
     }
@@ -838,6 +836,7 @@ export function toThreadListEntryResponses(
   deps: ThreadPromptBannerDeps,
   args: ToThreadListEntryResponsesArgs,
 ): ThreadListEntry[] {
+  if (args.threads.length === 0) return [];
   const scope = args.scope;
   const activityByThreadId = buildThreadActivityStateByThreadId(
     deps,
@@ -879,7 +878,7 @@ export function toThreadListEntryResponses(
   );
   const attentionThreadIds = nativeTerminalAttentionThreadIds(
     deps.db,
-    args.threads.map((thread) => thread.id),
+    [...nativeTerminalThreadsById.keys()],
   );
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
@@ -903,25 +902,17 @@ export function toThreadListEntryResponses(
       },
       thread,
     });
-    const withEnvironmentHost =
-      thread.environmentHostId === null &&
+    if (
+      entry.environmentHostId === null &&
       (thread.status === "pending" || thread.status === "starting")
-        ? {
-            ...entry,
-            environmentHostId: intendedThreadHostId(deps, thread.id),
-          }
-        : entry;
-    return {
-      ...withEnvironmentHost,
-      listIndicator: resolveThreadListIndicator({
-        ...threadListIndicatorStateForThread(
-          withEnvironmentHost,
-          false,
-          args.now,
-        ),
-        hasTerminalAttention: attentionThreadIds.has(thread.id),
-      }),
-    };
+    ) {
+      entry.environmentHostId = intendedThreadHostId(deps, thread.id);
+    }
+    entry.listIndicator = resolveThreadListIndicator({
+      ...threadListIndicatorStateForThread(entry, false, args.now),
+      hasTerminalAttention: attentionThreadIds.has(thread.id),
+    });
+    return entry;
   });
 }
 
