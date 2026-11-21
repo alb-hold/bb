@@ -93,7 +93,6 @@ function publishCollected(key: string, value: CollectedThreadAction): void {
   ) {
     return;
   }
-  console.log(`DIAG-PUBLISH ${key} data=${Object.is(current?.data, value.data)} sdk=${current?.sdk === value.sdk} nav=${current?.navigate === value.navigate} panel=${current?.panel === value.panel}`);
   const collected = new Map(snapshot.collected);
   collected.set(key, value);
   setSnapshot({ ...snapshot, collected });
@@ -101,7 +100,6 @@ function publishCollected(key: string, value: CollectedThreadAction): void {
 
 function dropCollected(key: string): void {
   if (!snapshot.collected.has(key)) return;
-  console.log(`DIAG-DROP ${key}`);
   const collected = new Map(snapshot.collected);
   collected.delete(key);
   setSnapshot({ ...snapshot, collected });

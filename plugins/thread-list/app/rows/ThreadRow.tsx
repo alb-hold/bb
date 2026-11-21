@@ -675,24 +675,6 @@ function ThreadRowComponent({
     multiSelection === null ? undefined : { dragThreadIds: multiSelection },
   );
   const miniMap = split.layout?.panes ?? null;
-  const diagValues: Record<string, unknown> = {
-    thread, options, isActive, crossProjectId, onProjectSelect, sdk, openThreadInSplit,
-    selectionStore, isSelected, selectionHidesActive, multiSelection, selectionMenu,
-    showProviderIcons, rowMetadataEnabled, showRowMetadata, providers, shortcut,
-    pluginThreadRowStatus, hasComposerDraft, crossProjectName, projectName,
-    visibilityGroup, rename, finishCustomizingActions, split,
-  };
-  const diagPrevious = useRef<Record<string, unknown> | null>(null);
-  useEffect(() => {
-    console.log(`DIAG-MOUNT ${thread.id}`);
-  }, [thread.id]);
-  if (diagPrevious.current !== null) {
-    const changed = Object.keys(diagValues).filter(
-      (key) => !Object.is(diagValues[key], diagPrevious.current?.[key]),
-    );
-    console.log(`DIAG-RENDER ${thread.id} changed=${changed.join(",")}`);
-  }
-  diagPrevious.current = diagValues;
   const isOpenInSplit = miniMap !== null;
   const { startedAt: automationStartedAt, elapsedMinutes } =
     useAutomationWokeAt(
@@ -714,17 +696,6 @@ function ThreadRowComponent({
   });
   const customizeRowActions = useCustomizeThreadRowActions();
   const isCompactViewport = useIsCompactViewport();
-  const diag2Values: Record<string, unknown> = {
-    rowActionKeys, quickActions, customizeRowActions, isCompactViewport,
-  };
-  const diag2Previous = useRef<Record<string, unknown> | null>(null);
-  if (diag2Previous.current !== null) {
-    const changed2 = Object.keys(diag2Values).filter(
-      (key) => !Object.is(diag2Values[key], diag2Previous.current?.[key]),
-    );
-    console.log(`DIAG-RENDER2 ${thread.id} changed=${changed2.join(",")}`);
-  }
-  diag2Previous.current = diag2Values;
   const pendingMenuCustomize = useRef<(() => void) | null>(null);
   const inlineMenuActions: PluginThreadActionsInlineItem[] =
     customizeRowActions === null
@@ -1441,24 +1412,4 @@ function ThreadRowComponent({
   );
 }
 
-function sameThreadRowOptions(
-  previous: ThreadRowOptions,
-  next: ThreadRowOptions,
-): boolean {
-  if (previous === next) return true;
-  const previousRecord: Record<string, unknown> = { ...previous };
-  const nextRecord: Record<string, unknown> = { ...next };
-  const keys = Object.keys(nextRecord);
-  if (keys.length !== Object.keys(previousRecord).length) return false;
-  return keys.every((key) => Object.is(previousRecord[key], nextRecord[key]));
-}
-
-export const ThreadRow = memo(
-  ThreadRowComponent,
-  (previous, next) =>
-    previous.thread === next.thread &&
-    previous.crossProjectId === next.crossProjectId &&
-    previous.isActive === next.isActive &&
-    previous.onProjectSelect === next.onProjectSelect &&
-    sameThreadRowOptions(previous.options, next.options),
-);
+export const ThreadRow = memo(ThreadRowComponent);
