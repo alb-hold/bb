@@ -7,3 +7,5 @@ To read one page, pass a positive `limit`. A server supporting cursor pagination
 The SDK and CLI collect the complete result when listing without a limit. SDK callers requesting an explicit limit receive at most that many entries. Existing offset-based requests keep their ordering.
 
 `GET /api/v1/sidebar-bootstrap` returns the personal project, public projects, sections, and their visible active threads. An explicit `limit` pages threads across all projects, up to 500 per request. Project and section metadata accompany each page. Use the same continuation headers as the thread list. Without a limit the bootstrap contains every matching thread.
+
+Pass `fields=summary` to the threads route for the fields used by the CLI table. Its response is an object with a `rows` array and the same pagination headers. The CLI uses this projection for text output and full entries for JSON.

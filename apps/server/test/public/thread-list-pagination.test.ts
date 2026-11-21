@@ -82,6 +82,16 @@ describe("thread list continuation", () => {
           true,
         );
         expect(paths[1]?.searchParams.has("cursor")).toBe(true);
+        const summaries = await sdk.threads.experimental_listSummaries(filter);
+        expect(summaries.map((row) => row.id)).toEqual(
+          expected.map((row) => row.id),
+        );
+        expect(summaries[0]).not.toHaveProperty("environmentPath");
+        expect(summaries[0]).toMatchObject({
+          title: result[0]?.title,
+          status: result[0]?.status,
+          listIndicator: result[0]?.listIndicator,
+        });
       }
       expect(
         (await harness.app.request("/api/v1/threads?limit=1&cursor=invalid"))

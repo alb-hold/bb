@@ -257,6 +257,7 @@ import {
   type ThreadCountResponse,
   type ThreadListQuery,
   type ThreadListResponse,
+  type ThreadListWireResponse,
   type ThreadConversationOutlineQuery,
   type ThreadConversationOutlineResponse,
   type ThreadOpenRequest,
@@ -1423,7 +1424,7 @@ export const publicApiRoutes = {
       request: optionalQueryRequest<EmptyInput, ThreadListQuery>(
         threadListQuerySchema,
       ),
-      response: jsonResponse<ThreadListResponse>(),
+      response: jsonResponse<ThreadListWireResponse>(),
     }),
     count: defineRoute({
       path: "/threads/count",

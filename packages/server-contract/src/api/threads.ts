@@ -28,6 +28,7 @@ import {
   threadCreateOriginSchema,
   threadOriginKindSchema,
   threadListEntrySchema,
+  type ThreadListSummary,
   threadQueuedMessageSchema,
   threadSearchSourceKindSchema,
   threadStatusSchema,
@@ -534,6 +535,10 @@ export const sendQueuedMessageResponseSchema = z.discriminatedUnion(
 export type SendQueuedMessageResponse = z.infer<
   typeof sendQueuedMessageResponseSchema
 >;
+
+export type ThreadListWireResponse =
+  | ThreadListResponse
+  | { rows: ThreadListSummary[] };
 
 export const threadListResponseSchema = z.array(threadListEntrySchema);
 export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
@@ -1078,6 +1083,7 @@ export type ThreadArchiveAllResponse = z.infer<
  */
 
 export const threadListQuerySchema = z.object({
+  fields: z.literal("summary").optional(),
   projectId: z.string().min(1).optional(),
   environmentId: z.string().min(1).optional(),
   hostId: z.string().min(1).optional(),

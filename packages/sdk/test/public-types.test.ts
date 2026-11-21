@@ -401,6 +401,7 @@ type ExpectedThreadsKey =
   | "experimental_updateRowState"
   | "experimental_listAncestors"
   | "experimental_listDescendants"
+  | "experimental_listSummaries"
   | "experimental_listCascade"
   | "experimental_listPluginMetadata"
   | "experimental_headState"

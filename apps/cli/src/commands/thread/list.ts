@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import {
+  type ThreadListSummary,
   jsonValueSchema,
   PERSONAL_PROJECT_ID,
   type JsonValue,
@@ -119,7 +120,7 @@ export function registerListCommand(
           : opts.all || opts.includeArchived || threadIds.length > 0
             ? undefined
             : false;
-        const threads = await sdk.threads.list({
+        const input = {
           ...(projectId ? { projectId } : {}),
           ...(environmentId ? { environmentId } : {}),
           ...(hostId ? { hostId } : {}),
@@ -129,7 +130,10 @@ export function registerListCommand(
           ...(sectionId ? { sectionId } : {}),
           ...(opts.unsectioned ? { unsectioned: true } : {}),
           ...(opts.includeHidden ? { includeHidden: true } : {}),
-        });
+        };
+        const threads = opts.json
+          ? await sdk.threads.list(input)
+          : await sdk.threads.experimental_listSummaries(input);
         const wokeThreadIds = await getWokenThreadIds(sdk);
         if (
           outputJson(
@@ -157,7 +161,7 @@ export function registerListCommand(
 const MAX_TITLE_WIDTH = 60;
 
 function printThreadTable(
-  threads: ThreadListEntry[],
+  threads: ThreadListSummary[],
   projectNames: ReadonlyMap<string, string>,
   wokeThreadIds: ReadonlySet<string>,
 ): void {
@@ -177,7 +181,7 @@ function printThreadTable(
   );
 }
 
-function formatThreadListTitle(thread: ThreadListEntry): string {
+function formatThreadListTitle(thread: ThreadListSummary): string {
   const title = thread.title?.trim();
   if (title) return title;
   const fallback = thread.titleFallback?.trim();
@@ -186,7 +190,7 @@ function formatThreadListTitle(thread: ThreadListEntry): string {
 }
 
 function formatThreadListProject(
-  thread: ThreadListEntry,
+  thread: ThreadListSummary,
   projectNames: ReadonlyMap<string, string>,
 ): string {
   if (thread.projectId === PERSONAL_PROJECT_ID) return "-";

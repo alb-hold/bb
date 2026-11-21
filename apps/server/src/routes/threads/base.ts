@@ -39,6 +39,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import {
+  toThreadListSummary,
   effectiveDisplayStatus,
   PROMPT_HISTORY_SEARCH_LIMIT_DEFAULT,
   PROMPT_HISTORY_SEARCH_LIMIT_MAX,
@@ -445,14 +446,17 @@ export function registerThreadBaseRoutes(
           "Native status list reconciliation failed",
         );
       });
+      const entries = toThreadListEntryResponses(deps, {
+        threads,
+        scope:
+          limit === undefined
+            ? buildThreadListEnrichmentScope(deps.db, options)
+            : { kind: "ids", ids: threads.map((thread) => thread.id) },
+      }) satisfies ThreadListEntry[];
       return context.json(
-        toThreadListEntryResponses(deps, {
-          threads,
-          scope:
-            limit === undefined
-              ? buildThreadListEnrichmentScope(deps.db, options)
-              : { kind: "ids", ids: threads.map((thread) => thread.id) },
-        }) satisfies ThreadListEntry[],
+        query.fields === "summary"
+          ? { rows: entries.map(toThreadListSummary) }
+          : entries,
       );
     } finally {
       clearCurrentThreadListSlowQueryContext();

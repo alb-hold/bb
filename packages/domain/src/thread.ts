@@ -260,3 +260,43 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   rowState: threadRowStateSchema,
 });
 export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
+
+export function toThreadListSummary({
+  id,
+  title,
+  titleFallback,
+  projectId,
+  status,
+  archivedAt,
+  pinnedAt,
+  runtime,
+  activity,
+  listIndicator,
+}: ThreadListSummary) {
+  return {
+    id,
+    title,
+    titleFallback,
+    projectId,
+    status,
+    archivedAt,
+    pinnedAt,
+    runtime,
+    activity,
+    listIndicator,
+  };
+}
+
+export type ThreadListSummary = Pick<
+  ThreadListEntry,
+  | "id"
+  | "title"
+  | "titleFallback"
+  | "projectId"
+  | "status"
+  | "archivedAt"
+  | "pinnedAt"
+  | "runtime"
+  | "activity"
+  | "listIndicator"
+>;

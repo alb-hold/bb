@@ -12,6 +12,7 @@ import type {
   ThreadTimelineResponse,
   ThreadWithIncludesResponse,
 } from "@bb/server-contract";
+import { fullThreadListRows } from "./threads.js";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
 export interface StatusGetArgs {
@@ -130,7 +131,10 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
             );
 
       return {
-        childThreads: childThreads?.map(withEffectiveDisplayStatus) ?? null,
+        childThreads:
+          childThreads === null
+            ? null
+            : fullThreadListRows(childThreads).map(withEffectiveDisplayStatus),
         pendingTodos,
         project,
         thread: thread === null ? null : summarizeThread(thread),

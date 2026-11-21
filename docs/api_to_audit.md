@@ -5611,3 +5611,7 @@ this keeps Pierre implementation types out of the SDK contract. The existing
 full `pierreDiffs` runtime slot and its synchronous exports remain unchanged for
 legacy and third-party plugins. Stabilization requires a public patch-metadata
 contract and parser failure/retry coverage. It is not a Plugin Guide surface.
+
+## `bb.sdk.threads.experimental_listSummaries`
+
+Lists the title, project, status, pin and archive timestamps, runtime, activity and indicator used by the CLI thread table. It accepts the same selectors and limit as `threads.list`. Stabilize after the CLI and plugin callers confirm parity for the complete table across pages and older servers.
