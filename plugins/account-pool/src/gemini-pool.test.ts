@@ -157,14 +157,14 @@ describe("Gemini credentials from the macOS keychain", () => {
   };
 
   it("imports credentials from the antigravity-acp keychain account", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
     await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual(expected);
     expect(readKeychain).toHaveBeenCalledWith("gemini", "antigravity-acp");
   });
 
   it("tries the antigravity account and decodes go-keyring credentials", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async (_service: string, account: string) => account === "antigravity-acp"
       ? { kind: "missing" as const }
       : { kind: "found" as const, secret: `go-keyring-base64:${Buffer.from(secret).toString("base64")}` });
@@ -176,13 +176,13 @@ describe("Gemini credentials from the macOS keychain", () => {
   });
 
   it("reports when neither keychain account has a sign-in", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async () => ({ kind: "missing" as const }));
     await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).rejects.toThrow(/not found or usable.*without --home/u);
   });
 
   it("rejects unusable keychain values without exposing secret contents", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     for (const value of ["fake-secret-kc", JSON.stringify({ client_secret: "fake-secret-kc", refresh_token: "fake-refresh-kc" })]) {
       const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret: value }));
       let message = "";
@@ -197,7 +197,7 @@ describe("Gemini credentials from the macOS keychain", () => {
   });
 
   it("explains keychain access outcomes", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     for (const kind of ["needs-allow", "denied", "timeout"] as const) {
       const readKeychain = vi.fn(async () => ({ kind }));
       await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).rejects.toThrow(/Click Allow/u);
@@ -223,7 +223,7 @@ describe("Gemini credentials from the macOS keychain", () => {
   });
 
   it("does not read the keychain on Linux", async () => {
-    vi.stubEnv("GEMINI_HOME", "");
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
     await expect(importGeminiCredentials(undefined, { platform: "linux", readKeychain })).rejects.toThrow(/not found or usable/u);
     expect(readKeychain).not.toHaveBeenCalled();
