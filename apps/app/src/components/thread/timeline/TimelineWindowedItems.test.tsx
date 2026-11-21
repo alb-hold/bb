@@ -8,6 +8,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AutoHeightSnapContext } from "@/components/ui/height-transition";
 import { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
 import { TimelineWindowedItems } from "./TimelineWindowedItems.js";
@@ -144,6 +145,31 @@ function setup({
 }
 
 describe("TimelineWindowedItems", () => {
+  it("snaps once after measuring all rows resized by a width change", () => {
+    const harness = setup({ attached: true });
+    const measured: number[][] = [];
+    const snap = () => {
+      measured.push(
+        ["row-0", "row-1"].map((key) => harness.measurements.get(key) ?? 0),
+      );
+    };
+    render(
+      <AutoHeightSnapContext.Provider value={snap}>
+        {harness.view(keys(3))}
+      </AutoHeightSnapContext.Provider>,
+      { container: harness.list },
+    );
+    harness.paint();
+    const items = harness.list.querySelector("[data-timeline-items]");
+    Object.defineProperty(items, "clientWidth", { value: 320 });
+    const rows = harness.list.querySelectorAll<HTMLElement>("[data-timeline-row-id]");
+    rows.forEach((row, index) => {
+      row.dataset.fakeHeight = String(120 + index);
+    });
+    harness.paint();
+    expect(measured).toEqual([[120, 121]]);
+  });
+
   it("keeps the reader's rows mounted and in place when an older page turns windowing on", () => {
     const harness = setup({ attached: false });
     const latest = keys(15);

@@ -494,6 +494,11 @@ export function TimelineWindowedItems({
     [],
   );
 
+  const remeasureAfterWidthChange = useCallback(() => {
+    snapHeight?.();
+    positionKeeper?.remeasure();
+  }, [positionKeeper, snapHeight]);
+
   const itemRef = useCallback(
     (node: HTMLDivElement | null) => {
       if (node === null) return undefined;
@@ -522,8 +527,7 @@ export function TimelineWindowedItems({
           const firstObservation = !observation.received;
           observation.received = true;
           if (changed && widthChanged) {
-            snapHeight?.();
-            positionKeeper?.remeasure();
+            settleAfterSharedResizeWrites(remeasureAfterWidthChange);
           } else if ((changed || firstObservation) && positionKeeper !== null) {
             settleAfterSharedResizeWrites(positionKeeper.reconcileAfterLayout);
           }
@@ -536,7 +540,7 @@ export function TimelineWindowedItems({
         if (key !== null) nodesRef.current.delete(key);
       };
     },
-    [positionKeeper, record, snapHeight],
+    [positionKeeper, record, remeasureAfterWidthChange],
   );
 
   const pinSettledRef = useRef(false);
