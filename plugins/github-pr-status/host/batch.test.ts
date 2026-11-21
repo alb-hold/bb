@@ -380,7 +380,7 @@ describe("host GraphQL batching", () => {
     [1, 2],
     [2, 1],
   ])(
-    "keeps successful aliases when gh exits with a partial GraphQL error (%i then %i)",
+    "keeps successful aliases when gh exits with a partial GraphQL error (%i then %i; test-change-reason: the fork submits prepared host views as one batch)",
     async (firstNumber, secondNumber) => {
       const gh = await installFakeGh({
         "api graphql": {
@@ -394,9 +394,9 @@ describe("host GraphQL batching", () => {
         },
       });
       const cwd = await makeTempDir("bb-pr-partial-");
-      const results = await Promise.all([
-        getPullRequestByUrl(raw(firstNumber).url, cwd),
-        getPullRequestByUrl(raw(secondNumber).url, cwd),
+      const results = await readPullRequests([
+        prepareUrlRead(raw(firstNumber).url, cwd),
+        prepareUrlRead(raw(secondNumber).url, cwd),
       ]);
       const first = results[firstNumber === 1 ? 0 : 1];
       const second = results[firstNumber === 2 ? 0 : 1];
