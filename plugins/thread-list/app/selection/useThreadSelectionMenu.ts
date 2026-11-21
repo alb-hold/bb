@@ -3,12 +3,7 @@ import type {
   PluginThreadActionsInlineItem,
   PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk/app";
-import type { SidebarThread } from "../model/sidebar-thread.js";
-import { toThreadActionTarget } from "../rows/threadActionTarget.js";
-import {
-  useThreadSelectionStore,
-  useThreadSelectionProjects,
-} from "./threadSelection.js";
+import { useThreadSelectionStore } from "./threadSelection.js";
 
 const SELECTION_GROUP = "5_selection";
 
@@ -23,7 +18,6 @@ export function useThreadSelectionMenu(
   threadIds: readonly string[] | null,
 ): ThreadSelectionMenu | null {
   const store = useThreadSelectionStore();
-  const projects = useThreadSelectionProjects();
   const dismissedWithEscape = useRef(false);
   const selection = useSyncExternalStore(store.subscribe, () =>
     threadIds === null ? null : store.getSelectionTargets(),

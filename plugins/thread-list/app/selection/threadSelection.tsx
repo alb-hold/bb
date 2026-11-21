@@ -12,10 +12,7 @@ import {
   experimental_useExperiment,
   type PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk/app";
-import {
-  useSidebarData,
-  type SidebarProject,
-} from "../model/use-sidebar-data.js";
+import { useSidebarData } from "../model/use-sidebar-data.js";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import { SIDEBAR_CONTENT_SELECTOR } from "../ui/sidebar.js";
 import { SIDEBAR_WINDOWED_NAV_ATTRIBUTE } from "../list/sidebarThreadShortcuts.js";
@@ -215,14 +212,6 @@ export function collectVisibleThreadIds(origin: Element): string[] {
 }
 
 const ThreadSelectionContext = createContext(new ThreadSelectionStore());
-const ThreadSelectionProjectsContext = createContext<
-  readonly SidebarProject[]
->([]);
-
-export function useThreadSelectionProjects() {
-  return useContext(ThreadSelectionProjectsContext);
-}
-
 export function ThreadSelectionProvider({
   activeThreadId,
   children,
@@ -277,9 +266,7 @@ export function ThreadSelectionProvider({
   }, [hasSelection, store]);
   return (
     <ThreadSelectionContext.Provider value={store}>
-      <ThreadSelectionProjectsContext.Provider value={projects}>
-        {children}
-      </ThreadSelectionProjectsContext.Provider>
+      {children}
     </ThreadSelectionContext.Provider>
   );
 }
