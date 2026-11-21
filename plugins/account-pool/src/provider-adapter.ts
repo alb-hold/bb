@@ -237,7 +237,7 @@ export async function fetchOAuthRefresh(
   }
 }
 
-async function oauthRefreshErrorDetail(
+export async function oauthRefreshErrorDetail(
   response: Response,
   timedOut: Promise<never>,
 ): Promise<string> {
