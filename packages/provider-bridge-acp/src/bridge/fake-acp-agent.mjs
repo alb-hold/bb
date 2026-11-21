@@ -58,6 +58,9 @@
  * - FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE
  *                            → add data.message to the auth-required error,
  *                              as antigravity-acp does when no method is set
+ * - FAKE_ACP_FORK_AUTH_REQUIRED=1
+ *                            → always answer session/fork with the
+ *                              auth-required error, even when signed in
  * - FAKE_ACP_OAUTH_SIGNED_OUT=1
  *                            → authenticate oauth-personal has no saved login:
  *                              run $BROWSER with a sign-in URL and never answer
@@ -498,6 +501,11 @@ function requireAuthenticated(message) {
   ) {
     return true;
   }
+  sendAuthRequired(message);
+  return false;
+}
+
+function sendAuthRequired(message) {
   // ACP's reserved auth-required error: code -32000 with this message.
   const dataMessage = process.env.FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE;
   send({
@@ -509,7 +517,6 @@ function requireAuthenticated(message) {
       ...(dataMessage ? { data: { message: dataMessage } } : {}),
     },
   });
-  return false;
 }
 
 /**
@@ -1165,6 +1172,10 @@ async function handleMessage(message) {
       });
       return;
     case "session/fork":
+      if (process.env.FAKE_ACP_FORK_AUTH_REQUIRED === "1") {
+        sendAuthRequired(message);
+        return;
+      }
       if (!requireAuthenticated(message)) {
         return;
       }

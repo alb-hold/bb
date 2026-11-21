@@ -2717,8 +2717,8 @@ async function startAgentSession(
         (capabilities.session.resume || supportsLoadSession)
           ? source
           : undefined;
-      const forkedSession = await withGoogleSignIn((target) =>
-        (handoffSource?.connection ?? target).request({
+      const forkOn = (target: AcpAgentConnection) =>
+        target.request({
           method: "session/fork",
           params: {
             sessionId: request.sourceProviderThreadId,
@@ -2728,8 +2728,11 @@ async function startAgentSession(
           },
           resultSchema: acpSessionForkResultSchema,
           timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
-        }),
-      );
+        });
+      const forkedSession =
+        handoffSource === undefined
+          ? await withGoogleSignIn(forkOn)
+          : await forkOn(handoffSource.connection);
       if (
         forkedSession.sessionId === request.sourceProviderThreadId ||
         getSessionByProviderThreadId(forkedSession.sessionId) !== undefined

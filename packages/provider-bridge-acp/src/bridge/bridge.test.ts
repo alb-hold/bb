@@ -1807,6 +1807,48 @@ describe("acp bridge", () => {
       });
     });
 
+    it("reports a live source agent's sign-in error on a handoff fork without signing in a new process", async () => {
+      const launchLog = join(workspaceDir, "handoff-auth-launches.txt");
+      const requestLog = join(workspaceDir, "handoff-auth-requests.jsonl");
+      const envVars = {
+        FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+        FAKE_ACP_AUTH_OPTIONAL: "1",
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+        FAKE_ACP_FORK_SESSION: "1",
+        FAKE_ACP_FORK_AUTH_REQUIRED: "1",
+        FAKE_ACP_RESUME_SESSION: "1",
+        FAKE_ACP_CLOSE_SESSION: "1",
+        FAKE_ACP_LAUNCH_LOG: launchLog,
+        FAKE_ACP_REQUEST_LOG: requestLog,
+      };
+      const source = await startThread({ envVars });
+      const response = await waitForResponse(
+        sendRequest("thread/fork", {
+          threadId: "thread-handoff-auth",
+          cwd: workspaceDir,
+          instructionMode: "append",
+          options: executionOptions({
+            providerOptions: { acpLaunchSpec: acpLaunchSpec({ envVars }) },
+          }),
+          sourceProviderThreadId: source.providerThreadId,
+        }),
+      );
+
+      expect(response.result).toBeUndefined();
+      expect(response.error).toBeDefined();
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(
+        loggedAcpRequests(requestLog).filter(
+          (request) => request.method === "session/fork",
+        ),
+      ).toHaveLength(1);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([pids[0]]);
+      });
+    });
+
     it("shows the same short sign-in message when a thread starts on a machine with no Google sign-in, and opens no browser", async () => {
       const launchLog = join(workspaceDir, "thread-signed-out-launches.txt");
       const browserLog = join(workspaceDir, "thread-signed-out-browser.txt");
