@@ -539,6 +539,12 @@
       "types": "./src/lib/absolute-file-path.ts",
       "default": "./src/lib/absolute-file-path.ts"
     },
+    "./lib/compact-relative-time": {
+      "source": "./src/lib/compact-relative-time.ts",
+      "types": "./src/lib/compact-relative-time.ts",
+      "default": "./src/lib/compact-relative-time.ts"
+    },
+
     "./lib/format-byte-size": {
       "source": "./src/lib/format-byte-size.ts",
       "types": "./src/lib/format-byte-size.ts",

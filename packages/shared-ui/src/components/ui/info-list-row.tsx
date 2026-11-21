@@ -1,3 +1,5 @@
+import { formatCompactRelativeTime } from "../../lib/compact-relative-time";
+export { formatCompactRelativeTime } from "../../lib/compact-relative-time";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { Icon, type IconName } from "./icon";
 import {
@@ -21,38 +23,6 @@ const INFO_LIST_PRIMARY_CLASS =
   "min-w-0 cursor-pointer truncate text-left text-xs leading-5 text-foreground no-underline after:absolute after:inset-0 after:rounded after:content-[''] focus-visible:outline-none";
 
 const MINUTE_MS = 60 * 1000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-const WEEK_MS = 7 * DAY_MS;
-
-export function formatCompactRelativeTime({
-  timestamp,
-  now,
-}: {
-  timestamp: number;
-  now: number;
-}): string {
-  const diffMs = now - timestamp;
-  if (diffMs < MINUTE_MS) {
-    return "now";
-  }
-  if (diffMs < HOUR_MS) {
-    return `${Math.floor(diffMs / MINUTE_MS)}m`;
-  }
-  if (diffMs < DAY_MS) {
-    return `${Math.floor(diffMs / HOUR_MS)}h`;
-  }
-  if (diffMs < WEEK_MS) {
-    return `${Math.floor(diffMs / DAY_MS)}d`;
-  }
-  if (diffMs < 5 * WEEK_MS) {
-    return `${Math.floor(diffMs / WEEK_MS)}w`;
-  }
-  return new Date(timestamp).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
 
 export type InfoListRowTarget =
   | { kind: "button"; onSelect: () => void }
