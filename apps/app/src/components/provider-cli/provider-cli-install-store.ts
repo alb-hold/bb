@@ -17,6 +17,8 @@ import { classifyProviderCliInstallFailure } from "@/components/provider-cli/pro
 import {
   operationFailureReason,
   type OperationFailureReason,
+} from "@/components/onboarding/operation-failure-reason";
+import {
   recordTelemetryEvent,
   type OnboardingEntry,
 } from "@/components/onboarding/onboarding-telemetry";

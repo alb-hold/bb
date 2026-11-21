@@ -1,5 +1,5 @@
 import type { ProviderCliStatus } from "@bb/host-daemon-contract";
-import { operationFailureReason } from "./onboarding-telemetry";
+import { operationFailureReason } from "./operation-failure-reason";
 import { viewerIsOnThisComputer } from "@/lib/local-host-daemon-access";
 import type {
   HostDiscoveredRepo,
@@ -11,7 +11,7 @@ import type {
 export {
   operationFailureReason,
   type OperationFailureReason,
-} from "./onboarding-telemetry";
+} from "./operation-failure-reason";
 
 export type OnboardingStepId = "agent" | "projects" | "plugins" | "devices";
 

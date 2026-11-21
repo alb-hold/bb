@@ -7,7 +7,8 @@ import {
   useHostProviderCliStatus,
   useSystemConfig,
 } from "@/hooks/queries/system-queries";
-import { operationFailureReason, recordTelemetryEvent } from "./onboarding-telemetry";
+import { operationFailureReason } from "./operation-failure-reason";
+import { recordTelemetryEvent } from "./onboarding-telemetry";
 import { OnboardingErrorTelemetry } from "./OnboardingErrorTelemetry";
 
 const OnboardingFlow = lazy(() =>
