@@ -23,6 +23,32 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+it("can reach a row overflowing a fixed-height wrapper with a gap", () => {
+  const scrollElement = document.createElement("div");
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = "display: grid; height: 10px; gap: 5px";
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  setFakeHeight(first, 8);
+  setFakeHeight(second, 8);
+  wrapper.append(first, second);
+  scrollElement.append(wrapper);
+  const layout = installFakeFlowLayout({ scrollElement, viewportHeight: 10 });
+  restoreLayout = layout.restore;
+  const checkGeometry = () => {
+    expect(second.getBoundingClientRect().bottom).toBe(21);
+    expect(scrollElement.scrollHeight).toBe(21);
+  };
+  checkGeometry();
+  const observer = new ResizeObserver(checkGeometry);
+  observer.observe(second);
+  layout.flushResizeObservers();
+  observer.disconnect();
+  layout.userScrollTo(100);
+  expect(scrollElement.scrollTop).toBe(11);
+  expect(second.getBoundingClientRect().bottom).toBe(10);
+});
+
 function rowsOf(count: number, height = 200, prefix = "row"): RowSpec[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `${prefix}-${index}`,

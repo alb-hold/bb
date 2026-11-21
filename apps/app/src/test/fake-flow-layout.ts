@@ -66,14 +66,15 @@ export function installFakeFlowLayout({
     top: number,
     snapshot?: Map<Element, number>,
   ): { height: number; bottom: number } => {
-    let height = ownHeight(element);
+    const declaredHeight = ownHeight(element);
+    let height = declaredHeight;
     const style = inlineStyle(element);
     let bottom = top;
     if (height === null && style !== null && style.height !== "") {
       height = pixels(style.height);
     }
-    if (height === null || snapshot !== undefined) {
-      const gap = height === null && style !== null ? pixels(style.gap) : 0;
+    if (declaredHeight === null || snapshot !== undefined) {
+      const gap = declaredHeight === null && style !== null ? pixels(style.gap) : 0;
       let used = 0;
       let first = true;
       for (
