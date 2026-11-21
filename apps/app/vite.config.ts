@@ -15,6 +15,10 @@ import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
+const pluginFrontendEntry = "src/lib/plugin-frontend.ts";
+const threadDetailEntry = "src/views/thread-detail/ThreadDetailView.tsx";
+const rootComposeEntry = "src/views/RootComposeView.tsx";
+
 export const sharedViteConfig = {
   plugins: [
     pluginZodRuntime(),
@@ -101,23 +105,32 @@ export const sharedViteConfig = {
                 entries: ["src/views/SplitWorkspaceRoute.tsx"],
               },
               {
+                name: "plugin-and-pages",
+                entries: [pluginFrontendEntry, threadDetailEntry, rootComposeEntry],
+              },
+              {
+                name: "plugin-and-thread",
+                entries: [pluginFrontendEntry, threadDetailEntry],
+              },
+              {
+                name: "plugin-and-compose",
+                entries: [pluginFrontendEntry, rootComposeEntry],
+              },
+              {
                 name: "plugin-frontend",
-                entries: ["src/lib/plugin-frontend.ts"],
+                entries: [pluginFrontendEntry],
               },
               {
                 name: "thread-and-compose",
-                entries: [
-                  "src/views/thread-detail/ThreadDetailView.tsx",
-                  "src/views/RootComposeView.tsx",
-                ],
+                entries: [threadDetailEntry, rootComposeEntry],
               },
               {
                 name: "thread-detail",
-                entries: ["src/views/thread-detail/ThreadDetailView.tsx"],
+                entries: [threadDetailEntry],
               },
               {
                 name: "root-compose",
-                entries: ["src/views/RootComposeView.tsx"],
+                entries: [rootComposeEntry],
               },
             ]),
           ],
