@@ -75,6 +75,7 @@
         "$TURBO_ROOT$/changelog-parser.ts",
         "$TURBO_ROOT$/plugins/plugin-api-docs/src/anatomy-manifest.json",
         "$TURBO_ROOT$/plugins/theme-preview/taxonomy.ts",
+        "$TURBO_ROOT$/plugins/thread-list/vitest.chromium.ts",
         "$TURBO_ROOT$/vitest*.ts"
       ]
     },

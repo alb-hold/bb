@@ -74,7 +74,7 @@ it("updates the generated subset when only host source usage changes", async () 
 });
 
 it.each([false, true])(
-  "records whole-plugin Zod admission in the built artifact, unsupported=%s",
+  "records whole-plugin Zod admission in the built artifact, unsupported=%s (test-change-reason: host builds opt into the fork’s per-plugin Zod admission)",
   async (unsupported) => {
     const appRoot = new URL("../../../apps/app/", import.meta.url).pathname;
     const dir = await mkdtemp(join(appRoot, ".zod-admission-test-"));
@@ -105,6 +105,7 @@ it.each([false, true])(
       dir,
       "0.9.0-test",
       await resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused")),
+      { minify: true, hostProvidedZod: true },
     );
     const meta = JSON.parse(await readFile(output.metaPath, "utf8"));
     expect(meta.runtimeSlots.includes("zod")).toBe(!unsupported);
