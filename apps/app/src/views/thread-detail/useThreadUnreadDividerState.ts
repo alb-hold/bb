@@ -218,12 +218,13 @@ export function useThreadUnreadDividerState({
               ? currentSnapshotValue.hasAttentionAfterOpening ||
                 (!currentSnapshotValue.isOpening &&
                   !becameFocused &&
+                  !replacedPlaceholder &&
                   threadIsUnread)
               : false,
           hasUnseenUpdatesOnOpen:
             currentSnapshotValue?.threadId === threadId
               ? currentSnapshotValue.hasUnseenUpdatesOnOpen ||
-                ((currentSnapshotValue.isOpening || becameFocused) &&
+                ((currentSnapshotValue.isOpening || becameFocused || replacedPlaceholder) &&
                   threadIsUnread)
               : threadIsUnread,
           isFocused,

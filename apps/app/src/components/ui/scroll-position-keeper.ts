@@ -229,6 +229,7 @@ export class ScrollPositionKeeper {
     scrollElement.style.overflowAnchor = "none";
     this.ownScrollTop = scrollElement.scrollTop;
     const onScroll = () => {
+      console.log("DIAG-scroll", scrollElement.scrollTop, this.ownScrollTop, this.maxScrollTop, scrollElement.scrollHeight, this.isInputSession());
       if (this.shrinkClampPending && this.isAtEnd(scrollElement.scrollTop)) {
         this.shrinkClampPending = false;
         return;
@@ -371,6 +372,7 @@ export class ScrollPositionKeeper {
       if (this.pointerMoved) this.extendInput(SESSION_EXTENSION_MS);
     };
     const onWheel = (event: WheelEvent) => {
+      console.log("DIAG-wheel", scrollElement.scrollTop, event.deltaY);
       this.pointerPressReleasedWithoutMove = false;
       this.extendInput(WHEEL_SESSION_MS);
       if (event.deltaY > 0) this.attachIfAtEnd();
@@ -1076,7 +1078,9 @@ export class ScrollPositionKeeper {
   private followsUnexplainedScroll(): boolean {
     return (
       this.windowFindOpen ||
-      (this.position.kind !== "bottom" && this.pendingRestore === null) ||
+      (this.position.kind !== "bottom" &&
+        this.pendingRestore === null &&
+        window.performance.now() >= this.restoreHoldUntil) ||
       this.options.getScrollElement()?.querySelector("iframe:hover") != null
     );
   }
