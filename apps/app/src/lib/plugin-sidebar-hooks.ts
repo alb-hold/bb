@@ -198,11 +198,10 @@ export function useSidebarThreads(
   );
   const query = useSidebarNavigation();
   const preview = useSidebarNavigationPreview();
-  const data =
-    query.data ??
-    (active && options?.experimental_previewRows
-      ? (preview ?? undefined)
-      : undefined);
+  const complete = query.isPlaceholderData ? undefined : query.data;
+  const data = active && options?.experimental_previewRows
+    ? complete ?? preview ?? query.data
+    : complete;
   const activityNow = useSecondTick(
     data?.projects.some((project) =>
       project.threads.some(
