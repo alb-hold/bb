@@ -369,6 +369,27 @@ describe("Gemini import refresh errors", () => {
   });
 });
 
+describe("Gemini import refresh with a stalled error body", () => {
+  it.each([400, 401])("rejects an import whose HTTP %s error body never arrives", async (status) => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-stall-"));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(new ReadableStream({ start() {} }), {
+      status, headers: { "content-type": "application/json" },
+    }));
+    const adapter = createGeminiAdapter({
+      refreshUrl: "https://example.invalid/token", fetch,
+      upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
+      importCredentials: async () => ({
+        refreshToken: "fake-refresh-stall", client: CLIENT, projectId: null, clientSource: "antigravity-installed-app" as const,
+      }),
+    });
+    const started = Date.now();
+    const result = adapter.importAccount();
+    await expect(result).rejects.toThrow(`OAuth refresh failed with HTTP ${status}.`);
+    await expect(result).rejects.not.toThrow("fake-refresh-stall");
+    expect(Date.now() - started).toBeLessThan(4_000);
+  }, 5_000);
+});
+
 describe("Gemini adapter local login", () => {
   it("returns null when the empty GEMINI_HOME has no local sign-in", async () => {
     const home = await tempDir("bb-agy-empty-local-login-");
