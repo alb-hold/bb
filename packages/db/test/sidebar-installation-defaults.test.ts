@@ -16,8 +16,11 @@ import {
   dropThreadParentNotificationsColumn,
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
-  dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
+  dropQueuedMessageDeliveryColumns,
+  dropThreadStatusChangedAtColumn,
+  dropThreadRunStateTables,
+  dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
 
 const SIDEBAR_INSTALLATION_DEFAULTS_MIGRATION_TIMESTAMP = 1790009314673;
@@ -97,7 +100,10 @@ describe.each(["project", "thread", "preference"] as const)(
           dropThreadParentNotificationsColumn(db);
           dropThreadStorageDeleteSeqColumn(db);
           dropTerminalDefaultColorsColumn(db);
-          dropQueuedMessageDeliveryModeColumn(db);
+          dropQueuedMessageDeliveryColumns(db);
+          dropThreadStatusChangedAtColumn(db);
+          dropThreadRunStateTables(db);
+          dropPluginFailureLabelColumns(db);
           db.$client
             .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
             .run(SIDEBAR_INSTALLATION_DEFAULTS_MIGRATION_TIMESTAMP);

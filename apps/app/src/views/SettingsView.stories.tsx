@@ -196,11 +196,15 @@ function GeneralSettingsStory({
   desktopBrowserAvailable?: boolean;
 }) {
   const state = useSettingsStoryState();
+  const [resumeThreadsAfterRestart, setResumeThreadsAfterRestart] =
+    useState(false);
   const [terminalCopyOnSelect, setTerminalCopyOnSelect] = useState(true);
 
   return (
     <>
       <GeneralSettingsSection
+        resumeThreadsAfterRestart={resumeThreadsAfterRestart}
+        onResumeThreadsAfterRestartChange={setResumeThreadsAfterRestart}
         confirmThreadArchive={state.confirmThreadArchive}
         onConfirmThreadArchiveChange={state.setConfirmThreadArchive}
         keepHistoryAfterContextClear={state.keepHistoryAfterContextClear}
@@ -417,7 +421,7 @@ export function FullPage() {
       new URLSearchParams(window.location.hash.slice(1)).get("settingsPath") ??
       new URLSearchParams(window.location.search).get("settingsPath");
     if (storyPath?.startsWith("/settings") === true) {
-      navigate(storyPath, { replace: true });
+      void navigate(storyPath, { replace: true });
     }
   }, [navigate]);
 

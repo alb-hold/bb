@@ -8,7 +8,7 @@ description: "Inspect an environment's GitHub pull request, mark it ready or dra
 The plugin finds the pull request for an environment's current branch by
 running `gh` in the environment's workspace on its machine, so forks, upstream
 remotes and the machine's own `gh` login apply. The sidebar row badge (the
-number in its state's color, shown when the `threadRowMetadata` experiment and Organize → Rows → Metadata are on), the composer banner, the Info panel and plugin-built
+number in its state's color, shown when Organize → Rows → Metadata are on), the composer banner, the Info panel and plugin-built
 sidebars read their PR status from it. Pending checks re-check about every 30
 seconds in one batched GitHub request per machine.
 
@@ -34,7 +34,8 @@ bb pull-request merge <environment-id> --expected-head-oid <oid> --expected-host
   `expectedRepository`, `expectedNumber`, and `expectedBaseRef`. Every identity
   value is required and compared with the fresh host read before `gh` starts.
 - bb never wakes a machine for PR work. When the environment's machine is
-  suspended or offline, `show` reports `unavailable` and the actions fail
+  suspended or offline, `show` reports the last pull request bb saw for
+  the environment, or `unavailable` when it has none, and the actions fail
   with a message naming the machine.
 - `gh` must be installed and logged in on that machine.
 

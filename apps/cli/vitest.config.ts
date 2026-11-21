@@ -7,6 +7,7 @@ export default defineWorkspaceTestConfig({
   test: {
     silent: "passed-only",
     testTimeout: 15_000,
+    setupFiles: ["../../vitest.opener-sentinel.setup.ts"],
     env: {
       BB_SERVER_URL: "http://127.0.0.1:49161",
       BB_HOST_DAEMON_PORT: "49162",

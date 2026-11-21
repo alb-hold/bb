@@ -73,7 +73,13 @@ export const HtmlSource = Mark.create({
         serialize: { open: "", close: "", escape: false },
         parse: {
           setup(markdown) {
-            markdown.renderer.rules.html_inline = (tokens, index) => {
+            type HtmlInlineRule = NonNullable<
+              typeof markdown.renderer.rules.html_inline
+            >;
+            markdown.renderer.rules.html_inline = (
+              tokens: Parameters<HtmlInlineRule>[0],
+              index: Parameters<HtmlInlineRule>[1],
+            ) => {
               const source = tokens[index]!.content;
               let rendered = renderedByTokens.get(tokens);
               if (!rendered) {
@@ -119,7 +125,13 @@ export const HtmlBlock = Node.create({
         },
         parse: {
           setup(markdown) {
-            markdown.renderer.rules.html_block = (tokens, index) => {
+            type HtmlBlockRule = NonNullable<
+              typeof markdown.renderer.rules.html_block
+            >;
+            markdown.renderer.rules.html_block = (
+              tokens: Parameters<HtmlBlockRule>[0],
+              index: Parameters<HtmlBlockRule>[1],
+            ) => {
               const source = tokens[index]!.content;
               if (
                 /^<div data-simple-html-embed="true" data-src="[^"]*" data-height="\d+"><\/div>\s*$/.test(

@@ -14,6 +14,7 @@ function served(tag: string): ThreadTimelineResponse {
     activeBackgroundCommands: [],
     pendingTodos: null,
     goal: null,
+    extensionStates: {},
     providerCommands: null,
     sessionOptions: null,
     modelFallback: null,

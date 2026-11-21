@@ -4,15 +4,33 @@ import type {
   ServerAccessStatus,
   SystemProviderState,
 } from "@bb/server-contract";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk/browser";
 import { describe, expect, it } from "vitest";
 import {
+  agentRowSetup,
+  agentCheckFailedMessage,
+  agentListFailedMessage,
+  agentListFailure,
+  failedAgentProviderIds,
+  resolveAgentRows,
+  type AgentCheck,
+  agentSignInView,
   connectAccessUrl,
+  devicesShowMachines,
+  connectFlowFailed,
   defaultSelectedRepoPaths,
+  skippedStepIds,
   hasReadyAgent,
+  operationFailureReason,
   parseSignInOutput,
+  projectsPrimaryAction,
   resolveAgentSetupState,
+  setupGuidePlanHealth,
   resolveSignInCommand,
+  signInBrowserIsOnMachine,
   shortRemoteName,
+  signInSiteName,
+  terminalConnectFlow,
 } from "./onboarding-model";
 
 function health(
@@ -31,6 +49,8 @@ function health(
     canUpdate: true,
     loginCommand: "claude auth login",
     localLoginCommand: null,
+    internal_DO_NOT_USE_guidedSignIn: false,
+    internal_DO_NOT_USE_setupGuidePlanLabel: null,
     ...overrides,
   };
 }
@@ -69,10 +89,28 @@ const idle = {
 };
 
 describe("resolveAgentSetupState", () => {
+  it("shows the setup guide's plan label, falling back to the agent's plan", () => {
+    const codex = health({
+      providerId: "codex",
+      accountEmail: "a@b.dev",
+      internal_DO_NOT_USE_setupGuidePlanLabel: "Plus",
+    });
+    expect(
+      resolveAgentSetupState({
+        ...idle,
+        health: setupGuidePlanHealth(codex),
+        cliStatus: undefined,
+      }),
+    ).toEqual({ status: "ready", detail: "a@b.dev · Plus" });
+    expect(
+      setupGuidePlanHealth(health({ planLabel: "Max (20x)" })).planLabel,
+    ).toBe("Max (20x)");
+  });
+
   it("shows the account and plan for a ready agent, even while a stale install job lingers", () => {
     expect(
       resolveAgentSetupState({
-        health: health({ accountEmail: "a@b.dev", planLabel: "Max (20x)" }),
+        health: health({ accountEmail: "a@b.dev", planLabel: "Ultra" }),
         cliStatus: cliStatus(),
         installing: true,
         installFailure: "old failure",
@@ -80,7 +118,7 @@ describe("resolveAgentSetupState", () => {
         signInFailed: true,
         installInfoPending: true,
       }),
-    ).toEqual({ status: "ready", detail: "a@b.dev · Max (20x)" });
+    ).toEqual({ status: "ready", detail: "a@b.dev · Ultra" });
     expect(
       resolveAgentSetupState({
         health: health(),
@@ -114,21 +152,42 @@ describe("resolveAgentSetupState", () => {
     ).toEqual({ status: "install", canInstall: false });
   });
 
-  it("keeps a missing agent in checking until install info has loaded", () => {
+  it("offers Install or Update while install info is still loading", () => {
+    const pending = {
+      ...idle,
+      cliStatus: undefined,
+      installInfoPending: true,
+    };
     expect(
       resolveAgentSetupState({
+        ...pending,
         health: health({ status: "not_installed" }),
-        cliStatus: undefined,
-        ...idle,
-        installInfoPending: true,
       }),
-    ).toEqual({ status: "checking" });
+    ).toEqual({ status: "install", canInstall: true });
     expect(
       resolveAgentSetupState({
+        ...pending,
+        health: health({
+          status: "unsupported_version",
+          minimumSupportedVersion: "2.0.0",
+        }),
+      }),
+    ).toEqual({
+      status: "update",
+      detail: "Needs version 2.0.0 or newer",
+      canInstall: true,
+    });
+    expect(
+      resolveAgentSetupState({
+        ...pending,
+        installInfoPending: false,
+        health: health({ status: "not_installed" }),
+      }),
+    ).toEqual({ status: "install", canInstall: false });
+    expect(
+      resolveAgentSetupState({
+        ...pending,
         health: health({ status: "unauthenticated" }),
-        cliStatus: undefined,
-        ...idle,
-        installInfoPending: true,
       }),
     ).toEqual({ status: "signIn", reason: "signedOut", canSignIn: true });
   });
@@ -147,7 +206,7 @@ describe("resolveAgentSetupState", () => {
         installing: true,
         installFailure: "Install failed.",
       }),
-    ).toEqual({ status: "installing" });
+    ).toEqual({ status: "installing", update: false });
     expect(
       resolveAgentSetupState({
         ...base,
@@ -508,4 +567,447 @@ describe("parseSignInOutput", () => {
       acceptsPastedCode: false,
     });
   });
+});
+
+describe("operationFailureReason", () => {
+  it.each([
+    ["host_unavailable", 502, "host_unavailable"],
+    ["command_timeout", 502, "timed_out"],
+    [null, 504, "timed_out"],
+    ["project_not_found", 404, "not_found"],
+    ["unauthorized", 401, "permission"],
+    ["forbidden", 403, "permission"],
+    ["project_not_found", 502, "other"],
+    [null, 500, "other"],
+  ] as const)(
+    "maps the %s error code with status %s to %s",
+    (code, status, reason) => {
+      expect(
+        operationFailureReason(
+          new BbHttpError({ body: null, code, message: "failed", status }),
+        ),
+      ).toBe(reason);
+    },
+  );
+
+  it("reports a request that ran out of time as timed out", () => {
+    expect(operationFailureReason(new BbRequestTimeoutError(30_000))).toBe(
+      "timed_out",
+    );
+  });
+
+  it("reports errors without an HTTP status as other", () => {
+    expect(operationFailureReason(new TypeError("Failed to fetch"))).toBe(
+      "other",
+    );
+  });
+});
+
+const PI_AUTH_URL =
+  "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=MXdVe-PfEWSN";
+const PI_CHANGELOG_URL = "https://pi.dev/changelog";
+const PI_LOGIN_OUTPUT = [
+  `${ESC}[90mNew version 1.6.0 is available. Changelog: ${ESC}]8;;${PI_CHANGELOG_URL}${BEL}${PI_CHANGELOG_URL}${ESC}]8;;${BEL}\r\n`,
+  `${ESC}[2K Login to Anthropic\r\n`,
+  `${ESC}[2K ${ESC}[38;5;6m${ESC}]8;;${PI_AUTH_URL}${BEL}${PI_AUTH_URL.slice(0, 88)}${ESC}]8;;${BEL}\r\n`,
+  `${ESC}[2K ${ESC}]8;;${PI_AUTH_URL}${BEL}${PI_AUTH_URL.slice(88)}${ESC}]8;;${BEL}${ESC}[39m\r\n`,
+  `${ESC}[2K ${ESC}[2m${ESC}]8;;${PI_AUTH_URL}${BEL}Ctrl+click to open${ESC}]8;;${BEL}${ESC}[22m • ctrl+x to copy\r\n`,
+  `${ESC}[2K Paste the code Anthropic shows after you sign in:\r\n`,
+  `${ESC}[2K > `,
+].join("");
+const PI_LOGIN_FAILED_OUTPUT = `${PI_LOGIN_OUTPUT}\r\n${ESC}[7;1H${ESC}[2K${ESC}[0m${ESC}]8;;${BEL}${ESC}[8;1H${ESC}[2K ${ESC}[38;5;1mError: Failed to login to Anthropic: OAuth state mismatch${ESC}[39m     `;
+
+describe("Pi's sign-in", () => {
+  it("takes the sign-in link Pi shows last, not an earlier link", () => {
+    expect(parseSignInOutput(PI_LOGIN_OUTPUT)).toEqual({
+      url: PI_AUTH_URL,
+      userCode: null,
+      acceptsPastedCode: true,
+    });
+  });
+
+  it("shows Pi's row like every other agent's until its sign-in terminal exists", () => {
+    expect(agentRowSetup({ connect: true, awaitingSession: true })).toBe(
+      "signIn",
+    );
+    expect(agentRowSetup({ connect: true, awaitingSession: false })).toBe(
+      "connect",
+    );
+    expect(agentRowSetup({ connect: false, awaitingSession: false })).toBe(
+      "signIn",
+    );
+  });
+
+  it("sees a failed sign-in although Pi keeps running at its prompt", () => {
+    const flow = terminalConnectFlow("pi");
+    if (flow === null) throw new Error("Pi has no connect flow");
+
+    expect(connectFlowFailed(flow, PI_LOGIN_OUTPUT)).toBe(false);
+    expect(connectFlowFailed(flow, PI_LOGIN_FAILED_OUTPUT)).toBe(true);
+  });
+});
+
+describe("skippedStepIds", () => {
+  it("marks only the steps whose last forward move was a skip", () => {
+    expect(
+      [
+        ...skippedStepIds(
+          new Map([
+            ["agent", "skipped"],
+            ["projects", "completed"],
+            ["plugins", "skipped"],
+          ] as const),
+        ),
+      ].sort(),
+    ).toEqual(["agent", "plugins"]);
+  });
+});
+
+describe("projectsPrimaryAction", () => {
+  const atOpen = new Set(["prj_existing"]);
+
+  it("imports the selection", () => {
+    expect(
+      projectsPrimaryAction({
+        selectedCount: 2,
+        existingProjectIds: atOpen,
+        projectIds: ["prj_existing"],
+      }),
+    ).toBe("import");
+  });
+
+  it("completes the step when a folder was added during the guide", () => {
+    expect(
+      projectsPrimaryAction({
+        selectedCount: 0,
+        existingProjectIds: atOpen,
+        projectIds: ["prj_existing", "prj_added_folder"],
+      }),
+    ).toBe("completed");
+  });
+
+  it("skips the step when nothing was selected or added, counting earlier projects as not added", () => {
+    expect(
+      projectsPrimaryAction({
+        selectedCount: 0,
+        existingProjectIds: atOpen,
+        projectIds: ["prj_existing"],
+      }),
+    ).toBe("skipped");
+    expect(
+      projectsPrimaryAction({
+        selectedCount: 0,
+        existingProjectIds: null,
+        projectIds: ["prj_existing"],
+      }),
+    ).toBe("skipped");
+  });
+});
+
+describe("resolveAgentRows", () => {
+  const codex = health({ providerId: "codex", displayName: "Codex" });
+  const pi = health({ providerId: "pi", displayName: "Pi" });
+  const names = new Map([
+    ["codex", "Codex"],
+    ["claude-code", "Claude Code"],
+    ["pi", "Pi"],
+  ]);
+  const timedOut = new BbRequestTimeoutError(75_000);
+  const pending = (providerId: string): AgentCheck => ({
+    providerId,
+    kind: "pending",
+  });
+  const answered = (state: SystemProviderState, settledAt = 1): AgentCheck => ({
+    providerId: state.providerId,
+    kind: "answered",
+    state,
+    settledAt,
+  });
+  const failed = (
+    providerId: string,
+    error: unknown = new Error("boom"),
+    settledAt = 1,
+  ): AgentCheck => ({ providerId, kind: "failed", error, settledAt });
+  const absent = (providerId: string): AgentCheck => ({
+    providerId,
+    kind: "absent",
+    settledAt: 1,
+  });
+  const resolve = (
+    checks: AgentCheck[],
+    states?: SystemProviderState[],
+    statesSettledAt = 0,
+  ) => resolveAgentRows({ states, statesSettledAt, checks, names });
+
+  it("shows nothing until the first agent's check finishes", () => {
+    expect(resolve([pending("codex"), pending("pi")])).toBeUndefined();
+  });
+
+  it("holds a slot for an agent still loading above one already shown and skips absent agents", () => {
+    expect(
+      resolve([
+        answered(codex),
+        pending("claude-code"),
+        answered(pi),
+        absent("acp-opencode"),
+      ]),
+    ).toEqual([
+      { kind: "agent", state: codex },
+      { kind: "loading", key: "claude-code" },
+      { kind: "agent", state: pi },
+    ]);
+  });
+
+  it("adds one trailing placeholder while later agents may still appear", () => {
+    expect(
+      resolve([
+        answered(codex),
+        absent("acp-opencode"),
+        pending("acp-hermes-agent"),
+        pending("acp-grok"),
+      ]),
+    ).toEqual([
+      { kind: "agent", state: codex },
+      { kind: "loading", key: "more" },
+    ]);
+  });
+
+  it("shows one agent whose check failed as its own row while the others answer", () => {
+    expect(
+      resolve([answered(codex), failed("claude-code", timedOut), answered(pi)]),
+    ).toEqual([
+      { kind: "agent", state: codex },
+      {
+        kind: "failed",
+        providerId: "claude-code",
+        name: "Claude Code",
+        failure: "timed_out",
+        detail: null,
+        retrying: false,
+      },
+      { kind: "agent", state: pi },
+    ]);
+  });
+
+  it("treats an agent the server could not check as failed", () => {
+    const unknown = health({
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      status: "unknown",
+      statusMessage: "Could not determine the version.",
+    });
+    expect(resolve([], [codex, unknown], 5)).toEqual([
+      { kind: "agent", state: codex },
+      {
+        kind: "failed",
+        providerId: "claude-code",
+        name: "Claude Code",
+        failure: "other",
+        detail: "Could not determine the version.",
+        retrying: false,
+      },
+    ]);
+    expect(
+      resolve([{ providerId: "claude-code", kind: "unchecked" }], [unknown], 5),
+    ).toEqual([expect.objectContaining({ kind: "failed", retrying: false })]);
+  });
+
+  it("marks a failed agent as retrying while its recheck runs, then shows the fresh answer", () => {
+    const unknown = health({
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      status: "unknown",
+    });
+    const claude = health({
+      providerId: "claude-code",
+      displayName: "Claude Code",
+    });
+    expect(resolve([pending("claude-code")], [codex, unknown], 5)?.[1]).toEqual(
+      expect.objectContaining({ kind: "failed", retrying: true }),
+    );
+    expect(resolve([answered(claude, 9)], [codex, unknown], 5)).toEqual([
+      { kind: "agent", state: codex },
+      { kind: "agent", state: claude },
+    ]);
+    expect(resolve([answered(claude, 3)], [codex, unknown], 5)?.[1]).toEqual(
+      expect.objectContaining({ kind: "failed" }),
+    );
+  });
+
+  it("rechecks only the failed agents, or every agent when none answered", () => {
+    const rows = resolve([
+      answered(codex),
+      failed("claude-code"),
+      answered(pi),
+    ]);
+    expect(failedAgentProviderIds(rows, [])).toEqual(["claude-code"]);
+    expect(
+      failedAgentProviderIds(undefined, [absent("codex"), failed("pi")]),
+    ).toEqual(["pi"]);
+    expect(
+      failedAgentProviderIds(undefined, [absent("codex"), absent("pi")]),
+    ).toEqual(["codex", "pi"]);
+  });
+});
+
+describe("agent check failure copy", () => {
+  it.each([
+    ["timed_out", "Didn't respond in time."],
+    ["other", "Couldn't load agent"],
+  ] as const)("says %s for one agent", (failure, message) => {
+    expect(agentCheckFailedMessage(failure)).toBe(message);
+  });
+
+  it("says the machine can't be reached when it is offline or the server says so", () => {
+    expect(agentListFailure({ hostConnected: false, errors: [] })).toBe(
+      "host_unavailable",
+    );
+    expect(
+      agentListFailure({
+        hostConnected: true,
+        errors: [
+          new BbHttpError({
+            body: null,
+            code: "host_unavailable",
+            message: "offline",
+            status: 503,
+          }),
+        ],
+      }),
+    ).toBe("host_unavailable");
+    expect(
+      agentListFailure({ hostConnected: true, errors: [null, new Error("x")] }),
+    ).toBe("other");
+    expect(
+      agentListFailedMessage({
+        failure: "host_unavailable",
+        machineName: "dev-laptop",
+      }),
+    ).toBe(
+      "Can't reach dev-laptop. Make sure bb is running there, then retry.",
+    );
+    expect(
+      agentListFailedMessage({ failure: "other", machineName: "dev-laptop" }),
+    ).toBe("Couldn't load agents");
+  });
+});
+
+describe("devicesShowMachines", () => {
+  it("offers other machines only once bb connect is on", () => {
+    expect(devicesShowMachines({ status: "on", url: "https://x" })).toBe(true);
+    expect(devicesShowMachines({ status: "off" })).toBe(false);
+    expect(devicesShowMachines({ status: "unavailable" })).toBe(false);
+  });
+});
+
+describe("signInSiteName", () => {
+  it("returns null when the URL has no usable host", () => {
+    expect(signInSiteName("not a url")).toBeNull();
+    expect(signInSiteName("file:///tmp/sign-in")).toBeNull();
+  });
+});
+
+describe("agentSignInView", () => {
+  const DEVICE_OUTPUT =
+    "Open https://auth.example.com/device and enter code ABCD-1234\r\n";
+
+  it("opens the terminal without a parsed link for other agents once it prints", () => {
+    const base = {
+      parsed: false,
+      connect: false,
+      fallbackDue: false,
+      terminalChoice: null,
+    };
+    expect(agentSignInView({ ...base, outputText: null })).toEqual({
+      guide: null,
+      terminalVisible: true,
+      started: false,
+    });
+    expect(agentSignInView({ ...base, outputText: "" }).started).toBe(false);
+    expect(agentSignInView({ ...base, outputText: DEVICE_OUTPUT })).toEqual({
+      guide: null,
+      terminalVisible: true,
+      started: true,
+    });
+    expect(
+      agentSignInView({
+        ...base,
+        outputText: DEVICE_OUTPUT,
+        terminalChoice: false,
+      }).terminalVisible,
+    ).toBe(false);
+  });
+
+  it("keeps Pi's terminal panel open from the start", () => {
+    expect(
+      agentSignInView({
+        parsed: false,
+        connect: true,
+        outputText: null,
+        fallbackDue: false,
+        terminalChoice: null,
+      }),
+    ).toEqual({ guide: null, terminalVisible: true, started: true });
+  });
+
+  it("lifts the link and code out of a parsed agent's output with the terminal hidden", () => {
+    expect(
+      agentSignInView({
+        parsed: true,
+        connect: false,
+        outputText: DEVICE_OUTPUT,
+        fallbackDue: false,
+        terminalChoice: null,
+      }),
+    ).toEqual({
+      guide: parseSignInOutput(DEVICE_OUTPUT),
+      terminalVisible: false,
+      started: true,
+    });
+    expect(parseSignInOutput(DEVICE_OUTPUT).url).not.toBeNull();
+  });
+});
+
+describe("signInBrowserIsOnMachine", () => {
+  it.each([
+    {
+      viewer: "the desktop app",
+      hostname: "brsbl.getbb.app",
+      isDesktop: true,
+      agentOnLocalDaemonHost: true,
+      browser: true,
+    },
+    {
+      viewer: "a loopback browser",
+      hostname: "localhost",
+      isDesktop: false,
+      agentOnLocalDaemonHost: true,
+      browser: true,
+    },
+    {
+      viewer: "a getbb.app share",
+      hostname: "brsbl-bbox--41201.getbb.app",
+      isDesktop: false,
+      agentOnLocalDaemonHost: true,
+      browser: false,
+    },
+    {
+      viewer: "the desktop app with the agent on another machine",
+      hostname: "localhost",
+      isDesktop: true,
+      agentOnLocalDaemonHost: false,
+      browser: false,
+    },
+  ])(
+    "signs in with a browser link from $viewer only when browser is $browser",
+    ({ hostname, isDesktop, agentOnLocalDaemonHost, browser }) => {
+      expect(
+        signInBrowserIsOnMachine({
+          agentOnLocalDaemonHost,
+          hostname,
+          isDesktop,
+        }),
+      ).toBe(browser);
+    },
+  );
 });

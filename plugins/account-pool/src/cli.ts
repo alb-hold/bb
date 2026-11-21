@@ -49,6 +49,7 @@ import { GeminiLoginError, type GeminiLogin } from "./gemini-login.js";
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
   "Conversation affinity stays on its account until that account becomes ineligible; explicit thread selections remain pinned.",
+  "New conversations prefer accounts below switchThreshold. Existing conversations retain accepted included usage. Paid extra usage follows provider refusal of included usage.",
   "When this bb server runs inside another bb server's thread, parent proxy routes its pooled traffic through that parent; isolate neutralises the inherited routing.",
   "Reorder changes account priority, which breaks ties after quota headroom and reset recovery; existing conversations stay pinned.",
 ].join("\n");
@@ -151,10 +152,6 @@ function formatAccounts(
       "Sign-in",
       "Active",
       "Priority",
-      "5h",
-      "5h reset",
-      "7d",
-      "7d reset",
       "Windows",
       "Binding window",
       "Headroom",
@@ -176,10 +173,6 @@ function formatAccounts(
         account.signInExpired ? "expired" : "ok",
         String(account.active),
         String(account.priority),
-        formatUtilization(account.fiveHourUtilization),
-        formatReset(account.fiveHourResetAt),
-        formatUtilization(account.sevenDayUtilization),
-        formatReset(account.sevenDayResetAt),
         formatLimitWindows(account.limitWindows),
         account.balance.bindingWindow ?? "-",
         formatUtilization(account.balance.bindingHeadroom),
@@ -373,7 +366,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -394,7 +387,7 @@ export function registerPoolCli(
               type: "string",
               placeholder: "dir",
               description:
-                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account",
+                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account. Without it, --import also reads the Antigravity sign-in saved in the macOS keychain",
             },
             "api-key": {
               type: "string",
@@ -1091,7 +1084,7 @@ export function registerPoolCli(
             {
               name: "value",
               description:
-                "HTTP(S) URL for the upstream keys, a number above 0 and at most 1 for switchThreshold, proxy or isolate for parentMode",
+                "HTTP(S) URL for the upstream keys, a number above 0 and at most 1 for switchThreshold (the quota fraction from which other accounts are preferred), proxy or isolate for parentMode",
               required: true,
             },
           ],

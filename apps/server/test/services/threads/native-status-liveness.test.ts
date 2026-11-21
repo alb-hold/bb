@@ -528,7 +528,7 @@ describe("native thread status liveness", () => {
         turnId: "native-child-turn",
       });
 
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       try {
         await runPeriodicSweeps({
           ...harness.deps,

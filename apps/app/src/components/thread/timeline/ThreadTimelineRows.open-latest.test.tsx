@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
 import { ThreadScreen } from "@/views/thread-detail/ThreadScreen";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
@@ -79,6 +80,11 @@ const TIMELINE = {
   timelineLoading: false,
   timelineRows: rows,
 } as unknown as UseThreadTimelineControllerResult;
+
+vi.mock("@/components/thread/timeline", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/thread/timeline")>()),
+  useThreadTimelineController: () => TIMELINE,
+}));
 
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
@@ -165,7 +171,6 @@ function OpenThread({
   const { placement, hasUnseenTimelineEvents: openAtLatest } =
     useThreadUnreadDividerState({
       routeThreadId: THREAD_ID,
-      anchor: "first-unread-row",
       bootstrapQuery: {
         dataUpdatedAt: bootstrapUpdatedAt,
         isFetchedAfterMount: false,
@@ -193,7 +198,7 @@ function OpenThread({
         status: "active",
         runtime: { displayStatus: "idle" },
       })}
-      timeline={TIMELINE}
+      timelineEnabled={true}
       timelineHost={{
         environmentHostName: null,
         hasUnseenTimelineEvents: openAtLatest,
@@ -680,7 +685,7 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(200);
   });
 
-  it("opens at newest when fresh unread data replaces a settled read placeholder", () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the lazy message time is settled before layout; opens at newest when fresh unread data replaces a settled read placeholder", async () => {
     getDefaultStore().set(threadTimelineScrollAnchorAtomFamily(THREAD_ID), {
       rowId: "answer-100",
       offsetWithinRow: 0,
@@ -694,6 +699,7 @@ describe("opening an unseen timeline", () => {
       true,
       true,
     );
+    await settleLazyModules();
     resize();
     act(() => vi.advanceTimersByTime(1));
     flushFrames();

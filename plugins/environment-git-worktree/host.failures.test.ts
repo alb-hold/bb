@@ -154,6 +154,7 @@ describe("worktree removal when its machinery fails", () => {
       operationId: "remove",
       pathKey: "thr_fail",
       path: target.path,
+      ownedBranch: null,
     });
 
     expect(result).toMatchObject({
@@ -181,6 +182,7 @@ describe("worktree removal when its machinery fails", () => {
       operationId: "remove",
       pathKey: "thr_fail",
       path: null,
+      ownedBranch: null,
     });
 
     expect(result.status).toBe("failed");

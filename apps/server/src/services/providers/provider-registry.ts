@@ -42,6 +42,7 @@ export type ProviderExtensionKindSchemas = Readonly<
 export interface ProviderRegistration {
   info: ProviderInfo;
   serverCapabilities: ProviderServerCapabilities;
+  guidedSignIn: boolean;
   bridgeOptions: Readonly<Record<string, JsonValue>>;
   extensionKinds: ProviderExtensionKindSchemas;
   visibility: "always" | "installed";

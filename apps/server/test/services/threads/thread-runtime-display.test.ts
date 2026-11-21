@@ -56,6 +56,7 @@ import type {
 } from "@bb/domain";
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
+  listPromptBannerActivityCandidateRows,
   resolveThreadRuntimeState,
   toPluginThreadDtoFromThread,
   toThreadResponseFromThread,
@@ -312,6 +313,7 @@ function createThreadListEntry(
 ): ThreadWithPendingInteractionState {
   return {
     ...args.thread,
+    statusChangedAt: 0,
     ...splitParentNotificationsChoice(args.thread.parentNotifications),
     modelOverride: null,
     reasoningLevelOverride: null,
@@ -324,8 +326,6 @@ function createThreadListEntry(
     environmentHostId: args.environmentHostId,
     environmentName: null,
     hasPendingInteraction: false,
-    // Only a `pending` thread whose first message queued carries one, and
-    // these fixtures are all threads that already started.
     startupContext: null,
   };
 }
@@ -968,18 +968,28 @@ describe("thread runtime display", () => {
     ] satisfies ThreadRuntimeState[]);
   });
 
-  it("reports each thread's queued work, with a failure outranking a wait", () => {
+  it("reports each thread's queued work, with a failure outranking a wait and bb notices alone not counting as a wait", () => {
     const { db, hostId, hub } = setup();
     const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
     const waiting = createThreadWithEnvironment({ db, hostId, status: "idle" });
     const failed = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    const noticesOnly = createThreadWithEnvironment({
+      db,
+      hostId,
+      status: "idle",
+    });
+    const noticeAndMessage = createThreadWithEnvironment({
+      db,
+      hostId,
+      status: "idle",
+    });
+    const notice = { kind: "child-completed" as const, subject: null };
 
-    // The failed thread holds BOTH a healthy row and a failed one, which is the
-    // case the precedence rule exists for: a thread that queued two messages
-    // and only the first one blew up must not read as merely waiting.
-    for (const { thread, count } of [
-      { thread: waiting.thread, count: 1 },
-      { thread: failed.thread, count: 2 },
+    for (const { thread, count, systemNotices } of [
+      { thread: waiting.thread, count: 1, systemNotices: 0 },
+      { thread: failed.thread, count: 2, systemNotices: 0 },
+      { thread: noticesOnly.thread, count: 2, systemNotices: 2 },
+      { thread: noticeAndMessage.thread, count: 2, systemNotices: 1 },
     ]) {
       for (let index = 0; index < count; index += 1) {
         createQueuedThreadMessage(db, noopNotifier, {
@@ -992,7 +1002,7 @@ describe("thread runtime display", () => {
           waitingOn: { kind: "thread-busy" },
           sendAt: null,
           payload: { kind: "inline" },
-          systemNotice: null,
+          systemNotice: index < systemNotices ? notice : null,
         });
       }
     }
@@ -1009,7 +1019,13 @@ describe("thread runtime display", () => {
       { db, hub, providerRegistry },
       {
         now: 1_000,
-        threads: [empty.thread, waiting.thread, failed.thread].map((thread) =>
+        threads: [
+          empty.thread,
+          waiting.thread,
+          failed.thread,
+          noticesOnly.thread,
+          noticeAndMessage.thread,
+        ].map((thread) =>
           createThreadListEntry({
             environmentHostId: hostId,
             thread: { ...thread, pinSortKey: null },
@@ -1022,6 +1038,8 @@ describe("thread runtime display", () => {
       "none",
       "waiting",
       "failed",
+      "none",
+      "waiting",
     ]);
   });
 
@@ -1049,7 +1067,7 @@ describe("thread runtime display", () => {
     ).toHaveLength(32_767);
   });
 
-  it("marks list entries active when the prompt banner would show plan or goal state", () => {
+  it("marks list entries active for an open Plan turn but never for a Goal", () => {
     const { db, hostId, hub } = setup();
     const activePlan = createThreadWithEnvironment({ db, hostId });
     const completedPlan = createThreadWithEnvironment({ db, hostId });
@@ -1239,28 +1257,62 @@ describe("thread runtime display", () => {
 
     expect(activityByThreadId.get(activePlan.thread.id)).toMatchObject({
       activePlanModeCount: 1,
-      activeGoalCount: 0,
     });
     expect(activityByThreadId.get(completedPlan.thread.id)).toMatchObject({
       activePlanModeCount: 0,
-      activeGoalCount: 0,
     });
     expect(activityByThreadId.get(activeGoal.thread.id)).toMatchObject({
       activePlanModeCount: 0,
-      activeGoalCount: 1,
     });
     expect(activityByThreadId.get(clearedGoal.thread.id)).toMatchObject({
       activePlanModeCount: 0,
-      activeGoalCount: 0,
     });
     expect(activityByThreadId.get(concurrentPlanGoal.thread.id)).toMatchObject({
       activePlanModeCount: 1,
-      activeGoalCount: 1,
     });
     expect(activityByThreadId.get(claudePlan.thread.id)).toMatchObject({
       activePlanModeCount: 1,
-      activeGoalCount: 0,
     });
+  });
+
+  it("reads open accepted inputs only for threads that can show active plan mode", () => {
+    const { db, hostId, hub } = setup();
+    const active = createThreadWithEnvironment({ db, hostId });
+    const idle = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    const requestIds = new Map([
+      [active.thread.id, formatClientTurnRequestIdSuffix({ suffix: "23456789af" })],
+      [idle.thread.id, formatClientTurnRequestIdSuffix({ suffix: "23456789ag" })],
+    ]);
+    for (const { thread } of [active, idle]) {
+      const requestId = requestIds.get(thread.id) ?? "";
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: threadScope(),
+        type: "client/turn/requested",
+        data: turnRequestData({ input: planPromptInput, requestId }),
+      });
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: turnScope(`turn-${thread.id}`),
+        providerThreadId: `provider-${thread.id}`,
+        type: "turn/input/accepted",
+        data: {
+          providerThreadId: `provider-${thread.id}`,
+          clientRequestId: requestId,
+        },
+      });
+    }
+
+    const rows = listPromptBannerActivityCandidateRows(
+      { db, hub, providerRegistry },
+      [active.thread, idle.thread],
+      { kind: "ids", ids: [active.thread.id, idle.thread.id] },
+    );
+
+    expect(
+      rows.filter((row) => row.type === "turn/input/accepted").map((row) => row.threadId),
+    ).toEqual([active.thread.id]);
+    expect(rows.some((row) => row.threadId === idle.thread.id)).toBe(false);
   });
 });
 

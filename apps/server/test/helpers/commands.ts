@@ -16,6 +16,7 @@ import type {
   HostDaemonEventEnvelope,
   HostDaemonOnlineRpcResult,
   HostDaemonOnlineRpcRequestMessage,
+  HostDaemonOnlineRpcCommand,
   HostDaemonRpcCommand,
   HostDaemonRpcResultForCommand,
 } from "@bb/host-daemon-contract";
@@ -63,6 +64,14 @@ export function listQueuedCommands(
     .map((queued) => hostDaemonRpcCommandSchema.parse(queued.command));
 }
 
+export function listPendingQueuedCommandsForHost(
+  hostId: string,
+): QueuedCommand[] {
+  return pendingHostRpcRequests.filter(
+    (queued) => queued.row.hostId === hostId,
+  );
+}
+
 export function listQueuedThreadCommands(
   harness: TestAppHarness,
   type: HostDaemonCommand["type"],
@@ -81,6 +90,11 @@ export function listQueuedThreadCommands(
 
 const pendingHostRpcRequests: QueuedCommand[] = [];
 const testRpcCursorByHost = new Map<string, number>();
+
+export function forgetQueuedCommand(command: QueuedCommand): void {
+  const index = pendingHostRpcRequests.indexOf(command);
+  if (index >= 0) pendingHostRpcRequests.splice(index, 1);
+}
 
 interface RegisterTestHostRpcCaptureArgs {
   hostId: string;
@@ -103,6 +117,10 @@ interface RegisterTestHostRpcCaptureArgs {
     >,
   ) => void;
   gitSourceInspectionResult?: HostDaemonOnlineRpcResult<"host.inspect_git_source">;
+  gitCheckoutInspectionResult?: HostDaemonOnlineRpcResult<"host.inspect_git_checkout">;
+  onInspectGitCheckout?: (
+    command: Extract<HostDaemonOnlineRpcCommand, { type: "host.inspect_git_checkout" }>,
+  ) => void;
   onInspectGitSource?: (
     command: Extract<HostDaemonRpcCommand, { type: "host.inspect_git_source" }>,
   ) => void;
@@ -223,6 +241,7 @@ function buildDefaultGitSourceInspectionResult(): HostDaemonOnlineRpcResult<"hos
     hasUncommittedChanges: false,
     operation: { kind: "none" },
     originDefaultBranch: "origin/main",
+    defaultWorktreeBaseBranch: "origin/main",
   };
 }
 
@@ -425,6 +444,22 @@ export function registerTestHostRpcCapture(
             result:
               args.gitBranchOptionsResult ??
               buildDefaultGitBranchOptionsResult(command.selectedBranch),
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
+      if (command.type === "host.inspect_git_checkout") {
+        args.onInspectGitCheckout?.(command);
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: args.gitCheckoutInspectionResult ?? {
+              checkout: buildDefaultGitSourceInspectionResult().checkout,
+            },
           }),
           sessionId: args.sessionId,
         });

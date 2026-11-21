@@ -85,7 +85,7 @@ function renderOpenInSplit(threadId: string, layout: SplitLayout | null) {
     </Provider>
   );
   const { result } = renderHook(
-    () => useThreadRowSplitDrag({ projectId: "p1", threadId, title: "Thread" }),
+    () => useThreadRowSplitDrag({ projectId: "p1", threadId, getTitle: () => "Thread" }),
     { wrapper },
   );
   return {

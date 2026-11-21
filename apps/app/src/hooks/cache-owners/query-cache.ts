@@ -35,7 +35,9 @@ type TimelineRowsUpdater = (
   rows: readonly TimelineRow[],
 ) => readonly TimelineRow[] | null;
 
-type TimelineRowsUpdatePredicate = (queryKey: QueryKey) => boolean;
+type TimelineRowsUpdatePredicate = (
+  response: ThreadTimelineResponse,
+) => boolean;
 
 interface UpdateCachedTimelineRowsArgs {
   queryClient: QueryClient;
@@ -266,6 +268,13 @@ export function listSidebarNavigationThreads(
     ...navigation.projects.flatMap((project) => project.threads),
     ...navigation.personalProject.threads,
   ];
+}
+
+export function writeSidebarNavigation(
+  queryClient: QueryClient,
+  navigation: SidebarBootstrapResponse,
+): void {
+  queryClient.setQueryData(sidebarNavigationQueryKey(), navigation);
 }
 
 export function getCachedSidebarNavigationThreads(
@@ -501,7 +510,7 @@ function updateCachedTimelineRows({
     if (!response) {
       continue;
     }
-    if (!shouldUpdate(queryKey)) {
+    if (!shouldUpdate(response)) {
       continue;
     }
 
@@ -525,6 +534,26 @@ export function insertOptimisticTimelineRow(
   updateCachedTimelineRows({
     queryClient,
     shouldUpdate: updateEveryTimelineQuery,
+    threadId,
+    updater: (rows) => [...rows, row],
+  });
+}
+
+export function insertOptimisticTimelineRowUnlessDelivered({
+  messageSequence,
+  queryClient,
+  row,
+  threadId,
+}: {
+  messageSequence: number | null;
+  queryClient: QueryClient;
+  row: TimelineRow;
+  threadId: string;
+}): void {
+  updateCachedTimelineRows({
+    queryClient,
+    shouldUpdate: (response) =>
+      messageSequence === null || response.maxSeq < messageSequence,
     threadId,
     updater: (rows) => [...rows, row],
   });

@@ -10,6 +10,7 @@ import {
 } from "react-router-dom";
 import {
   startTransition,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -36,7 +37,7 @@ import { createPluginPanelFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginNavPanelSlot,
 } from "@/lib/plugin-slots";
 import { PLUGIN_PANEL_ROUTE_PATH } from "@/lib/route-paths";
@@ -259,17 +260,17 @@ describe("useComposer", () => {
     function ComposerProbe() {
       const composer = useComposer();
       onRender?.(composer);
-      const initialMethods = useRef({
+      const [initialMethods] = useState(() => ({
         setText: composer.setText,
         updateText: composer.updateText,
         clear: composer.clear,
         setTextEffect: composer.setTextEffect,
-      });
+      }));
       const methodsAreStable =
-        initialMethods.current.setText === composer.setText &&
-        initialMethods.current.updateText === composer.updateText &&
-        initialMethods.current.clear === composer.clear &&
-        initialMethods.current.setTextEffect === composer.setTextEffect;
+        initialMethods.setText === composer.setText &&
+        initialMethods.updateText === composer.updateText &&
+        initialMethods.clear === composer.clear &&
+        initialMethods.setTextEffect === composer.setTextEffect;
       return (
         <div>
           <div>scope: {composer.scope.kind}</div>
@@ -716,7 +717,9 @@ describe("useComposer", () => {
         ],
       });
       const draftRef = useRef(draft);
-      draftRef.current = draft;
+      useInsertionEffect(() => {
+        draftRef.current = draft;
+      });
       const subscribeDraft = useComposerHostDraftNotifier(draft);
       const host = useMemo<PluginComposerHost>(
         () => ({
@@ -930,7 +933,9 @@ describe("useComposer", () => {
         ],
       });
       const draftRef = useRef(draft);
-      draftRef.current = draft;
+      useInsertionEffect(() => {
+        draftRef.current = draft;
+      });
       const subscribeDraft = useComposerHostDraftNotifier(draft);
       const host = useMemo<PluginComposerHost>(
         () => ({
@@ -1224,7 +1229,7 @@ describe("useComposer", () => {
       return (
         <button
           type="button"
-          onClick={() => navigate("/threads/thr_owned_next")}
+          onClick={() => void navigate("/threads/thr_owned_next")}
         >
           change-owned-scope
         </button>
@@ -1587,7 +1592,11 @@ describe("useComposer().experimental_setSelection", () => {
       }),
     );
     const host = {
-      scope: { kind: "thread", threadId: "thr_own_selection", environment: null },
+      scope: {
+        kind: "thread",
+        threadId: "thr_own_selection",
+        environment: null,
+      },
       textEffectKey: "thread:thr_own_selection",
       getSelection: () => selection,
       subscribeSelection: (listener: () => void) => {
@@ -1711,11 +1720,11 @@ describe("PluginPanelView routes", () => {
         ],
       }),
     );
-    applyPluginCss("demo", "/demo.css?h=route");
+    void applyPluginCss("demo", "/demo.css?h=route");
     function LeavePanel() {
       const navigate = useNavigate();
       return (
-        <button type="button" onClick={() => navigate("/")}>
+        <button type="button" onClick={() => void navigate("/")}>
           Leave panel
         </button>
       );
@@ -1817,7 +1826,7 @@ describe("plugin panel shared title bar and full-bleed body", () => {
     const panel = panelSlot({ headerContent: ExplodingAccessory });
     render(
       <>
-        <PluginPanelHeaderCenter chrome={panel} />
+        <PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />
         <PluginPanelHeaderActions panel={panel} subPath="" />
       </>,
     );
@@ -1831,10 +1840,10 @@ describe("plugin panel shared title bar and full-bleed body", () => {
       return <button type="button">Toggle sidebar</button>;
     }
     const panel = panelSlot({ headerContent: Accessory });
-    applyPluginCss("demo", "/demo.css?h=header");
+    void applyPluginCss("demo", "/demo.css?h=header");
     const view = render(
       <>
-        <PluginPanelHeaderCenter chrome={panel} />
+        <PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />
         <PluginPanelHeaderActions panel={panel} subPath="notes/today.md" />
       </>,
     );
@@ -1871,6 +1880,51 @@ describe("plugin panel shared title bar and full-bleed body", () => {
         .querySelector("[data-plugin-right-panel-toggle-portal]")
         ?.getAttribute("data-plugin-right-panel-toggle-portal"),
     ).toBe("plugin-panel:demo:board:pane-docs");
+  });
+
+  it("renders experimental_headerTitle in place of the icon and title with the subPath", () => {
+    function Breadcrumb({ subPath }: { subPath: string }) {
+      return (
+        <nav aria-label="Breadcrumb">
+          <button type="button">acme</button> › {subPath}
+        </nav>
+      );
+    }
+    const panel = panelSlot({ experimental_headerTitle: Breadcrumb });
+    render(
+      <PluginPanelHeaderCenter
+        chrome={panel}
+        panel={panel}
+        subPath="feature-x"
+      />,
+    );
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(breadcrumb.textContent).toBe("acme › feature-x");
+    expect(breadcrumb.closest("[data-bb-plugin-root]")).not.toBeNull();
+    expect(screen.queryByText("Demo board")).toBeNull();
+  });
+
+  it("restores the default title when experimental_headerTitle crashes", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    function Crashes(): never {
+      throw new Error("title crashed");
+    }
+    const panel = panelSlot({ experimental_headerTitle: Crashes });
+    render(<PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />);
+    expect(screen.getByText("Demo board")).toBeDefined();
+    expect(screen.queryByText(/plugin demo crashed/)).toBeNull();
+  });
+
+  it("still renders the route of a panel hidden from navigation", () => {
+    setPluginSlotRegistrations(
+      "demo",
+      registrationSet({
+        navPanels: [panelSlot({ experimental_hideFromNavigation: true })],
+      }),
+    );
+    renderPanelBody("/plugins/demo/board/env_1");
+    expect(screen.getByText("panel body")).toBeDefined();
   });
 
   it("still contains a crashing panel inside the error boundary", () => {
@@ -2135,8 +2189,11 @@ describe("plugin thread panel actions", () => {
       opened.push(args.paramsJson);
     };
     function BothActionsHarness() {
-      const { actions } = useThreadFixedTabs({ threadId: "thr_one", environmentId: null });
-      const { newThreadPanelActions } = usePluginSlots();
+      const { actions } = useThreadFixedTabs({
+        threadId: "thr_one",
+        environmentId: null,
+      });
+      const newThreadPanelActions = usePluginSlotKind("newThreadPanelActions");
       const threadEntries = usePluginPanelActions({
         actions,
         panel: usePanelFor(actions, recordOpen),
@@ -2217,7 +2274,7 @@ describe("plugin thread panel actions", () => {
       const [tab, setTab] = useState<ReturnType<
         typeof createPluginPanelFixedPanelTab
       > | null>(null);
-      const { newThreadPanelActions } = usePluginSlots();
+      const newThreadPanelActions = usePluginSlotKind("newThreadPanelActions");
       const entries = usePluginNewThreadPanelActions({
         panel: usePanelFor(newThreadPanelActions, (args) =>
           setTab(createPluginPanelFixedPanelTab(args)),

@@ -6,6 +6,7 @@ import { AppToaster } from "./AppToaster";
 import { appToast } from "./ui/app-toast";
 import { startSplitPreloading } from "@/lib/split-prefetch";
 import { bootPluginFrontends } from "@/lib/plugin-frontend-lazy";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const loaded = vi.hoisted(() => vi.fn());
 const download = vi.hoisted(() => {
@@ -30,12 +31,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("leaves the toaster unloaded through plugin boot and idle, then shows the first notification", async () => {
+it("leaves the toaster unloaded through plugin boot and idle, then shows the first notification (test-change-reason: upstream 0.50.1 holds dynamic imports until settleLazyModules, so plugin boot and the view download are settled explicitly)", async () => {
   vi.useFakeTimers();
   render(<AppToaster />);
   startSplitPreloading();
+  await settleLazyModules(bootPluginFrontends());
   await act(async () => {
-    await bootPluginFrontends();
     await vi.advanceTimersByTimeAsync(1200);
   });
   expect(loaded).not.toHaveBeenCalled();
@@ -43,7 +44,7 @@ it("leaves the toaster unloaded through plugin boot and idle, then shows the fir
   await act(async () => {
     appToast.success("Saved draft");
   });
-  await act(async () => download.completed);
+  await settleLazyModules(download.completed);
   expect(await screen.findByText("Saved draft")).toBeTruthy();
   expect(loaded).toHaveBeenCalledOnce();
 });

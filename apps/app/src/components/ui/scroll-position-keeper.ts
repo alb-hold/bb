@@ -244,7 +244,10 @@ export class ScrollPositionKeeper {
         this.handleScroll();
         return;
       }
-      if (this.layoutScrollPending && this.position.kind !== "bottom") {
+      if (
+        this.position.kind !== "bottom" &&
+        (this.layoutScrollPending || window.performance.now() < this.restoreHoldUntil)
+      ) {
         this.handleScroll();
         return;
       }
@@ -706,6 +709,10 @@ export class ScrollPositionKeeper {
     this.reconcile();
   }
 
+  readonly reconcileAfterLayout = (): void => {
+    this.reconcile();
+  };
+
   reconcile(urgent = true): void {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null) return;
@@ -1072,7 +1079,9 @@ export class ScrollPositionKeeper {
   private followsUnexplainedScroll(): boolean {
     return (
       this.windowFindOpen ||
-      (this.position.kind !== "bottom" && this.pendingRestore === null) ||
+      (this.position.kind !== "bottom" &&
+        this.pendingRestore === null &&
+        window.performance.now() >= this.restoreHoldUntil) ||
       this.options.getScrollElement()?.querySelector("iframe:hover") != null
     );
   }

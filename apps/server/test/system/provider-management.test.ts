@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { appSettingsUpdateSchema } from "@bb/domain";
+import { appSettingsUpdateSchema, defaultAppSettings } from "@bb/domain";
 import { getDisabledProviderIds } from "@bb/db";
 import { systemProviderCatalogEntrySchema } from "@bb/server-contract";
 import { requireBridgeLaunchForProviderId } from "../../src/services/system/provider-bridge-launch.js";
@@ -31,6 +31,43 @@ function setProviderEnabled(
 }
 
 describe("provider management", () => {
+  it("lists every registered provider's info in picker order, including providers no host has installed", async () => {
+    await withTestHarness(
+      { seedFirstPartyProviders: false },
+      async (harness) => {
+        await harness.pluginService.install("builtin:provider-acp", {
+          kind: "root",
+        });
+        const order = ["acp-grok", "acp-cursor"];
+        const saved = await harness.app.request("/api/v1/settings/general", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...defaultAppSettings, providerOrder: order }),
+        });
+        expect(saved.status).toBe(200);
+        expect(
+          (await listSystemProviderInfos(harness.deps)).map((provider) => provider.id),
+        ).not.toContain("acp-grok");
+
+        const catalog = await readCatalog(
+          await harness.app.request("/api/v1/system/providers/catalog"),
+        );
+        const registered = harness.deps.providerRegistry
+          .list()
+          .map((entry) => entry.info.id);
+        expect(registered.slice(0, 2)).toEqual(order);
+        expect(
+          catalog.flatMap((entry) =>
+            entry.info === null ? [] : [entry.info.id],
+          ),
+        ).toEqual(registered);
+        expect(
+          catalog.find((entry) => entry.id === "acp-grok")?.info,
+        ).toMatchObject({ id: "acp-grok", displayName: "Grok Build" });
+      },
+    );
+  });
+
   it("keeps a disabled provider discoverable, blocks launches, and preserves its siblings across plugin disable and enable", async () => {
     await withTestHarness(
       { seedFirstPartyProviders: false },
@@ -164,7 +201,6 @@ describe("provider management", () => {
           },
         );
         expect(resolved.providerId).not.toBe("acp-opencode");
-        expect(resolved.executionDefaults).toBeNull();
       },
     );
   });

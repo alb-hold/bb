@@ -8,6 +8,19 @@ import {
 import { usePluginFrontendBootComplete } from "@/lib/plugin-frontend-boot-state";
 import { queueSplitPreload } from "@/lib/split-prefetch";
 
+function preloadLazyPluginRenderers(
+  warmDiff: boolean,
+  warmSource: boolean,
+): Promise<[false | void, false | void]> {
+  return import("@/components/plugin/lazy-plugin-renderers").then(
+    ({ LazyPluginDiff, LazyPluginSourceCode }) =>
+      Promise.all([
+        warmDiff && LazyPluginDiff.preload(),
+        warmSource && LazyPluginSourceCode.preload(),
+      ]),
+  );
+}
+
 export function useCodeRendererPreloads(): void {
   const bootComplete = usePluginFrontendBootComplete();
   const warmDiff = useDiffRendererReplacement().kind === "owner";
@@ -24,13 +37,7 @@ export function useCodeRendererPreloads(): void {
         await Promise.all([
           warmDiff && BbDiffSplit.preload(),
           warmSource && BbSourceCodeSplit.preload(),
-          import("@/components/plugin/lazy-plugin-renderers").then(
-            ({ LazyPluginDiff, LazyPluginSourceCode }) =>
-              Promise.all([
-                warmDiff && LazyPluginDiff.preload(),
-                warmSource && LazyPluginSourceCode.preload(),
-              ]),
-          ),
+          preloadLazyPluginRenderers(warmDiff, warmSource),
         ]).catch(() => undefined);
       });
     };

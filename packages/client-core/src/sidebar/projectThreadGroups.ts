@@ -1,8 +1,6 @@
 import type { ThreadListEntry } from "@bb/domain";
-import {
-  getCollapsedChildActivity,
-  type CollapsedChildActivity,
-} from "../thread/thread-activity.js";
+
+import { getCollapsedChildActivity, type CollapsedChildActivity } from "../thread/thread-activity.js";
 
 interface ProjectThreadNodeStats {
   childCount: number;
@@ -16,14 +14,7 @@ export interface ProjectThreadNode {
   stats: ProjectThreadNodeStats;
 }
 
-export interface SidebarSectionDefinition {
-  id: string;
-  name: string;
-}
-
 export type ProjectThreadItem = { kind: "thread"; node: ProjectThreadNode };
-
-export const CHRONOLOGICAL_CONTAINER_ID = "chronological";
 
 export type ThreadComparator = (
   left: ThreadListEntry,
@@ -105,8 +96,8 @@ function buildThreadNode({
         ancestorThreadIds: nextAncestorThreadIds,
         childrenByParentId,
         compareThreads,
-        depth: depth + 1,
         draftThreadIds,
+        depth: depth + 1,
         thread: childThread,
         now,
         visitedThreadIds,
@@ -135,23 +126,6 @@ function isRootThread(
     thread.parentThreadId === null ||
     !projectThreadIds.has(thread.parentThreadId)
   );
-}
-
-export function resolveSidebarProjectId(
-  thread: ThreadListEntry,
-  threadById: ReadonlyMap<string, ThreadListEntry>,
-): string {
-  const visitedThreadIds = new Set<string>([thread.id]);
-  let current = thread;
-  while (current.parentThreadId !== null) {
-    const parent = threadById.get(current.parentThreadId);
-    if (parent === undefined || visitedThreadIds.has(parent.id)) {
-      break;
-    }
-    visitedThreadIds.add(parent.id);
-    current = parent;
-  }
-  return current.projectId;
 }
 
 export function buildChronologicalThreadList(
@@ -188,8 +162,8 @@ export function buildChronologicalThreadList(
         ancestorThreadIds: new Set(),
         childrenByParentId,
         compareThreads,
-        depth: 0,
         draftThreadIds,
+        depth: 0,
         thread,
         now,
         visitedThreadIds,
@@ -205,8 +179,8 @@ export function buildChronologicalThreadList(
         ancestorThreadIds: new Set(),
         childrenByParentId,
         compareThreads,
-        depth: 0,
         draftThreadIds,
+        depth: 0,
         thread,
         now,
         visitedThreadIds,

@@ -14,7 +14,7 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import {
   observedBorderBoxBlockSize,
   observeSharedResize,
-} from "@/lib/shared-resize-observer";
+} from "@bb/shared-ui/lib/shared-resize-observer";
 import { layoutAnimationInFlightCountAtom } from "./layoutAnimationAtoms.js";
 import { CONTROL_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 
@@ -257,7 +257,10 @@ export function ExpandablePanel({
   const hasCollapsedContent =
     collapsedContent !== undefined && collapsedContent !== null;
   const headerRootClassName = cn("px-2 py-1", headerClassName);
-  const [isClosing, setIsClosing] = useState(false);
+  const [closingBody, setClosingBody] = useState<{ body: ReactNode } | null>(
+    null,
+  );
+  const isClosing = closingBody !== null;
   const renderedBodyRef = useRef<ReactNode>(null);
   const deferredIsExpanded = useDeferredValue(isExpanded);
   const expandedBody = useMemo(() => {
@@ -279,10 +282,10 @@ export function ExpandablePanel({
     }
     if (!animate) return;
     setLayoutAnimationInFlightCount((c) => c + 1);
-    let released = false;
+    const releaseState = { released: false };
     const release = () => {
-      if (released) return;
-      released = true;
+      if (releaseState.released) return;
+      releaseState.released = true;
       setLayoutAnimationInFlightCount((c) => Math.max(0, c - 1));
     };
     const timer = window.setTimeout(release, EXPANDABLE_PANEL_TRANSITION_MS);
@@ -305,16 +308,16 @@ export function ExpandablePanel({
     }
     if (hasCollapsedContent || !animate) {
       renderedBodyRef.current = null;
-      setIsClosing(false);
+      setClosingBody(null);
       return;
     }
     if (renderedBodyRef.current === null) {
       return;
     }
-    setIsClosing(true);
+    setClosingBody({ body: renderedBodyRef.current });
     const timeout = setTimeout(() => {
       renderedBodyRef.current = null;
-      setIsClosing(false);
+      setClosingBody(null);
     }, EXPANDABLE_PANEL_TRANSITION_MS);
     return () => clearTimeout(timeout);
   }, [animate, hasCollapsedContent, isExpanded]);
@@ -323,8 +326,8 @@ export function ExpandablePanel({
       ? null
       : deferredIsExpanded
         ? expandedBody
-        : isClosing
-          ? renderedBodyRef.current
+        : closingBody !== null
+          ? closingBody.body
           : null;
 
   return (

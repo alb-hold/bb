@@ -30,8 +30,12 @@ const SKIP_DIRECTORY_PREFIXES = ["tmp-", "tmp_"];
 
 const ACTIVITY_MARKERS = ["HEAD", "index", join("logs", "HEAD")];
 const WALK_BUDGET_MS = 3_000;
+const MACOS_PRIVACY_PROMPT_FOLDERS = new Set(["Desktop", "Documents"]);
 const WALK_CONCURRENCY = 32;
+const PERMISSION_ERROR_CODES = new Set(["EACCES", "EPERM"]);
 const MS_PER_DAY = 86_400_000;
+
+const pendingAccessAnswers = new Map<string, Promise<void>>();
 
 interface FoundRepo {
   path: string;
@@ -44,16 +48,20 @@ interface DiscoverReposArgs {
   limit: number;
   home?: string;
   now?: number;
+  platform?: NodeJS.Platform;
   walkBudgetMs?: number;
+  openDirectory?: (path: string) => Promise<Dir>;
 }
 
 async function withDeadline<T>(
   operation: Promise<T>,
   deadline: number,
   disposeLate?: (value: T) => void,
+  onTimeout?: () => void,
 ): Promise<T | null> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
+    onTimeout?.();
     void operation.then((value) => disposeLate?.(value)).catch(() => {});
     return null;
   }
@@ -68,6 +76,7 @@ async function withDeadline<T>(
       new Promise<null>((resolve) => {
         timer = setTimeout(() => {
           timedOut = true;
+          onTimeout?.();
           resolve(null);
         }, remaining);
         timer.unref();
@@ -79,6 +88,26 @@ async function withDeadline<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function openAfterAccessAnswer(
+  path: string,
+  openDirectory: (path: string) => Promise<Dir>,
+): Promise<Dir> {
+  const pending = pendingAccessAnswers.get(path);
+  if (pending !== undefined) return pending.then(() => openDirectory(path));
+  const opening = openDirectory(path);
+  const answered = opening.then(
+    () => {},
+    () => {},
+  );
+  pendingAccessAnswers.set(path, answered);
+  void answered.then(() => {
+    if (pendingAccessAnswers.get(path) === answered) {
+      pendingAccessAnswers.delete(path);
+    }
+  });
+  return opening;
 }
 
 function closeLateDir(dir: Dir): void {
@@ -114,27 +143,67 @@ function createLimiter(limit: number) {
   };
 }
 
+function isPermissionError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    PERMISSION_ERROR_CODES.has(error.code)
+  );
+}
+
+interface WalkOptions {
+  maxDepth: number;
+  deadline: number;
+  walkBudgetMs: number;
+  privacyPromptFolders: ReadonlySet<string>;
+  openDirectory: (path: string) => Promise<Dir>;
+}
+
 async function walkForRepos(
   root: string,
-  maxDepth: number,
-  deadline: number,
-): Promise<{ repos: FoundRepo[]; truncated: boolean }> {
+  options: WalkOptions,
+): Promise<{
+  repos: FoundRepo[];
+  truncated: boolean;
+  unreadableCount: number;
+}> {
   const repos: FoundRepo[] = [];
   let truncated = false;
+  let unreadableCount = 0;
+  const countUnreadable = (error: unknown): null => {
+    if (isPermissionError(error)) unreadableCount += 1;
+    return null;
+  };
   const limitOpenDirectories = createLimiter(WALK_CONCURRENCY);
 
   const readDirectory = async (
     dir: string,
     depth: number,
+    deadline: number | null,
   ): Promise<{
     children: string[];
     gitMarker: "directory" | "file" | null;
   } | null> => {
-    const handle = await withDeadline(opendir(dir), deadline, closeLateDir);
-    if (handle === null) {
-      if (Date.now() > deadline) truncated = true;
-      return null;
-    }
+    const opening = (
+      deadline === null
+        ? openAfterAccessAnswer(dir, options.openDirectory)
+        : options.openDirectory(dir)
+    ).catch(countUnreadable);
+    const handle =
+      deadline === null
+        ? await opening
+        : await withDeadline(
+            opening,
+            deadline,
+            (lateHandle) => {
+              if (lateHandle !== null) closeLateDir(lateHandle);
+            },
+            () => {
+              truncated = true;
+            },
+          );
+    if (handle === null) return null;
 
     const children: string[] = [];
     let gitMarker: "directory" | "file" | null = null;
@@ -158,21 +227,31 @@ async function walkForRepos(
         }
         children.push(entry.name);
       }
-    } catch {
-      return null;
+    } catch (error) {
+      return countUnreadable(error);
     }
     return { children, gitMarker };
   };
 
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > maxDepth) return;
-    if (Date.now() > deadline) {
+  const walk = async (
+    dir: string,
+    depth: number,
+    parentDeadline: number,
+    waitForAccessAnswer: boolean,
+  ): Promise<void> => {
+    if (depth > options.maxDepth) return;
+    if (!waitForAccessAnswer && Date.now() > parentDeadline) {
       truncated = true;
       return;
     }
 
-    const listing = await limitOpenDirectories(() => readDirectory(dir, depth));
+    const listing = await limitOpenDirectories(() =>
+      readDirectory(dir, depth, waitForAccessAnswer ? null : parentDeadline),
+    );
     if (listing === null) return;
+    const deadline = waitForAccessAnswer
+      ? Math.max(parentDeadline, Date.now() + options.walkBudgetMs)
+      : parentDeadline;
 
     if (listing.gitMarker === "file") return;
     if (listing.gitMarker === "directory") {
@@ -189,12 +268,19 @@ async function walkForRepos(
     }
 
     await Promise.all(
-      listing.children.map((child) => walk(join(dir, child), depth + 1)),
+      listing.children.map((child) =>
+        walk(
+          join(dir, child),
+          depth + 1,
+          deadline,
+          depth === 0 && options.privacyPromptFolders.has(child),
+        ),
+      ),
     );
   };
 
-  await walk(root, 0);
-  return { repos, truncated };
+  await walk(root, 0, options.deadline, false);
+  return { repos, truncated, unreadableCount };
 }
 
 async function readOriginUrl(repoPath: string): Promise<string | null> {
@@ -216,11 +302,17 @@ export async function discoverRepos(
 ): Promise<DiscoverReposResult> {
   const home = args.home ?? homedir();
   const now = args.now ?? Date.now();
-  const { repos, truncated } = await walkForRepos(
-    home,
-    args.maxDepth,
-    Date.now() + (args.walkBudgetMs ?? WALK_BUDGET_MS),
-  );
+  const walkBudgetMs = args.walkBudgetMs ?? WALK_BUDGET_MS;
+  const { repos, truncated, unreadableCount } = await walkForRepos(home, {
+    maxDepth: args.maxDepth,
+    deadline: Date.now() + walkBudgetMs,
+    walkBudgetMs,
+    privacyPromptFolders:
+      (args.platform ?? process.platform) === "darwin"
+        ? MACOS_PRIVACY_PROMPT_FOLDERS
+        : new Set(),
+    openDirectory: args.openDirectory ?? ((path) => opendir(path)),
+  });
 
   const cutoff = now - args.sinceDays * MS_PER_DAY;
   const recent = repos
@@ -238,5 +330,6 @@ export async function discoverRepos(
       })),
     ),
     truncated,
+    unreadableCount,
   };
 }

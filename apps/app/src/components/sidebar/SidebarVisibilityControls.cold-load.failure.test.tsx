@@ -12,7 +12,11 @@ const download = await vi.hoisted(async () => {
 
 vi.mock("./SidebarVisibilityCustomize", async () => {
   await download.promise;
-  throw new Error("module initialization failed");
+  return {
+    get SidebarVisibilityCustomize() {
+      throw new Error("module initialization failed");
+    },
+  };
 });
 
 afterEach(() => {
@@ -20,7 +24,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("preserves Done, Escape and compact Back callbacks through an import failure", async () => {
+it("preserves Done, Escape and compact Back callbacks through an import failure (test-change-reason: reject the fork’s split loader when it reads the module export)", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onDone = vi.fn();
   const props = {
@@ -59,7 +63,7 @@ it("preserves Done, Escape and compact Back callbacks through an import failure"
   beforeFailure.focus();
   expect(document.activeElement).toBe(beforeFailure);
   await act(async () => {
-    download.reject(new Error("module initialization failed"));
+    download.resolve();
   });
   expect(await screen.findByRole("alert")).toBeDefined();
   const done = screen.getByRole("button", { name: "Done" });

@@ -1,11 +1,17 @@
 import type { PostHog } from "posthog-js";
 import { useEffect } from "react";
 import type { ArrivalSource } from "./arrival-source";
+import { POSTHOG_PROXY_PATH, POSTHOG_UI_HOST } from "./posthog-proxy";
 import type { CtaPlacement } from "./site";
+import type { TestimonialSource } from "./testimonials";
 
 type LandingEvent =
   | {
       name: "landing_github_clicked";
+      properties: { placement: CtaPlacement };
+    }
+  | {
+      name: "landing_marketplace_clicked";
       properties: { placement: CtaPlacement };
     }
   | {
@@ -19,6 +25,14 @@ type LandingEvent =
   | {
       name: "landing_cli_command_copied";
       properties: { placement: CtaPlacement; command: string };
+    }
+  | {
+      name: "landing_section_viewed";
+      properties: { section: string };
+    }
+  | {
+      name: "landing_testimonial_clicked";
+      properties: { source: TestimonialSource };
     }
   | {
       name: "landing_send_to_computer_clicked";
@@ -60,7 +74,7 @@ let client: PostHog | null = null;
 let loading = false;
 const pendingEvents: LandingEvent[] = [];
 
-export function initAnalytics(): void {
+function initAnalytics(): void {
   if (loading || typeof window === "undefined") {
     return;
   }
@@ -69,13 +83,19 @@ export function initAnalytics(): void {
     return;
   }
   loading = true;
+  const internalUser =
+    new URLSearchParams(window.location.search).get("bb_internal") === "1";
   void import("posthog-js").then(({ default: posthog }) => {
     posthog.init(key, {
-      api_host: import.meta.env.VITE_POSTHOG_HOST ?? "https://us.i.posthog.com",
+      api_host: POSTHOG_PROXY_PATH,
+      ui_host: POSTHOG_UI_HOST,
       autocapture: false,
       capture_pageview: true,
       capture_pageleave: true,
     });
+    if (internalUser) {
+      posthog.register({ internal_user: true });
+    }
     client = posthog;
     for (const event of pendingEvents.splice(0)) {
       client.capture(event.name, event.properties);

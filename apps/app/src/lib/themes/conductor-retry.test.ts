@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAppThemeCss } from "./index";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const themeImport = vi.hoisted(() => ({
   active: null as {
@@ -69,7 +70,7 @@ afterEach(() => {
 
 describe("Conductor theme loading", () => {
   it.each(conductorThemes)(
-    "applies $themeId after its chunk import rejects once",
+    "test-change-reason: upstream holds tracked lazy imports, so the retry is settled; applies $themeId after its chunk import rejects once",
     async ({ themeId, css }) => {
       let failed = () => {};
       const rejected = new Promise<void>((resolve) => {
@@ -82,10 +83,15 @@ describe("Conductor theme loading", () => {
         themeId,
         customCss: null,
       });
+      await settleLazyModules();
       await rejected;
       expect(attempt.attempts).toBe(1);
-      await vi.advanceTimersByTimeAsync(500);
-      const resolvedCss = await pendingCss;
+      const resolvedCss = await settleLazyModules(
+        (async () => {
+          await vi.advanceTimersByTimeAsync(500);
+          return pendingCss;
+        })(),
+      );
 
       expect(attempt.attempts).toBe(2);
       expect(resolvedCss).toBe(css);

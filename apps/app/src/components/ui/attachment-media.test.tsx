@@ -119,13 +119,13 @@ it.each([
   { name: "composer", Surface: Composer },
   { name: "conversation", Surface: Conversation },
 ])(
-  "opens video attachments and preserves playback keyboard controls in $name",
-  ({ Surface }) => {
+  "test-change-reason: upstream holds the lazy lightbox import, so the dialog is awaited; opens video attachments and preserves playback keyboard controls in $name",
+  async ({ Surface }) => {
     const view = render(<Surface />);
     const trigger = view.getByRole("button", { name: "Recording" });
     expect(trigger.querySelector("video")).not.toBeNull();
     fireEvent.click(trigger);
-    const dialog = view.getByRole("dialog");
+    const dialog = await view.findByRole("dialog");
     const video = within(dialog).getByLabelText<HTMLVideoElement>("Recording");
     expect(video.controls).toBe(true);
     expect(new URL(video.src).searchParams.get("path")).toBe(videoPath);

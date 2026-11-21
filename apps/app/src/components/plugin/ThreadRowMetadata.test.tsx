@@ -88,7 +88,7 @@ describe("thread row metadata", () => {
     expect(renderRow().row.querySelector("[data-reserve-line]")).toBeNull();
   });
 
-  it("remembers populated rows before registration and pending data, then forgets resolved empty rows", async () => {
+  it("remembers populated rows before registration and pending data, then forgets resolved empty rows (test-change-reason: upstream 0.50.1 compiles apps/app with the React Compiler, which skips re-running a collector whose props are unchanged, so the data arrives through hook state instead of a mutated variable)", async () => {
     setPluginSlotRegistrations(
       "demo",
       makePluginRegistrationSet({
@@ -105,8 +105,12 @@ describe("thread row metadata", () => {
     expect(line.hasAttribute("data-has-items")).toBe(false);
     const empty = render(<ThreadRowMetadata thread={otherThread} />);
     expect(empty.container.querySelector("[data-reserve-line]")).toBeNull();
-    let data: Map<string, string> | undefined;
+    let publish: (next: Map<string, string>) => void = () => {};
     function useData() {
+      const [data, setData] = useState<Map<string, string> | undefined>();
+      useEffect(() => {
+        publish = setData;
+      }, [setData]);
       return data;
     }
     function Badge({
@@ -124,17 +128,13 @@ describe("thread row metadata", () => {
         }),
       ),
     );
-    const collectors = render(<ThreadRowMetadataCollectorsView />);
+    render(<ThreadRowMetadataCollectorsView />);
     await act(async () => {});
     expect(line.hasAttribute("data-reserve-line")).toBe(true);
-    data = new Map([[thread.id, "#10843"]]);
-    collectors.rerender(<ThreadRowMetadataCollectorsView />);
-    await act(async () => {});
+    await act(async () => publish(new Map([[thread.id, "#10843"]])));
     expect(line.textContent).toBe("#10843");
     expect(line.hasAttribute("data-reserve-line")).toBe(true);
-    data = new Map();
-    collectors.rerender(<ThreadRowMetadataCollectorsView />);
-    await act(async () => {});
+    await act(async () => publish(new Map()));
     expect(line.hasAttribute("data-reserve-line")).toBe(false);
     next.unmount();
     act(() => removePluginSlotRegistrations("demo"));

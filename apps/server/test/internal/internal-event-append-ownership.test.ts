@@ -4,7 +4,6 @@ import {
   getThread,
   getHighWaterMarks,
   getLastStoredProviderThreadId,
-  listEvents,
   listQueuedThreadMessages,
 } from "@bb/db";
 import { threadScope, turnScope } from "@bb/domain";
@@ -36,6 +35,7 @@ import {
 } from "../helpers/seed.js";
 import { createTestAppHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 interface PostEventBatchArgs {
   harness: TestAppHarness;
@@ -746,7 +746,9 @@ describe("internal event append ownership", () => {
           `Expected parent turn command, got ${parentTurnCommand.command.type}`,
         );
       }
-      const [input] = parentTurnCommand.command.input;
+      const input = parentTurnCommand.command.input.find(
+        (part) => part.type === "text" && part.text.includes("[bb system]"),
+      );
       if (!input || input.type !== "text") {
         throw new Error("Expected parent notification text input");
       }

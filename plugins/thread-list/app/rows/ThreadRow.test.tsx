@@ -64,7 +64,7 @@ import {
   sidebarShowRowMetadataAtom,
   THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
-import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
+import { SidebarProjectNamesContext } from "../model/use-sidebar-data.js";
 import {
   StickyRowStateReportProvider,
   type StickyRowStateReporter,
@@ -144,8 +144,8 @@ function activity(
     workflows: 0,
     backgroundAgents: 0,
     backgroundCommands: 0,
-    planMode: 0,
     goals: 0,
+    planMode: 0,
     ...overrides,
   };
 }
@@ -196,7 +196,9 @@ function ThreadRowHarness({
   ) : threadRow;
   const content = (
     <SidebarRowMetadataExperiment>
-      <SidebarProjectsContext.Provider value={projects}>
+      <SidebarProjectNamesContext.Provider
+        value={new Map(projects.map((project) => [project.id, project.name]))}
+      >
         <SidebarProvidersContext.Provider value={providers}>
           <TooltipProvider>
             <SidebarDraftPresenceSync />
@@ -239,7 +241,7 @@ function ThreadRowHarness({
             </ThreadRowNavigationProvider>
           </TooltipProvider>
         </SidebarProvidersContext.Provider>
-      </SidebarProjectsContext.Provider>
+      </SidebarProjectNamesContext.Provider>
     </SidebarRowMetadataExperiment>
   );
   const rowStateReporter =
@@ -1715,9 +1717,9 @@ describe("ThreadRow", () => {
     ["meta", { metaKey: true }],
     ["ctrl", { ctrlKey: true }],
   ])(
-    "selects the row on %s-shift-click and still splits without shift with multi-select on",
+    "selects the row on %s-shift-click and still splits without shift",
     (_label, modifier) => {
-      const slot = renderThreadRow({ experiments: ["sidebarMultiSelect"] });
+      const slot = renderThreadRow();
       const link = screen.getByRole("link", { name: "Open Thread" });
       const row = link.closest("[data-sidebar-rename-row]");
       expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
@@ -1743,7 +1745,6 @@ describe("ThreadRow", () => {
       thread: first,
       siblings: [second, third],
       projects: [makePluginProject()],
-      experiments: ["sidebarMultiSelect"],
       threadBulkActions: (threads) => {
         bulkTargets.push(threads.map((target) => target.id));
         return [];
@@ -1780,9 +1781,7 @@ describe("ThreadRow", () => {
   it.each(["sidebar", "outside"])(
     "clears selection on empty %s space but keeps it for rows and menus",
     (target) => {
-      const { container } = renderThreadRow({
-        experiments: ["sidebarMultiSelect"],
-      });
+      const { container } = renderThreadRow();
       container.setAttribute("data-sidebar", "sidebar");
       const link = screen.getByRole("link", { name: "Open Thread" });
       const row = link.closest("[data-sidebar-rename-row]")!;
@@ -2792,9 +2791,7 @@ describe("ThreadRow", () => {
 
   it("routes a click on other plugins' metadata like the rest of the row", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
-    const slot = renderThreadRow({
-      experiments: ["sidebarMultiSelect", "threadRowMetadata"],
-    });
+    const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
     const link = screen.getByRole("link", { name: "Open Thread" });
     const row = link.closest("[data-sidebar-rename-row]");
     const items = row?.querySelector("[data-thread-row-metadata]");
@@ -3309,7 +3306,6 @@ describe("ThreadRow", () => {
       .mockReturnValue(false);
     const slot = renderThreadRow({
       options: { ...DEFAULT_OPTIONS, consumeClickSuppression },
-      experiments: ["sidebarMultiSelect"],
     });
     const link = screen.getByRole("link", { name: "Open Thread" });
 

@@ -13,6 +13,7 @@ import {
   openSession,
   threads,
   upsertHost,
+  threadRunStates,
 } from "@bb/db";
 import {
   HOST_DAEMON_PROTOCOL_VERSION,
@@ -272,7 +273,6 @@ export function seedQueuedMessage(
     permissionMode?: PermissionMode;
     senderThreadId?: string | null;
     serviceTier?: string;
-    /** Defaults to a row with no wait: an ordinary queued message. */
     waitingOn?: QueuedMessageWaitingOn | null;
     sendAt?: number | null;
   },
@@ -359,6 +359,23 @@ export function seedThreadIdentity(
     scope: threadScope(),
     data: {},
   });
+}
+
+export function seedThreadStop(
+  deps: Pick<AppDeps, "db">,
+  args: { acked: boolean; threadId: string },
+): void {
+  const now = Date.now();
+  deps.db
+    .insert(threadRunStates)
+    .values({
+      threadId: args.threadId,
+      stopReason: "manual-stop",
+      stopRequestedAt: now,
+      stopAckedAt: args.acked ? now : null,
+      updatedAt: now,
+    })
+    .run();
 }
 
 export function seedThreadRuntimeState(

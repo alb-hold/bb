@@ -28,6 +28,7 @@ export const measuredTargetSchema = z.discriminatedUnion("outcome", [
         z.object({
           name: z.string(),
           sizeBytes: z.number().int().nonnegative(),
+          empty: z.boolean(),
         }),
       )
       .nullable(),
@@ -83,6 +84,7 @@ export const hostStorageContract = defineRpcContract({
     input: z
       .object({
         repositoryPaths: z.array(absolutePathSchema).min(1).max(100),
+        ownedPaths: z.array(absolutePathSchema),
       })
       .strict(),
     output: z.object({
@@ -105,6 +107,26 @@ export const hostStorageContract = defineRpcContract({
       ),
       failures: z.array(
         z.object({ repositoryPath: z.string(), message: z.string() }),
+      ),
+    }),
+  },
+  inspectCheckouts: {
+    input: z
+      .object({ paths: z.array(absolutePathSchema).min(1).max(100) })
+      .strict(),
+    output: z.object({
+      checkouts: z.array(
+        z.discriminatedUnion("state", [
+          z.object({
+            path: z.string(),
+            state: z.enum(["missing", "notGit", "clean"]),
+          }),
+          z.object({
+            path: z.string(),
+            state: z.literal("changed"),
+            changedFileCount: z.number().int().positive(),
+          }),
+        ]),
       ),
     }),
   },

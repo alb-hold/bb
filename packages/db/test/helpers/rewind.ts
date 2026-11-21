@@ -144,6 +144,69 @@ export function rewindQueuedMessageStateMigration(db: DbConnection): void {
   `);
 }
 
+export function dropQueuedMessageDeliveryColumns(db: DbConnection): void {
+  db.$client.exec("DROP INDEX IF EXISTS queued_thread_messages_coalesce_idx");
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(queued_thread_messages)")
+    .all();
+  for (const name of ["coalesce_state", "coalesce_key", "delivery_mode"]) {
+    if (columns.some((column) => column.name === name)) {
+      db.$client.exec(`ALTER TABLE queued_thread_messages DROP COLUMN ${name}`);
+    }
+  }
+}
+
+export function dropTerminalDefaultColorsColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .all();
+  if (columns.some((column) => column.name === "default_colors"))
+    db.$client.exec("ALTER TABLE terminal_sessions DROP COLUMN default_colors");
+}
+
+export function dropThreadStatusChangedAtColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(threads)")
+    .all();
+  if (columns.some((column) => column.name === "status_changed_at")) {
+    db.$client.exec("ALTER TABLE threads DROP COLUMN status_changed_at");
+  }
+}
+
+export function dropThreadRunStateTables(db: DbConnection): void {
+  db.$client.exec(
+    "DROP TABLE IF EXISTS thread_turn_requests; DROP TABLE IF EXISTS thread_run_states;",
+  );
+}
+
+export function dropPluginFailureLabelColumns(db: DbConnection): void {
+  for (const [table, column] of [
+    ["plugins", "last_failure_label"],
+    ["plugin_state_snapshots", "rollback_candidate_label"],
+  ] as const) {
+    const columns = db.$client
+      .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
+      .all();
+    if (columns.some((existing) => existing.name === column)) {
+      db.$client.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+    }
+  }
+}
+
+export function restoreDiffViewedFilesTable(db: DbConnection): void {
+  db.$client.exec(`
+    CREATE TABLE IF NOT EXISTS diff_viewed_files (
+      environment_id text NOT NULL,
+      target_key text NOT NULL,
+      path text NOT NULL,
+      revision text NOT NULL,
+      updated_at integer NOT NULL,
+      PRIMARY KEY(environment_id, target_key, path),
+      FOREIGN KEY (environment_id) REFERENCES environments(id) ON UPDATE no action ON DELETE cascade
+    )
+  `);
+}
+
 export function dropQueuedMessageDeliveryModeColumn(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(queued_thread_messages)")
@@ -155,10 +218,22 @@ export function dropQueuedMessageDeliveryModeColumn(db: DbConnection): void {
   }
 }
 
-export function dropTerminalDefaultColorsColumn(db: DbConnection): void {
+export function dropQueuedMessageCoalesceColumns(db: DbConnection): void {
+  db.$client.exec("DROP INDEX IF EXISTS queued_thread_messages_coalesce_idx");
   const columns = db.$client
-    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .prepare<[], { name: string }>("PRAGMA table_info(queued_thread_messages)")
     .all();
-  if (columns.some((column) => column.name === "default_colors"))
-    db.$client.exec("ALTER TABLE terminal_sessions DROP COLUMN default_colors");
+  for (const name of ["coalesce_state", "coalesce_key"]) {
+    if (columns.some((column) => column.name === name)) {
+      db.$client.exec(`ALTER TABLE queued_thread_messages DROP COLUMN ${name}`);
+    }
+  }
+}
+
+export function rewindMergedUpstreamMigrations(db: DbConnection): void {
+  dropQueuedMessageCoalesceColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropPluginFailureLabelColumns(db);
+  restoreDiffViewedFilesTable(db);
 }

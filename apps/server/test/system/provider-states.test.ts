@@ -1,6 +1,7 @@
 import type { ProviderHealth } from "@bb/host-daemon-contract";
 import { updateHost } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
+import { listSystemProviderInfos } from "../../src/services/system/execution-options.js";
 import { getProviderStates } from "../../src/services/system/provider-states.js";
 import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
@@ -188,6 +189,262 @@ describe("getProviderStates", () => {
     });
   });
 
+  it("checks each provider once, in model-picker order, on a cold host", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (request.command.type === "provider.health") {
+            return {
+              ok: true,
+              result: {
+                supported: true,
+                health: healthForInstalledOnlyProvider(
+                  request.command.providerId,
+                  new Set(["acp-cursor", "acp-opencode"]),
+                ),
+              },
+            };
+          }
+          throw new Error(`Unexpected command ${request.command.type}`);
+        },
+      });
+
+      const result = await getProviderStates(harness.deps, {
+        hostId: host.id,
+      });
+
+      const checked = responder.requests.flatMap((request) =>
+        request.command.type === "provider.health"
+          ? [request.command.providerId]
+          : [],
+      );
+      expect(checked.slice(0, 3)).toEqual(["codex", "claude-code", "pi"]);
+      expect([...checked].sort()).toEqual(
+        [
+          "acp-cursor",
+          "acp-grok",
+          "acp-hermes-agent",
+          "acp-omp",
+          "acp-opencode",
+          "claude-code",
+          "codex",
+          "pi",
+        ].sort(),
+      );
+      expect(result.providers.map((provider) => provider.providerId)).toEqual([
+        "codex",
+        "claude-code",
+        "pi",
+        "acp-cursor",
+        "acp-opencode",
+      ]);
+    });
+  });
+
+  it.each([{ first: "agent states" }, { first: "provider list" }])(
+    "checks Hermes once when $first starts first",
+    async ({ first }) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps);
+        const responder = registerHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          handle: async (request) => {
+            if (request.command.type === "provider.health") {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              return {
+                ok: true,
+                result: {
+                  supported: true,
+                  health: healthForInstalledOnlyProvider(
+                    request.command.providerId,
+                    new Set(["acp-hermes-agent"]),
+                  ),
+                },
+              };
+            }
+            throw new Error(`Unexpected command ${request.command.type}`);
+          },
+        });
+
+        const loadStates = () =>
+          getProviderStates(harness.deps, { hostId: host.id });
+        const loadList = () =>
+          listSystemProviderInfos(harness.deps, { hostId: host.id });
+        const [states, listed] =
+          first === "agent states"
+            ? await Promise.all([loadStates(), loadList()])
+            : await Promise.all([loadList(), loadStates()]).then(
+                ([list, state]) => [state, list] as const,
+              );
+
+        const hermesChecks = responder.requests.filter(
+          (request) =>
+            request.command.type === "provider.health" &&
+            request.command.providerId === "acp-hermes-agent",
+        );
+        expect(hermesChecks).toHaveLength(1);
+        expect(responder.requests).toHaveLength(8);
+        expect(states.providers.map((provider) => provider.providerId)).toEqual(
+          listed.map((provider) => provider.id),
+        );
+        expect(
+          states.providers.find(
+            (provider) => provider.providerId === "acp-hermes-agent",
+          ),
+        ).toMatchObject({ status: "ready" });
+      });
+    },
+  );
+
+  it("hides an installed-only agent when the provider list's check it joined fails", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: async (request) => {
+          if (request.command.type !== "provider.health") {
+            throw new Error(`Unexpected command ${request.command.type}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          if (request.command.providerId === "acp-hermes-agent") {
+            return {
+              ok: false,
+              errorCode: "host_unavailable",
+              errorMessage: "Host is not connected",
+            };
+          }
+          return {
+            ok: true,
+            result: {
+              supported: true,
+              health: healthForInstalledOnlyProvider(
+                request.command.providerId,
+                new Set(),
+              ),
+            },
+          };
+        },
+      });
+
+      const [listed, states] = await Promise.all([
+        listSystemProviderInfos(harness.deps, { hostId: host.id }),
+        getProviderStates(harness.deps, { hostId: host.id }),
+      ]);
+
+      expect(listed.map((provider) => provider.id)).not.toContain(
+        "acp-hermes-agent",
+      );
+      expect(
+        states.providers.map((provider) => provider.providerId),
+      ).not.toContain("acp-hermes-agent");
+    });
+  });
+
+  it("marks which provider rows run the guided sign-in, on a live and a paused host", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (request.command.type === "provider.health") {
+            return {
+              ok: true,
+              result: {
+                supported: true,
+                health: {
+                  ...readyHealth(request.command.providerId),
+                  status: "unauthenticated",
+                },
+              },
+            };
+          }
+          throw new Error(`Unexpected command ${request.command.type}`);
+        },
+      });
+      const paused = seedHost(harness.deps, {
+        id: "host-provider-states-guided-paused",
+      });
+      updateHost(harness.db, harness.hub, paused.id, {
+        phase: "suspended",
+        suspendedAt: 123,
+      });
+
+      for (const hostId of [host.id, paused.id]) {
+        const result = await getProviderStates(harness.deps, { hostId });
+        expect(
+          result.providers.every(
+            (provider) =>
+              typeof provider.internal_DO_NOT_USE_guidedSignIn === "boolean",
+          ),
+        ).toBe(true);
+        expect(
+          result.providers
+            .filter((provider) => provider.internal_DO_NOT_USE_guidedSignIn)
+            .map((provider) => provider.providerId)
+            .sort(),
+        ).toStrictEqual(
+          hostId === host.id
+            ? ["acp-cursor", "claude-code", "codex"]
+            : ["claude-code", "codex"],
+        );
+        expect(
+          result.providers.find((provider) => provider.providerId === "pi")
+            ?.internal_DO_NOT_USE_guidedSignIn,
+        ).toBe(false);
+      }
+    });
+  });
+
+  it("keeps the setup-guide plan out of planLabel and fills null when a bridge doesn't send it", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (request.command.type === "provider.health") {
+            return {
+              ok: true,
+              result: {
+                supported: true,
+                health:
+                  request.command.providerId === "codex"
+                    ? {
+                        ...readyHealth("codex"),
+                        internal_DO_NOT_USE_setupGuidePlanLabel: "Plus",
+                      }
+                    : readyHealth(request.command.providerId),
+              },
+            };
+          }
+          throw new Error(`Unexpected command ${request.command.type}`);
+        },
+      });
+
+      const result = await getProviderStates(harness.deps, {
+        hostId: host.id,
+      });
+      const byId = new Map(
+        result.providers.map((provider) => [provider.providerId, provider]),
+      );
+
+      expect(byId.get("codex")).toMatchObject({
+        planLabel: null,
+        internal_DO_NOT_USE_setupGuidePlanLabel: "Plus",
+      });
+      expect(byId.get("claude-code")).toMatchObject({
+        planLabel: null,
+        internal_DO_NOT_USE_setupGuidePlanLabel: null,
+      });
+    });
+  });
+
   it("does not start a health probe the provider did not declare", async () => {
     await withTestHarness(async (harness) => {
       harness.deps.providerRegistry.register(
@@ -318,10 +575,7 @@ describe("getProviderStates", () => {
 
       expect(result.providers[0]?.providerId).toBe("codex");
       expect(primaryCalls).toBe(0);
-      expect(healthCwds.filter((cwd) => cwd === undefined)).toHaveLength(5);
-      expect(healthCwds.filter((cwd) => cwd !== undefined)).toEqual(
-        Array(3).fill(environment.path),
-      );
+      expect(healthCwds).toEqual(Array(8).fill(environment.path));
     });
   });
 

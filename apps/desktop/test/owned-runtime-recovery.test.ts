@@ -9,11 +9,11 @@ import {
 } from "../src/owned-runtime-recovery.js";
 
 describe("owned runtime recovery", () => {
-  it("wires the owned process exit watcher to the window recovery callbacks in main", () => {
+  it("wires the owned process exit watcher to the window recovery callbacks in main (test-change-reason: the merged runtime attaches the watcher after startup)", () => {
     const mainSource = readFileSync(join(process.cwd(), "src/main.ts"), "utf8");
     const exitWatcherStart = mainSource.indexOf("void watchOwnedRuntimeExit({");
     const exitWatcherEnd = mainSource.indexOf(
-      "return { bbProcess, runtime }",
+      "\n}",
       exitWatcherStart,
     );
     const recoveryStart = mainSource.indexOf(
@@ -26,6 +26,7 @@ describe("owned runtime recovery", () => {
     const exitWatcher = mainSource.slice(exitWatcherStart, exitWatcherEnd);
     const recoverySetup = mainSource.slice(recoveryStart, recoveryEnd);
 
+    expect(mainSource).toContain("reportOwnedRuntimeExit(ownedRuntime)");
     expect(exitWatcherStart).toBeGreaterThanOrEqual(0);
     expect(exitWatcherEnd).toBeGreaterThan(exitWatcherStart);
     expect(exitWatcher).toContain("exit: bbProcess.exit");

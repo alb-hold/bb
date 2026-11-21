@@ -85,6 +85,8 @@ function multipleReadyProviderStates(
       canUpdate: false,
       loginCommand: null,
       localLoginCommand: null,
+      internal_DO_NOT_USE_guidedSignIn: false,
+      internal_DO_NOT_USE_setupGuidePlanLabel: null,
     })),
   };
 }
@@ -105,6 +107,8 @@ function readyProviderStates(providerId: string): SystemProviderStatesResponse {
         canUpdate: false,
         loginCommand: null,
         localLoginCommand: null,
+        internal_DO_NOT_USE_guidedSignIn: false,
+        internal_DO_NOT_USE_setupGuidePlanLabel: null,
       },
     ],
   };
@@ -126,6 +130,8 @@ function piUnauthenticatedProviderStates(): SystemProviderStatesResponse {
         canUpdate: false,
         loginCommand: null,
         localLoginCommand: null,
+        internal_DO_NOT_USE_guidedSignIn: false,
+        internal_DO_NOT_USE_setupGuidePlanLabel: null,
       },
     ],
   };
@@ -550,6 +556,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
             />
           </>
@@ -685,6 +692,7 @@ describe("useThreadCreationOptions", () => {
               value: options.reasoningLevel,
               options: options.reasoningOptions,
               onChange: options.setReasoningLevel,
+              isLoading: false,
             }}
           />
         );
@@ -796,6 +804,7 @@ describe("useThreadCreationOptions", () => {
             value: options.reasoningLevel,
             options: options.reasoningOptions,
             onChange: options.setReasoningLevel,
+            isLoading: false,
           }}
         />
       );
@@ -902,10 +911,12 @@ describe("useThreadCreationOptions", () => {
     );
     expect(result.current.selectedModel).toBe("global-model");
     expect(result.current.reasoningOptions).toEqual([]);
+    expect(result.current.isLoadingReasoning).toBe(true);
     await act(async () => discovery.resolve(catalog));
     await waitFor(() =>
       expect(result.current.reasoningOptions.length).toBeGreaterThan(0),
     );
+    expect(result.current.isLoadingReasoning).toBe(false);
     expect(result.current.selectedModel).toBe("global-model");
   });
 
@@ -949,6 +960,7 @@ describe("useThreadCreationOptions", () => {
       ).toBe("success"),
     );
     expect(result.current.reasoningOptions).toEqual([]);
+    expect(result.current.isLoadingReasoning).toBe(false);
     await act(async () => {
       queryClient.setQueryData(
         systemExecutionOptionsQueryKey(routing),
@@ -2343,6 +2355,7 @@ describe("useThreadCreationOptions", () => {
             value: result.current.reasoningLevel,
             options: result.current.reasoningOptions,
             onChange: result.current.setReasoningLevel,
+            isLoading: false,
           }}
         />,
         { wrapper },
@@ -2561,6 +2574,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
               provider={{
                 selectedId: options.selectedProviderId,
@@ -2848,6 +2862,7 @@ describe("useThreadCreationOptions", () => {
                 value: options.reasoningLevel,
                 options: options.reasoningOptions,
                 onChange: options.setReasoningLevel,
+                isLoading: false,
               }}
             />
           </CompactViewportOverrideProvider>
@@ -2964,6 +2979,43 @@ describe("useThreadCreationOptions", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("sends the fallback provider it shows when the stored provider is no longer offered", async () => {
+    window.localStorage.setItem("bb.promptbox.provider", "removed-provider");
+    window.localStorage.setItem(
+      `bb.promptbox.model-${GLOBAL_PROVIDER_ID}-1`,
+      "global-remembered",
+    );
+    vi.mocked(sdk.system.executionOptions).mockImplementation(async (args) =>
+      args?.providerId === "removed-provider"
+        ? {
+            ...executionOptionsResponse(),
+            models: [],
+            selectedOnlyModels: [],
+          }
+        : providerExecutionOptionsResponse(args?.providerId),
+    );
+    const { wrapper } = createQueryClientTestHarness();
+
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "new-thread",
+          initialProviderId: PROJECT_PROVIDER_ID,
+          initialModel: "project-remembered",
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe(GLOBAL_PROVIDER_ID);
+      expect(result.current.selectedModel).toBe("global-remembered");
+      expect(result.current.executionInputSources).toMatchObject({
+        providerId: "client-preference",
+        model: "client-preference",
+      });
+    });
   });
 
   it("routes reusable root-composer worktrees through their environment", async () => {

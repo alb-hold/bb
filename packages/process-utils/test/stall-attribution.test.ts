@@ -83,6 +83,29 @@ describe("stall sample attribution", () => {
     });
   });
 
+  it("charges native work to the plugin whose code called it", () => {
+    const result = createStallSampleSummarizer(
+      profileWithSamples([5_000, 5_000, 5_000, 5_000]),
+      [{ location: "plugin-log.ts", owner: "plugin:logger" }],
+    )({
+      startedAt: 1000,
+      endedAt: 1020,
+    });
+    expect(result.owners).toEqual([{ owner: "plugin:logger", sampledMs: 5 }]);
+    expect(
+      result.stacks.map((stack) => [
+        stack.frames[0]?.functionName,
+        stack.owner,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["writeSync", "plugin:logger"],
+        ["heartbeat", null],
+        ["(garbage collector)", null],
+      ]),
+    );
+  });
+
   it("does not charge a long unsampled gap or missing profile coverage to a single stack", () => {
     const result = createStallSampleSummarizer(
       profileWithSamples([5_000, 80_000, 5_000, 5_000]),
@@ -90,12 +113,12 @@ describe("stall sample attribution", () => {
       startedAt: 990,
       endedAt: 1100,
     });
-    expect(result).toMatchObject({ sampledMs: 25, unobservedMs: 85 });
+    expect(result).toMatchObject({ sampledMs: 35, unobservedMs: 75 });
     expect(
       result.stacks.find(
         (stack) => stack.frames[0]?.functionName === "(garbage collector)",
       )?.sampledMs,
-    ).toBe(10);
+    ).toBe(20);
     expect(
       createStallSampleSummarizer({ ...profileWithSamples([]), samples: [] })({
         startedAt: 1000,

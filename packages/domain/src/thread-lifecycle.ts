@@ -115,3 +115,5 @@ export function evaluateThreadLifecycleEvent(
   }
   return { to };
 }
+
+export type ThreadStatusMove = ThreadLifecycleEventType;

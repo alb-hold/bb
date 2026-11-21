@@ -21,12 +21,16 @@ function percentage(value: number | null): string {
 }
 
 function label(account: AccountSummary): string {
-  const usage =
-    account.provider === "claude"
-      ? `5h ${percentage(account.fiveHourUtilization)} · weekly ${percentage(account.sevenDayUtilization)}`
-      : account.limitWindows
-          .map((window) => `${window.slot} ${percentage(window.utilization)}`)
-          .join(" · ");
+  const usage = account.limitWindows
+    .map((window) => {
+      let name: string = window.slot;
+      if (account.provider === "claude") {
+        if (window.windowMinutes === 300) name = "5h";
+        if (window.windowMinutes === 10_080) name = "weekly";
+      }
+      return `${name} ${percentage(window.utilization)}`;
+    })
+    .join(" · ");
   const state = !account.enabled
     ? "Disabled"
     : account.error !== null

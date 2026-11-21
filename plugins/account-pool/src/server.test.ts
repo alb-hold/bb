@@ -54,6 +54,7 @@ import {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { ThreadTokenStore } from "./thread-tokens.js";
 import { createHostProxy } from "./host-proxy.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import {
@@ -314,14 +315,12 @@ describe("Explicit subscription routing", () => {
   );
 
   it.each(["disabled", "exhausted", "removed"])(
-    "never switches away from a selected %s subscription",
+    "test-change-reason: the included-usage ruling requires exhausted quota — never switches away from a selected %s subscription",
     async (state) => {
       const { fixture, second, seen, key, request } = await twoSubscriptions();
       if (state === "exhausted") {
-        const quotas = new QuotaStore(fixture.host.bb.storage.database());
-        quotas.put({
-          ...quotas.get(second.id),
-          sevenDayUtilization: 0.98,
+        setQuota(fixture, second.id, {
+          sevenDayUtilization: 1,
           sevenDayResetAt: Date.now() + 3_600_000,
         });
       } else {
@@ -793,10 +792,63 @@ function authHeaders(key: string): Record<string, string> {
 function setQuota(
   fixture: Fixture,
   accountId: string,
-  update: Partial<AccountQuota>,
+  update: Partial<AccountQuota> & {
+    fiveHourUtilization?: number | null;
+    fiveHourStatus?: string | null;
+    fiveHourResetAt?: number | null;
+    sevenDayUtilization?: number | null;
+    sevenDayStatus?: string | null;
+    sevenDayResetAt?: number | null;
+  },
 ): void {
   const quotas = new QuotaStore(fixture.host.bb.storage.database());
-  quotas.put({ ...quotas.get(accountId), ...update });
+  const {
+    fiveHourUtilization,
+    fiveHourStatus,
+    fiveHourResetAt,
+    sevenDayUtilization,
+    sevenDayStatus,
+    sevenDayResetAt,
+    ...fields
+  } = update;
+  const previous = quotas.get(accountId);
+  const limitWindows = previous.limitWindows.filter(
+    (window) =>
+      !((window.slot === "primary" && window.windowMinutes === 300) ||
+        (window.slot === "secondary" && window.windowMinutes === 10_080)),
+  );
+  const observedAt = update.observedAt ?? previous.observedAt ?? Date.now();
+  if (
+    fiveHourUtilization !== undefined ||
+    fiveHourStatus !== undefined ||
+    fiveHourResetAt !== undefined
+  ) {
+    limitWindows.push({
+      slot: "primary",
+      windowMinutes: 300,
+      utilization: fiveHourUtilization ?? null,
+      status: fiveHourStatus ?? null,
+      resetAt: fiveHourResetAt ?? null,
+      observedAt,
+      source: "usage",
+    });
+  }
+  if (
+    sevenDayUtilization !== undefined ||
+    sevenDayStatus !== undefined ||
+    sevenDayResetAt !== undefined
+  ) {
+    limitWindows.push({
+      slot: "secondary",
+      windowMinutes: 10_080,
+      utilization: sevenDayUtilization ?? null,
+      status: sevenDayStatus ?? null,
+      resetAt: sevenDayResetAt ?? null,
+      observedAt,
+      source: "usage",
+    });
+  }
+  quotas.put({ ...previous, ...fields, limitWindows });
 }
 
 function nextClockTick(): Promise<void> {
@@ -1450,8 +1502,6 @@ describe("Account Pool plugin", () => {
     expect(firstCodex).toMatchObject({
       provider: "codex",
       status: "exhausted",
-      fiveHourUtilization: null,
-      sevenDayUtilization: null,
       familyWeekly: { other: null },
       limitWindows: [
         {
@@ -2333,7 +2383,7 @@ describe("Account Pool plugin", () => {
     );
   });
 
-  it("resolves distinct secret machine tokens and honors per-thread bypass", async () => {
+  it("resolves distinct secret machine tokens and honors per-thread bypass (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);
       response.writeHead(200, { "content-type": "application/json" });
@@ -2379,9 +2429,15 @@ describe("Account Pool plugin", () => {
           "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
       },
       {
+        name: "BB_CLAUDE_MODELS_URL",
+        value: { serverPath: "/api/v1/plugins/account-pool/http/claude/v1/models" },
+        reason:
+          "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
+      },
+      {
         name: "BB_CLAUDE_SETTINGS_ENV_PIN",
         value:
-          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
         reason: expect.stringContaining("settings layer"),
       },
       {
@@ -2471,6 +2527,56 @@ describe("Account Pool plugin", () => {
     ]);
     expect(off.exitCode).toBe(0);
     expect(await resolveToken(fixture.host)).toBe(fixture.key);
+  });
+
+  it("lists Claude models through the hub with a pooled account's credentials", async () => {
+    const seen: Array<{ url: string | undefined; authorization: string | undefined }> = [];
+    const upstream = await startUpstream(async (request, response) => {
+      await readRequestBody(request);
+      seen.push({
+        url: request.url,
+        authorization: request.headers.authorization,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"data":[],"has_more":false,"last_id":null}');
+    });
+    cleanups.push(upstream.close);
+    const fixture = await createFixture({
+      upstreamUrl: upstream.url,
+      source: "import",
+      options: { importCredentials: async () => importedCredentials() },
+    });
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+    const modelsUrl = entries.find(
+      (entry) => entry.name === "BB_CLAUDE_MODELS_URL",
+    )?.value;
+    expect(modelsUrl).toEqual({
+      serverPath: "/api/v1/plugins/account-pool/http/claude/v1/models",
+    });
+
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "GET",
+      "/claude/v1/models?limit=1000",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "anthropic-version": "2023-06-01",
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: [],
+      has_more: false,
+      last_id: null,
+    });
+    expect(seen).toEqual([
+      { url: "/v1/models?limit=1000", authorization: "Bearer oauth-access" },
+    ]);
   });
 
   it("routes thread-less Codex model listing through the hub without recording a thread route", async () => {
@@ -3082,10 +3188,22 @@ describe("Account Pool plugin", () => {
       .array(accountSummarySchema)
       .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
     expect(accounts[0]).toMatchObject({
-      fiveHourUtilization: 0.25,
-      sevenDayUtilization: 0.5,
-      fiveHourStatus: "allowed",
-      sevenDayStatus: "allowed",
+      limitWindows: [
+        {
+          slot: "primary",
+          windowMinutes: 300,
+          utilization: 0.25,
+          status: "allowed",
+          source: "header",
+        },
+        {
+          slot: "secondary",
+          windowMinutes: 10_080,
+          utilization: 0.5,
+          status: "allowed",
+          source: "header",
+        },
+      ],
       representativeClaim: "claim-a",
       familyWeekly: {
         fable: {
@@ -4665,24 +4783,31 @@ describe("Account Pool plugin", () => {
       return fixture;
     }
 
+    const upstreamKey = (init: RequestInit | undefined) => {
+      const headers = new Headers(init?.headers);
+      return (
+        headers.get("x-api-key") ??
+        headers.get("authorization")?.slice(7) ??
+        ""
+      );
+    };
+
     it.each(["claude", "codex"] as const)(
-      "keeps %s sessions and the pool cursor on the third account after two failures",
+      "keeps %s sessions and the pool cursor on the third account after two failures (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
       async (provider) => {
         let outage = false;
         const attempts: string[] = [];
         const fixture = await affinityFixture(
           provider,
           async (_input, init) => {
-            const headers = new Headers(init?.headers);
-            const key =
-              headers.get("x-api-key") ??
-              headers.get("authorization")?.slice(7) ??
-              "";
+            const key = upstreamKey(init);
             attempts.push(key);
-            return Response.json(
-              {},
-              { status: outage && key !== "sk-third" ? 503 : 200 },
-            );
+            return outage && key !== "sk-third"
+              ? Response.json(
+                  {},
+                  { status: 503, headers: { "retry-after": "0" } },
+                )
+              : Response.json({});
           },
         );
         await nextClockTick();
@@ -4717,6 +4842,7 @@ describe("Account Pool plugin", () => {
         expect(attempts).toEqual([
           "sk-first",
           "sk-first",
+          ...(provider === "codex" ? ["sk-first", "sk-first"] : []),
           "sk-second",
           "sk-third",
           "sk-third",
@@ -4724,6 +4850,40 @@ describe("Account Pool plugin", () => {
           "sk-third",
           "sk-third",
         ]);
+      },
+    );
+
+    it.each(["claude", "codex"] as const)(
+      "handles an automatically affined %s session according to its retry policy (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
+      async (provider) => {
+        const attempts: string[] = [];
+        let retry = false;
+        const fixture = await affinityFixture(provider, async (_input, init) => {
+          const key = upstreamKey(init);
+          attempts.push(key);
+          return retry && key === "sk-first"
+            ? Response.json({}, { status: 503, headers: { "retry-after": "0" } })
+            : Response.json({});
+        });
+        const send = async () => {
+          const response = await fixture.host.harness.behavior.fetchHttp(
+            "POST",
+            provider === "claude" ? "/v1/messages" : "/v1/responses",
+            {
+              headers: { ...authHeaders(fixture.key), "session-id": "auto-affinity" },
+              body: provider === "claude" ? claudeBody("auto-affinity") : "{}",
+            },
+          );
+          expect(response.status).toBe(200);
+          await response.text();
+        };
+        await send();
+        attempts.length = 0;
+        retry = true;
+        await send();
+        expect(attempts).toEqual(provider === "claude"
+          ? ["sk-first", "sk-second"]
+          : ["sk-first", "sk-first", "sk-first", "sk-second"]);
       },
     );
 
@@ -5565,13 +5725,13 @@ describe("Account Pool plugin", () => {
         "codex-parent-body",
         "codex-spawn",
       ])(
-        "inherits the eligible %s parent once and keeps child failover independent",
+        "inherits the eligible %s parent once and keeps child failover independent (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
         async (wire) => {
           const provider = wire === "claude" ? "claude" : "codex";
           const route =
             provider === "claude" ? "/v1/messages" : "/v1/responses";
           const seen: Array<{ key: string | null; body: string }> = [];
-          let rejectNext = false;
+          let rejections = 0;
           const fixture = await affinityFixture(
             provider,
             async (_input, init) => {
@@ -5588,9 +5748,12 @@ describe("Account Pool plugin", () => {
                 ),
               });
               if (seen.length === 1) return openStream();
-              if (rejectNext) {
-                rejectNext = false;
-                return Response.json({}, { status: 503 });
+              if (rejections > 0) {
+                rejections--;
+                return Response.json(
+                  {},
+                  { status: 503, headers: { "retry-after": "0" } },
+                );
               }
               return Response.json({});
             },
@@ -5611,7 +5774,7 @@ describe("Account Pool plugin", () => {
             expect(seen[1]?.body).toBe(
               forkRequest(wire, "child-session", "parent-session").body,
             );
-            rejectNext = true;
+            rejections = provider === "claude" ? 1 : 3;
             const failover = await send("child-session", "parent-session");
             expect(failover.status).toBe(200);
             await failover.text();
@@ -5623,6 +5786,7 @@ describe("Account Pool plugin", () => {
               "sk-first",
               "sk-first",
               "sk-first",
+              ...(provider === "codex" ? ["sk-first", "sk-first"] : []),
               "sk-second",
               "sk-first",
               "sk-second",
@@ -5928,7 +6092,7 @@ describe("Account Pool plugin", () => {
       "disabled account",
       "network error",
     ])(
-      "preserves the correct binding after %s despite an older response completion",
+      "preserves the correct binding after %s despite an older response completion (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
       async (reason) => {
         const attempts: Array<string | null> = [];
         let finishOld = () => {};
@@ -6644,10 +6808,10 @@ describe("Account Pool plugin", () => {
         expectedStatus: 503,
       },
       {
-        name: "keeps invalid_grant accounts excluded despite a valid access token",
+        name: "keeps serving a valid access token after invalid_grant without replaying the refresh token",
         elapsedMinutes: 6,
         failureStatus: 400,
-        expectedStatus: 429,
+        expectedStatus: 200,
       },
     ])("$name", async ({ elapsedMinutes, failureStatus, expectedStatus }) => {
       let now = 1_800_000_000_000;
@@ -6726,11 +6890,7 @@ describe("Account Pool plugin", () => {
         .parse(
           await fixture.host.harness.behavior.callRpc("account.list", null),
         );
-      expect(accounts[0]?.error).toEqual(
-        failureStatus === 400
-          ? expect.stringContaining("OAuth refresh failed")
-          : null,
-      );
+      expect(accounts[0]?.error).toBeNull();
       expect(authorizations).toEqual(
         expectedStatus === 200
           ? [`Bearer ${oldToken}`, `Bearer ${oldToken}`]
@@ -6744,17 +6904,17 @@ describe("Account Pool plugin", () => {
         { headers: authHeaders(fixture.key), body: "{}" },
       );
       await recovered.text();
-      expect(recovered.status).toBe(failureStatus === 400 ? 429 : 200);
+      expect(recovered.status).toBe(200);
       expect(refreshCalls).toBe(failureStatus === 400 ? 1 : 2);
-      if (failureStatus !== 400) {
-        expect(authorizations.at(-1)).toBe(`Bearer ${newToken}`);
-        const recoveredAccounts = z
-          .array(accountSummarySchema)
-          .parse(
-            await fixture.host.harness.behavior.callRpc("account.list", null),
-          );
-        expect(recoveredAccounts[0]?.error).toBeNull();
-      }
+      expect(authorizations.at(-1)).toBe(
+        `Bearer ${failureStatus === 400 ? oldToken : newToken}`,
+      );
+      const recoveredAccounts = z
+        .array(accountSummarySchema)
+        .parse(
+          await fixture.host.harness.behavior.callRpc("account.list", null),
+        );
+      expect(recoveredAccounts[0]?.error).toBeNull();
     });
   });
 
@@ -7058,7 +7218,8 @@ describe("Account Pool plugin", () => {
       const cached = await accountState();
       const quota = (account: typeof cached) =>
         provider === "claude"
-          ? account?.sevenDayUtilization
+          ? account?.limitWindows.find((window) => window.slot === "secondary")
+              ?.utilization
           : account?.limitWindows[0]?.utilization;
       expect(quota(cached)).toBe(0.2);
       for (const mode of ["network", "http", "payload"] as const) {
@@ -9729,7 +9890,7 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual(["sk-second"]);
     });
 
-    it("keeps an affinity until its account crosses a quota threshold and reports a different next pick", async () => {
+    it("test-change-reason: included usage keeps an affinity beyond the threshold until quota is exhausted, even with a different next pick", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -9767,7 +9928,14 @@ describe("Account Pool plugin", () => {
         sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
       });
       await pool.send("thr_balancer_affinity", "session-affinity");
-      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-second"]);
+      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-first"]);
+
+      setQuota(pool.fixture, pool.fixture.account.id, {
+        sevenDayUtilization: 1,
+        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+      });
+      await pool.send("thr_balancer_affinity", "session-affinity");
+      expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-first", "sk-second"]);
     });
 
     it("returns the binding for the requested thread when another thread was used later", async () => {
@@ -9805,13 +9973,13 @@ describe("Account Pool plugin", () => {
       expect(second).toMatchObject({ boundAccountId: pool.second.id });
     });
 
-    it("reports all enabled accounts in binding headroom when none are eligible", async () => {
+    it("test-change-reason: the included-usage ruling requires exhausted quota — reports all enabled accounts in binding headroom when none are eligible", async () => {
       const pool = await fixtureWithAccounts();
       for (const accountId of [pool.fixture.account.id, pool.second.id])
         setQuota(pool.fixture, accountId, {
-          fiveHourUtilization: 0.98,
+          fiveHourUtilization: 1,
           fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-          sevenDayUtilization: 0.98,
+          sevenDayUtilization: 1,
           sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         });
 
@@ -9987,7 +10155,7 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual([]);
     });
 
-    it("keeps an extra-usage eligible bound account in the binding preview", async () => {
+    it('test-change-reason: owner ruling 2026-11-21 "included" — stay on included usage past the switch threshold until the provider refuses it', async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -10019,12 +10187,12 @@ describe("Account Pool plugin", () => {
         nextAccountId: pool.fixture.account.id,
         headroom: [
           { accountId: pool.fixture.account.id, eligible: true },
-          { accountId: pool.second.id, eligible: false },
+          { accountId: pool.second.id, eligible: true },
         ],
       });
     });
 
-    it("does not report an extra-usage bound account when routing narrows below threshold", async () => {
+    it('test-change-reason: owner ruling 2026-11-21 "included" — release a paid binding when included quota is available', async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -10037,7 +10205,7 @@ describe("Account Pool plugin", () => {
       await pool.send("thr_extrausagerebalance", "session-extrausagerebalance");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.98,
+        sevenDayUtilization: 1,
         sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         extraUsage: { status: "allowed", observedAt: now, source: "usage" },
       });
@@ -10509,7 +10677,7 @@ describe("sequential pool recovery", () => {
     }
   });
 
-  it("keeps the last working binding after every account fails during a provider outage", async () => {
+  it("keeps the last working binding after every account fails during a provider outage (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)", async () => {
     const attempts: Array<string | null> = [];
     let outage = false;
     const fixture = await createFixture({
@@ -10518,7 +10686,9 @@ describe("sequential pool recovery", () => {
       options: {
         fetch: async (_input, init) => {
           attempts.push(new Headers(init?.headers).get("x-api-key"));
-          return Response.json({}, { status: outage ? 503 : 200 });
+          return outage
+            ? Response.json({}, { status: 503, headers: { "retry-after": "0" } })
+            : Response.json({});
         },
       },
     });
@@ -10535,7 +10705,301 @@ describe("sequential pool recovery", () => {
     await failed.text();
     outage = false;
     await (await send()).text();
-    expect(attempts).toEqual(["sk-first", "sk-first", "sk-second", "sk-first"]);
+    expect(attempts).toEqual([
+      "sk-first",
+      "sk-first",
+      "sk-second",
+      "sk-first",
+    ]);
+  });
+
+  it("skips an account at the switch threshold when routing a new conversation", async () => {
+    const now = 1_800_000_000_000;
+    const resetAt = String((now + 60 * 60 * 1_000) / 1_000);
+    const attempts: Array<string | null> = [];
+    let firstRequests = 0;
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => now,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key") ?? "";
+          attempts.push(key);
+          return Response.json(
+            {},
+            {
+              headers:
+                key === "sk-first"
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization":
+                        firstRequests++ === 0 ? "0.97" : "0.98",
+                      "anthropic-ratelimit-unified-5h-status": "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": resetAt,
+                    }
+                  : {},
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async () => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        { headers: authHeaders(fixture.key), body: "{}" },
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(await send()).toBe(200);
+    expect(await send()).toBe(200);
+    expect(await send()).toBe(200);
+    expect(attempts).toEqual(["sk-first", "sk-first", "sk-second"]);
+  });
+
+  it("keeps a conversation on its account past the switch threshold until the provider refuses it", async () => {
+    const attempts: Array<string | null> = [];
+    let refused = false;
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          const rejected = refused && key === "sk-first";
+          return Response.json(
+            {},
+            {
+              status: rejected ? 429 : 200,
+              headers:
+                key === "sk-first"
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization": "0.99",
+                      "anthropic-ratelimit-unified-5h-status": rejected
+                        ? "rejected"
+                        : "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                    }
+                  : {},
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async (session: string) => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          headers: authHeaders(fixture.key),
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            metadata: { user_id: JSON.stringify({ session_id: session }) },
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await send("pinned");
+    await send("pinned");
+    await send("new");
+    await send("pinned");
+    refused = true;
+    await send("pinned");
+    await send("pinned");
+
+    expect(attempts).toEqual([
+      "sk-first",
+      "sk-first",
+      "sk-second",
+      "sk-first",
+      "sk-first",
+      "sk-second",
+      "sk-second",
+    ]);
+  });
+
+  it("prefers an account past the threshold that the provider accepts over extra usage", async () => {
+    const attempts: Array<string | null> = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          return Response.json(
+            {},
+            {
+              headers:
+                key === "sk-first"
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization": "0.99",
+                      "anthropic-ratelimit-unified-5h-status": "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                    }
+                  : {
+                      "anthropic-ratelimit-unified-5h-utilization": "1",
+                      "anthropic-ratelimit-unified-5h-status": "rejected",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                      "anthropic-ratelimit-unified-overage-status": "allowed",
+                    },
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async (requestBody: string) => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        { headers: authHeaders(fixture.key), body: requestBody },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await send("{}");
+    await send(body);
+    await send("{}");
+    await send(body);
+
+    expect(attempts).toEqual(["sk-first", "sk-second", "sk-first", "sk-first"]);
+  });
+
+  it.each([
+    { utilization: 1, windowStatus: "allowed", expected: "ready" },
+    { utilization: 0.5, windowStatus: "rejected", expected: "exhausted" },
+    { utilization: 1, windowStatus: null, expected: "exhausted" },
+  ])("reports $expected for a $windowStatus window at $utilization utilization", async ({
+    utilization, windowStatus, expected,
+  }) => {
+    const fixture = await createFixture({ upstreamUrl: "https://upstream.example" });
+    setQuota(fixture, fixture.account.id, {
+      fiveHourUtilization: utilization,
+      fiveHourStatus: windowStatus,
+      fiveHourResetAt: Date.now() + 3_600_000,
+    });
+    const result = await fixture.host.harness.behavior.runCli(["status", "--json"]);
+    expect(statusReportSchema.parse(JSON.parse(result.stdout)).accounts[0]?.status).toBe(expected);
+  });
+
+  it("reports an account past the switch threshold as exhausted only once the provider refuses it", async () => {
+    let refused = false;
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async () =>
+          Response.json(
+            {},
+            {
+              status: refused ? 429 : 200,
+              headers: {
+                "anthropic-ratelimit-unified-7d-utilization": "0.99",
+                "anthropic-ratelimit-unified-7d-status": refused
+                  ? "rejected"
+                  : "allowed",
+                "anthropic-ratelimit-unified-7d-reset": "1800086400",
+              },
+            },
+          ),
+      },
+    });
+    const status = async () => {
+      await (
+        await fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+          headers: authHeaders(fixture.key),
+          body,
+        })
+      ).text();
+      const result = await fixture.host.harness.behavior.runCli([
+        "status",
+        "--json",
+      ]);
+      return statusReportSchema.parse(JSON.parse(result.stdout)).accounts[0]
+        ?.status;
+    };
+
+    expect(await status()).toBe("ready");
+    refused = true;
+    expect(await status()).toBe("exhausted");
+  });
+
+  it("waits only for windows the provider refused before retrying", async () => {
+    const now = 1_800_000_000_000;
+    const seconds = (milliseconds: number) =>
+      String((now + milliseconds) / 1_000);
+    const hour = 60 * 60 * 1_000;
+    const day = 24 * hour;
+    const attempts: Array<string | null> = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => now,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          return key === "sk-first"
+            ? Response.json(
+                {},
+                {
+                  headers: {
+                    "anthropic-ratelimit-unified-5h-utilization": "1",
+                    "anthropic-ratelimit-unified-5h-reset": seconds(2 * hour),
+                    "anthropic-ratelimit-unified-7d-utilization": "0.99",
+                    "anthropic-ratelimit-unified-7d-status": "allowed",
+                    "anthropic-ratelimit-unified-7d-reset": seconds(6 * day),
+                  },
+                },
+              )
+            : Response.json(
+                {},
+                {
+                  status: 429,
+                  headers: {
+                    "anthropic-ratelimit-unified-5h-status": "rejected",
+                    "anthropic-ratelimit-unified-5h-reset": seconds(hour),
+                    "anthropic-ratelimit-unified-7d-utilization": "0.99",
+                    "anthropic-ratelimit-unified-7d-status": "allowed",
+                    "anthropic-ratelimit-unified-7d-reset": seconds(5 * day),
+                  },
+                },
+              );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = () =>
+      fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+        headers: authHeaders(fixture.key),
+        body,
+      });
+    await (await send()).text();
+
+    const refused = await send();
+
+    expect(attempts).toEqual(["sk-first", "sk-second"]);
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("3600");
+    expect(await refused.text()).toContain(new Date(now + hour).toISOString());
+    expect(
+      await fixture.host.harness.behavior.callRpc(retryAvailabilityMethod, {
+        threadId: "thread-one",
+        requestId: "creq_aaaaaaaaaa",
+      }),
+    ).toEqual({ kind: "blocked", retryAt: now + hour });
   });
 
   it("keeps Codex over-limit accounts ineligible until reset when utilization is omitted", async () => {
@@ -11361,12 +11825,29 @@ it("drains a streamed response before disposing the owned transport", async () =
   }
 });
 
-it("publishes pooled usage without a display plugin and does not invent unobserved utilization", async () => {
+it("publishes pooled subscription usage without a display plugin and does not invent unobserved utilization (test-change-reason: the fork reports observed usage for routed API-key accounts)", async () => {
   const upstream = await startUpstream((_request, response) => {
     response.end();
   });
   cleanups.push(upstream.close);
-  const fixture = await createFixture({ upstreamUrl: upstream.url });
+  const fixture = await createFixture({
+    upstreamUrl: upstream.url,
+    source: "import",
+    options: {
+      usageUrl: `${upstream.url}/usage`,
+      importCredentials: async () => importedCredentials(),
+    },
+  });
+  const apiKeyAccount = await addApiAccount(fixture, "sk-pay-as-you-go");
+  const measurement = await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+    resourceId: apiKeyAccount.id,
+    refresh: false,
+  });
+  expect(measurement).toMatchObject({
+    observedAt: null,
+    usage: { status: "error", message: "Usage has not been observed for this account." },
+  });
+  await fixture.host.harness.behavior.callRpc("account.disable", { id: apiKeyAccount.id });
   const inventory = usageResourceListSchema.parse(
     await fixture.host.harness.behavior.callRpc(usageListMethod, {}),
   );
@@ -11399,6 +11880,12 @@ it("publishes pooled usage without a display plugin and does not invent unobserv
       message: "Usage has not been observed for this account.",
     },
   });
+  await expect(
+    fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+      resourceId: apiKeyAccount.id,
+      refresh: false,
+    }),
+  ).rejects.toThrow("no longer exists");
   expect(
     fixture.host.harness.registrations.experimental_publishedRpcMethods.map(
       (entry) => entry.method,
@@ -11681,6 +12168,7 @@ describe("Account Pool nested proxy", () => {
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+      "BB_CLAUDE_MODELS_URL",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -11722,7 +12210,7 @@ describe("Account Pool nested proxy", () => {
       availability: undefined,
       stopParent: true,
     },
-  ])("neutralises inherited routing when $label", async (args) => {
+  ])("neutralises inherited routing when $label (test-change-reason: include the pooled model URL in the fork routing environment)", async (args) => {
     const parent = await startParent(
       args.availability === undefined
         ? {}
@@ -11760,6 +12248,7 @@ describe("Account Pool nested proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
@@ -11955,7 +12444,7 @@ describe("Account Pool nested proxy", () => {
     },
   );
 
-  it("neutralises inherited routing for a bypassed self-parent thread", async () => {
+  it("neutralises inherited routing for a bypassed self-parent thread (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const host = await createChild({
       parentUrl: "http://127.0.0.1:38886/api/v1/plugins/account-pool/http",
       loopbackBaseUrl: "http://localhost:38886/",
@@ -14787,7 +15276,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, oldToken, "/v1/messages")).toBe(200);
   });
 
-  it("blanks the inherited routing for an archived thread on a nested server", async () => {
+  it("blanks the inherited routing for an archived thread on a nested server (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const parent = await scopedFixture();
     const { host: child } = await startNestedChild(
       parent,
@@ -14811,6 +15300,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -14879,7 +15369,7 @@ describe("Account Pool credential scoping", () => {
         expect(await statusOf(host, other, "/v1/messages")).not.toBe(401);
       });
 
-      it("suspends its tokens after a missed archive event on a nested server and blanks the inherited routing", async () => {
+      it("suspends its tokens after a missed archive event on a nested server and blanks the inherited routing (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
         const parent = await scopedFixture();
         const { host: child, dataDir } = await startNestedChild(
           parent,
@@ -14905,6 +15395,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -14914,7 +15405,7 @@ describe("Account Pool credential scoping", () => {
         expect(await credentialFiles(dataDir, "thread-missed")).toHaveLength(2);
       });
 
-      it("stays unrouted without minting when its thread lookup fails on a nested server", async () => {
+      it("stays unrouted without minting when its thread lookup fails on a nested server (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
         const parent = await scopedFixture();
         const { host: child, dataDir } = await startNestedChild(
           parent,
@@ -14937,6 +15428,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -15027,7 +15519,7 @@ describe("Account Pool credential scoping", () => {
     return { host: child, dataDir };
   }
 
-  it("lets a nested server proxy through its parent with the scoped token until the thread is archived", async () => {
+  it("lets a nested server proxy through its parent with the scoped token until the thread is archived (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const parent = await scopedFixture();
     const scoped = await nestedToken(parent.host);
     const { host: child } = await startNestedChild(parent, scoped);
@@ -15053,6 +15545,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -16306,7 +16799,7 @@ describe("Account Pool Artifact proxy", () => {
     expect((await fs.stat(caDir)).mode & 0o777).toBe(0o700);
   });
 
-  it("pins the new-mode routing variables into Claude's settings layer so a host settings env block cannot replace them", async () => {
+  it("pins the new-mode routing variables into Claude's settings layer so a host settings env block cannot replace them (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const fixture = await artifactFixture(
       async () => Response.json({}),
       () => hostRpcResult,
@@ -16320,6 +16813,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "HTTPS_PROXY",
       "NO_PROXY",
@@ -16337,7 +16831,7 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
-  it("leaves api-key-only pools and the codex environment unchanged", async () => {
+  it("leaves api-key-only pools and the codex environment unchanged (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const calls: ExperimentalFakeHostRpcCall[] = [];
     const fixture = await artifactFixture(
       async () => Response.json({}),
@@ -16354,6 +16848,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
       "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
@@ -16363,7 +16858,7 @@ describe("Account Pool Artifact proxy", () => {
       entries.find((entry) => entry.name === "BB_CLAUDE_SETTINGS_ENV_PIN")
         ?.value,
     ).toBe(
-      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
     );
     expect(calls).toEqual([]);
   });

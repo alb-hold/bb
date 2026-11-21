@@ -1,9 +1,13 @@
 import {
+  ExperimentalFilePreview,
+  CollapsibleStackCard,
   PluginBranchPicker,
   PluginNewThreadComposer,
   ImageLightbox,
   PluginProviderModelPicker,
   PluginPermissionModePicker,
+  PluginSdkVoiceInputButton,
+  PluginSdkVoiceInputTextarea,
 } from "./plugin-sdk-lazy-components";
 import { applicationLinkApprovals } from "./application-url";
 import {
@@ -23,7 +27,7 @@ import {
   usePluginBranches,
   usePluginCheckoutState,
 } from "@/components/plugin/usePluginBranchPickerState";
-import { useComposerRendererApi } from "@/components/promptbox/ComposerBox";
+import { useComposerRendererApi } from "@/components/plugin/plugin-composer-host";
 import {
   ComposerRoot,
   useComposerContributions,
@@ -32,7 +36,6 @@ import {
   useComposerCommandSearch,
   useComposerMentionSearch,
 } from "@/components/promptbox/composer-search";
-import { VoiceInputButton } from "@/components/promptbox/VoiceInputButton";
 import { VoiceRecordingBar } from "@/components/promptbox/VoiceRecordingBar";
 import { FailedVoiceRecordings } from "@/components/promptbox/FailedVoiceRecordings";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
@@ -47,13 +50,13 @@ import {
   ThreadTitle as ThreadTitleText,
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
-import { VoiceInputTextarea } from "@/components/promptbox/VoiceInputTextarea";
 import { LazyPluginThreadChat } from "@/components/plugin/LazyPluginThreadChat";
 import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
 import { usePluginId } from "@/components/plugin/plugin-context";
+import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
 import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
 import { definePluginApp } from "./plugin-app-definition";
 import {
@@ -102,6 +105,7 @@ import {
   experimental_THREAD_INFO_ROW_GROUPS,
   experimental_THREAD_INFO_SECTION_GROUPS,
 } from "@get-bb/plugin-sdk";
+import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
 import {
   ThreadActionsContextMenu,
   ThreadActionsMenu,
@@ -184,7 +188,7 @@ export const pluginSdkAppImplementation = {
   experimental_useComposerMentionSearch: useComposerMentionSearch,
   experimental_useComposerCommandSearch: useComposerCommandSearch,
   experimental_ComposerRoot: ComposerRoot,
-  experimental_VoiceInputButton: VoiceInputButton,
+  experimental_VoiceInputButton: PluginSdkVoiceInputButton,
   experimental_VoiceRecordingBar: VoiceRecordingBar,
   experimental_FailedVoiceRecordings: FailedVoiceRecordings,
   experimental_ShortcutHint: AppCommandShortcutHint,
@@ -216,8 +220,10 @@ export const pluginSdkAppImplementation = {
   experimental_useBranches: usePluginBranches,
   experimental_useCheckoutState: usePluginCheckoutState,
   experimental_SourceCode: LazyPluginSourceCode,
+  experimental_FilePreview: ExperimentalFilePreview,
   experimental_Diff: LazyPluginDiff,
   experimental_InfoSection: InfoSection,
+  experimental_CollapsibleStackCard: CollapsibleStackCard,
   experimental_ThreadRowMetadata: ThreadRowMetadata,
   experimental_DetailRow: DetailRow,
   experimental_ThreadContextCardRow: ThreadContextCardRow,
@@ -239,6 +245,7 @@ export const pluginSdkAppImplementation = {
   experimental_useSidebarThreadSplit: useSidebarThreadSplit,
   experimental_useExperiment: useExperiment,
   experimental_useThreadContextKind: useThreadContextKind,
+  experimental_useThreadExtensionState: usePluginThreadExtensionState,
   experimental_useSidebarNavigation: useSidebarNavigation,
   experimental_useSidebarNavigationSplit: useSidebarNavigationSplit,
   experimental_SidebarNavigationIcon: SidebarNavigationIcon,
@@ -250,11 +257,12 @@ export const pluginSdkAppImplementation = {
   useSidebarThreadShortcut,
   ThreadTitle: PluginThreadTitle,
   experimental_ThreadStatusGlyph: ThreadStatusGlyph,
+  experimental_resolveThreadStatus,
   useEnvironmentProviders,
   useSdk,
   experimental_useProviders: useProviders,
   experimental_useCodeTheme: useCodeTheme,
-  experimental_VoiceInputTextarea: VoiceInputTextarea,
+  experimental_VoiceInputTextarea: PluginSdkVoiceInputTextarea,
   experimental_copyToClipboard: copyToClipboard,
   experimental_saveFile: saveFile,
 } satisfies PluginSdkApp;

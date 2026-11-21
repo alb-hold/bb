@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLatestThreadSequence, getThread } from "@bb/db";
 import { turnScope } from "@bb/domain";
-import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
+import { moveThreadStatus } from "../../helpers/thread-status.js";
 import {
   seedEvent,
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
+  seedTurnStarted,
 } from "../../helpers/seed.js";
 import {
   createTestAppHarness,
@@ -212,9 +213,15 @@ describe("hero plugin: slack-bot", () => {
         logger: testLogger,
         providerRegistry: server.deps.providerRegistry,
       };
-      applyLoggedThreadLifecycleEvent(lifecycleDeps, {
+      moveThreadStatus(lifecycleDeps, {
+        move: "run.started",
         threadId: threadId as string,
-        event: { type: "run.started" },
+      });
+      seedTurnStarted(server.deps, {
+        threadId: threadId as string,
+        environmentId: threadRow?.environmentId ?? null,
+        providerThreadId: "provider-slack-1",
+        turnId: "turn-1",
       });
       seedEvent(server.deps, {
         threadId: threadId as string,
@@ -234,9 +241,9 @@ describe("hero plugin: slack-bot", () => {
           },
         },
       });
-      const outcome = applyLoggedThreadLifecycleEvent(lifecycleDeps, {
+      const outcome = moveThreadStatus(lifecycleDeps, {
+        move: "run.succeeded",
         threadId: threadId as string,
-        event: { type: "run.succeeded" },
       });
       expect(outcome.applied).toBe(true);
 

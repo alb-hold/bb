@@ -51,6 +51,7 @@ function model() {
     model: "gpt-test",
     displayName: "GPT Test",
     description: "test",
+    reasoningDiscovery: "known" as const,
     supportedReasoningEfforts: [
       { reasoningEffort: "medium", description: "test" },
     ],
@@ -107,6 +108,8 @@ function setup(
             environmentId: "environment-1",
             providerId: "codex",
             status: worker?.status ?? "active",
+            archivedAt: null,
+            deletedAt: null,
           } as never;
         },
         list: async () => [],
@@ -129,6 +132,8 @@ function setup(
         },
         send: async () => ({ ok: true }),
         stop: async () => ({ ok: true }),
+        queue: { list: async () => [] },
+        events: { list: async () => [] },
         archive: async ({ threadId }) => {
           if (archiveFailures.has(threadId)) {
             throw new Error("Host unavailable");
@@ -137,6 +142,7 @@ function setup(
           return { ok: true } as never;
         },
       },
+      plugins: { experimental_discoverRpc: async () => [] },
       providers: {
         list: async () => [
           {
@@ -271,6 +277,143 @@ describe("workflow service policy integration", () => {
     await Promise.all(harnesses.map((harness) => harness.dispose()));
     harnesses.length = 0;
   });
+
+  it.each([
+    {
+      discovery: "known",
+      efforts: [],
+      parent: "medium",
+      requested: null,
+      resolved: "medium",
+    },
+    {
+      discovery: "known",
+      efforts: [],
+      parent: "high",
+      requested: null,
+      resolved: "medium",
+    },
+    {
+      discovery: "unknown",
+      efforts: [],
+      parent: "medium",
+      requested: null,
+      resolved: "medium",
+    },
+    {
+      discovery: "known",
+      efforts: ["low", "medium"],
+      parent: "low",
+      requested: null,
+      resolved: "low",
+    },
+    {
+      discovery: "known",
+      efforts: ["low", "medium"],
+      parent: "xhigh",
+      requested: null,
+      resolved: "medium",
+    },
+    {
+      discovery: "known",
+      efforts: [],
+      parent: "medium",
+      requested: "medium",
+      resolved: "medium",
+    },
+    {
+      discovery: "known",
+      efforts: [],
+      parent: "medium",
+      requested: "high",
+      resolved: null,
+    },
+    {
+      discovery: "unknown",
+      efforts: [],
+      parent: "medium",
+      requested: "medium",
+      resolved: null,
+    },
+    {
+      discovery: "known",
+      efforts: ["low", "medium"],
+      parent: "medium",
+      requested: "xhigh",
+      resolved: null,
+    },
+  ] as const)(
+    "resolves reasoning: $discovery/$efforts parent=$parent requested=$requested",
+    async ({ discovery, efforts, parent, requested, resolved }) => {
+      const test = setup();
+      harnesses.push(test.harness);
+      test.harness.sdk.stub("providers.models", async () => ({
+        providers: [],
+        models: [
+          {
+            ...model(),
+            reasoningDiscovery: discovery,
+            supportedReasoningEfforts: efforts.map((reasoningEffort) => ({
+              reasoningEffort,
+              description: "test",
+            })),
+          },
+        ],
+        selectedOnlyModels: [],
+        modelLoadError: null,
+      }));
+      test.harness.sdk.stub("threads.defaultExecutionOptions", async () => ({
+        model: "gpt-test",
+        reasoningLevel: parent,
+        permissionMode: "full",
+        serviceTier: "default",
+        source: "default",
+      }));
+      const run = await test.start(
+        source(
+          requested === null
+            ? 'return await agent("review");'
+            : `return await agent("review", { provider: "codex", model: "gpt-test", reasoningLevel: "${requested}" });`,
+        ),
+      );
+      const controller = new AbortController();
+      const worker = test.service.runWorker(controller.signal);
+      try {
+        if (resolved === null) {
+          await eventually(() =>
+            expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+          );
+          expect(getRunRequired(test.db, run.id).error).toContain(
+            "not supported",
+          );
+          expect(test.childCount()).toBe(0);
+          expect(getCall(test.db, run.id, 0)).toBeNull();
+          return;
+        }
+        await eventually(() => {
+          expect(getRunRequired(test.db, run.id).error).toBeNull();
+          expect(test.childCount()).toBe(1);
+        });
+        expect(test.harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject(
+          {
+            providerId: "codex",
+            model: "gpt-test",
+            reasoningLevel: resolved,
+          },
+        );
+        expect(getCall(test.db, run.id, 0)).toMatchObject({
+          resolvedReasoningLevel: resolved,
+        });
+        test.service.onThreadIdle("child-1", "completed");
+        await eventually(() =>
+          expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+        );
+      } finally {
+        controller.abort();
+        await worker;
+      }
+    },
+  );
 
   it("applies live settings to future run snapshots without mutating existing runs", async () => {
     const initial = {
@@ -1132,7 +1275,10 @@ describe("workflow service policy integration", () => {
   });
 
   it("keeps quiet workers alive until the total run timeout", async () => {
-    const test = setup();
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      totalRunTimeoutMs: 90_000,
+    });
     harnesses.push(test.harness);
     const run = await test.start(source(`return await agent("quiet");`));
     const controller = new AbortController();
@@ -1157,18 +1303,14 @@ describe("workflow service policy integration", () => {
         error: null,
       });
 
-      test.db
-        .prepare(`UPDATE workflow_runs SET started_at = ? WHERE id = ?`)
-        .run(Date.now() - 90_000_000, run.id);
-      await vi.waitFor(
-        () => {
-          const timedOutRun = getRunRequired(test.db, run.id);
-          expect(timedOutRun.status).toBe("failed");
-          expect(timedOutRun.error).toContain("run timed out");
-          expect(timedOutRun.error).not.toContain("Cancelled");
-        },
-        { timeout: 4_000 },
-      );
+      const startedAt = getRunRequired(test.db, run.id).startedAt!;
+      await vi.advanceTimersByTimeAsync(startedAt + 89_000 - Date.now());
+      expect(getRunRequired(test.db, run.id).status).toBe("running");
+      await vi.advanceTimersByTimeAsync(1_500);
+      const timedOutRun = getRunRequired(test.db, run.id);
+      expect(timedOutRun.status).toBe("failed");
+      expect(timedOutRun.error).toContain("run timed out");
+      expect(timedOutRun.error).not.toContain("Cancelled");
     } finally {
       controller.abort();
       try {
@@ -1406,6 +1548,27 @@ describe("workflow service policy integration", () => {
     }
   });
 
+  it("finds unannounced maintenance work on the slow safety tick, not every second", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expiredRunWithWorkers(test.db, "unannounced", ["worker-unannounced"]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(test.archived).toEqual([]);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(test.archived).toEqual(["worker-unannounced"]);
+      expect(getRun(test.db, "unannounced")).toBeNull();
+    } finally {
+      controller.abort();
+      await worker;
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["settings", "completion", "cancellation"] as const)(
     "wakes queued runs when %s frees capacity",
     async (change) => {
@@ -1544,6 +1707,222 @@ describe("workflow service policy integration", () => {
           .prepare(`SELECT thread_id FROM workflow_workers ORDER BY thread_id`)
           .all(),
       ).toEqual([{ thread_id: "child-1" }, { thread_id: "child-2" }]);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  function stubFailedWorker(
+    test: ReturnType<typeof setup>,
+    state: {
+      status: "error" | "active";
+      queuedRetryReason: string | null;
+      latestRequest: Record<string, unknown>;
+      providerRetry: "absent" | { decidedRequestId: string | null };
+      retryQueuedWithDecision?: boolean;
+    },
+  ) {
+    let decisionRead = false;
+    const worker = test.workers.get("child-1");
+    if (worker === undefined) throw new Error("missing worker child-1");
+    worker.status = state.status;
+    test.harness.sdk.stub(
+      "threads.queue.list",
+      async () =>
+        (state.queuedRetryReason === null &&
+        !(state.retryQueuedWithDecision === true && decisionRead)
+          ? []
+          : [
+              {
+                payload: {
+                  kind: "retry",
+                  retryOfTurnRequestId: "creq_failed",
+                  attempt: 2,
+                  reason: state.queuedRetryReason ?? "Provider unavailable",
+                },
+              },
+            ]) as never,
+    );
+    test.harness.sdk.stub(
+      "threads.events.list",
+      async () =>
+        [
+          {
+            type: "client/turn/requested",
+            data: { ...state.latestRequest, target: { kind: "thread-start" } },
+          },
+        ] as never,
+    );
+    const providerRetry = state.providerRetry;
+    test.harness.sdk.stub("plugins.experimental_discoverRpc", async () =>
+      providerRetry === "absent"
+        ? []
+        : [
+            {
+              pluginId: "provider-retry",
+              displayName: "Provider retry",
+              method: "decision.get",
+            },
+          ],
+    );
+    test.harness.sdk.stub("plugins.callRpc", async () => {
+      decisionRead = true;
+      return providerRetry === "absent" ||
+        providerRetry.decidedRequestId === null
+        ? null
+        : {
+            requestId: providerRetry.decidedRequestId,
+            decision:
+              state.retryQueuedWithDecision === true
+                ? { kind: "retry", reason: "Provider unavailable" }
+                : { kind: "decline", reason: "not-retryable" },
+          };
+    });
+  }
+
+  it.each([
+    {
+      name: "provider retry queued a retry",
+      thread: {
+        status: "error",
+        queuedRetryReason: "Provider unavailable",
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: { decidedRequestId: null },
+      },
+      reRuns: false,
+    },
+    {
+      name: "core queued a restart resume",
+      thread: {
+        status: "error",
+        queuedRetryReason: "bb restarted",
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: "absent",
+      },
+      reRuns: false,
+    },
+    {
+      name: "a retry already ran",
+      thread: {
+        status: "active",
+        queuedRetryReason: null,
+        latestRequest: {
+          requestId: "creq_retry",
+          retryOfRequestId: "creq_failed",
+          retryAttempt: 2,
+        },
+        providerRetry: { decidedRequestId: "creq_failed" },
+      },
+      reRuns: false,
+    },
+    {
+      name: "its retry lands mid-check",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: { decidedRequestId: "creq_failed" },
+        retryQueuedWithDecision: true,
+      },
+      reRuns: false,
+    },
+    {
+      name: "provider retry declined the failure",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: { decidedRequestId: "creq_failed" },
+      },
+      reRuns: true,
+    },
+    {
+      name: "provider retry is not installed",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: "absent",
+      },
+      reRuns: true,
+    },
+  ] as const)(
+    "hands a failed worker's retry over when $name",
+    async ({ thread, reRuns }) => {
+      const test = setup();
+      harnesses.push(test.harness);
+      const run = await test.start(source(`return await agent("retry");`));
+      const controller = new AbortController();
+      const worker = test.service.runWorker(controller.signal);
+      try {
+        await eventually(() =>
+          expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+        );
+        stubFailedWorker(test, thread);
+        test.service.onThreadFailed("child-1", "HTTP 503: Service unavailable");
+
+        const finisher = reRuns ? "child-2" : "child-1";
+        await eventually(() =>
+          expect(getCall(test.db, run.id, 0)).toMatchObject({
+            status: "running",
+            childThreadId: finisher,
+          }),
+        );
+        test.service.onThreadIdle(finisher, "done");
+        await eventually(() =>
+          expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+        );
+        expect(test.childCount()).toBe(reRuns ? 2 : 1);
+      } finally {
+        controller.abort();
+        await worker;
+      }
+    },
+  );
+
+  it("waits for provider retry to decide on a failed worker before replacing it", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("retry");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+      );
+      const undecided = {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: "creq_failed" },
+        providerRetry: { decidedRequestId: null },
+      } as const;
+      stubFailedWorker(test, undecided);
+      test.service.onThreadFailed("child-1", "HTTP 503: Service unavailable");
+      await eventually(() =>
+        expect(
+          test.harness.sdk.callsTo("plugins.callRpc").length,
+        ).toBeGreaterThan(1),
+      );
+      expect(getCall(test.db, run.id, 0)?.status).toBe("failed");
+      expect(test.childCount()).toBe(1);
+      expect(test.archived).not.toContain("child-1");
+
+      stubFailedWorker(test, {
+        ...undecided,
+        queuedRetryReason: "Provider unavailable",
+      });
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)).toMatchObject({
+          status: "running",
+          childThreadId: "child-1",
+        }),
+      );
+      test.service.onThreadIdle("child-1", "done");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+      expect(test.childCount()).toBe(1);
     } finally {
       controller.abort();
       await worker;

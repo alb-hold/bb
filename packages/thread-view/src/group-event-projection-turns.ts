@@ -39,7 +39,9 @@ interface ProjectionTurnBoundsUpdate {
 }
 
 interface GroupEventProjectionTurnsArgs {
+  delegatedTurnIds: ReadonlySet<string>;
   events: ThreadEventWithMeta[];
+  externalUserBoundarySeqsByTurnId?: ReadonlyMap<string, readonly number[]>;
   messages: EventProjectionMessage[];
 }
 
@@ -161,10 +163,10 @@ function addProjectionTurnMessage(
   });
 }
 
-function isInteractionLifecycleMessage(
-  message: EventProjectionMessage,
-): boolean {
+function canGroupThreadMessageInTurn(message: EventProjectionMessage): boolean {
   switch (message.kind) {
+    case "operation":
+      return message.opType === "warning" || message.opType === "deprecation";
     case "permission-grant-lifecycle":
     case "plugin-form-lifecycle":
     case "user-question-lifecycle":
@@ -174,13 +176,14 @@ function isInteractionLifecycleMessage(
   }
 }
 
-function findTurnRunningAtSequence(
+function findRootTurnRunningAtSequence(
   turnsById: ReadonlyMap<string, ProjectionTurnDraft>,
+  delegatedTurnIds: ReadonlySet<string>,
   sequence: number,
 ): ProjectionTurnDraft | null {
   let running: ProjectionTurnDraft | null = null;
-  for (const draft of turnsById.values()) {
-    if (draft.startedSequence >= sequence) {
+  for (const [turnId, draft] of turnsById) {
+    if (delegatedTurnIds.has(turnId) || draft.startedSequence >= sequence) {
       continue;
     }
     if (
@@ -199,7 +202,17 @@ function findTurnRunningAtSequence(
 function applyExternalUserBoundaries(
   turnsById: Map<string, ProjectionTurnDraft>,
   messages: EventProjectionMessage[],
+  known: ReadonlyMap<string, readonly number[]> | undefined,
 ): void {
+  if (known !== undefined) {
+    for (const [turnId, draft] of turnsById) {
+      const boundarySeqs = known.get(turnId) ?? [];
+      if (boundarySeqs.length > 0) {
+        draft.turn.externalUserBoundarySeqs = [...boundarySeqs];
+      }
+    }
+    return;
+  }
   const userMessages = messages.flatMap((message) =>
     message.kind === "user" && message.initiator === "user"
       ? [
@@ -341,8 +354,12 @@ export function groupEventProjectionTurns(
 
   for (const message of args.messages) {
     if (message.scope.kind === "thread") {
-      const runningTurn = isInteractionLifecycleMessage(message)
-        ? findTurnRunningAtSequence(turnsById, message.sourceSeqStart)
+      const runningTurn = canGroupThreadMessageInTurn(message)
+        ? findRootTurnRunningAtSequence(
+            turnsById,
+            args.delegatedTurnIds,
+            message.sourceSeqStart,
+          )
         : null;
       if (runningTurn !== null) {
         addProjectionTurnMessage(runningTurn, message);
@@ -368,7 +385,11 @@ export function groupEventProjectionTurns(
     addProjectionTurnMessage(turnDraft, message);
   }
 
-  applyExternalUserBoundaries(turnsById, args.messages);
+  applyExternalUserBoundaries(
+    turnsById,
+    args.messages,
+    args.externalUserBoundarySeqsByTurnId,
+  );
 
   const orderedEntryDrafts = [...entryDrafts].sort((left, right) => {
     if (left.sourceSeqStart !== right.sourceSeqStart) {

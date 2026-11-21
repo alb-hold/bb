@@ -13,6 +13,10 @@ interface WaitForActiveTurnStateArgs {
 
 export class RuntimeTurnState {
   private readonly activeTurnIdByThreadId = new Map<string, string>();
+  private readonly activeTurnRequestIdsByThreadId = new Map<
+    string,
+    Set<string>
+  >();
   private readonly activeTurnWaitersByThreadId = new Map<
     string,
     Set<PendingActiveTurnWaiter>
@@ -20,6 +24,7 @@ export class RuntimeTurnState {
 
   clear(): void {
     this.activeTurnIdByThreadId.clear();
+    this.activeTurnRequestIdsByThreadId.clear();
     for (const threadId of [...this.activeTurnWaitersByThreadId.keys()]) {
       this.resolveWaiters(threadId, null);
     }
@@ -27,11 +32,35 @@ export class RuntimeTurnState {
 
   clearThread(threadId: string): void {
     this.activeTurnIdByThreadId.delete(threadId);
+    this.activeTurnRequestIdsByThreadId.delete(threadId);
+    this.resolveWaiters(threadId, null);
+  }
+
+  clearStaleTurn(threadId: string, staleTurnId: string): void {
+    const activeTurnId = this.activeTurnIdByThreadId.get(threadId);
+    if (activeTurnId !== undefined && activeTurnId !== staleTurnId) {
+      return;
+    }
+    this.clearThread(threadId);
+  }
+
+  resolveWaitersWithoutTurn(threadId: string): void {
+    if (this.activeTurnIdByThreadId.has(threadId)) {
+      return;
+    }
     this.resolveWaiters(threadId, null);
   }
 
   getActiveTurnId(threadId: string): string | null {
     return this.activeTurnIdByThreadId.get(threadId) ?? null;
+  }
+
+  getActiveTurnRequestIds(threadId: string): string[] {
+    return [...(this.activeTurnRequestIdsByThreadId.get(threadId) ?? [])];
+  }
+
+  noteActiveTurnRequest(threadId: string, requestId: string): void {
+    this.activeTurnRequestIdsByThreadId.get(threadId)?.add(requestId);
   }
 
   getActiveThreadIds(): string[] {
@@ -73,7 +102,18 @@ export class RuntimeTurnState {
         scope: event.scope,
       });
       this.activeTurnIdByThreadId.set(event.threadId, turnId);
+      this.activeTurnRequestIdsByThreadId.set(event.threadId, new Set());
       this.resolveWaiters(event.threadId, turnId);
+      return;
+    }
+
+    if (event.type === "turn/input/accepted") {
+      if (
+        event.scope.kind === "turn" &&
+        this.activeTurnIdByThreadId.get(event.threadId) === event.scope.turnId
+      ) {
+        this.noteActiveTurnRequest(event.threadId, event.clientRequestId);
+      }
       return;
     }
 
@@ -84,6 +124,7 @@ export class RuntimeTurnState {
       });
       if (this.activeTurnIdByThreadId.get(event.threadId) === turnId) {
         this.activeTurnIdByThreadId.delete(event.threadId);
+        this.activeTurnRequestIdsByThreadId.delete(event.threadId);
       }
     }
   }

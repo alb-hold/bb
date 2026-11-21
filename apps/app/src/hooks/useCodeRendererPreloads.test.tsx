@@ -32,6 +32,7 @@ import {
 import { holdSplitPreloads, startSplitPreloading } from "@/lib/split-prefetch";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { useCodeRendererPreloads } from "./useCodeRendererPreloads";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const imports = vi.hoisted(() => ({ diff: vi.fn(), source: vi.fn() }));
 
@@ -59,7 +60,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("waits for thread intent, skips replacements, and mounts warmed SDK views without skeletons", async () => {
+it("test-change-reason: upstream holds tracked lazy imports, so the warm-up is settled with settleLazyModules; waits for thread intent, skips replacements, and mounts warmed SDK views without skeletons", async () => {
   vi.useFakeTimers();
   const release = holdSplitPreloads();
   markPluginFrontendBootStarted();
@@ -112,7 +113,7 @@ it("waits for thread intent, skips replacements, and mounts warmed SDK views wit
   expect(imports.source).not.toHaveBeenCalled();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(2000);
-    await vi.dynamicImportSettled();
+    await settleLazyModules();
   });
   expect(imports.diff).not.toHaveBeenCalled();
   expect(imports.source).not.toHaveBeenCalled();
@@ -122,7 +123,7 @@ it("waits for thread intent, skips replacements, and mounts warmed SDK views wit
   await act(async () => {
     row.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(2000);
-    await vi.dynamicImportSettled();
+    await settleLazyModules();
   });
   row.remove();
   expect(imports.diff).toHaveBeenCalledTimes(1);

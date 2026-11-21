@@ -1,18 +1,25 @@
+
+
+import { readFileSync } from "node:fs";
+
+import { resolve } from "node:path";
+
+
 // @vitest-environment jsdom
 
-import { defaultExperiments } from "@bb/domain";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { appQueryClient } from "@/lib/app-query-client";
-import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
 import { ApplicationUrlDialog } from "@/components/ApplicationUrlDialog";
+
 import { resolveApplicationUrlConfirmation } from "@/lib/application-url";
+
 import { LazyMarkdownHtml } from "./lazy-markdown-html";
+
 import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
+
 import {
   LOCAL_FILE_TEST_HOST_ID,
   createMarkdownLocalFileHostTestWrapper,
 } from "@/test/fixtures/markdown-local-file-host";
+
 
 import {
   act,
@@ -22,15 +29,21 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
 import { highlightMarkdownCode } from "./markdown-code-highlight";
+
 import { MarkdownPreview } from "./markdown-preview";
+
 import { MARKDOWN_TABLE_START_OFFSET_VARIABLE } from "./markdown-table-breakout";
+
 import {
   MarkdownLocalFileContextMenuContext,
   MarkdownLocalFileOpenTargetsContext,
   type MarkdownLinkRouting,
 } from "./markdown-link-routing";
+
 
 const workspaceLinkRouting = {
   localFile: {
@@ -46,6 +59,7 @@ const workspaceLinkRouting = {
   },
 } satisfies MarkdownLinkRouting;
 
+
 const inlineCodeLinkRouting = {
   localFile: {
     ...workspaceLinkRouting.localFile,
@@ -53,17 +67,19 @@ const inlineCodeLinkRouting = {
   },
 } satisfies MarkdownLinkRouting;
 
+
 beforeAll(() => LazyMarkdownHtml.preload());
+
 
 afterEach(() => {
   resolveApplicationUrlConfirmation("cancel");
   cleanup();
-  appQueryClient.removeQueries({ queryKey: systemConfigQueryKey() });
   window.localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
+
 
 function mockResizeObserverDeliveries(): {
   notifyResize: () => void;
@@ -120,6 +136,7 @@ function mockResizeObserverDeliveries(): {
   };
 }
 
+
 function requireElement(container: ParentNode, selector: string): Element {
   const element = container.querySelector(selector);
   if (element === null) {
@@ -127,6 +144,7 @@ function requireElement(container: ParentNode, selector: string): Element {
   }
   return element;
 }
+
 
 describe("MarkdownPreview", () => {
   it("keeps the first two code lines at the same minimum height and reserves a separate controls lane", () => {
@@ -1409,49 +1427,11 @@ describe("MarkdownPreview", () => {
   });
 });
 
-describe("application links", () => {
-  it.each([false, true])(
-    "keeps application links inert until enabled and responds to disabling (HTML: %s)",
-    async (allowHtml) => {
-      const openApplicationUrl = vi.fn(async () => {});
-      vi.stubGlobal("bbDesktop", { openApplicationUrl });
-      render(
-        <MarkdownPreview
-          allowHtml={allowHtml}
-          content="[Review note](reflect://note/test) <kbd>Enter</kbd>"
-        />,
-      );
-      expect(screen.queryByRole("link", { name: "Review note" })).toBeNull();
-      fireEvent.click(screen.getByText("Review note"));
-      expect(openApplicationUrl).not.toHaveBeenCalled();
-      act(() => {
-        appQueryClient.setQueryData(systemConfigQueryKey(), {
-          experiments: { ...defaultExperiments, applicationLinks: true },
-        });
-      });
-      fireEvent.click(await screen.findByRole("link", { name: "Review note" }));
-      expect(openApplicationUrl).not.toHaveBeenCalled();
-      resolveApplicationUrlConfirmation("open");
-      await waitFor(() => expect(openApplicationUrl).toHaveBeenCalledOnce());
-      act(() => {
-        appQueryClient.setQueryData(systemConfigQueryKey(), {
-          experiments: defaultExperiments,
-        });
-      });
-      await waitFor(() =>
-        expect(screen.queryByRole("link", { name: "Review note" })).toBeNull(),
-      );
-      fireEvent.click(screen.getByText("Review note"));
-      expect(openApplicationUrl).toHaveBeenCalledOnce();
-    },
-  );
 
+describe("application links", () => {
   it.each([false, true])(
     "preserves explicit links without launching during rendering (HTML: %s)",
     async (allowHtml) => {
-      appQueryClient.setQueryData(systemConfigQueryKey(), {
-        experiments: { ...defaultExperiments, applicationLinks: true },
-      });
       const openApplicationUrl = vi.fn(async () => {});
       vi.stubGlobal("bbDesktop", { openApplicationUrl });
       const url = "reflect://note/Project%20X?tag=a%2Fb";
@@ -1482,9 +1462,6 @@ describe("application links", () => {
   );
 
   it("asks on every click in the browser and cancels without launching", async () => {
-    appQueryClient.setQueryData(systemConfigQueryKey(), {
-      experiments: { ...defaultExperiments, applicationLinks: true },
-    });
     render(
       <>
         <MarkdownPreview content="[Review note](reflect://note/Project%20X)" />

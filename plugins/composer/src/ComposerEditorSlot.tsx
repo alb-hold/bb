@@ -22,6 +22,8 @@ import {
 export type { ComposerEditorLayout } from "./composerHeightAtoms";
 export const COMPOSER_EDITOR_AVAILABLE_HEIGHT_PROPERTY =
   "--composer-editor-available-height";
+
+
 export function blurPromptEditor(editor: Editor | null | undefined): void {
   editor?.view.dom.blur();
   window.getSelection()?.removeAllRanges();

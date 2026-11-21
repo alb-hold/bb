@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";import { arrayMove } from "@dnd-kit/sortable";
 import type { Host } from "@bb/domain";
 import type { ProjectWithThreadsResponse } from "@bb/server-contract";
@@ -163,7 +163,7 @@ function SortableProjectRow({
         className="group -mx-2 flex min-w-0 flex-1 cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-state-hover focus-within:bg-state-hover"
         onClick={(event) => {
           if (targetsResourceAction(event)) return;
-          navigate(detailPath);
+          void navigate(detailPath);
         }}
       >
         <Link
@@ -236,9 +236,11 @@ export function ProjectsSettingsSection() {
   const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
 
   const serverProjects = sidebarNavigationQuery.data?.projects;
-  useEffect(() => {
+  const [orderedProjects, setOrderedProjects] = useState(serverProjects);
+  if (orderedProjects !== serverProjects) {
+    setOrderedProjects(serverProjects);
     setOptimisticOrder(null);
-  }, [serverProjects]);
+  }
   const projects = useMemo(() => {
     if (!serverProjects) return undefined;
     if (!optimisticOrder) return serverProjects;

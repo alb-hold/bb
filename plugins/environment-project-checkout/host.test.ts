@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import {
+  BRANCH_REF_CASES,
+  createBranchRefFixture,
+} from "bb-environment-provider-host/testing/branch-ref-cases";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCheckoutHostEntry } from "./host.js";
 
@@ -210,6 +214,101 @@ describe("checkout host entry", () => {
     await harness.experimental_dispose();
   });
 
+  async function divergeOnReadme(repo: string): Promise<void> {
+    await git(repo, "branch", "release");
+    await git(repo, "switch", "--create", "side");
+    await writeFile(join(repo, "README.md"), "side\n");
+    await git(repo, "commit", "--all", "-m", "side");
+    await git(repo, "switch", "main");
+  }
+
+  async function attachRelease(repo: string, dataDir: string) {
+    const harness = createHarness(dataDir);
+    const inspection = await harness.experimental_call("inspectCheckout", {
+      path: repo,
+    });
+    const result = await harness.experimental_call("attach", {
+      operationId: "refused",
+      path: repo,
+      branch: { kind: "existing", name: "release" },
+    });
+    await harness.experimental_dispose();
+    return { inspection, result };
+  }
+
+  it("refuses to switch branches on a detached HEAD", async () => {
+    const { repo, dataDir } = await createRepository();
+    await git(repo, "branch", "release");
+    await git(repo, "checkout", "--detach", "HEAD");
+    const { inspection, result } = await attachRelease(repo, dataDir);
+    expect(inspection).toMatchObject({ checkout: { kind: "detached" } });
+    expect(result).toEqual({
+      status: "failed",
+      message:
+        "Cannot checkout branch while the workspace is on a detached HEAD",
+    });
+    await expect(
+      git(repo, "symbolic-ref", "--quiet", "HEAD"),
+    ).rejects.toThrow();
+  });
+
+  it("refuses to switch branches while a merge is in progress", async () => {
+    const { repo, dataDir } = await createRepository();
+    await divergeOnReadme(repo);
+    await git(repo, "merge", "--no-ff", "--no-commit", "side");
+    const { inspection, result } = await attachRelease(repo, dataDir);
+    expect(inspection).toMatchObject({
+      checkout: { kind: "branch", branchName: "main" },
+      operation: { kind: "merge", hasConflicts: false },
+    });
+    expect(result).toEqual({
+      status: "failed",
+      message: "Cannot checkout branch while merge is in progress",
+    });
+    expect((await git(repo, "rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe(
+      "main",
+    );
+  });
+
+  it("refuses to switch branches over unresolved merge conflicts", async () => {
+    const { repo, dataDir } = await createRepository();
+    await divergeOnReadme(repo);
+    await writeFile(join(repo, "README.md"), "main\n");
+    await git(repo, "commit", "--all", "-m", "main");
+    await expect(git(repo, "merge", "side")).rejects.toThrow();
+    const { inspection, result } = await attachRelease(repo, dataDir);
+    expect(inspection).toMatchObject({
+      checkout: { kind: "branch", branchName: "main" },
+      operation: { kind: "merge", hasConflicts: true },
+    });
+    expect(result).toEqual({
+      status: "failed",
+      message: "Cannot checkout branch while merge has unresolved conflicts",
+    });
+    expect((await git(repo, "rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe(
+      "main",
+    );
+  });
+
+  it("refuses to switch branches mid-rebase, where git detaches HEAD", async () => {
+    const { repo, dataDir } = await createRepository();
+    await divergeOnReadme(repo);
+    await writeFile(join(repo, "README.md"), "main\n");
+    await git(repo, "commit", "--all", "-m", "main");
+    await expect(git(repo, "rebase", "side")).rejects.toThrow();
+    const { inspection, result } = await attachRelease(repo, dataDir);
+    expect(inspection).toMatchObject({
+      checkout: { kind: "detached" },
+      operation: { kind: "rebase", hasConflicts: true },
+    });
+    expect(result).toEqual({
+      status: "failed",
+      message:
+        "Cannot checkout branch while the workspace is on a detached HEAD",
+    });
+    await expect(git(repo, "status")).resolves.toContain("rebase in progress");
+  });
+
   it("inspects dirty and detached checkouts", async () => {
     const { repo, dataDir } = await createRepository();
     await writeFile(join(repo, "README.md"), "edited\n");
@@ -246,5 +345,40 @@ describe("checkout host entry", () => {
       message: expect.stringContaining("does not exist"),
     });
     await harness.experimental_dispose();
+  });
+});
+
+describe("new branch base resolution", () => {
+  it.each(BRANCH_REF_CASES)("$name", async (testCase) => {
+    const root = await mkdtemp(join(tmpdir(), "bb-checkout-base-ref-"));
+    temporaryRoots.push(root);
+    const repo = join(root, "repo");
+    const dataDir = join(root, "plugin-data");
+    await mkdir(repo, { recursive: true });
+    await mkdir(dataDir, { recursive: true });
+    const fixture = await createBranchRefFixture(repo, testCase);
+    const harness = createHarness(dataDir);
+    const result = await harness.experimental_call("attach", {
+      operationId: "new-from-base",
+      path: repo,
+      branch: {
+        kind: "new",
+        name: "bb/new-thr_1",
+        baseBranch: testCase.requested,
+      },
+    });
+    await harness.experimental_dispose();
+    if (fixture.expectedCommit === null) {
+      expect(result.status).toBe("failed");
+      return;
+    }
+    expect(result).toMatchObject({
+      status: "attached",
+      branchName: "bb/new-thr_1",
+      mergeBaseBranch: testCase.expected.ref,
+    });
+    expect((await git(repo, "rev-parse", "HEAD")).trim()).toBe(
+      fixture.expectedCommit,
+    );
   });
 });

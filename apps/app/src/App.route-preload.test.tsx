@@ -22,12 +22,12 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { AppRoutes, AuthCallbackRoute } from "./App";
 import { startSplitPreloading } from "./lib/split-prefetch";
+import { settleLazyModulesExcept } from "./test/lazy-modules";
 
 const downloads = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
@@ -98,7 +98,7 @@ it("keeps the workspace chunk off routes that do not use it", async () => {
   expect(downloads.workspaceStarted).not.toHaveBeenCalled();
 });
 
-it("starts destination code before the workspace settles and keeps thread code off new-thread startup", async () => {
+it("test-change-reason: the held-import harness makes Testing Library waitFor wait for the never-resolving workspace download, so vi.waitFor is used as upstream does; starts destination code before the workspace settles and keeps thread code off new-thread startup", async () => {
   const providers = vi.spyOn(sdk.providers, "list").mockResolvedValue([]);
   const environments = vi
     .spyOn(sdk.environments, "listProviders")
@@ -129,14 +129,14 @@ it("starts destination code before the workspace settles and keeps thread code o
       <AppRoutes />
     </MemoryRouter>,
   );
-  await waitFor(() => expect(downloads.compose).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(downloads.progressive).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(downloads.compose).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(downloads.progressive).toHaveBeenCalledTimes(1));
   startSplitPreloading();
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 1200));
   });
   expect(downloads.thread).not.toHaveBeenCalled();
-  await waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
   expect(machines).toHaveBeenCalledTimes(1);
   expect(providers).toHaveBeenCalledTimes(1);
   expect(screen.queryByText("Workspace ready")).toBeNull();
@@ -164,8 +164,9 @@ it("starts destination code before the workspace settles and keeps thread code o
   expect(machines).toHaveBeenCalledTimes(1);
 
   fireEvent.click(screen.getByRole("button", { name: "Open personal thread" }));
-  await waitFor(() => expect(downloads.thread).toHaveBeenCalledTimes(1));
-  await waitFor(() =>
+  await vi.waitFor(() => expect(downloads.thread).toHaveBeenCalledTimes(1));
+  await settleLazyModulesExcept("./views/SplitWorkspaceRoute");
+  await vi.waitFor(() =>
     expect(downloads.prefetch).toHaveBeenCalledWith("thr_example"),
   );
 
@@ -176,7 +177,7 @@ it("starts destination code before the workspace settles and keeps thread code o
   });
 });
 
-it("warms a thread reached through browser history without row intent", async () => {
+it("test-change-reason: vi.waitFor instead of Testing Library waitFor, as upstream, and the held thread-open-prefetch import is settled; warms a thread reached through browser history without row intent", async () => {
   downloads.prefetch.mockClear();
   function Back() {
     const navigate = useNavigate();
@@ -193,7 +194,8 @@ it("warms a thread reached through browser history without row intent", async ()
   );
   expect(downloads.prefetch).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Back to thread" }));
-  await waitFor(() =>
+  await settleLazyModulesExcept("./views/SplitWorkspaceRoute");
+  await vi.waitFor(() =>
     expect(downloads.prefetch).toHaveBeenCalledWith("history"),
   );
 });

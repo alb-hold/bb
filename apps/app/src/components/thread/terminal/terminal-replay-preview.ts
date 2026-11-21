@@ -5,6 +5,7 @@ import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import { canRevealTerminalSurface } from "./terminal-grid-presentation";
 import { flushTerminalReplay } from "./terminal-replay-flush";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
 
@@ -392,8 +393,10 @@ export function mountTerminalReplayPreview({
 
   let disposed = false;
   const renderSubscription = terminal.onRender(matchCellWidth);
-  const resizeObserver = new ResizeObserver(updateVisibility);
-  resizeObserver.observe(container);
+  const unobserveResize = observeSharedResize(container, {
+    read: () => undefined,
+    write: updateVisibility,
+  });
   window.addEventListener("resize", updateVisibility);
   function updateVisibility() {
     if (held || !readyToPaint()) {
@@ -613,7 +616,7 @@ export function mountTerminalReplayPreview({
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("resize", updateVisibility);
-      resizeObserver.disconnect();
+    unobserveResize();
       renderSubscription.dispose();
       window.removeEventListener("focus", refreshVisibility);
       window.removeEventListener("blur", refreshVisibility);

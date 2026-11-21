@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { performance as nodePerformance } from "node:perf_hooks";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const gate = "terminal-runtime-preload";
 
@@ -20,7 +21,7 @@ afterEach(async () => {
 it("loads a usable terminal on a deep link without a preload", async () => {
   const { importTerminalModules } = await import("./terminal-modules");
   const [{ Terminal }, { FitAddon }, { Unicode11Addon }] =
-    await importTerminalModules();
+    await settleLazyModules(importTerminalModules());
   const terminal = new Terminal({
     cols: 71,
     rows: 29,
@@ -46,7 +47,7 @@ it("retains the first preload timings when later panel consumers preload again",
   const { importTerminalModules, preloadTerminalModules } =
     await import("./terminal-modules");
   preloadTerminalModules();
-  await importTerminalModules();
+  await settleLazyModules(importTerminalModules());
   await Promise.resolve();
   const start = performance.getEntriesByName(`${gate}-start`)[0]?.startTime;
   const end = performance.getEntriesByName(`${gate}-end`)[0]?.startTime;
@@ -54,7 +55,7 @@ it("retains the first preload timings when later panel consumers preload again",
   expect(end).toBeTypeOf("number");
   await new Promise((resolve) => setTimeout(resolve, 1));
   preloadTerminalModules();
-  await importTerminalModules();
+  await settleLazyModules(importTerminalModules());
   await Promise.resolve();
   expect(performance.getEntriesByName(`${gate}-start`)[0]?.startTime).toBe(
     start,

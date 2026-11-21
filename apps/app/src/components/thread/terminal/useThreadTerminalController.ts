@@ -345,29 +345,21 @@ export function useThreadTerminalController({
     activeSession?.status === "disconnected" &&
     activeSession.id === retainedTerminalViewId;
 
-  useEffect(() => {
-    if (!shouldMountTerminalView) {
-      setRetainedTerminalViewId(null);
-      return;
-    }
-    if (activeSession?.status === "running") {
-      setRetainedTerminalViewId(activeSession.id);
-      return;
-    }
-    if (
-      retainedTerminalViewId !== null &&
-      activeTerminalId !== retainedTerminalViewId
-    ) {
-      setRetainedTerminalViewId(null);
-      setRetainedExitedSession(null);
-    }
-  }, [
-    activeSession,
-    activeSession?.status,
-    activeTerminalId,
-    retainedTerminalViewId,
-    shouldMountTerminalView,
-  ]);
+  if (!shouldMountTerminalView && retainedTerminalViewId !== null) {
+    setRetainedTerminalViewId(null);
+  } else if (
+    shouldMountTerminalView &&
+    activeSession?.status === "running" &&
+    retainedTerminalViewId !== activeSession.id
+  ) {
+    setRetainedTerminalViewId(activeSession.id);
+  } else if (
+    retainedTerminalViewId !== null &&
+    activeTerminalId !== retainedTerminalViewId
+  ) {
+    setRetainedTerminalViewId(null);
+    setRetainedExitedSession(null);
+  }
 
   useEffect(() => {
     if (!isPanelOpen || terminalsQuery.isLoading || terminalsQuery.error) {
@@ -803,8 +795,7 @@ export function useThreadTerminalController({
       );
     },
     [
-      activeSession?.id,
-      activeSession?.threadId,
+      activeSession,
       clearTerminalProgress,
       queueTerminalProgressUpdate,
     ],

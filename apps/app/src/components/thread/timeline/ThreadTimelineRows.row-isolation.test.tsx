@@ -14,6 +14,7 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const renderedMessageTexts = vi.hoisted(() => [] as string[]);
 
@@ -113,8 +114,8 @@ describe("ThreadTimelineRows row isolation", () => {
     { role: "user" as const, timeFollowsMenu: false },
     { role: "assistant" as const, timeFollowsMenu: true },
   ])(
-    "shows the $role message time in its action row without opening the menu",
-    ({ role, timeFollowsMenu }) => {
+    "shows the $role message time in its action row without opening the menu (test-change-reason: upstream 0.50.1 holds lazy imports until a test settles them, and the inline message time is a split chunk)",
+    async ({ role, timeFollowsMenu }) => {
       const startedAt = 1_700_000_000_123;
       render(
         <MemoryRouter>
@@ -136,6 +137,7 @@ describe("ThreadTimelineRows row isolation", () => {
           </QueryClientProvider>
         </MemoryRouter>,
       );
+      await settleLazyModules();
       const time = screen.getByText(
         formatShortMessageTime(startedAt, new Date()),
       );

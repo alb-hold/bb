@@ -8,6 +8,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineRow } from "@bb/server-contract";
@@ -98,6 +99,7 @@ function serverProducedInterruptionRows(count: number): TimelineRow[] {
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: true,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       isLatestPage: true,
       summarizeShellCommands: true,
@@ -330,8 +332,10 @@ describe("system summary overflow", () => {
     systemRow({ systemKind: "reconnect", title: summary, detail: null }),
     systemRow({ systemKind: "debug", title: summary, detail: null }),
   ])("expands an overflowing $systemKind / $operationKind summary", (row) => {
+    const deliverResizes = stubResizeObserverDeliveries();
     measureSummary(60);
     renderRow(row);
+    deliverResizes();
     expect(preview()?.classList.contains("line-clamp-2")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     expect(preview()?.classList.contains("line-clamp-2")).toBe(false);

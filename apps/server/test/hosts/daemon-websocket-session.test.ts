@@ -1,8 +1,10 @@
 import { eq } from "drizzle-orm";
-import { buildHostDaemonWebSocketProtocols } from "@bb/host-daemon-contract";
+import {
+  buildHostDaemonWebSocketProtocols,
+  HostDaemonWsSequencer,
+} from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import {
   createTerminalSession,
   getRetainedTerminalOutput,
@@ -24,6 +26,13 @@ import {
 
 let server: RunningTestServer | null = null;
 const sockets = new Set<WebSocket>();
+const sequencers = new WeakMap<WebSocket, HostDaemonWsSequencer>();
+
+function sendDaemonMessage(socket: WebSocket, message: unknown): void {
+  const sequencer = sequencers.get(socket);
+  if (!sequencer) throw new Error("daemon websocket sequencer is missing");
+  socket.send(sequencer.encode(JSON.stringify(message)));
+}
 
 async function connectDaemon(
   sessionId: string,
@@ -38,6 +47,7 @@ async function connectDaemon(
     headers: { authorization: `Bearer ${createTestDaemonHostKey({ hostId })}` },
   });
   sockets.add(socket);
+  sequencers.set(socket, new HostDaemonWsSequencer());
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
@@ -74,15 +84,12 @@ afterEach(async () => {
 });
 
 describe("daemon websocket session authorization", () => {
-  it("applies the server protocol handler on the daemon socket", async () => {
+  it("negotiates the daemon protocol on the websocket", async () => {
     server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
-    const socket = await connectDaemon(session.id, host.id, [
-      ...buildHostDaemonWebSocketProtocols(),
-      TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
-    ]);
+    const socket = await connectDaemon(session.id, host.id);
 
-    expect(socket.protocol).toBe(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL);
+    expect(socket.protocol).toBe(buildHostDaemonWebSocketProtocols()[0]);
   });
 
   it("a real daemon offer negotiates the daemon protocol", async () => {
@@ -168,7 +175,7 @@ describe("daemon websocket session authorization", () => {
         .where(eq(hostDaemonSessions.id, session.id))
         .run();
       const closed = waitForClose(socket);
-      socket.send(JSON.stringify(message));
+      sendDaemonMessage(socket, message);
       await expect(closed).resolves.toMatchObject({
         code: 1008,
         reason: "inactive-session",
@@ -193,7 +200,7 @@ describe("daemon websocket session authorization", () => {
     const info = vi.spyOn(server.deps.logger, "info");
 
     const closed = waitForClose(socket);
-    socket.send(JSON.stringify({ type: "daemon.restarting" }));
+    sendDaemonMessage(socket, { type: "daemon.restarting" });
 
     await expect(closed).resolves.toEqual({
       code: 1008,
@@ -235,16 +242,14 @@ describe("daemon websocket session authorization", () => {
     });
 
     const closed = waitForClose(socket);
-    socket.send(
-      JSON.stringify({
-        type: "terminal.output",
-        terminalId: "terminal-output-after-close",
-        chunk: {
-          seq: 0,
-          dataBase64: Buffer.from("must not be retained").toString("base64"),
-        },
-      }),
-    );
+    sendDaemonMessage(socket, {
+      type: "terminal.output",
+      terminalId: "terminal-output-after-close",
+      chunk: {
+        seq: 0,
+        dataBase64: Buffer.from("must not be retained").toString("base64"),
+      },
+    });
     const outcome = await Promise.race([
       closed.then(() => "closed" as const),
       activityRecorded.then(() => "activity" as const),
@@ -276,7 +281,7 @@ describe("daemon websocket session authorization", () => {
     const recordActivity = vi.spyOn(server.hub, "recordDaemonActivity");
 
     const closed = waitForClose(oldSocket);
-    oldSocket.send(JSON.stringify({ type: "daemon.restarting" }));
+    sendDaemonMessage(oldSocket, { type: "daemon.restarting" });
 
     await expect(closed).resolves.toEqual({
       code: 1008,
@@ -363,24 +368,20 @@ describe("daemon websocket session authorization", () => {
     );
 
     try {
-      oldSocket.send(
-        JSON.stringify({
-          type: "terminal.replay",
-          requestId: "replay-before-replacement",
-          terminalId: terminal.id,
-          replayStartSeq: 0,
-          nextSeq: chunks.length,
-          chunks,
-        }),
-      );
+      sendDaemonMessage(oldSocket, {
+        type: "terminal.replay",
+        requestId: "replay-before-replacement",
+        terminalId: terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      });
       await started;
-      oldSocket.send(
-        JSON.stringify({
-          type: "environment-change",
-          environmentId: environment.id,
-          change: "work-status-changed",
-        }),
-      );
+      sendDaemonMessage(oldSocket, {
+        type: "environment-change",
+        environmentId: environment.id,
+        change: "work-status-changed",
+      });
       await secondAccepted;
       expect(
         getSessionById(server.db, { sessionId: session.id }),
@@ -440,7 +441,7 @@ describe("daemon websocket session authorization", () => {
       .run();
 
     const closed = waitForClose(socket);
-    socket.send(JSON.stringify({ type: "daemon.restarting" }));
+    sendDaemonMessage(socket, { type: "daemon.restarting" });
 
     await expect(closed).resolves.toEqual({
       code: 1008,
@@ -546,24 +547,20 @@ describe("daemon websocket session authorization", () => {
       socket.once("close", () => resolve()),
     );
     try {
-      socket.send(
-        JSON.stringify({
-          type: "terminal.replay",
-          requestId: "queued-replay-before-close",
-          terminalId: terminal.id,
-          replayStartSeq: 0,
-          nextSeq: chunks.length,
-          chunks,
-        }),
-      );
+      sendDaemonMessage(socket, {
+        type: "terminal.replay",
+        requestId: "queued-replay-before-close",
+        terminalId: terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      });
       await started;
-      socket.send(
-        JSON.stringify({
-          type: "environment-change",
-          environmentId: environment.id,
-          change: "work-status-changed",
-        }),
-      );
+      sendDaemonMessage(socket, {
+        type: "environment-change",
+        environmentId: environment.id,
+        change: "work-status-changed",
+      });
       await secondFrameAccepted;
       socket.close();
       await closed;

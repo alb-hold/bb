@@ -49,8 +49,8 @@ function threadOnMachine(
       workflows: 0,
       backgroundAgents: 0,
       backgroundCommands: 0,
-      planMode: 0,
       goals: 0,
+      planMode: 0,
     },
     indicator: "none",
     indicatorLabel: null,
@@ -313,7 +313,7 @@ function selectMachine(
 }
 
 describe("provider usage footer disclosure", () => {
-  it("aggregates every machine", async () => {
+  it("aggregates every machine (test-change-reason: provider icons follow the fork’s account display order)", async () => {
     const { item, slot, fetchMock } = await setupUsageDisclosure();
     expect(slot.getByRole("tabpanel").parentElement!.className).toContain(
       "max-md:pointer-coarse:h-48",
@@ -353,6 +353,15 @@ describe("provider usage footer disclosure", () => {
       "Claude Code Claude Secondary",
       "Codex codex@example.com",
     ]);
+    expect(
+      slot
+        .getAllByRole("region")
+        .map((row) =>
+          row
+            .querySelector('[data-provider-kind="agent"]')
+            ?.getAttribute("data-provider-id"),
+        ),
+    ).toEqual(["claude-code", "claude-code", "codex"]);
     await waitFor(() =>
       expect(fetchMock.mock.calls).toEqual(
         expect.arrayContaining([

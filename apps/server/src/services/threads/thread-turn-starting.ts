@@ -14,7 +14,7 @@ type TurnStartingDeps = Pick<
 >;
 
 export type QueueInputForStartingTurnResult =
-  | { kind: "dispatched" }
+  | { kind: "dispatched"; messageSequence: null }
   | { kind: "queued"; entry: ThreadQueuedMessage }
   | { kind: "retry"; thread: Thread | null };
 
@@ -27,7 +27,8 @@ export function queueInputForStartingTurn(
     expectedParentThreadId?: string | null;
   },
 ): QueueInputForStartingTurnResult {
-  if (args.input.input.length === 0) return { kind: "dispatched" };
+  if (args.input.input.length === 0)
+    return { kind: "dispatched", messageSequence: null };
   const notifications = new NotificationBuffer();
   const outcome: QueueInputForStartingTurnResult = deps.db.transaction(
     (tx) => {
@@ -58,13 +59,14 @@ export function queueInputForStartingTurn(
         {
           thread,
           message: args.input,
+          placement: "back",
           waitingOn: { kind: "turn-starting" },
           sendAt: null,
           claimed: args.claimed,
         },
       );
       return entry === null
-        ? { kind: "dispatched" }
+        ? { kind: "dispatched", messageSequence: null }
         : { kind: "queued", entry };
     },
     { behavior: "immediate" },

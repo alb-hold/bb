@@ -17,6 +17,7 @@ import type {
   ComposerBoxProps,
   PromptBoxSubmissionConfig,
 } from "./ComposerBox";
+import { createComposerDraftStore } from "@/components/plugin/plugin-composer-host";
 
 type Handoff = NonNullable<
   ExperimentalComposerInput["experimental_startupHandoff"]
@@ -69,19 +70,27 @@ function setup(initial = "", submission?: PromptBoxSubmissionConfig) {
   const submitted = vi.fn();
   const onChange = vi.fn();
   function Composer({ downloaded }: { downloaded: boolean }) {
-    const [value, setValue] = useState(initial);
+    const [draft] = useState(() => {
+      const store = createComposerDraftStore({
+        text: initial,
+        mentions: [],
+        attachments: [],
+      });
+      return {
+        ...store,
+        setDraft(next: ReturnType<typeof store.getCurrent>) {
+          store.setDraft(next);
+          onChange(next.text, next.mentions);
+        },
+      };
+    });
     const props: ComposerBoxProps = {
       submission,
       surface: "new-thread",
-      value,
-      mentionRanges: [],
-      onChange: (next, mentions) => {
-        onChange(next, mentions);
-        setValue(next);
-      },
+      draft,
       onSubmit: () => {
-        submitted(value);
-        setValue("");
+        submitted(draft.getCurrent().text);
+        draft.setDraft({ text: "", mentions: [], attachments: [] });
       },
       placeholder: "Ask anything.",
       typeahead: {

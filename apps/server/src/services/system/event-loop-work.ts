@@ -1,17 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import { roundDurationMs } from "@bb/process-utils";
+
 import { parseRequestAppSurface } from "@bb/config/app-surface";
 import type { ThreadListClientKind, ThreadListRequestShape } from "@bb/db";
 import type { ThreadListQuery } from "@bb/server-contract";
 import type { PluginService } from "../plugins/plugin-service.js";
 
+
+type EventLoopWorkLabel = string | (() => string);
+
 interface EventLoopWorkFrame {
-  blocksEventLoop: boolean;
   id: number;
-  label: string;
-  parentId: number | null;
-  startedAt: number;
+  label: EventLoopWorkLabel;
+  parent: EventLoopWorkFrame | null;
+  segment: boolean;
+  dominantChild: CompletedEventLoopWork | null;
   threadListContext: ThreadListRequestContext | null;
   threadListQuery: ThreadListQuery | null;
   threadListLimit: number | undefined;
@@ -26,10 +30,30 @@ interface ThreadListRequestContext {
 type ThreadListPluginCallerResolver = Pick<PluginService, "resolveRpcCaller">;
 
 interface CompletedEventLoopWork {
-  blocksEventLoop: boolean;
+  callerDescription: string | null;
+  contextSwitches: MainThreadContextSwitches | null;
+  cpuMs: number;
+  dominantChild: CompletedEventLoopWork | null;
   durationMs: number;
-  cpuMs: number | null;
-  label: string;
+  label: EventLoopWorkLabel;
+}
+
+interface MainThreadContextSwitches {
+  involuntary: number;
+  voluntary: number;
+}
+
+export interface MainThreadCost {
+  cpuMs: number;
+  involuntaryContextSwitches: number;
+  voluntaryContextSwitches: number;
+  wallMs: number;
+}
+
+interface MainThreadCostStart {
+  cpu: NodeJS.CpuUsage;
+  startedAt: number;
+  usage: NodeJS.ResourceUsage;
 }
 
 interface EventLoopWorkSnapshot {
@@ -37,70 +61,136 @@ interface EventLoopWorkSnapshot {
   lastCompletedWork: string | null;
   lastCompletedWorkWallMs: number | null;
   longestSynchronousWork: string | null;
+  longestSynchronousWorkCaller: string | null;
   longestSynchronousWorkWallMs: number | null;
   longestSynchronousWorkCpuMs: number | null;
+  longestSynchronousWorkVoluntaryContextSwitches: number | null;
+  longestSynchronousWorkInvoluntaryContextSwitches: number | null;
   synchronousWorkCpuMs: number;
   rawLongestSynchronousWorkWallMs: number | null;
   rawLongestSynchronousWorkCpuMs: number | null;
 }
 
-const activeFrames = new Map<number, EventLoopWorkFrame>();
-const currentFrameId = new AsyncLocalStorage<number>();
-const threadListRequestFields = new WeakMap<
-  ThreadListRequestContext,
-  { clientKind: ThreadListClientKind; requestShape: ThreadListRequestShape }
->();
-const completedInWindow: CompletedEventLoopWork[] = [];
-let nextFrameId = 1;
-let lastCompleted: CompletedEventLoopWork | null = null;
+const DOMINANT_CHILD_SHARE = 0.5;
 
-function enterEventLoopWork(label: string, blocksEventLoop: boolean): number {
-  const id = nextFrameId;
-  nextFrameId += 1;
-  activeFrames.set(id, {
-    blocksEventLoop,
-    id,
+const activeFrames = new Map<number, EventLoopWorkFrame>();
+const currentAsyncFrame = new AsyncLocalStorage<EventLoopWorkFrame>();
+let currentSyncFrame: EventLoopWorkFrame | null = null;
+let longestInWindow: CompletedEventLoopWork | null = null;
+let synchronousWorkCpuMs = 0;
+const threadListRequestFields = new WeakMap<ThreadListRequestContext, { clientKind: ThreadListClientKind; requestShape: ThreadListRequestShape }>();
+let nextFrameId = 1;
+let lastCompleted: { label: EventLoopWorkLabel; durationMs: number } | null =
+  null;
+
+function currentFrame(): EventLoopWorkFrame | null {
+  return currentSyncFrame ?? currentAsyncFrame.getStore() ?? null;
+}
+
+function currentAsyncParentFrame(): EventLoopWorkFrame | null {
+  if (currentSyncFrame === null || currentSyncFrame.segment) {
+    return currentAsyncFrame.getStore() ?? null;
+  }
+  return currentSyncFrame;
+}
+
+function describeLabel(label: EventLoopWorkLabel): string {
+  return typeof label === "string" ? label : label();
+}
+
+function createFrame(
+  label: EventLoopWorkLabel,
+  parent: EventLoopWorkFrame | null,
+  segment: boolean,
+): EventLoopWorkFrame {
+  const frame: EventLoopWorkFrame = {
+    dominantChild: null,
+    id: nextFrameId,
     label,
-    parentId: currentFrameId.getStore() ?? null,
-    startedAt: performance.now(),
+    parent,
+    segment,
     threadListContext: null,
     threadListQuery: null,
     threadListLimit: undefined,
     threadListOffset: undefined,
     threadListPluginCallerResolver: null,
-  });
-  return id;
+  };
+  nextFrameId += 1;
+  return frame;
 }
 
-function leaveEventLoopWork(id: number, cpuMs: number | null): void {
-  const frame = activeFrames.get(id);
-  activeFrames.delete(id);
-  if (frame === undefined) {
+function completeFrame(frame: EventLoopWorkFrame, durationMs: number): void {
+  frame.parent = null;
+  if (!frame.segment) {
+    lastCompleted = { label: frame.label, durationMs };
+  }
+}
+
+function recordSynchronousWork(
+  completed: CompletedEventLoopWork,
+  caller: EventLoopWorkFrame | null,
+): void {
+  if (caller !== null && caller === currentSyncFrame) {
+    if (
+      caller.dominantChild === null ||
+      completed.durationMs > caller.dominantChild.durationMs
+    ) {
+      caller.dominantChild = completed;
+    }
     return;
   }
-  const completed: CompletedEventLoopWork = {
-    blocksEventLoop: frame.blocksEventLoop,
-    cpuMs,
-    durationMs: performance.now() - frame.startedAt,
-    label: frame.label,
-  };
-  lastCompleted = completed;
-  completedInWindow.push(completed);
+  synchronousWorkCpuMs += completed.cpuMs;
+  if (
+    longestInWindow === null ||
+    completed.durationMs > longestInWindow.durationMs
+  ) {
+    completed.callerDescription = formatCaller(caller);
+    longestInWindow = completed;
+  }
+}
+
+function dominantChildOf(
+  frame: EventLoopWorkFrame,
+  durationMs: number,
+): CompletedEventLoopWork | null {
+  const child = frame.dominantChild;
+  frame.dominantChild = null;
+  return child !== null && child.durationMs >= durationMs * DOMINANT_CHILD_SHARE
+    ? child
+    : null;
+}
+
+function formatWorkChain(work: CompletedEventLoopWork): string {
+  const labels: string[] = [];
+  let current: CompletedEventLoopWork | null = work;
+  while (current !== null) {
+    labels.push(describeLabel(current.label));
+    current = current.dominantChild;
+  }
+  return labels.join(" > ");
+}
+
+function formatCaller(caller: EventLoopWorkFrame | null): string | null {
+  const labels: string[] = [];
+  for (let frame = caller; frame !== null; frame = frame.parent) {
+    labels.push(describeLabel(frame.label));
+  }
+  return labels.length === 0 ? null : labels.reverse().join(" > ");
 }
 
 function formatLineage(root: EventLoopWorkFrame): string {
-  const labels: string[] = [root.label];
-  let parentId = root.id;
+  const labels: string[] = [describeLabel(root.label)];
+  let parent = root;
   for (;;) {
     const children: EventLoopWorkFrame[] = [...activeFrames.values()]
-      .filter((frame) => frame.parentId === parentId)
+      .filter((frame) => frame.parent === parent)
       .sort((left, right) => left.id - right.id);
     const child = children[0];
     if (child === undefined) {
       break;
     }
-    labels.push(child.label);
-    parentId = child.id;
+    labels.push(describeLabel(child.label));
+    parent = child;
   }
   return labels.join(" > ");
 }
@@ -111,59 +201,48 @@ function formatActiveWork(): string | null {
   }
   const roots = [...activeFrames.values()]
     .filter(
-      (frame) => frame.parentId === null || !activeFrames.has(frame.parentId),
+      (frame) => frame.parent === null || !activeFrames.has(frame.parent.id),
     )
     .sort((left, right) => left.id - right.id);
   return roots.map((root) => formatLineage(root)).join(" | ");
 }
 
-function selectLongestSynchronousWork(): CompletedEventLoopWork | null {
-  let longest: CompletedEventLoopWork | null = null;
-  for (const completed of completedInWindow) {
-    if (!completed.blocksEventLoop) {
-      continue;
-    }
-    if (longest === null || completed.durationMs > longest.durationMs) {
-      longest = completed;
-    }
-  }
-  return longest;
+function roundNullableDurationMs(durationMs: number | null): number | null {
+  return durationMs === null ? null : roundDurationMs(durationMs);
 }
 
 function getEventLoopWorkSnapshot(): EventLoopWorkSnapshot {
-  const longest = selectLongestSynchronousWork();
+  const longest = longestInWindow;
   return {
-    inFlightWorkAtObservation: formatActiveWork(),
-    lastCompletedWork: lastCompleted?.label ?? null,
-    lastCompletedWorkWallMs:
-      lastCompleted === null ? null : roundDurationMs(lastCompleted.durationMs),
-    longestSynchronousWork: longest?.label ?? null,
-    longestSynchronousWorkCpuMs:
-      longest === null || longest.cpuMs === null
-        ? null
-        : roundDurationMs(longest.cpuMs),
-    synchronousWorkCpuMs: roundDurationMs(
-      completedInWindow.reduce(
-        (total, completed) =>
-          total + (completed.blocksEventLoop ? (completed.cpuMs ?? 0) : 0),
-        0,
-      ),
-    ),
-    longestSynchronousWorkWallMs:
-      longest === null ? null : roundDurationMs(longest.durationMs),
+    synchronousWorkCpuMs: roundDurationMs(synchronousWorkCpuMs),
     rawLongestSynchronousWorkWallMs: longest?.durationMs ?? null,
     rawLongestSynchronousWorkCpuMs: longest?.cpuMs ?? null,
+    inFlightWorkAtObservation: formatActiveWork(),
+    lastCompletedWork:
+      lastCompleted === null ? null : describeLabel(lastCompleted.label),
+    lastCompletedWorkWallMs:
+      lastCompleted === null ? null : roundDurationMs(lastCompleted.durationMs),
+    longestSynchronousWork: longest === null ? null : formatWorkChain(longest),
+    longestSynchronousWorkCaller: longest?.callerDescription ?? null,
+    longestSynchronousWorkCpuMs: roundNullableDurationMs(
+      longest?.cpuMs ?? null,
+    ),
+    longestSynchronousWorkWallMs: roundNullableDurationMs(
+      longest?.durationMs ?? null,
+    ),
+    longestSynchronousWorkVoluntaryContextSwitches:
+      longest?.contextSwitches?.voluntary ?? null,
+    longestSynchronousWorkInvoluntaryContextSwitches:
+      longest?.contextSwitches?.involuntary ?? null,
   };
 }
 
 export function getCurrentEventLoopWorkLabel(): string | null {
   const labels: string[] = [];
-  const currentId = currentFrameId.getStore();
-  let frame = currentId === undefined ? undefined : activeFrames.get(currentId);
-  while (frame !== undefined) {
-    labels.unshift(frame.label);
-    frame =
-      frame.parentId === null ? undefined : activeFrames.get(frame.parentId);
+  let frame = currentFrame();
+  while (frame !== null) {
+    labels.unshift(describeLabel(frame.label));
+    frame = frame.parent;
   }
   return labels.length === 0 ? null : labels.join(" > ");
 }
@@ -175,10 +254,8 @@ export function setCurrentThreadListSlowQueryContext(
   offset: number | undefined,
   pluginCallerResolver: ThreadListPluginCallerResolver,
 ): void {
-  const currentId = currentFrameId.getStore();
-  const frame =
-    currentId === undefined ? undefined : activeFrames.get(currentId);
-  if (frame === undefined) return;
+  let frame = currentFrame();
+  if (frame === null) return;
   frame.threadListContext = context;
   frame.threadListQuery = query;
   frame.threadListLimit = limit;
@@ -189,10 +266,8 @@ export function setCurrentThreadListSlowQueryContext(
 }
 
 export function clearCurrentThreadListSlowQueryContext(): void {
-  const currentId = currentFrameId.getStore();
-  const frame =
-    currentId === undefined ? undefined : activeFrames.get(currentId);
-  if (frame === undefined) return;
+  let frame = currentFrame();
+  if (frame === null) return;
   frame.threadListContext = null;
   frame.threadListQuery = null;
   frame.threadListLimit = undefined;
@@ -203,9 +278,8 @@ export function clearCurrentThreadListSlowQueryContext(): void {
 export function getCurrentThreadListSlowQueryFields():
   | { clientKind: ThreadListClientKind; requestShape: ThreadListRequestShape }
   | undefined {
-  const currentId = currentFrameId.getStore();
-  let frame = currentId === undefined ? undefined : activeFrames.get(currentId);
-  while (frame !== undefined) {
+  let frame = currentFrame();
+  while (frame !== null) {
     const context = frame.threadListContext;
     const query = frame.threadListQuery;
     if (context !== null && query !== null) {
@@ -256,8 +330,7 @@ export function getCurrentThreadListSlowQueryFields():
         },
       };
     }
-    frame =
-      frame.parentId === null ? undefined : activeFrames.get(frame.parentId);
+    frame = frame.parent;
   }
   return undefined;
 }
@@ -272,40 +345,123 @@ export function getThreadListSlowApiRequestFields(
 
 export function takeEventLoopWorkWindowSnapshot(): EventLoopWorkSnapshot {
   const snapshot = getEventLoopWorkSnapshot();
-  completedInWindow.length = 0;
+  longestInWindow = null;
+  synchronousWorkCpuMs = 0;
   return snapshot;
 }
 
-export function runEventLoopWorkSync<T>(label: string, work: () => T): T {
-  const id = enterEventLoopWork(label, true);
-  const cpuStart = process.threadCpuUsage();
-  return currentFrameId.run(id, () => {
-    try {
-      return work();
-    } finally {
-      const cpu = process.threadCpuUsage(cpuStart);
-      leaveEventLoopWork(id, (cpu.user + cpu.system) / 1_000);
-    }
-  });
+export function startMainThreadCost(): MainThreadCostStart {
+  return {
+    cpu: process.threadCpuUsage(),
+    startedAt: performance.now(),
+    usage: process.resourceUsage(),
+  };
+}
+
+export function finishMainThreadCost(
+  start: MainThreadCostStart,
+): MainThreadCost {
+  const wallMs = performance.now() - start.startedAt;
+  const cpu = process.threadCpuUsage(start.cpu);
+  const usage = process.resourceUsage();
+  return {
+    cpuMs: (cpu.user + cpu.system) / 1_000,
+    involuntaryContextSwitches:
+      usage.involuntaryContextSwitches - start.usage.involuntaryContextSwitches,
+    voluntaryContextSwitches:
+      usage.voluntaryContextSwitches - start.usage.voluntaryContextSwitches,
+    wallMs,
+  };
+}
+
+function runSynchronousWorkFrame<T>(
+  label: EventLoopWorkLabel,
+  caller: EventLoopWorkFrame | null,
+  segment: boolean,
+  work: () => T,
+): T {
+  const frame = createFrame(label, caller, segment);
+  const outerSyncFrame = currentSyncFrame;
+  const cost = startMainThreadCost();
+  currentSyncFrame = frame;
+  try {
+    return work();
+  } finally {
+    currentSyncFrame = outerSyncFrame;
+    const measured = finishMainThreadCost(cost);
+    const durationMs = measured.wallMs;
+    completeFrame(frame, durationMs);
+    recordSynchronousWork(
+      {
+        callerDescription: null,
+        contextSwitches: {
+          involuntary: measured.involuntaryContextSwitches,
+          voluntary: measured.voluntaryContextSwitches,
+        },
+        cpuMs: measured.cpuMs,
+        dominantChild: dominantChildOf(frame, durationMs),
+        durationMs,
+        label,
+      },
+      caller,
+    );
+  }
+}
+
+export function runEventLoopWorkSync<T>(
+  label: EventLoopWorkLabel,
+  work: () => T,
+): T {
+  return runSynchronousWorkFrame(label, currentFrame(), false, work);
+}
+
+export function recordCompletedEventLoopWork(
+  label: EventLoopWorkLabel,
+  durationMs: number,
+  cpuMs: number,
+): void {
+  const caller = currentFrame();
+  recordSynchronousWork(
+    {
+      callerDescription: null,
+      contextSwitches: null,
+      cpuMs,
+      dominantChild: null,
+      durationMs,
+      label,
+    },
+    caller,
+  );
 }
 
 export async function runEventLoopWork<T>(
   label: string,
   work: () => Promise<T> | T,
 ): Promise<T> {
-  const id = enterEventLoopWork(label, false);
-  return currentFrameId.run(id, async () => {
+  const frame = createFrame(label, currentAsyncParentFrame(), false);
+  const startedAt = performance.now();
+  activeFrames.set(frame.id, frame);
+  const segmentCaller = currentSyncFrame ?? frame.parent;
+  return currentAsyncFrame.run(frame, async () => {
     try {
-      return await work();
+      return await runSynchronousWorkFrame(
+        `${label} (until first await)`,
+        segmentCaller,
+        true,
+        work,
+      );
     } finally {
-      leaveEventLoopWork(id, null);
+      activeFrames.delete(frame.id);
+      completeFrame(frame, performance.now() - startedAt);
     }
   });
 }
 
 export function resetEventLoopWorkForTests(): void {
   activeFrames.clear();
-  completedInWindow.length = 0;
+  currentSyncFrame = null;
+  longestInWindow = null;
+  synchronousWorkCpuMs = 0;
   lastCompleted = null;
   nextFrameId = 1;
 }

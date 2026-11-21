@@ -1,5 +1,5 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -52,6 +52,66 @@ function raw(number: number) {
   };
 }
 afterEach(() => vi.unstubAllEnvs());
+
+async function installRateLimitedGh() {
+  const binPath = await makeTempDir("bb-rate-limited-gh-");
+  const logPath = join(binPath, "calls.log");
+  await writeFile(logPath, "");
+  await writeFile(
+    join(binPath, process.platform === "win32" ? "gh.cmd" : "gh"),
+    process.platform === "win32"
+      ? '@echo off\r\n>>"%TEST_GH_LOG%" echo called\r\nif not "%~1"=="api" exit /b 2\r\nif not "%~2"=="graphql" exit /b 2\r\n>&2 echo API rate limit exceeded\r\nexit /b 1\r\n'
+      : '#!/bin/sh\nprintf "called\\n" >> "$TEST_GH_LOG"\n[ "$1" = api ] && [ "$2" = graphql ] || exit 2\nprintf "API rate limit exceeded\\n" >&2\nexit 1\n',
+    { mode: 0o755 },
+  );
+  vi.stubEnv("GH_CONFIG_DIR", binPath);
+  vi.stubEnv("TEST_GH_LOG", logPath);
+  vi.stubEnv("PATH", `${binPath}${delimiter}${process.env.PATH ?? ""}`);
+  return async () =>
+    (await readFile(logPath, "utf8")).split("\n").filter(Boolean).length;
+}
+
+function withChecks(
+  number: number,
+  nodes: object[],
+  endCursor: string | null = null,
+) {
+  return {
+    ...raw(number),
+    commits: {
+      nodes: [
+        {
+          commit: {
+            statusCheckRollup: {
+              contexts: {
+                nodes,
+                pageInfo: { hasNextPage: endCursor !== null, endCursor },
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
+function ciJob(
+  name: string,
+  conclusion: string,
+  runNumber: number,
+  event = "pull_request",
+) {
+  return {
+    name,
+    status: "COMPLETED",
+    conclusion,
+    detailsUrl: null,
+    startedAt: "2026-11-04T04:52:33Z",
+    checkSuite: {
+      workflowRun: { runNumber, event, workflow: { databaseId: 240828233 } },
+    },
+  };
+}
 
 describe("host GraphQL batching", () => {
   it("rejects unconfigured hosts before invoking gh with inherited credentials", async () => {
@@ -284,9 +344,7 @@ describe("host GraphQL batching", () => {
   });
 
   it("separates credentials and pauses only the credential that hit a rate limit", async () => {
-    const gh = await installFakeGh({
-      "api graphql": { stderr: "API rate limit exceeded", exit: 1 },
-    });
+    const readCallCount = await installRateLimitedGh();
     const cwd = await makeTempDir("bb-pr-rate-");
     vi.stubEnv("GH_TOKEN", "credential-one");
     await expect(getPullRequestByUrl(raw(1).url, cwd)).resolves.toMatchObject({
@@ -296,35 +354,33 @@ describe("host GraphQL batching", () => {
       outcome: "unavailable",
       message: expect.stringContaining("rate limit"),
     });
-    expect(await gh.readCalls()).toHaveLength(1);
+    expect(await readCallCount()).toBe(1);
     vi.stubEnv("GH_TOKEN", "credential-two");
     await getPullRequestByUrl(raw(1).url, cwd);
-    expect(await gh.readCalls()).toHaveLength(2);
+    expect(await readCallCount()).toBe(2);
   });
 
   it("releases a gh profile's rate-limit pause after its active account changes", async () => {
-    const gh = await installFakeGh({
-      "api graphql": { stderr: "API rate limit exceeded", exit: 1 },
-    });
+    const readCallCount = await installRateLimitedGh();
     vi.stubEnv("GH_TOKEN", undefined);
     vi.stubEnv("GITHUB_TOKEN", undefined);
     const cwd = await makeTempDir("bb-pr-account-");
     await getPullRequestByUrl(raw(1).url, cwd);
     await getPullRequestByUrl(raw(2).url, cwd);
-    expect(await gh.readCalls()).toHaveLength(1);
+    expect(await readCallCount()).toBe(1);
     await writeFile(
       join(process.env.GH_CONFIG_DIR!, "hosts.yml"),
       "github.com:\n    user: another-account\n",
     );
     await getPullRequestByUrl(raw(2).url, cwd);
-    expect(await gh.readCalls()).toHaveLength(2);
+    expect(await readCallCount()).toBe(2);
   });
 
   it.each([
     [1, 2],
     [2, 1],
   ])(
-    "keeps successful aliases when gh exits with a partial GraphQL error (%i then %i)",
+    "keeps successful aliases when gh exits with a partial GraphQL error (%i then %i; test-change-reason: the fork submits prepared host views as one batch)",
     async (firstNumber, secondNumber) => {
       const gh = await installFakeGh({
         "api graphql": {
@@ -338,9 +394,9 @@ describe("host GraphQL batching", () => {
         },
       });
       const cwd = await makeTempDir("bb-pr-partial-");
-      const results = await Promise.all([
-        getPullRequestByUrl(raw(firstNumber).url, cwd),
-        getPullRequestByUrl(raw(secondNumber).url, cwd),
+      const results = await readPullRequests([
+        prepareUrlRead(raw(firstNumber).url, cwd),
+        prepareUrlRead(raw(secondNumber).url, cwd),
       ]);
       const first = results[firstNumber === 1 ? 0 : 1];
       const second = results[firstNumber === 2 ? 0 : 1];
@@ -487,5 +543,80 @@ describe("host GraphQL batching", () => {
       "found",
     ]);
     expect(await gh.readCalls()).toHaveLength(1);
+  });
+
+  it("ignores checks from a workflow run superseded by a newer run of the same workflow and event", async () => {
+    const pr = withChecks(5, [
+      ciJob("Select CI checks", "CANCELLED", 20437),
+      ciJob("Tests (${{ matrix.shard }}, ubuntu-latest)", "CANCELLED", 20437),
+      ciJob("Select CI checks", "SUCCESS", 20438),
+      ciJob("Tests (packages-build, ubuntu-latest)", "SUCCESS", 20438),
+      ciJob("Push build", "FAILURE", 20436, "push"),
+      {
+        name: "External app",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        detailsUrl: null,
+        startedAt: "2026-11-04T04:52:33Z",
+        checkSuite: { workflowRun: null },
+      },
+      {
+        context: "legacy-status",
+        state: "SUCCESS",
+        targetUrl: null,
+        createdAt: "2026-11-04T04:52:33Z",
+      },
+    ]);
+    await installFakeGh({
+      "api graphql": { resources: { [pr.url]: { data: pr } } },
+    });
+    const result = await getPullRequestByUrl(
+      pr.url,
+      await makeTempDir("bb-pr-superseded-"),
+    );
+    expect(result.outcome === "found" && result.pullRequest.checks).toEqual([
+      expect.objectContaining({
+        name: "Select CI checks",
+        conclusion: "success",
+      }),
+      expect.objectContaining({
+        name: "Tests (packages-build, ubuntu-latest)",
+        conclusion: "success",
+      }),
+      expect.objectContaining({ name: "Push build", conclusion: "failure" }),
+      expect.objectContaining({ name: "External app" }),
+      expect.objectContaining({ name: "legacy-status" }),
+    ]);
+  });
+
+  it("ignores a superseded workflow run whose newer run is on a later checks page", async () => {
+    const firstPage = withChecks(
+      6,
+      [ciJob("Tests (${{ matrix.shard }}, ubuntu-latest)", "CANCELLED", 20437)],
+      "cursor-1",
+    );
+    const secondPage = withChecks(6, [
+      ciJob("Tests (packages-build, ubuntu-latest)", "SUCCESS", 20438),
+    ]);
+    const gh = await installFakeGh({
+      "api graphql": {
+        resources: { [firstPage.url]: { data: firstPage } },
+        whenQueryIncludes: {
+          text: 'after: "cursor-1"',
+          response: { resources: { [firstPage.url]: { data: secondPage } } },
+        },
+      },
+    });
+    const result = await getPullRequestByUrl(
+      firstPage.url,
+      await makeTempDir("bb-pr-superseded-pages-"),
+    );
+    expect(result.outcome === "found" && result.pullRequest.checks).toEqual([
+      expect.objectContaining({
+        name: "Tests (packages-build, ubuntu-latest)",
+        conclusion: "success",
+      }),
+    ]);
+    expect(await gh.readCalls()).toHaveLength(2);
   });
 });

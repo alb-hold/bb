@@ -15,7 +15,7 @@ import { recordFinishedTurn } from "../system/turn-telemetry.js";
 import type { ServerLogger } from "../../types.js";
 import type { NotificationHub } from "../../ws/hub.js";
 import {
-  emitPluginThreadLifecycleOutcome,
+  emitPluginThreadStatusEntered,
   emitPluginTurnFailed,
 } from "../plugins/plugin-thread-events.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
@@ -112,7 +112,7 @@ export function applyLoggedThreadLifecycleEvent(
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
   if (!isSessionStatusCorrection(args.event)) {
-    emitPluginThreadLifecycleOutcome(outcome);
+    if (outcome.applied) emitPluginThreadStatusEntered(outcome.thread);
   }
   announceTurnFailed(args, outcome);
   return outcome;
@@ -137,7 +137,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
   if (!isSessionStatusCorrection(args.event)) {
-    emitPluginThreadLifecycleOutcome(outcome);
+    if (outcome.applied) emitPluginThreadStatusEntered(outcome.thread);
   }
   announceTurnFailed(args, outcome);
   return outcome;

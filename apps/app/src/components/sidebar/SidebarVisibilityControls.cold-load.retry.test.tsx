@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
 const download = await vi.hoisted(async () => {
@@ -17,7 +18,11 @@ const retryLoaded = await vi.hoisted(async () => {
 
 vi.mock("./SidebarVisibilityCustomize", async () => {
   await download.promise;
-  throw new Error("module initialization failed");
+  return {
+    get SidebarVisibilityCustomize() {
+      throw new Error("module initialization failed");
+    },
+  };
 });
 
 afterEach(() => {
@@ -25,7 +30,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("retries the failed import and updates sidebar visibility", async () => {
+it("retries the failed import and updates sidebar visibility (test-change-reason: fail the fork’s split loader on export access)", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const onVisibleChange = vi.fn();
   render(
@@ -45,7 +50,7 @@ it("retries the failed import and updates sidebar visibility", async () => {
     </CompactViewportOverrideProvider>,
   );
   await act(async () => {
-    download.reject(new Error("module initialization failed"));
+    download.resolve();
   });
   expect(await screen.findByRole("alert")).toBeDefined();
   vi.resetModules();
@@ -58,6 +63,7 @@ it("retries the failed import and updates sidebar visibility", async () => {
   await act(async () => {
     await retryLoaded.promise;
   });
+  await settleLazyModules();
   fireEvent.click(screen.getByRole("checkbox", { name: "Show Review in sidebar" }));
   expect(onVisibleChange).toHaveBeenCalledWith("section:review", true);
   expect(screen.queryByRole("alert")).toBeNull();

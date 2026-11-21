@@ -3,7 +3,6 @@ import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -19,15 +18,16 @@ import {
   runPluginPanelAction,
 } from "./PluginPanelActions";
 import { Button } from "@bb/shared-ui/button";
-import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
-import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
 import { PluginItemIcon } from "@/components/plugin/PluginIcon";
-import { RIGHT_PANEL_TOGGLE_ICON_NAME } from "@/components/secondary-panel/panelToggleControlState";
+import {
+  RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
+  RIGHT_PANEL_TOGGLE_ICON_NAME,
+} from "@/components/secondary-panel/panelToggleControlState";
 import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
 import { getPluginPageSecondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import {
@@ -63,7 +63,10 @@ import {
   type SecondaryFileFixedPanelTab,
   type TerminalFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
-import { createFileOpenerOriginalTab } from "./file-opener-tabs";
+import {
+  createFileOpenerOriginalTab,
+  type FileOpenerOriginalTab,
+} from "./file-opener-tabs";
 import { activateSecondaryPanelTabInState } from "@bb/client-core";
 import {
   terminalQueryScopeForTarget,
@@ -81,7 +84,7 @@ import {
 } from "@/lib/bb-desktop";
 import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
-import { usePluginSlots } from "@/lib/plugin-slots";
+import { usePluginSlotKind } from "@/lib/plugin-slots";
 import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
 import {
   FixedTabTargetScope,
@@ -102,7 +105,6 @@ import { PluginDetailTabContent } from "./plugin-detail-navigation";
 import { usePanelTabPresenter } from "@/components/secondary-panel/usePanelTabPresenter";
 
 const EMPTY_TERMINAL_HOSTS: readonly Host[] = [];
-const RIGHT_PANEL_TOGGLE_CLASS = `${COARSE_POINTER_HEADER_ICON_BUTTON_CLASS} ${CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS}`;
 
 const compactDrawerOpenAtomFamily = atomFamily((_panelStateId: string) =>
   atom(false),
@@ -143,6 +145,42 @@ function PluginFixedTabContent({
   );
 }
 
+function renderFileOpenerOriginalTabContent(
+  tab: FileOpenerOriginalTab,
+  isOpen: boolean,
+): ReactNode {
+  switch (tab.kind) {
+    case "workspace-file-preview":
+      return tab.environmentId === null ? null : (
+        <LazyWorkspaceFilePreviewTabContent
+          activePath={tab.path}
+          environmentId={tab.environmentId}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+          source={tab.source}
+        />
+      );
+    case "host-file-preview":
+      return tab.hostId === null ? null : (
+        <LazyHostScopedFilePreviewTabContent
+          activePath={tab.path}
+          hostId={tab.hostId}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+        />
+      );
+    case "thread-storage-file-preview":
+      return tab.threadId === null ? null : (
+        <LazyThreadStorageFilePreviewTabContent
+          activePath={tab.path}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+          threadId={tab.threadId}
+        />
+      );
+  }
+}
+
 function findPluginRightPanelTogglePortal(
   panelStateId: string,
 ): HTMLElement | null {
@@ -174,7 +212,7 @@ export function PluginPanelRightPanelHost({
   flushPageInsets?: boolean;
   paneId?: string;
 }) {
-  const { navPanels } = usePluginSlots();
+  const navPanels = usePluginSlotKind("navPanels");
   const panel =
     navPanels.find(
       (candidate) =>
@@ -549,9 +587,13 @@ export function PluginPanelRightPanelHost({
   const isSidebarFramed = useIsSidebarFramed();
   const [togglePortalTarget, setTogglePortalTarget] =
     useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    setTogglePortalTarget(findPluginRightPanelTogglePortal(panelStateId));
-  }, [panel, panelStateId]);
+  const findTogglePortalTarget = (node: HTMLDivElement | null) => {
+    setTogglePortalTarget(
+      node === null || panel === null
+        ? null
+        : findPluginRightPanelTogglePortal(panelStateId),
+    );
+  };
 
   const panelBrowser = usePanelBrowser({
     available: isDesktopBrowserAvailable(),
@@ -621,7 +663,7 @@ export function PluginPanelRightPanelHost({
   );
 
   const renderPanelTabContent = useCallback(
-    function renderTabContent(tab: SecondaryFileFixedPanelTab): ReactNode {
+    (tab: SecondaryFileFixedPanelTab): ReactNode => {
       switch (tab.kind) {
         case "plugin-detail":
           return <PluginDetailTabContent detailKey={tab.detailKey} />;
@@ -676,24 +718,9 @@ export function PluginPanelRightPanelHost({
             />
           );
         case "workspace-file-preview":
-          return tab.environmentId === null ? null : (
-            <LazyWorkspaceFilePreviewTabContent
-              activePath={tab.path}
-              environmentId={tab.environmentId}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-              source={tab.source}
-            />
-          );
         case "host-file-preview":
-          return tab.hostId === null ? null : (
-            <LazyHostScopedFilePreviewTabContent
-              activePath={tab.path}
-              hostId={tab.hostId}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-            />
-          );
+        case "thread-storage-file-preview":
+          return renderFileOpenerOriginalTabContent(tab, isOpen);
         case "attachment-file-preview":
           return (
             <LazyAttachmentFilePreviewTabContent
@@ -701,15 +728,6 @@ export function PluginPanelRightPanelHost({
               name={tab.name}
               path={tab.path}
               projectId={tab.projectId}
-            />
-          );
-        case "thread-storage-file-preview":
-          return tab.threadId === null ? null : (
-            <LazyThreadStorageFilePreviewTabContent
-              activePath={tab.path}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-              threadId={tab.threadId}
             />
           );
         case "plugin-panel": {
@@ -724,7 +742,9 @@ export function PluginPanelRightPanelHost({
                 subPath,
               }}
               fileOpenerOriginal={
-                originalTab === null ? undefined : renderTabContent(originalTab)
+                originalTab === null
+                  ? undefined
+                  : renderFileOpenerOriginalTabContent(originalTab, isOpen)
               }
             />
           );
@@ -886,6 +906,7 @@ export function PluginPanelRightPanelHost({
   const toggleIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
   const page = (
     <div
+      ref={findTogglePortalTarget}
       className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
         flushPageInsets
           ? "-m-4 h-[calc(100%+2rem)] md:-m-5 md:h-[calc(100%+2.5rem)]"
@@ -932,7 +953,7 @@ export function PluginPanelRightPanelHost({
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    RIGHT_PANEL_TOGGLE_CLASS,
+                    RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
                     isSidebarFramed && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
                   )}
                   aria-label={toggleLabel}

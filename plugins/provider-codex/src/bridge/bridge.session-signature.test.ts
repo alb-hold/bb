@@ -82,6 +82,67 @@ it("keeps the constructed session for a turn whose options carry no envVars", as
   ).toEqual([]);
 }, 30_000);
 
+it("rebuilds the session only when a turn changes or removes an env var", async () => {
+  const original = { BB_TEST_SECRET: "original", BB_TEST_REMOVED: "gone" };
+  harness.sendRequest(1, "thread/start", {
+    threadId: THREAD_ID,
+    cwd: workspaceDir,
+    instructionMode: "append",
+    options: { ...FULL_ACCESS_SESSION_OPTIONS, envVars: original },
+  });
+  const started = await harness.waitForResponse(1);
+  const { providerThreadId } = z
+    .object({ providerThreadId: z.string() })
+    .parse(started.result);
+
+  const turnEnvVars: Record<string, string>[] = [
+    { BB_TEST_REMOVED: "gone", BB_TEST_SECRET: "original" },
+    { BB_TEST_SECRET: "rotated", BB_TEST_REMOVED: "gone" },
+    { BB_TEST_SECRET: "rotated" },
+    { BB_TEST_SECRET: "rotated" },
+  ];
+  const replacementsAfterTurn: number[] = [];
+  for (const [index, envVars] of turnEnvVars.entries()) {
+    const id = index + 2;
+    harness.sendRequest(id, "turn/start", {
+      threadId: THREAD_ID,
+      providerThreadId,
+      clientRequestId: `creq_envswapxx${id}`,
+      input: [{ type: "text", text: "say hello", mentions: [] }],
+      options: { ...FULL_ACCESS_SESSION_OPTIONS, envVars },
+    });
+    expect((await harness.waitForResponse(id)).error).toBeUndefined();
+    replacementsAfterTurn.push(
+      harness.messages.filter(
+        (message) => message.method === "session/replaced",
+      ).length,
+    );
+  }
+
+  expect(replacementsAfterTurn).toEqual([0, 1, 2, 2]);
+  const resumeConfigs = recordedRequests()
+    .filter((request) => request.method === "thread/resume")
+    .map((request) =>
+      z
+        .object({ config: z.record(z.string(), z.unknown()) })
+        .parse(request.params),
+    )
+    .map(({ config }) =>
+      Object.fromEntries(
+        Object.entries(config).filter(([key]) =>
+          key.startsWith("shell_environment_policy.set.BB_TEST_"),
+        ),
+      ),
+    );
+  expect(resumeConfigs).toEqual([
+    {
+      "shell_environment_policy.set.BB_TEST_SECRET": "rotated",
+      "shell_environment_policy.set.BB_TEST_REMOVED": "gone",
+    },
+    { "shell_environment_policy.set.BB_TEST_SECRET": "rotated" },
+  ]);
+}, 30_000);
+
 it("keeps an auto-reviewed session when only escalation intent changes", async () => {
   harness.sendRequest(1, "thread/start", {
     threadId: THREAD_ID,
@@ -381,3 +442,75 @@ it("applies follow-up permission changes in both directions without replacing th
     recordedRequests().filter((request) => request.method === "initialize"),
   ).toHaveLength(1);
 }, 30_000);
+
+const subagentConfigCases = [
+  { userAgent: "bb/0.136.0 (Linux; x86_64)", modern: false },
+  { userAgent: "bb/0.144.0 (Linux; x86_64)", modern: false },
+  { userAgent: "bb/0.145.0-alpha.1 (Linux; x86_64)", modern: false },
+  { userAgent: "bb/0.145.0 (Linux; x86_64)", modern: true },
+  { userAgent: "bb/0.169.0 (Mac OS 27.2.1; arm64)", modern: true },
+  { userAgent: "unrecognized", modern: false },
+  { userAgent: "bb/0.145.00 (Linux; x86_64)", modern: false },
+  { userAgent: "unrecognized (OS 99.99.99)", modern: false },
+  { userAgent: undefined, modern: false },
+];
+
+for (const method of [
+  "thread/start",
+  "thread/resume",
+  "thread/fork",
+] as const) {
+  it.each(subagentConfigCases)(
+    `${method} selects compatible subagent configuration for $userAgent`,
+    async ({ userAgent, modern }) => {
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          requestLogPath,
+          initializeResult: { userAgent },
+        }),
+      );
+      harness.sendRequest(1, method, {
+        threadId: THREAD_ID,
+        cwd: workspaceDir,
+        instructionMode: "append",
+        ...(method === "thread/resume"
+          ? { providerThreadId: "existing-thread" }
+          : {}),
+        ...(method === "thread/fork"
+          ? { sourceProviderThreadId: "existing-thread" }
+          : {}),
+        options: {
+          ...FULL_ACCESS_SESSION_OPTIONS,
+          providerOptions: { providerSubagentsEnabled: false },
+        },
+      });
+      expect((await harness.waitForResponse(1)).error).toBeUndefined();
+      const request = recordedRequests().find(
+        (entry) => entry.method === method,
+      );
+      const { config } = z
+        .object({ config: z.record(z.string(), z.unknown()) })
+        .parse(request?.params);
+      expect(
+        Object.fromEntries(
+          Object.entries(config).filter(
+            ([key]) =>
+              key.startsWith("features.multi_agent") ||
+              key === "agents.enabled",
+          ),
+        ),
+      ).toEqual(
+        modern
+          ? {
+              "agents.enabled": false,
+              "features.multi_agent_v2": false,
+            }
+          : {
+              "features.multi_agent": false,
+              "features.multi_agent_v2.max_concurrent_threads_per_session": 1,
+            },
+      );
+    },
+  );
+}

@@ -1,8 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { usagePlanLabel, usageWindowLabel } from "./usage-source.js";
+
+import {
+  accountUsageWindows,
+  usagePlanLabel,
+  usagePlan,
+  usageWindowLabel,
+} from "./usage-source.js";
+
 import { displayPlanLabel } from "./display.js";
 
 describe("usage presentation labels", () => {
+  it("uses legacy quota fields when normalized windows are empty", () => {
+    expect(
+      accountUsageWindows({
+        limitWindows: [],
+        fiveHourUtilization: 0.42,
+        fiveHourResetAt: 1_800_000_000_000,
+        sevenDayUtilization: 0.63,
+        sevenDayResetAt: 1_800_000_100_000,
+      }),
+    ).toEqual([
+      {
+        id: "five-hour",
+        label: "Five-hour limit",
+        utilization: 0.42,
+        resetAt: 1_800_000_000_000,
+      },
+      {
+        id: "weekly",
+        label: "Weekly limit",
+        utilization: 0.63,
+        resetAt: 1_800_000_100_000,
+      },
+    ]);
+  });
+
   it.each([
     ["claude", "api-key", null, null, "Claude subscription"],
     ["codex", "oauth", "max", "max_20x", "Max (20x)"],
@@ -17,6 +49,7 @@ describe("usage presentation labels", () => {
       ).toBe(expected);
     },
   );
+
   it("names known windows consistently and retains other durations", () => {
     expect(usageWindowLabel(10_080, "primary")).toBe("Weekly limit");
     expect(usageWindowLabel(300, "secondary")).toBe("Five-hour limit");
@@ -24,6 +57,31 @@ describe("usage presentation labels", () => {
     expect(usageWindowLabel(2_880, "primary")).toBe("2 day limit");
     expect(usageWindowLabel(null, "Custom limit")).toBe("Custom limit");
   });
+
+  it("names Claude plans after the Max and Ultra rename", () => {
+    expect(
+      usagePlan({
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_20x",
+      }),
+    ).toEqual({ id: "ultra", label: "Ultra" });
+    expect(
+      usagePlan({
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_5x",
+      }),
+    ).toEqual({ id: "max", label: "Max" });
+    expect(usagePlan({ subscriptionType: "max", rateLimitTier: null })).toEqual(
+      { id: "max", label: "Max" },
+    );
+    expect(usagePlan({ subscriptionType: "pro", rateLimitTier: null })).toEqual(
+      { id: "pro", label: "Pro" },
+    );
+    expect(
+      usagePlan({ subscriptionType: null, rateLimitTier: null }),
+    ).toBeNull();
+  });
+
   it("uses a Max multiplier only with a stored provider Max name", () => {
     expect(
       usagePlanLabel(
@@ -80,6 +138,7 @@ describe("usage presentation labels", () => {
       }),
     ).toBe("Claude subscription");
   });
+
   it("uses the shared Claude OAuth fallback without labeling other account types", () => {
     expect(
       usagePlanLabel({
@@ -114,6 +173,7 @@ describe("usage presentation labels", () => {
       }),
     ).toBeNull();
   });
+
   it("retains known subscription labels for Claude API-key accounts", () => {
     expect(
       usagePlanLabel(

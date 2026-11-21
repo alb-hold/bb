@@ -81,13 +81,18 @@ interface ListClaudeCodeModelsResult {
   selectedOnlyModels: AvailableModel[];
 }
 
+export type ClaudeModelDiscovery = ModelInfo[] | { accountModels: ModelInfo[] };
+
 export function buildClaudeCodeModels(
-  discoveredModels: readonly ModelInfo[],
+  discovery: readonly ModelInfo[] | ClaudeModelDiscovery,
 ): ListClaudeCodeModelsResult {
+  const accountScoped = "accountModels" in discovery;
+  const discoveredModels = accountScoped ? discovery.accountModels : discovery;
   const defaultModel =
     discoveredModels.find((modelInfo) => modelInfo.value === "default")
       ?.resolvedModel ?? null;
-  const models: AvailableModel[] = CLAUDE_CODE_ACTIVE_CATALOG.map((entry) => ({
+  const catalog = accountScoped ? [] : CLAUDE_CODE_ACTIVE_CATALOG;
+  const models: AvailableModel[] = catalog.map((entry) => ({
     id: entry.id,
     model: entry.model,
     displayName: entry.displayName,

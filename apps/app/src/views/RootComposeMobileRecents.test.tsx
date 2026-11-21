@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
 import { InfoRowTime } from "@bb/shared-ui/info-list-row";
+
 import type { ThreadListEntry } from "@bb/domain";
+
 import {
   act,
   cleanup,
@@ -10,42 +12,64 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
 import type { ReactNode } from "react";
+
 import { Provider, createStore } from "jotai";
+
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
+
 import { MemoryRouter } from "react-router-dom";
+
 import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
+
 import {
   writeCachedSidebarBootstrap,
   readCachedSidebarBootstrap,
   SIDEBAR_BOOTSTRAP_CACHE_KEY,
   resetSidebarBootstrapCacheForTest,
 } from "@/lib/sidebar-bootstrap-cache";
+
 import {
   makeSidebarBootstrapResponse,
   makeProjectWithThreadsResponse,
 } from "@/test/fixtures/projects";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
+
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
+
 import {
   RecentThreadProviderMark,
   RecentThreadRowContent,
 } from "./RootComposeRecentRows";
+
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+
 import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+
 import { readFileSync } from "node:fs";
+
 import {
   SidebarProvider,
   Sidebar,
   SidebarInset,
 } from "@/components/ui/sidebar";
+
 import { RootComposeHome } from "./RootComposeHome";
+
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+
 import { CORE_THREAD_ACTIONS } from "@/lib/thread-actions/core-thread-actions";
+
 import { ThreadActionCollectors } from "@/lib/thread-actions/thread-action-registry";
+
 
 const threadActions = vi.hoisted(() => ({
   requestArchive: vi.fn(),
@@ -56,9 +80,11 @@ const threadActions = vi.hoisted(() => ({
   unarchiveThread: vi.fn(),
 }));
 
+
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   useThreadActions: () => threadActions,
 }));
+
 
 const sdkThreads = vi.hoisted(() => ({
   pin: vi.fn(async ({ threadId }: { threadId: string }) => ({
@@ -66,7 +92,9 @@ const sdkThreads = vi.hoisted(() => ({
   })),
 }));
 
+
 vi.mock("@/lib/sdk", () => ({ sdk: { threads: sdkThreads } }));
+
 
 const personalProvider: SystemEnvironmentProvider = {
   machineProviderId: null,
@@ -87,6 +115,7 @@ const personalProvider: SystemEnvironmentProvider = {
   },
   inputs: null,
 };
+
 
 function TestProviders({
   children,
@@ -123,11 +152,13 @@ function TestProviders({
   );
 }
 
+
 function storeWithCollapsedThreads(threadIds: string[]) {
   const store = createStore();
-  store.set(mobileRecentsCollapsedThreadIdsAtom, threadIds);
+  void store.set(mobileRecentsCollapsedThreadIdsAtom, threadIds);
   return store;
 }
+
 
 function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
   return makeThreadListEntry({
@@ -141,11 +172,11 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
     createdAt: 1,
     updatedAt: 2,
     activity: {
+      activeGoalCount: 0,
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
       activeBackgroundCommandCount: 0,
       activePlanModeCount: 1,
-      activeGoalCount: 1,
     },
     runtime: {
       displayStatus: "active",
@@ -154,13 +185,15 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
   });
 }
 
+
 const IDLE_ACTIVITY: ThreadListEntry["activity"] = {
+      activeGoalCount: 0,
   activeWorkflowCount: 0,
   activeBackgroundAgentCount: 0,
   activeBackgroundCommandCount: 0,
   activePlanModeCount: 0,
-  activeGoalCount: 0,
 };
+
 
 function makeIdleThread(
   overrides: Partial<ThreadListEntry> = {},
@@ -175,6 +208,7 @@ function makeIdleThread(
   });
 }
 
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
@@ -182,6 +216,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
+
 
 describe("mobile recents hierarchy interaction", () => {
   function renderTree() {
@@ -386,6 +421,7 @@ describe("mobile recents hierarchy interaction", () => {
   });
 });
 
+
 describe("mobile recents section", () => {
   it("keeps the Recent label pinned while the list scrolls under it", () => {
     render(
@@ -416,7 +452,10 @@ describe("mobile recents section", () => {
   });
 });
 
+
 describe("mobile recent thread rows", () => {
+
+
   it.each([
     [3 * 60 * 60 * 1000, "3h"],
     [24 * 60 * 60 * 1000, "1d"],
@@ -461,6 +500,7 @@ describe("mobile recent thread rows", () => {
     expect(metadata.querySelector("[data-icon]")).toBeNull();
     expect(metadata.classList.contains("pl-5.5")).toBe(false);
   });
+
 
   it.each([
     "bb/mobile-home",
@@ -508,6 +548,7 @@ describe("mobile recent thread rows", () => {
     expect(metadata.querySelector('[role="img"]')).toBeNull();
   });
 
+
   it("caps the project and reserves the age beside a short branch", () => {
     render(
       <TestProviders>
@@ -532,6 +573,7 @@ describe("mobile recent thread rows", () => {
     expect(branch.classList.contains("truncate")).toBe(true);
   });
 
+
   it("does not repeat the project name as the workspace segment", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData(systemEnvironmentProvidersQueryKey({}), [
@@ -551,11 +593,11 @@ describe("mobile recent thread rows", () => {
                 environmentProviderId: "personal-workspace",
                 latestAttentionAt: Date.now() - 3 * 60 * 60 * 1000,
                 activity: {
+      activeGoalCount: 0,
                   activeWorkflowCount: 0,
                   activeBackgroundAgentCount: 0,
                   activeBackgroundCommandCount: 0,
                   activePlanModeCount: 0,
-                  activeGoalCount: 0,
                 },
               }),
             ]}
@@ -568,6 +610,8 @@ describe("mobile recent thread rows", () => {
       "Personal \u00b7 3h",
     );
   });
+
+
 
   it("reserves an empty status slot when a thread has no indicator", () => {
     render(
@@ -605,6 +649,7 @@ describe("mobile recent thread rows", () => {
     ).toHaveLength(1);
   });
 });
+
 
 describe("RootComposeMobileRecents", () => {
   it("shows three desktop Recent rows with the real sidebar expanded", () => {
@@ -676,6 +721,7 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByText("Recent")).toBeNull();
   });
 
+
   it("opens thread actions on a long press without following the thread link", async () => {
     vi.useFakeTimers();
     const thread = makeThread();
@@ -700,7 +746,9 @@ describe("RootComposeMobileRecents", () => {
       clientX: 100,
       clientY: 100,
     });
-    act(() => vi.advanceTimersByTime(700));
+    act(() => {
+      vi.advanceTimersByTime(700);
+    });
     fireEvent.pointerUp(link, { pointerId: 1, pointerType: "touch" });
     const click = new MouseEvent("click", { bubbles: true, cancelable: true });
     fireEvent(link, click);
@@ -715,6 +763,7 @@ describe("RootComposeMobileRecents", () => {
       expect(sdkThreads.pin).toHaveBeenCalledWith({ threadId: thread.id }),
     );
   });
+
 
   it("shows concurrent Plan activity before the runtime spinner", () => {
     render(
@@ -733,6 +782,9 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
     expect(screen.queryByLabelText("Goal active")).toBeNull();
   });
+
+
+
 
   it("expires a native runtime indicator on the shared visible tick", () => {
     vi.useFakeTimers();
@@ -768,6 +820,7 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
 
+
   it("shows Working for a draft thread with runtime activity", () => {
     window.localStorage.setItem(
       "bb.promptbox.contents-proj_mobile-thr_mobile-3",
@@ -792,6 +845,7 @@ describe("RootComposeMobileRecents", () => {
     ).toBeNull();
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
   });
+
 
   it("includes the resolved Done indicator in the link label", () => {
     window.localStorage.setItem(
@@ -833,6 +887,7 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
   });
 });
+
 
 it.each(
   ["plain", "expanded", "collapsed", "native", "worktree"].flatMap((shape) =>
@@ -950,6 +1005,7 @@ it.each(
   },
 );
 
+
 it.each([false, true])(
   "uses one leading glyph column for native=%s",
   (nativeTerminal) => {
@@ -977,6 +1033,7 @@ it.each([false, true])(
     ).toHaveLength(nativeTerminal ? 1 : 0);
   },
 );
+
 
 it.each([
   ["native", { nativeTerminal: true }, "Native terminal", "native-terminal", "Terminal"],

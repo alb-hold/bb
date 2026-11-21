@@ -1,4 +1,4 @@
-import { reportedProviderId } from "../services/system/provider-telemetry.js";
+import { withReportedProviderId } from "../services/system/provider-telemetry.js";
 import { rememberPluginRecommendation } from "../services/plugins/plugin-use-telemetry.js";
 import { createMobileAppReleaseService } from "../services/install/mobile-app-releases.js";
 import {
@@ -57,6 +57,7 @@ import {
 import type { ServerAppDeps, ServerRuntimeConfig } from "../types.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
 import { ApiError } from "../errors.js";
+import { readMultipartFormData } from "./multipart-form-data.js";
 import {
   buildAiServicesView,
   testAiService,
@@ -346,7 +347,9 @@ export function registerSystemRoutes(
     return context.json(compatibleGeneralSettings());
   });
 
-  post(routes.recordTelemetryEvent, (context, payload) => {
+  get(routes.setupGuide, (context) => context.json({ variant: "new" }));
+
+  post(routes.recordTelemetryEvent, async (context, payload) => {
     if (
       payload.name === "recommendation" &&
       payload.properties.action === "selected"
@@ -357,19 +360,7 @@ export function registerSystemRoutes(
         payload.properties.recommendation_id,
       );
     }
-    deps.telemetry.capture(
-      payload.name === "onboarding_operation" &&
-        payload.properties.step === "agent" &&
-        payload.properties.resource_id !== undefined
-        ? {
-            ...payload,
-            properties: {
-              ...payload.properties,
-              resource_id: reportedProviderId(payload.properties.resource_id),
-            },
-          }
-        : payload,
-    );
+    deps.telemetry.capture(withReportedProviderId(payload));
     return context.json({ ok: true });
   });
 
@@ -702,7 +693,7 @@ export function registerSystemRoutes(
   );
 
   post(routes.voiceTranscription, async (context) => {
-    const formData = await context.req.formData();
+    const formData = await readMultipartFormData(context.req);
     const file = formData.get("file");
     if (!(file instanceof File)) {
       throw new ApiError(400, "invalid_request", "Audio file is required");
@@ -743,6 +734,21 @@ export function registerSystemRoutes(
         confirmInterruptingThreads: body.confirmInterruptingThreads,
       }),
     );
+  });
+
+  post(routes.scheduleAppUpdate, async (context) => {
+    assertAppUpdateAllowed(context);
+    return context.json(await deps.appUpdate.schedule());
+  });
+
+  post(routes.cancelScheduledAppUpdate, async (context) => {
+    assertAppUpdateAllowed(context);
+    return context.json(await deps.appUpdate.cancelScheduled());
+  });
+
+  post(routes.setAppUpdateAuto, async (context, body) => {
+    assertAppUpdateAllowed(context);
+    return context.json(await deps.appUpdate.setAutoUpdate(body.enabled));
   });
 
   post(routes.acknowledgeAppUpdate, async (context, body) => {

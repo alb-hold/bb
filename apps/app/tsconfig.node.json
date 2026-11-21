@@ -11,12 +11,17 @@
     "vite.config.ts",
     "vite-xterm-faint.ts",
     "vite.dev.config.ts",
+    "vite.profiling.config.ts",
     "vite-bundle-stats.ts",
     "vite-font-preload.ts",
     "vite-split-prefetch.ts",
+    "vite-route-modulepreload.ts",
+    "vite-journey-chunks.ts",
     "vite-initial-thread-preload.ts",
     "vite-forkable-plugin-paths.ts",
     "vite-shared-ui-seam.ts",
-    "vite-react-compiler.ts"
+    "vite-react-compiler.ts",
+    "vite-plugin-zod-runtime.ts",
+    "vite-test-lazy-imports.ts"
   ]
 }

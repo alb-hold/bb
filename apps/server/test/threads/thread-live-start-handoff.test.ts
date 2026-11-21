@@ -1,4 +1,9 @@
-import { getThread } from "@bb/db";
+import {
+  getHost,
+  getLatestSessionForHost,
+  getThread,
+  hasThreadStartTurnRequest,
+} from "@bb/db";
 import type { EnvironmentRow } from "@bb/db";
 import {
   encodeClientTurnRequestIdNumber,
@@ -10,10 +15,11 @@ import {
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
 import {
-  hasLiveThreadStartInFlight,
+  recoverThreadLifecyclesAfterRestart,
   requestThreadStart,
   requestThreadStopForCurrentState,
 } from "../../src/services/threads/thread-lifecycle.js";
+import { advanceThreadProvisioning } from "../../src/services/threads/thread-provisioning.js";
 import {
   createTestDaemonEventEnvelope,
   internalAuthHeaders,
@@ -31,6 +37,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { runThreadPurges } from "../helpers/thread-purges.js";
 
 const START_EXECUTION = {
   model: "gpt-5",
@@ -101,7 +108,7 @@ async function startLiveThreadStartRpc(
     ({ command }) =>
       command.type === "thread.start" && command.threadId === thread.id,
   );
-  expect(hasLiveThreadStartInFlight(thread.id)).toBe(true);
+  expect(hasThreadStartTurnRequest(args.harness.db, thread.id)).toBe(true);
   return { environment, startCommand, thread, owner };
 }
 
@@ -113,45 +120,6 @@ async function failLiveStartRpc(args: FailLiveStartRpcArgs): Promise<void> {
 }
 
 describe("live thread start handoff", () => {
-  it("sends live stop when manual stop races with an unsettled thread start", async () => {
-    await withTestHarness(async (harness) => {
-      const fixture = await startLiveThreadStartRpc({
-        harness,
-        requestIdValue: 1,
-      });
-      try {
-        requestThreadStopForCurrentState(
-          harness.deps,
-          fixture.thread,
-          fixture.environment,
-        );
-
-        const stopCommand = await waitForQueuedCommand(
-          harness,
-          ({ command }) =>
-            command.type === "thread.stop" &&
-            command.threadId === fixture.thread.id,
-        );
-        expect(stopCommand.command).toMatchObject({
-          type: "thread.stop",
-          environmentId: fixture.environment.id,
-          threadId: fixture.thread.id,
-        });
-        expect(getThread(harness.db, fixture.thread.id)?.status).toBe(
-          "stopping",
-        );
-        await reportQueuedCommandSuccess(harness, stopCommand, {
-          providerCheckpointId: null,
-        });
-      } finally {
-        await failLiveStartRpc({
-          harness,
-          startCommand: fixture.startCommand,
-        });
-      }
-    });
-  });
-
   it("sends live stop when archive races with an unsettled thread start", async () => {
     await withTestHarness(async (harness) => {
       const fixture = await startLiveThreadStartRpc({
@@ -233,6 +201,7 @@ describe("live thread start handoff", () => {
         await reportQueuedCommandSuccess(harness, storageDeleteCommand, {
           providerCheckpointId: null,
         });
+        await runThreadPurges(harness.deps);
         expect(getThread(harness.db, fixture.thread.id)).toBeNull();
       } finally {
         await failLiveStartRpc({
@@ -250,11 +219,7 @@ describe("live thread start handoff", () => {
         requestIdValue: 4,
       });
 
-      requestThreadStopForCurrentState(
-        harness.deps,
-        fixture.thread,
-        fixture.environment,
-      );
+      requestThreadStopForCurrentState(harness.deps, fixture.thread);
       const stopCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
@@ -286,17 +251,18 @@ describe("live thread start handoff", () => {
         requestIdValue: 7,
       });
 
-      requestThreadStopForCurrentState(
-        harness.deps,
-        fixture.thread,
-        fixture.environment,
-      );
+      requestThreadStopForCurrentState(harness.deps, fixture.thread);
       const stopCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
           command.type === "thread.stop" &&
           command.threadId === fixture.thread.id,
       );
+      expect(stopCommand.command).toMatchObject({
+        type: "thread.stop",
+        environmentId: fixture.environment.id,
+        threadId: fixture.thread.id,
+      });
       expect(getThread(harness.db, fixture.thread.id)).toMatchObject({
         status: "stopping",
       });
@@ -317,6 +283,57 @@ describe("live thread start handoff", () => {
       });
     });
   });
+
+  it.each([
+    { running: true, status: "active" },
+    { running: false, status: "error" },
+  ] as const)(
+    "settles a thread start whose answer a server restart lost from the daemon's report (running: $running)",
+    async ({ running, status }) => {
+      await withTestHarness(async (harness) => {
+        const fixture = await startLiveThreadStartRpc({
+          harness,
+          requestIdValue: running ? 7 : 8,
+        });
+        await recoverThreadLifecyclesAfterRestart(harness.deps);
+        await advanceThreadProvisioning(harness.deps, {
+          threadId: fixture.thread.id,
+        });
+        expect(getThread(harness.db, fixture.thread.id)?.status).toBe(
+          "starting",
+        );
+
+        const host = getHost(harness.db, fixture.environment.hostId);
+        const session = getLatestSessionForHost(harness.db, {
+          hostId: fixture.environment.hostId,
+        });
+        if (host === null || session === null) {
+          throw new Error("Expected the fixture's host session");
+        }
+        const response = await harness.app.request("/internal/session/open", {
+          method: "POST",
+          headers: internalAuthHeaders(harness, { hostId: host.id }),
+          body: JSON.stringify({
+            hostId: host.id,
+            instanceId: session.instanceId,
+            hostName: host.name,
+            hasMachineCredential: false,
+            platform: "darwin",
+            dataDir: session.dataDir,
+            localApiPort: null,
+            protocolVersion: session.protocolVersion,
+            activeThreads: running ? [{ threadId: fixture.thread.id }] : [],
+            openThreadWork: [],
+          }),
+        });
+        expect(response.status).toBe(201);
+        expect(getThread(harness.db, fixture.thread.id)?.status).toBe(status);
+        expect(hasThreadStartTurnRequest(harness.db, fixture.thread.id)).toBe(
+          false,
+        );
+      });
+    },
+  );
 
   it("does not reactivate an idle thread when a completed start turn settled first", async () => {
     await withTestHarness(async (harness) => {
@@ -422,6 +439,7 @@ describe("live thread start handoff", () => {
             status: "idle",
           });
         } else {
+          await runThreadPurges(harness.deps);
           expect(getThread(harness.db, fixture.thread.id)).toBeNull();
         }
 

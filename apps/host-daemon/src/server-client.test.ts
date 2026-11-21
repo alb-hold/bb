@@ -48,7 +48,7 @@ async function readText(source: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 describe("createServerClient", () => {
-  it("sends the compiled daemon protocol version on session open", async () => {
+  it("sends the compiled daemon protocol version on session open (test-change-reason: the merged session response supplies reconnect grace)", async () => {
     let requestProtocolVersion: number | undefined;
     const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
       const payload: unknown = JSON.parse(String(init?.body));
@@ -63,9 +63,12 @@ describe("createServerClient", () => {
       return Response.json(
         {
           sessionId: "session-1",
+          agentCpuPriority: false,
+          endedInteractiveRequests: [],
           machineEnvironment: { revision: 0, entries: [] },
           idleProviderSessionTimeoutMinutes: 30,
           heartbeatIntervalMs: 5_000,
+          reconnectGraceMs: 30_000,
           leaseTimeoutMs: 30_000,
         },
         { status: 201 },
@@ -86,7 +89,9 @@ describe("createServerClient", () => {
       instanceId: "instance-1",
       localApiPort: null,
       activeThreads: [],
+      openThreadWork: [],
       undeliveredEventThreadIds: [],
+      turnCommandThreadIds: [],
       loadedEnvironments: [],
       adoptedThreads: [],
     });
@@ -119,7 +124,9 @@ describe("createServerClient", () => {
       dataDir: "/tmp/bb",
       instanceId: "instance-1",
       localApiPort: null,
+      turnCommandThreadIds: [],
       activeThreads: [],
+      openThreadWork: [],
       undeliveredEventThreadIds: [],
       loadedEnvironments: [],
       adoptedThreads: [],
@@ -226,7 +233,10 @@ describe("createServerClient", () => {
           dataDir: "/tmp/bb",
           instanceId: "instance-1",
           localApiPort: null,
+          turnCommandThreadIds: [],
           activeThreads: [],
+          openThreadWork: [],
+
           adoptedThreads: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
@@ -257,10 +267,13 @@ describe("createServerClient", () => {
         return Response.json(
           {
             sessionId: "session-1",
+            agentCpuPriority: false,
+            endedInteractiveRequests: [],
             machineEnvironment: { revision: 0, entries: [] },
             idleProviderSessionTimeoutMinutes: 30,
             heartbeatIntervalMs: 5_000,
             leaseTimeoutMs: 30_000,
+            reconnectGraceMs: 30_000,
           },
           { status: 201 },
         );
@@ -280,7 +293,9 @@ describe("createServerClient", () => {
         dataDir: "/tmp/bb",
         instanceId: "instance-1",
         localApiPort: 38_888,
+        turnCommandThreadIds: [],
         activeThreads: [],
+        openThreadWork: [],
         undeliveredEventThreadIds: [],
         loadedEnvironments: [],
         adoptedThreads: [],
@@ -289,14 +304,17 @@ describe("createServerClient", () => {
     },
   );
 
-  it("sends adopted threads on session open only when there are any, so the request stays stock-shaped", async () => {
+  it("sends adopted threads on session open only when there are any, so the request stays stock-shaped (test-change-reason: the merged session response supplies reconnect grace)", async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return Response.json(
         {
           sessionId: "session-1",
+          agentCpuPriority: false,
+          endedInteractiveRequests: [],
           heartbeatIntervalMs: 30_000,
+          reconnectGraceMs: 30_000,
           leaseTimeoutMs: 90_000,
           idleProviderSessionTimeoutMinutes: 30,
           machineEnvironment: { revision: 0, entries: [] },
@@ -321,9 +339,11 @@ describe("createServerClient", () => {
         instanceId: "instance-1",
         localApiPort: null,
         activeThreads: [],
+        openThreadWork: [],
         loadedEnvironments: [],
         adoptedThreads,
         undeliveredEventThreadIds: [],
+        turnCommandThreadIds: [],
       });
 
     await open([]);
@@ -549,7 +569,7 @@ describe("createServerClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("returns accepted event mappings when posting events", async () => {
+  it("returns accepted event mappings when posting events (test-change-reason: the fork sends session settings only during session open)", async () => {
     const fetchFn = vi.fn<FetchFn>(async (input, init) => {
       expect(String(input)).toContain("/internal/session/events");
       expect(JSON.parse(String(init?.body))).toEqual({

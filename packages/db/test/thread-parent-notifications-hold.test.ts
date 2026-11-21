@@ -15,7 +15,10 @@ import {
   updateThread,
   type DbConnection,
 } from "../src/index.js";
-import { dropThreadParentNotificationsHoldColumn } from "./helpers/rewind.js";
+import {
+  dropThreadParentNotificationsHoldColumn,
+  rewindMergedUpstreamMigrations,
+} from "./helpers/rewind.js";
 
 const STOCK_PARENT_NOTIFICATIONS_VALUES: readonly string[] = [
   "auto",
@@ -119,6 +122,7 @@ describe("parent notifications inbox storage", () => {
       const inbox = seedThread(db, "inbox");
       const stuck = seedThread(db, "stuck");
       dropThreadParentNotificationsHoldColumn(db);
+      rewindMergedUpstreamMigrations(db);
       db.$client
         .prepare(
           "UPDATE threads SET parent_notifications = 'inbox' WHERE id = ?",

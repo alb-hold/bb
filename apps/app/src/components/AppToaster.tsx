@@ -18,6 +18,7 @@ const AppToasterSplit = defineSplit({
   loading: () => null,
   error: ToasterUnavailable,
   tier: "intent",
+  suspends: false,
 });
 
 export function AppToaster() {

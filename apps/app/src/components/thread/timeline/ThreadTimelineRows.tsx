@@ -8,9 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
-import type { ComponentProps, CSSProperties, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactNode, Ref } from "react";
 import "./timeline-row-spacing.css";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -84,7 +83,6 @@ import { TimelineReasoningDetail } from "./TimelineReasoningDetail.js";
 import { ExpandableTimelineRow } from "./ExpandableTimelineRow.js";
 import { TimelineRowBodyPlaceholder } from "./TimelineRowBodyPlaceholder.js";
 import {
-  timelineDetailIdentity,
   usePreloadTimelineRowBody,
   useTimelineRowBodyRenderersReady,
 } from "./timeline-row-body-preload.js";
@@ -129,6 +127,10 @@ import {
   timelineRowRenderSignature,
 } from "@bb/client-core";
 import {
+  TimelineDetailSourceContext,
+  useTimelineDetailIdentity,
+} from "./timeline-detail-identity.js";
+import {
   TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
   timelineRowContainmentStyle,
   useArmTopLevelTimelineRowContainment,
@@ -139,14 +141,10 @@ import { copyToClipboardWithToast } from "@/lib/clipboard";
 import { useThreadTimelineTurnSummaryDetails } from "@/hooks/queries/thread-panel-queries";
 import { useThreadTimelineNavigation } from "./ThreadTimelineNavigationContext.js";
 import { type ThreadTimelineTurnSummaryDetailsQueryIdentity } from "@/hooks/queries/query-keys";
-import {
-  useSenderThreadMetadataById,
-  type SenderThreadMetadata,
-} from "@/hooks/useSenderThreadMetadataById";
+import { useSenderThreadMetadata } from "@/hooks/useSenderThreadMetadataById";
 import {
   EMPTY_PLUGIN_SLOT_SNAPSHOT,
-  getPluginSlotSnapshot,
-  subscribePluginSlots,
+  usePluginSlotKind,
   type PluginMessageActionSlot,
   type PluginMessageMetadataSlot,
 } from "@/lib/plugin-slots.js";
@@ -341,11 +339,6 @@ interface TimelineRowTitleRenderStateArgs extends ActiveSummaryTreatmentArgs {
   compactActivityIntents: boolean;
 }
 
-interface TimelineRowTitleRenderStateCache {
-  key: string;
-  state: TimelineRowTitleRenderState;
-}
-
 type TimelineConversationViewRow = Extract<
   ThreadTimelineViewRow,
   { kind: "conversation" }
@@ -396,10 +389,6 @@ interface ConversationRowContentProps extends ConversationRowProps {
 
 const TimelineRendererStaticContext =
   createContext<TimelineRendererStaticContextValue | null>(null);
-const SenderThreadMetadataContext = createContext<ReadonlyMap<
-  string,
-  SenderThreadMetadata
-> | null>(null);
 const TimelineTurnStateContext =
   createContext<TimelineTurnStateContextValue | null>(null);
 const LatestActionableAssistantMessageIdContext = createContext<string | null>(
@@ -420,37 +409,12 @@ function useTimelineRendererStaticContext(): TimelineRendererStaticContextValue 
   return context;
 }
 
-function useSenderThreadMetadataContext(): ReadonlyMap<
-  string,
-  SenderThreadMetadata
-> {
-  const context = useContext(SenderThreadMetadataContext);
-  if (!context) {
-    throw new Error("Thread timeline sender metadata context is missing");
-  }
-  return context;
-}
-
 function useTimelineTurnStateContext(): TimelineTurnStateContextValue {
   const context = useContext(TimelineTurnStateContext);
   if (!context) {
     throw new Error("Thread timeline turn-state context is missing");
   }
   return context;
-}
-
-function timelineRowTitleRenderStateKey({
-  activeLatestBundleId,
-  compactActivityIntents,
-  row,
-  scopeActive,
-}: TimelineRowTitleRenderStateArgs): string {
-  return joinSignatureParts([
-    timelineRowRenderSignature(row),
-    compactActivityIntents,
-    scopeActive,
-    activeLatestBundleId === row.id,
-  ]);
 }
 
 function buildTimelineRowTitleRenderState({
@@ -481,24 +445,6 @@ function buildTimelineRowTitleRenderState({
     kind: "row-title",
     title,
   };
-}
-
-function useTimelineRowTitleRenderState(
-  args: TimelineRowTitleRenderStateArgs,
-): TimelineRowTitleRenderState {
-  const cacheRef = useRef<TimelineRowTitleRenderStateCache | null>(null);
-  const key = timelineRowTitleRenderStateKey(args);
-  const cached = cacheRef.current;
-  if (cached?.key === key) {
-    return cached.state;
-  }
-
-  const state = buildTimelineRowTitleRenderState(args);
-  cacheRef.current = {
-    key,
-    state,
-  };
-  return state;
 }
 
 function areTimelineRowViewPropsEqual(
@@ -558,11 +504,52 @@ function areReadonlySetsEqual(
 function useStableReadonlySet(
   values: ReadonlySet<string>,
 ): ReadonlySet<string> {
-  const valuesRef = useRef(values);
-  if (!areReadonlySetsEqual(valuesRef.current, values)) {
-    valuesRef.current = values;
+  const [stable, setStable] = useState(values);
+  if (!areReadonlySetsEqual(stable, values)) {
+    setStable(values);
+    return values;
   }
-  return valuesRef.current;
+  return stable;
+}
+
+function accumulateTerminalRowIds(
+  previous: ReadonlySet<string>,
+  frontierRowIds: Iterable<string>,
+): ReadonlySet<string> {
+  const accumulated = new Set(previous);
+  for (const id of frontierRowIds) {
+    accumulated.delete(id);
+    accumulated.add(id);
+  }
+  while (accumulated.size > TIMELINE_TERMINAL_EXPANSION_RETENTION) {
+    const oldestId = accumulated.values().next().value;
+    if (oldestId === undefined) {
+      break;
+    }
+    accumulated.delete(oldestId);
+  }
+  return accumulated;
+}
+
+function useAccumulatedTerminalRowIds(
+  frontierRowIds: Iterable<string>,
+): ReadonlySet<string> {
+  const [accumulation, setAccumulation] = useState(() => ({
+    frontierRowIds,
+    accumulated: accumulateTerminalRowIds(EMPTY_ROW_ID_SET, frontierRowIds),
+  }));
+  if (accumulation.frontierRowIds !== frontierRowIds) {
+    const next = {
+      frontierRowIds,
+      accumulated: accumulateTerminalRowIds(
+        accumulation.accumulated,
+        frontierRowIds,
+      ),
+    };
+    setAccumulation(next);
+    return next.accumulated;
+  }
+  return accumulation.accumulated;
 }
 
 function useTimelineSearchExpansionRowIds(
@@ -1034,12 +1021,10 @@ function InlineMessageEditorHost({
 }: {
   editor: ThreadTimelineInlineMessageEditor;
 }) {
+  const { onHostElementChange } = editor;
   return (
     <div className="ml-auto w-full max-w-[70%] max-md:max-w-full">
-      <div
-        ref={editor.onHostElementChange}
-        data-sent-message-inline-editor-host=""
-      />
+      <div ref={onHostElementChange} data-sent-message-inline-editor-host="" />
     </div>
   );
 }
@@ -1070,7 +1055,9 @@ const ConversationRowContent = memo(function ConversationRowContent({
     resolveUserAttachmentImageSrc,
     threadId,
   } = useTimelineRendererStaticContext();
-  const senderThreadMetadataById = useSenderThreadMetadataContext();
+  const senderThreadMetadata = useSenderThreadMetadata(
+    row.role === "user" ? row.senderThreadId : null,
+  );
   if (
     row.role === "user" &&
     inlineMessageEditor !== undefined &&
@@ -1136,10 +1123,6 @@ const ConversationRowContent = memo(function ConversationRowContent({
       : { role: "assistant" }),
   };
   if (row.role === "user") {
-    const senderThreadMetadata =
-      row.senderThreadId === null
-        ? null
-        : (senderThreadMetadataById.get(row.senderThreadId) ?? null);
     const canEditMessage =
       onEditMessage !== undefined &&
       row.initiator === "user" &&
@@ -1315,7 +1298,7 @@ function TimelineExpandableBody(props: TimelineExpandableBodyProps) {
     preloadBody();
   }, [preloadBody]);
   const deferred = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, itemId ?? ""),
+    useTimelineDetailIdentity(row, threadId, itemId ?? ""),
     itemId !== null,
   );
   const resolved =
@@ -1569,7 +1552,7 @@ function LazyTurnRowBody({
 }: TurnRowBodyProps) {
   const { getViewRows, threadId } = useTimelineRendererStaticContext();
   const detail = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, null),
+    useTimelineDetailIdentity(row, threadId, null),
     true,
   );
   const rows = detail.rows
@@ -1648,7 +1631,7 @@ function DeferredDelegationChildRows({
 }) {
   const { getViewRows, threadId } = useTimelineRendererStaticContext();
   const detail = useTimelineDetailRows(
-    timelineDetailIdentity(row, threadId, row.callId),
+    useTimelineDetailIdentity(row, threadId, row.callId),
     true,
   );
   const loadedRows = detail.rows
@@ -1704,6 +1687,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
   const { projectId, resolveUserAttachmentImageSrc } =
     useTimelineRendererStaticContext();
   const delegationActive = row.status === "pending";
+  const detailIdentity = useTimelineDetailIdentity(row, row.threadId, null);
   const [lastInlineChildRows, setLastInlineChildRows] = useState(row.childRows);
   if (row.childRows !== null && row.childRows !== lastInlineChildRows) {
     setLastInlineChildRows(row.childRows);
@@ -1715,40 +1699,42 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
       streaming={delegationActive}
       className={NESTED_TIMELINE_GROUP_LINE_CLASS_NAME}
     >
-      <div className="flex flex-col gap-3">
-        {row.childRows === null ? (
-          <DeferredDelegationChildRows
-            fallbackRows={lastInlineChildRows}
-            row={row}
-          />
-        ) : row.childRows.length > 0 ? (
-          <TimelineRowsList
-            rows={row.childRows}
-            scopeActive={delegationActive}
-            showAssistantMessageActions={false}
-            compactActivityIntents={false}
-            spacing="nested"
-            threadIsActive={false}
-            unreadDividerPlacement={null}
-          />
-        ) : null}
-        {row.output.trim().length > 0 ? (
-          <ConversationMessageContent
-            attachments={null}
-            id={row.id}
-            projectId={projectId}
-            resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
-            role="assistant"
-            showActions={false}
-            mobileActionDisplay="overflow"
-            streaming={delegationActive}
-            text={row.output}
-            timestamp={row.startedAt}
-            threadId={row.threadId}
-            turnId={row.turnId}
-          />
-        ) : null}
-      </div>
+      <TimelineDetailSourceContext.Provider value={detailIdentity}>
+        <div className="flex flex-col gap-3">
+          {row.childRows === null ? (
+            <DeferredDelegationChildRows
+              fallbackRows={lastInlineChildRows}
+              row={row}
+            />
+          ) : row.childRows.length > 0 ? (
+            <TimelineRowsList
+              rows={row.childRows}
+              scopeActive={delegationActive}
+              showAssistantMessageActions={false}
+              compactActivityIntents={false}
+              spacing="nested"
+              threadIsActive={false}
+              unreadDividerPlacement={null}
+            />
+          ) : null}
+          {row.output.trim().length > 0 ? (
+            <ConversationMessageContent
+              attachments={null}
+              id={row.id}
+              projectId={projectId}
+              resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
+              role="assistant"
+              showActions={false}
+              mobileActionDisplay="overflow"
+              streaming={delegationActive}
+              text={row.output}
+              timestamp={row.startedAt}
+              threadId={row.threadId}
+              turnId={row.turnId}
+            />
+          ) : null}
+        </div>
+      </TimelineDetailSourceContext.Provider>
     </TimelineDetailScroll>
   );
 }
@@ -1876,7 +1862,7 @@ function SentThreadMessageRow({
   sentAt: number;
 }) {
   const context = useTimelineRendererStaticContext();
-  const recipient = useSenderThreadMetadataContext().get(message.threadId);
+  const recipient = useSenderThreadMetadata(message.threadId);
   return (
     <GeneratedConversationMessage
       attachmentItems={NO_ATTACHMENTS}
@@ -1913,7 +1899,7 @@ function TimelineRowView({
 }: TimelineRowViewProps) {
   const horizontalPadding = timelineRowHorizontalPadding(spacing);
   const { onTitleAction } = useTimelineRendererStaticContext();
-  const titleState = useTimelineRowTitleRenderState({
+  const titleState = buildTimelineRowTitleRenderState({
     activeLatestBundleId,
     compactActivityIntents,
     row,
@@ -2188,7 +2174,7 @@ function findUnreadDividerIndex({
   const firstNewIndex = rows.findIndex((row) =>
     isNewRowAfterCutoff(row, cutoffAt),
   );
-  if (firstNewIndex === -1 || unreadDividerPlacement.anchor !== "turn-answer") {
+  if (firstNewIndex === -1) {
     return firstNewIndex;
   }
   const settledTurnReplyIndexes = findSettledTurnReplyIndexes(
@@ -2277,7 +2263,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length; ) {
+  for (let index = 0; index < rows.length;) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2419,15 +2405,17 @@ function TimelineRowItemWrapper({
   spacing,
   windowedState,
   style,
+  ref,
 }: {
   style?: CSSProperties;
   children: ReactNode;
   row: ThreadTimelineViewRow;
   spacing: TimelineRowsListSpacing;
   windowedState: TimelineWindowedItemRenderState;
+  ref?: Ref<HTMLDivElement>;
 }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const composedRef = useComposedRefs(wrapperRef, windowedState.itemRef);
+  const composedRef = useComposedRefs(wrapperRef, ref);
   const isTopLevel = spacing === "top-level";
   const { marginTop, ...rowStyle } = style ?? {};
   useArmTopLevelTimelineRowContainment(
@@ -2644,8 +2632,7 @@ function TimelineRowsList({
         (current.row.kind === "turn" && current.row.status !== "pending");
       const nextIsUserMessage =
         next.row.kind === "conversation" && next.row.role === "user";
-      if (currentIsDisclosure && nextIsUserMessage)
-        return TURN_END_TO_USER_GAP;
+      if (currentIsDisclosure && nextIsUserMessage) return TURN_END_TO_USER_GAP;
       if (
         current.row.turnId !== next.row.turnId ||
         (current.row.kind === "conversation" && current.row.role === "user") ||
@@ -2752,7 +2739,6 @@ function TimelineRowsList({
                 return (
                   <div
                     key={item.id}
-                    ref={windowedState.itemRef}
                     data-scroll-landmark-id={item.id}
                     data-timeline-window-key={`divider:${item.id}`}
                   >
@@ -2764,7 +2750,6 @@ function TimelineRowsList({
                 return (
                   <div
                     key={item.id}
-                    ref={windowedState.itemRef}
                     data-timeline-row-id={item.id}
                     data-timeline-window-key={item.id}
                     className="max-md:[contain-intrinsic-block-size:auto_1.25rem]"
@@ -2864,50 +2849,19 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   const liveAutoExpandedRowIds = useStableReadonlySet(
     computedAutoExpansionRowIds.liveExpandedRowIds,
   );
-  const accumulatedTerminalRowIdsRef = useRef(new Set<string>());
-  const accumulatedTerminalRowIds = useMemo(() => {
-    const accumulated = accumulatedTerminalRowIdsRef.current;
-    for (const id of computedAutoExpansionRowIds.terminalFrontierRowIds) {
-      accumulated.delete(id);
-      accumulated.add(id);
-    }
-    while (accumulated.size > TIMELINE_TERMINAL_EXPANSION_RETENTION) {
-      const oldestId = accumulated.values().next().value;
-      if (oldestId === undefined) {
-        break;
-      }
-      accumulated.delete(oldestId);
-    }
-    return new Set(accumulated);
-  }, [computedAutoExpansionRowIds.terminalFrontierRowIds]);
   const terminalAutoExpandedRowIds = useStableReadonlySet(
-    accumulatedTerminalRowIds,
+    useAccumulatedTerminalRowIds(
+      computedAutoExpansionRowIds.terminalFrontierRowIds,
+    ),
   );
   const initialAutoExpandedRowIds = useStableReadonlySet(
     props.initialExpanded ?? EMPTY_ROW_ID_SET,
   );
   const projectId = props.projectId;
-  const senderThreadMetadataById = useSenderThreadMetadataById();
-  const messageDirectiveSlots = useSyncExternalStore(
-    subscribePluginSlots,
-    () => getPluginSlotSnapshot().messageDirectives,
-    () => EMPTY_PLUGIN_SLOT_SNAPSHOT.messageDirectives,
-  );
-  const codeFenceRendererSlots = useSyncExternalStore(
-    subscribePluginSlots,
-    () => getPluginSlotSnapshot().codeFenceRenderers,
-    () => EMPTY_PLUGIN_SLOT_SNAPSHOT.codeFenceRenderers,
-  );
-  const messageActionSlots = useSyncExternalStore(
-    subscribePluginSlots,
-    () => getPluginSlotSnapshot().messageActions,
-    () => EMPTY_PLUGIN_SLOT_SNAPSHOT.messageActions,
-  );
-  const messageMetadataSlots = useSyncExternalStore(
-    subscribePluginSlots,
-    () => getPluginSlotSnapshot().messageMetadata,
-    () => EMPTY_PLUGIN_SLOT_SNAPSHOT.messageMetadata,
-  );
+  const messageDirectiveSlots = usePluginSlotKind("messageDirectives");
+  const codeFenceRendererSlots = usePluginSlotKind("codeFenceRenderers");
+  const messageActionSlots = usePluginSlotKind("messageActions");
+  const messageMetadataSlots = usePluginSlotKind("messageMetadata");
   const messageDirectiveRegistry = useMemo(
     () => buildMessageDirectiveRegistry(messageDirectiveSlots),
     [messageDirectiveSlots],
@@ -3067,89 +3021,83 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       <SearchMessageLocationProvider threadId={props.threadId}>
         <MessageDirectiveRegistryProvider registry={messageDirectiveRegistry}>
           <TimelineRendererStaticContext.Provider value={staticContextValue}>
-            <SenderThreadMetadataContext.Provider
-              value={senderThreadMetadataById}
+            <LatestActionableAssistantMessageIdContext.Provider
+              value={latestActionableAssistantMessageId}
             >
-              <LatestActionableAssistantMessageIdContext.Provider
-                value={latestActionableAssistantMessageId}
+              <LatestActionableUserMessageIdContext.Provider
+                value={latestActionableUserMessageId}
               >
-                <LatestActionableUserMessageIdContext.Provider
-                  value={latestActionableUserMessageId}
+                <StreamingAssistantMessageIdContext.Provider
+                  value={streamingAssistantMessageId}
                 >
-                  <StreamingAssistantMessageIdContext.Provider
-                    value={streamingAssistantMessageId}
+                  <TimelineTurnStateContext.Provider
+                    value={turnStateContextValue}
                   >
-                    <TimelineTurnStateContext.Provider
-                      value={turnStateContextValue}
+                    <TimelineWindowingMeasurementsContext.Provider
+                      value={windowingMeasurements}
                     >
-                      <TimelineWindowingMeasurementsContext.Provider
-                        value={windowingMeasurements}
-                      >
-                        <div className="relative">
-                          <AutoHeightContainer
-                            snapRevision={heightSnapRevision}
-                            animateGrowth={!scopeActive}
-                          >
-                            <TimelineRowsList
-                              hasOlderTimelineRows={props.hasOlderTimelineRows}
-                              isLoadingOlderTimelineRows={
-                                props.isLoadingOlderTimelineRows
-                              }
-                              navigationTargetRowId={
-                                props.timelineNavigationTargetRowId
-                              }
-                              onLoadOlderRows={props.onLoadOlderRows}
-                              rows={rows}
-                              flatTurnTokenSummaryThreadId={props.threadId}
-                              flatTurnTokenSummaryExcludedTurnId={
-                                shouldExcludeActiveTurnTokenSummary
-                                  ? rows.some((row) => row.kind === "turn")
-                                    ? (findActiveTurnId(
-                                        rows,
-                                        streamingAssistantMessageId,
-                                      ) ?? findNewestTurnId(rows))
-                                    : findNewestTurnId(rows)
-                                  : undefined
-                              }
-                              scopeActive={scopeActive}
-                              threadIsActive={
-                                shouldExcludeActiveTurnTokenSummary
-                              }
-                              showAssistantMessageActions={true}
-                              compactActivityIntents={false}
-                              spacing="top-level"
-                              unreadDividerAutoScroll={
-                                props.unreadDividerAutoScroll ??
-                                props.hasUnseenTimelineEvents !== true
-                              }
-                              unreadDividerPlacement={
-                                props.unreadDividerPlacement ?? null
-                              }
-                            />
-                          </AutoHeightContainer>
+                      <div className="relative">
+                        <AutoHeightContainer
+                          snapRevision={heightSnapRevision}
+                          animateGrowth={!scopeActive}
+                        >
+                          <TimelineRowsList
+                            hasOlderTimelineRows={props.hasOlderTimelineRows}
+                            isLoadingOlderTimelineRows={
+                              props.isLoadingOlderTimelineRows
+                            }
+                            navigationTargetRowId={
+                              props.timelineNavigationTargetRowId
+                            }
+                            onLoadOlderRows={props.onLoadOlderRows}
+                            rows={rows}
+                            flatTurnTokenSummaryThreadId={props.threadId}
+                            flatTurnTokenSummaryExcludedTurnId={
+                              shouldExcludeActiveTurnTokenSummary
+                                ? rows.some((row) => row.kind === "turn")
+                                  ? (findActiveTurnId(
+                                      rows,
+                                      streamingAssistantMessageId,
+                                    ) ?? findNewestTurnId(rows))
+                                  : findNewestTurnId(rows)
+                                : undefined
+                            }
+                            scopeActive={scopeActive}
+                            threadIsActive={shouldExcludeActiveTurnTokenSummary}
+                            showAssistantMessageActions={true}
+                            compactActivityIntents={false}
+                            spacing="top-level"
+                            unreadDividerAutoScroll={
+                              props.unreadDividerAutoScroll ??
+                              props.hasUnseenTimelineEvents !== true
+                            }
+                            unreadDividerPlacement={
+                              props.unreadDividerPlacement ?? null
+                            }
+                          />
+                        </AutoHeightContainer>
 
-                          {hasSelectionActions ? (
-                            <div
-                              ref={setSelectionMenuLayer}
-                              className="pointer-events-none absolute inset-0 z-10 [contain:layout]"
-                            />
-                          ) : null}
-                        </div>
-                      </TimelineWindowingMeasurementsContext.Provider>
-                      {hasSelectionActions ? (
-                        <TimelineSelectionMenu
-                          selection={activeSelection?.selection ?? null}
-                          onAddToChat={selectionAddToChatHandler}
-                          pluginActions={selectionPluginActions}
-                          onDismiss={dismissSelection}
-                          container={selectionMenuLayer}
-                        />
-                      ) : null}
-                    </TimelineTurnStateContext.Provider>
-                  </StreamingAssistantMessageIdContext.Provider>
-                </LatestActionableUserMessageIdContext.Provider>
-              </LatestActionableAssistantMessageIdContext.Provider>
-            </SenderThreadMetadataContext.Provider>
+                        {hasSelectionActions ? (
+                          <div
+                            ref={setSelectionMenuLayer}
+                            className="pointer-events-none absolute inset-0 z-10 [contain:layout]"
+                          />
+                        ) : null}
+                      </div>
+                    </TimelineWindowingMeasurementsContext.Provider>
+                    {hasSelectionActions ? (
+                      <TimelineSelectionMenu
+                        selection={activeSelection?.selection ?? null}
+                        onAddToChat={selectionAddToChatHandler}
+                        pluginActions={selectionPluginActions}
+                        onDismiss={dismissSelection}
+                        container={selectionMenuLayer}
+                      />
+                    ) : null}
+                  </TimelineTurnStateContext.Provider>
+                </StreamingAssistantMessageIdContext.Provider>
+              </LatestActionableUserMessageIdContext.Provider>
+            </LatestActionableAssistantMessageIdContext.Provider>
           </TimelineRendererStaticContext.Provider>
         </MessageDirectiveRegistryProvider>
       </SearchMessageLocationProvider>

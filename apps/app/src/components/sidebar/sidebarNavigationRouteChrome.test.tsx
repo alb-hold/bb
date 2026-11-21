@@ -31,8 +31,7 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useIsAppCommandModifierHeld: () => false,
 }));
 
-vi.mock("@/lib/plugin-nav-panel-chrome", () => ({
-  usePluginNavPanelChrome: () => [
+const NAV_PANELS = vi.hoisted(() => [
     {
       chrome: {
         pluginId: "garden",
@@ -40,10 +39,14 @@ vi.mock("@/lib/plugin-nav-panel-chrome", () => ({
         path: "docs",
         title: "Docs",
         icon: "MessageCircle",
+        hideFromNavigation: false,
       },
       panel: null,
     },
-  ],
+]);
+
+vi.mock("@/lib/plugin-nav-panel-chrome", () => ({
+  usePluginNavPanelChrome: () => NAV_PANELS,
 }));
 
 function VisibleRailKeys() {

@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -13,7 +12,6 @@ import {
   PERSONAL_PROJECT_ID,
   type Host,
   type ProjectSource,
-  type PromptTextMention,
 } from "@bb/domain";
 import type {
   SystemEnvironmentProvider,
@@ -26,8 +24,9 @@ import { ComposerBannersSlot } from "@/components/plugin/PluginComposerBanners";
 import { PROMPT_STACK_TRACK_CLASS } from "@/components/promptbox/banner/PromptStackCard";
 import {
   composerScopeIdentity,
+  type ComposerDraftStore,
   type PluginComposerHost,
-  usePluginComposerViewModel,
+  usePluginComposerStaticViewModel,
 } from "@/components/plugin/plugin-composer-host";
 import {
   ComposerExtensionHost,
@@ -76,7 +75,6 @@ import {
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
-import type { PromptDraftController } from "@/hooks/usePromptDraftStorage";
 
 const NEW_THREAD_PROMPT_BOX_MIN_HEIGHT = 80;
 
@@ -128,12 +126,9 @@ export interface NewThreadModeConfig {
 }
 
 interface NewThreadPromptBoxUIProps {
-  draftSource?: Pick<PromptDraftController, "getCurrent" | "subscribe">;
   id?: string;
 
-  value: string;
-  mentionRanges: readonly PromptTextMention[];
-  onChange: (value: string, mentionRanges: PromptTextMention[]) => void;
+  draft: ComposerDraftStore;
   onSubmit: (extras?: ComposerSubmitExtras) => void | Promise<void>;
   focusRequest?: string;
   isSubmitting: boolean;
@@ -192,9 +187,6 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI(
   );
 });
 
-const subscribeToNoDraft = () => () => {};
-const getNoDraft = () => null;
-
 function LiveNewThreadComposer(
   props: NewThreadPromptBoxUIProps & {
     promptBoxRef: RefObject<PromptBoxHandle | null>;
@@ -203,34 +195,20 @@ function LiveNewThreadComposer(
   },
 ) {
   "use no memo";
-  const { draftSource, pluginComposerHost, execution, focusDefault } = props;
-  const draft = useSyncExternalStore(
-    draftSource?.subscribe ?? subscribeToNoDraft,
-    draftSource?.getCurrent ?? getNoDraft,
-    draftSource?.getCurrent ?? getNoDraft,
-  );
-  const value = draft?.text ?? props.value;
-  const mentionRanges = draft?.mentions ?? props.mentionRanges;
-  const history = draft
-    ? { ...props.history, currentDraft: draft }
-    : props.history;
-  const attachments = draft
-    ? { ...props.attachments, items: draft.attachments }
-    : props.attachments;
-  const attachmentCount = attachments.items?.length ?? 0;
+  const { pluginComposerHost, execution, focusDefault } = props;
+  const { history, attachments } = props;
   const [composerLayout, setComposerLayout] =
     useState<ComposerView["layout"]>("expanded");
-  const composerView = usePluginComposerViewModel({
+  const composerView = usePluginComposerStaticViewModel({
     scope: pluginComposerHost?.scope ?? DEFAULT_COMPOSER_SCOPE,
     layout: composerLayout,
-    text: value,
-    attachmentCount,
     isRunning: false,
     isSubmitting: props.isSubmitting,
   });
   const controller = useComposerExtensionController({
     host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
+    draft: props.draft,
     focusDefault,
   });
 
@@ -240,8 +218,6 @@ function LiveNewThreadComposer(
       defaultRenderer={
         <DefaultNewThreadComposer
           {...props}
-          value={value}
-          mentionRanges={mentionRanges}
           history={history}
           attachments={attachments}
           onComposerLayoutChange={setComposerLayout}
@@ -264,9 +240,7 @@ interface DefaultNewThreadComposerProps extends Omit<
 
 const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   id,
-  value,
-  mentionRanges,
-  onChange,
+  draft,
   onSubmit,
   promptBoxRef,
   isSubmitting,
@@ -301,8 +275,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   const { permissionDisplayOverride, permissionPickerDisabledByPlanMode } =
     usePromptModePermissionDisplay({
       execution,
-      value,
-      mentionRanges,
+      draft,
       activePromptMode: null,
     });
   const submitTitle = isSubmitting
@@ -329,7 +302,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         </ComposerBannersSlot>
       </div>
       <PendingComposerSubmission
-        text={value}
+        draft={draft}
         resetKey={history.resetKey}
         loading={Boolean(execution.pending || execution.model.isLoading)}
         disabled={disabled}
@@ -346,9 +319,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
             suppressPluginComposerCustomizations={execution.pending}
             id={id}
             promptBoxRef={promptBoxRef}
-            value={value}
-            mentionRanges={mentionRanges}
-            onChange={onChange}
+            draft={draft}
             onSubmit={onSubmit}
             textEffects={textEffects}
             onComposerLayoutChange={onComposerLayoutChange}
@@ -521,16 +492,17 @@ export function ProjectlessMachineSlot({
 }: ProjectlessMachineSlotProps) {
   const machines = environment.machines ?? null;
   const selectedProviderHostId = environment.selectedProviderHostId ?? null;
+  const machineHosts = machines?.hosts;
   const availableHosts = useMemo(() => {
-    const selectable = selectHosts(machines?.hosts, "persistent");
-    const selected = machines?.hosts.find(
+    const selectable = selectHosts(machineHosts, "persistent");
+    const selected = machineHosts?.find(
       (candidate) => candidate.id === selectedProviderHostId,
     );
     return selected === undefined ||
       selectable.some((candidate) => candidate.id === selected.id)
       ? selectable
       : [...selectable, selected];
-  }, [machines?.hosts, selectedProviderHostId]);
+  }, [machineHosts, selectedProviderHostId]);
   const parsedEnvironment = useMemo(
     () => parseEnvironmentValue(environment.value),
     [environment.value],

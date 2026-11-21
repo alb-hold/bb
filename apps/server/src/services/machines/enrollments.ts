@@ -91,7 +91,14 @@ export async function findUnusedEnrollmentCredential(
     )
     .limit(1)
     .get();
-  if (!row?.expiresAt) return null;
+  if (
+    row === undefined ||
+    typeof row.hostId !== "string" ||
+    (row.enrollSource !== null && typeof row.enrollSource !== "string") ||
+    !(row.expiresAt instanceof Date)
+  ) {
+    return null;
+  }
   return {
     hostId: row.hostId,
     enrollSource: row.enrollSource,

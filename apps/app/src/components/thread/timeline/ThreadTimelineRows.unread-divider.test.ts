@@ -18,14 +18,8 @@ import {
 
 const DIVIDER = "__divider__";
 
-function firstUnreadRow(
-  cutoffAt: number,
-): ThreadTimelineUnreadDividerPlacement {
-  return { anchor: "first-unread-row", cutoffAt };
-}
-
-function turnAnswer(cutoffAt: number): ThreadTimelineUnreadDividerPlacement {
-  return { anchor: "turn-answer", cutoffAt };
+function readUntil(cutoffAt: number): ThreadTimelineUnreadDividerPlacement {
+  return { cutoffAt };
 }
 
 function renderTopLevelSequence(
@@ -93,7 +87,7 @@ function command(createdAt: number, turnId = "turn-1"): TimelineRow {
   });
 }
 
-describe("unread divider placement at the turn answer", () => {
+describe("unread divider placement", () => {
   it("lands on the final answer of a flat turn that ran after the reader's prompt", () => {
     const sequence = renderTopLevelSequence(
       [
@@ -104,7 +98,7 @@ describe("unread divider placement at the turn answer", () => {
         command(500),
         assistantMessage(600),
       ],
-      turnAnswer(100),
+      readUntil(100),
     );
 
     expect(sequence).toEqual([
@@ -125,7 +119,7 @@ describe("unread divider placement at the turn answer", () => {
         command(200),
         assistantMessage(300),
       ],
-      turnAnswer(100),
+      readUntil(100),
     );
 
     expect(sequence).toEqual(["user", "system", "work", DIVIDER, "assistant"]);
@@ -146,7 +140,7 @@ describe("unread divider placement at the turn answer", () => {
         }),
         assistantMessage(600),
       ],
-      turnAnswer(100),
+      readUntil(100),
     );
 
     expect(sequence).toEqual(["user", "turn", DIVIDER, "assistant"]);
@@ -161,7 +155,7 @@ describe("unread divider placement at the turn answer", () => {
         command(500, "turn-2"),
         assistantMessage(600, "turn-2"),
       ],
-      turnAnswer(300),
+      readUntil(300),
     );
 
     expect(sequence).toEqual([
@@ -190,7 +184,7 @@ describe("unread divider placement at the turn answer", () => {
           turnId: "turn-1",
         }),
       ],
-      turnAnswer(100),
+      readUntil(100),
     );
 
     expect(sequence).toEqual(["user", "work", DIVIDER, "system"]);
@@ -199,7 +193,7 @@ describe("unread divider placement at the turn answer", () => {
   it("falls back to the first new row in a turn with no reply", () => {
     const sequence = renderTopLevelSequence(
       [userMessage(100), command(200), command(300)],
-      turnAnswer(100),
+      readUntil(100),
     );
 
     expect(sequence).toEqual(["user", DIVIDER, "bundle-summary"]);
@@ -214,7 +208,7 @@ describe("unread divider placement at the turn answer", () => {
         command(500, "turn-2"),
         assistantMessage(600, "turn-2"),
       ],
-      turnAnswer(450),
+      readUntil(450),
       true,
     );
 
@@ -237,7 +231,7 @@ describe("unread divider placement at the turn answer", () => {
         command(400),
         assistantMessage(500),
       ],
-      turnAnswer(350),
+      readUntil(350),
     );
 
     expect(sequence).toEqual(["user", "step-summary", DIVIDER, "assistant"]);
@@ -250,75 +244,7 @@ describe("unread divider placement at the turn answer", () => {
         userMessage(400, "turn-2"),
         command(500, "turn-2"),
       ],
-      turnAnswer(300),
-    );
-
-    expect(sequence).toEqual(["assistant", "user", DIVIDER, "work"]);
-  });
-});
-
-describe("unread divider placement at the first unread row", () => {
-  it("keeps the divider below a work group the reader already saw part of", () => {
-    const sequence = renderTopLevelSequence(
-      [
-        userMessage(100),
-        command(200),
-        command(300),
-        command(400),
-        assistantMessage(500),
-      ],
-      firstUnreadRow(350),
-    );
-
-    expect(sequence).toEqual(["user", "step-summary", DIVIDER, "assistant"]);
-  });
-
-  it("places the divider above a work group that started after the cutoff", () => {
-    const sequence = renderTopLevelSequence(
-      [
-        userMessage(100),
-        assistantMessage(200),
-        command(400),
-        command(500),
-        assistantMessage(600),
-      ],
-      firstUnreadRow(300),
-    );
-
-    expect(sequence).toEqual([
-      "user",
-      "assistant",
-      DIVIDER,
-      "step-summary",
-      "assistant",
-    ]);
-  });
-
-  it("matches collapsed-turn placement when finished turns stay flat", () => {
-    const collapsed = renderTopLevelSequence(
-      [
-        userMessage(100),
-        turnRow({
-          id: "turn-row",
-          seq: 100,
-          createdAt: 100,
-          startedAt: 100,
-          turnId: "turn-1",
-          summaryCount: 3,
-          children: [command(200), command(300), command(400)],
-        }),
-        assistantMessage(500),
-      ],
-      firstUnreadRow(350),
-    );
-
-    expect(collapsed).toEqual(["user", "turn", DIVIDER, "assistant"]);
-  });
-
-  it("never anchors the divider on the reader's own message", () => {
-    const sequence = renderTopLevelSequence(
-      [assistantMessage(100), userMessage(400), command(500)],
-      firstUnreadRow(300),
+      readUntil(300),
     );
 
     expect(sequence).toEqual(["assistant", "user", DIVIDER, "work"]);
@@ -327,7 +253,7 @@ describe("unread divider placement at the first unread row", () => {
   it("omits the divider when no row started after the cutoff", () => {
     const sequence = renderTopLevelSequence(
       [userMessage(100), command(200), assistantMessage(300)],
-      firstUnreadRow(400),
+      readUntil(400),
     );
 
     expect(sequence).not.toContain(DIVIDER);
@@ -336,7 +262,7 @@ describe("unread divider placement at the first unread row", () => {
 
 describe("loaded unread divider placement", () => {
   it("drops a divider whose cutoff is older than the loaded rows, and keeps it dropped after older rows load", () => {
-    const placement = firstUnreadRow(350);
+    const placement = readUntil(350);
     const latestPage = buildTimelineViewRows([
       command(400),
       assistantMessage(500),
@@ -368,7 +294,7 @@ describe("loaded unread divider placement", () => {
   });
 
   it("keeps a divider whose cutoff falls inside the loaded rows", () => {
-    const placement = firstUnreadRow(350);
+    const placement = readUntil(350);
     const { result } = renderHook(() =>
       useLoadedUnreadDividerPlacement({
         hasOlderRows: true,

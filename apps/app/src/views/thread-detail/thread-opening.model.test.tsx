@@ -1,33 +1,54 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from "@testing-library/react";
+
 import type { ReactNode } from "react";
+
 import { MemoryRouter } from "react-router-dom";
+
 import type {
   ThreadResponse,
   ThreadTimelineResponse,
   TimelineRow,
 } from "@bb/server-contract";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { BottomAnchoredScrollBody } from "@/components/ui/bottom-anchored-scroll-body";
+
 import { ThreadTimelineSurface } from "@/components/thread/timeline/ThreadTimelineSurface";
+
 import { useThreadTimelineController } from "@/components/thread/timeline/useThreadTimelineController";
+
 import { sdk } from "@/lib/sdk";
+
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+
 import { threadListQueryKey, threadQueryKey } from "@/hooks/queries/query-keys";
+
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
+
+import { settleLazyModules } from "@/test/lazy-modules";
+
 import {
   makeThreadResponse,
   makeThreadTimelineResponse,
 } from "@/test/fixtures/thread-responses";
+
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
+
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
 import { useThreadDetailThread } from "./useThreadDetailThread";
 
 const SEED_COUNT = Number(process.env.OPENING_MODEL_SEEDS ?? 40);
+
 const THREAD_ID = "thr_opening";
+
 const DESKTOP_SEGMENT_LIMIT = 20;
+
 const COMPACT_SEGMENT_LIMIT = 8;
+
 const THRESHOLD_PX = 4;
 
 const viewport = vi.hoisted(() => ({ compact: false }));
@@ -98,15 +119,10 @@ interface Pending {
 
 function OpenedThread() {
   const timeline = useThreadTimelineController({ threadId: THREAD_ID });
-  const { unreadDividerState } = useThreadDetailThread(
-    THREAD_ID,
-    true,
-    "first-unread-row",
-    {
-      hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
-      isFocused: true,
-    },
-  );
+  const { unreadDividerState } = useThreadDetailThread(THREAD_ID, true, {
+    hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
+    isFocused: true,
+  });
   return (
     <BottomAnchoredScrollBody
       footer={null}
@@ -146,7 +162,18 @@ function Host({ shown }: { shown: boolean }) {
 let restoreLayout: (() => void) | null = null;
 
 function getScrollElement() {
-  return document.querySelector<HTMLElement>("[data-page-scroll-viewport]");
+  const elements = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+  let element = elements.nextNode();
+  while (element !== null) {
+    if (
+      element instanceof Element &&
+      element.hasAttribute("data-page-scroll-viewport")
+    ) {
+      return element as HTMLElement;
+    }
+    element = elements.nextNode();
+  }
+  return null;
 }
 
 function installOpeningLayout(
@@ -346,6 +373,7 @@ async function runSeed(seed: number): Promise<void> {
       layout.flushResizeObservers();
       await vi.advanceTimersByTimeAsync(0);
     });
+    await settleLazyModules();
   };
   const releaseAll = async (onRelease?: () => Promise<void>) => {
     for (let guard = 0; guard < 200; guard += 1) {
@@ -581,7 +609,7 @@ async function runSeed(seed: number): Promise<void> {
   }
 }
 
-describe("thread opening model", () => {
+describe("thread opening model (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so the model settles them after each flush)", () => {
   it("opens a confirmed native thread while environment bootstrap is pending", async () => {
     const nativeThread = makeThreadResponse({
       id: THREAD_ID,
@@ -596,7 +624,6 @@ describe("thread opening model", () => {
       const { thread, hasThreadDetailBootstrapSettled } = useThreadDetailThread(
         THREAD_ID,
         false,
-        "first-unread-row",
         {
           hasUnseenTimelineEvents: false,
           isFocused: true,
@@ -685,6 +712,7 @@ describe("thread opening model", () => {
         await vi.advanceTimersByTimeAsync(4_000);
         layout.flushResizeObservers();
       });
+      await settleLazyModules();
     };
     const divider = () =>
       document.querySelector<HTMLElement>(

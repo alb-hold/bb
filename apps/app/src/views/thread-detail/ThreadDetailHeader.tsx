@@ -23,6 +23,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { SplitButton } from "@/components/ui/split-button.js";
 import {
   AppPageHeader,
@@ -45,11 +46,16 @@ import {
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import {
+  PluginThreadHeaderTitle,
+  usePluginThreadHeaderTitleSlot,
+} from "@/components/plugin/PluginThreadHeaderTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
 import {
+  RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
   RIGHT_PANEL_TOGGLE_ICON_NAME,
   RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
 } from "@/components/secondary-panel/panelToggleControlState";
@@ -69,6 +75,14 @@ const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   "border-border/70 bg-transparent font-normal hover:bg-state-hover",
 );
 const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
+const INTERACTIVE_TITLE_TARGET_SELECTOR =
+  "a, button, input, select, textarea, label, [role='button'], [role='link'], [contenteditable='true']";
+
+function isInteractiveTitleTarget(event: ReactPointerEvent): boolean {
+  if (!(event.target instanceof Element)) return false;
+  const interactive = event.target.closest(INTERACTIVE_TITLE_TARGET_SELECTOR);
+  return interactive !== null && event.currentTarget.contains(interactive);
+}
 
 export interface ThreadDetailHeaderActionsMenuArgs {
   includeResponsiveActions: boolean;
@@ -81,6 +95,7 @@ export interface ThreadDetailHeaderActionsMenuArgs {
 interface ThreadDetailHeaderProps {
   actionsMenu: ((args: ThreadDetailHeaderActionsMenuArgs) => ReactNode) | null;
   contextCardButton?: ReactNode;
+  environmentId: string | null;
   isSecondaryPanelOpen: boolean;
   onClosePane?: () => void;
   onToggleSecondaryPanel: () => void;
@@ -99,8 +114,19 @@ interface ThreadDetailHeaderProps {
   environmentIsWorktree?: boolean;
 }
 
+function ThreadDetailHeaderActionsMenu({
+  actionsMenu,
+  args,
+}: {
+  actionsMenu: NonNullable<ThreadDetailHeaderProps["actionsMenu"]>;
+  args: ThreadDetailHeaderActionsMenuArgs;
+}) {
+  return actionsMenu(args);
+}
+
 export function ThreadDetailHeader({
   actionsMenu,
+  environmentId,
   isSecondaryPanelOpen,
   onClosePane,
   onToggleSecondaryPanel,
@@ -120,7 +146,11 @@ export function ThreadDetailHeader({
   environmentIsWorktree = false,
 }: ThreadDetailHeaderProps) {
   const isWorktree = environmentIsWorktree && !nativeTerminal;
-  const ProviderMark = getProviderIconInfo("agent", providerId ?? "", provider)?.icon;
+  const ProviderMark = getProviderIconInfo(
+    "agent",
+    providerId ?? "",
+    provider,
+  )?.icon;
   const identityLeadingMark =
     providerId === null && !nativeTerminal && !environmentIsWorktree ? null : (
       <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
@@ -138,6 +168,7 @@ export function ThreadDetailHeader({
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
+  const pluginTitleSlot = usePluginThreadHeaderTitleSlot();
   const [primaryAction, ...secondaryActions] = headerActions;
   const { renameThreadAsync } = useThreadActions();
   const handleRename = useCallback(
@@ -164,6 +195,7 @@ export function ThreadDetailHeader({
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
   const isSidebarFramed = useIsSidebarFramed();
   const headerRef = useRef<HTMLElement>(null!);
+  const [measuredPaneWidth, setMeasuredPaneWidth] = useState(0);
   const {
     beginPaneDrag,
     isFocused,
@@ -180,7 +212,6 @@ export function ThreadDetailHeader({
   const isWindowPanelOpen =
     useContext(SecondaryPanelHostLayoutContext)?.isOpen === true;
   const isSplitPaneHeader = beginPaneDrag !== undefined;
-  const [measuredPaneWidth, setMeasuredPaneWidth] = useState(0);
   const usesResponsiveActionOverflow =
     (isSplitPaneHeader || isCompactViewport) &&
     measuredPaneWidth > 0 &&
@@ -193,28 +224,27 @@ export function ThreadDetailHeader({
     const header = headerRef.current;
     const pane = header.closest<HTMLElement>("[data-split-pane-id]");
     const measuredElement = isSplitPaneHeader ? (pane ?? header) : header;
-    const measure = () => {
-      const width = measuredElement.getBoundingClientRect().width;
-      if (width > 0) {
-        setMeasuredPaneWidth(width);
-      }
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(measuredElement);
-    return () => {
-      observer.disconnect();
-    };
+    const read = () => measuredElement.getBoundingClientRect().width;
+    const write = (width: number) => setMeasuredPaneWidth(width);
+    write(read());
+    return observeSharedResize(measuredElement, { read, write });
   }, [isSplitPaneHeader]);
   const handleTitlePointerDown = (event: ReactPointerEvent) => {
-    if (isEditing || !beginPaneDrag || event.button !== 0) {
+    if (
+      isEditing ||
+      !beginPaneDrag ||
+      event.button !== 0 ||
+      isInteractiveTitleTarget(event)
+    ) {
       return;
     }
     beginPaneDrag(event, threadTitle);
   };
   const handleTitleDoubleClick = () => {
-    if (!isEditing) startEditingFromDoubleClick();
+    if (!isEditing && pluginTitleSlot === null) startEditingFromDoubleClick();
   };
+  const coreTitle = <ThreadTitle title={threadTitle} />;
+  const TitleElement = pluginTitleSlot === null || isEditing ? "p" : "div";
   const [searchFits, setSearchFits] = useState<boolean | null>(null);
   const searchInMenu =
     actionsMenu !== null &&
@@ -273,7 +303,7 @@ export function ThreadDetailHeader({
         ) : null}
         {identityLeadingMark}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <p
+          <TitleElement
             data-thread-detail-header-title=""
             className={cn(
               "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
@@ -290,8 +320,20 @@ export function ThreadDetailHeader({
             onDoubleClick={handleTitleDoubleClick}
             onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
           >
-            {isEditing ? editor : <ThreadTitle title={threadTitle} />}
-          </p>
+            {isEditing ? (
+              editor
+            ) : pluginTitleSlot === null ? (
+              coreTitle
+            ) : (
+              <PluginThreadHeaderTitle
+                slot={pluginTitleSlot}
+                threadId={threadId}
+                projectId={thread.projectId}
+                environmentId={environmentId}
+                fallback={coreTitle}
+              />
+            )}
+          </TitleElement>
           {hasNativeTerminal ? (
             <div
               ref={nativeActivityTargetRef}
@@ -322,26 +364,29 @@ export function ThreadDetailHeader({
             usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
           )}
         >
-          {actionsMenu({
-            includeResponsiveActions: usesResponsiveActionOverflow,
-            terminalSearchActions:
-              hasNativeTerminal && searchInMenu
-                ? [
-                    {
-                      key: "terminal-search",
-                      group: "terminal",
-                      action: {
-                        icon: "Search",
-                        label: "Search terminal output",
-                        run: searchTerminal,
+          <ThreadDetailHeaderActionsMenu
+            actionsMenu={actionsMenu}
+            args={{
+              includeResponsiveActions: usesResponsiveActionOverflow,
+              terminalSearchActions:
+                hasNativeTerminal && searchInMenu
+                  ? [
+                      {
+                        key: "terminal-search",
+                        group: "terminal",
+                        action: {
+                          icon: "Search",
+                          label: "Search terminal output",
+                          run: searchTerminal,
+                        },
                       },
-                    },
-                  ]
-                : [],
-            headerActions,
-            requestRename: startEditingFromMenu,
-            onCloseAutoFocus,
-          })}
+                    ]
+                  : [],
+              headerActions,
+              requestRename: startEditingFromMenu,
+              onCloseAutoFocus,
+            }}
+          />
         </span>
       )}
     </>
@@ -433,8 +478,7 @@ export function ThreadDetailHeader({
             variant="ghost"
             size="icon"
             className={cn(
-              HEADER_ICON_BUTTON_CLASS,
-              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+              RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
               "relative",
               usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
               isTopRow &&

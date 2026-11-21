@@ -1,11 +1,26 @@
 import { ExpandableText } from "@bb/shared-ui/expandable-text";
-import type { ReactNode } from "react";
+import * as CheckboxPrimitive from "@radix-ui/react-checkbox";
+import { useState, type ReactNode } from "react";
 import type { ExperimentalProviderIconProps } from "@get-bb/plugin-sdk/app";
 import { Button } from "@bb/shared-ui/button";
 import { Checkbox } from "@bb/shared-ui/checkbox";
-import { Icon, type IconName } from "@bb/shared-ui/icon";
+import { Icon } from "@bb/shared-ui/icon";
+import { CONTROL_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { ResourceBrowseGrid } from "@bb/shared-ui/resource-list";
+import {
+  DisclosureToggle,
+  InlinePanel,
+  InlineTextLink,
+  SignInPanel,
+  type SignInPanelVariant,
+} from "@bb/shared-ui/sign-in-panel";
+import {
+  SETUP_GUIDE_CONTAINER_CLASS,
+  SetupOptionGroup,
+  SetupOptionRow,
+} from "@bb/shared-ui/setup-option-row";
 import { Switch } from "@bb/shared-ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   PluginAuthorByline,
@@ -20,61 +35,65 @@ import {
 } from "@/lib/bb-desktop";
 import {
   ONBOARDING_STEPS,
+  signInSiteName,
+  stripTerminalSequences,
   type AgentSetupState,
+  type AgentSignInView,
   type OnboardingStepId,
-  type SignInGuide,
 } from "./onboarding-model";
 import bbLogoUrl from "../../../../../assets/bb-logo.svg";
 
+const ONBOARDING_LIST_CLASS =
+  "divide-y divide-border-hairline rounded-lg border border-border";
+
 const CONTENT_COLUMN_CLASS =
-  "mx-auto w-full max-w-[600px] px-4 @min-[36rem]/onboarding:px-6";
+  "mx-auto w-full max-w-150 px-4 @xl/onboarding:px-6";
 
 interface OnboardingLayoutProps {
   step: OnboardingStepId;
+  width?: "default" | "wide";
+  skippedSteps?: ReadonlySet<OnboardingStepId>;
   compact?: boolean;
   reserveMacosTrafficLights?: boolean;
   title: string;
   description: ReactNode;
   children: ReactNode;
-  footerNote?: ReactNode;
   primaryLabel: string;
   primaryDisabled?: boolean;
   primaryBusy?: boolean;
-  secondaryLabel?: string;
   onPrimary: () => void;
-  onSecondary?: () => void;
   onBack?: () => void;
   onSelectStep: (step: OnboardingStepId) => void;
-  onSkipAll: () => void;
 }
 
 export function OnboardingLayout({
   step,
+  width = "default",
+  skippedSteps,
   compact = false,
   reserveMacosTrafficLights = false,
   title,
   description,
   children,
-  footerNote,
   primaryLabel,
   primaryDisabled = false,
   primaryBusy = false,
-  secondaryLabel,
   onPrimary,
-  onSecondary,
   onBack,
   onSelectStep,
-  onSkipAll,
 }: OnboardingLayoutProps) {
   const activeIndex = ONBOARDING_STEPS.findIndex((entry) => entry.id === step);
   return (
     <div
       data-testid="onboarding"
-      className="@container/onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
+      className={cn(
+        SETUP_GUIDE_CONTAINER_CLASS,
+        "flex min-h-0 flex-1 flex-col bg-background text-foreground",
+      )}
     >
       <header
         className={cn(
-          "grid h-14 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 pr-4 @min-[36rem]/onboarding:gap-3",
+          "grid h-14 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 pr-4 @xl/onboarding:gap-3",
           reserveMacosTrafficLights
             ? cn(
                 MACOS_TRAFFIC_LIGHT_RESERVE_PADDING_CLASS,
@@ -94,22 +113,24 @@ export function OnboardingLayout({
           className="col-start-2 row-start-1 flex min-w-0 items-center justify-center gap-1"
         >
           {ONBOARDING_STEPS.map((entry, index) => {
-            const done = index < activeIndex;
+            const passed = index < activeIndex;
+            const skipped = passed && (skippedSteps?.has(entry.id) ?? false);
+            const done = passed && !skipped;
             const active = index === activeIndex;
             return (
               <button
                 key={entry.id}
                 type="button"
-                disabled={!done}
+                disabled={!passed}
                 aria-current={active ? "step" : undefined}
-                aria-label={entry.label}
+                aria-label={skipped ? `${entry.label} (skipped)` : entry.label}
                 onClick={() => onSelectStep(entry.id)}
                 className={cn(
-                  "flex shrink-0 items-center gap-1.5 rounded-full px-1 py-1 text-xs font-medium transition-colors @min-[36rem]/onboarding:px-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "flex shrink-0 items-center gap-1.5 rounded-full px-1 py-1 text-xs font-medium transition-colors @xl/onboarding:px-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   MACOS_APP_REGION_NO_DRAG_CLASS,
                   active && "text-foreground",
-                  done && "text-subtle-foreground hover:bg-state-hover",
-                  !active && !done && "text-muted-foreground",
+                  passed && "text-subtle-foreground hover:bg-state-hover",
+                  !active && !passed && "text-muted-foreground",
                 )}
               >
                 <span
@@ -117,18 +138,21 @@ export function OnboardingLayout({
                     "flex size-5 items-center justify-center rounded-full text-xs tabular-nums",
                     active && "bg-foreground text-background",
                     done && "bg-success text-background",
-                    !active && !done && "border border-border",
+                    skipped && "bg-state-hover text-subtle-foreground",
+                    !active && !passed && "border border-border",
                   )}
                 >
                   {done ? (
                     <Icon name="Check" aria-hidden className="size-3" />
+                  ) : skipped ? (
+                    <Icon name="Minus" aria-hidden className="size-3" />
                   ) : (
                     index + 1
                   )}
                 </span>
                 <span
                   className={cn(
-                    !active && "sr-only @min-[36rem]/onboarding:not-sr-only",
+                    !active && "sr-only @xl/onboarding:not-sr-only",
                   )}
                 >
                   {entry.label}
@@ -137,72 +161,53 @@ export function OnboardingLayout({
             );
           })}
         </nav>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "col-start-3 row-start-1 shrink-0 text-muted-foreground",
-            MACOS_APP_REGION_NO_DRAG_CLASS,
-          )}
-          onClick={onSkipAll}
-        >
-          <span className="@min-[36rem]/onboarding:hidden">Skip</span>
-          <span className="hidden @min-[36rem]/onboarding:inline">
-            Skip setup
-          </span>
-        </Button>
+        <span aria-hidden className="col-start-3 row-start-1 w-6" />
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div
           className={cn(
             CONTENT_COLUMN_CLASS,
-            "flex flex-col gap-6",
-            compact ? "py-4" : "py-6",
+            width === "wide" && "max-w-3xl",
+            "flex flex-col gap-5 pt-8",
+            compact ? "pb-4" : "pb-6",
           )}
         >
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col items-center gap-1.5 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-            <p className="text-sm text-muted-foreground">{description}</p>
+            <p className="text-balance text-sm text-muted-foreground">
+              {description}
+            </p>
           </div>
           {children}
+          <div className="sticky bottom-0 flex flex-col items-center gap-2 bg-background pb-4 pt-2 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-gradient-to-t before:from-background before:to-transparent">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {onBack ? (
+                <Button variant="ghost" size="sm" onClick={onBack}>
+                  <Icon name="ArrowLeft" aria-hidden />
+                  Back
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                disabled={primaryDisabled || primaryBusy}
+                onClick={onPrimary}
+              >
+                {primaryBusy ? (
+                  <Icon name="Spinner" aria-hidden className="animate-spin" />
+                ) : null}
+                {primaryLabel}
+                {primaryBusy ? null : <Icon name="ArrowRight" aria-hidden />}
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
-      <footer className="shrink-0 border-t border-border-hairline">
-        <div
-          className={cn(
-            CONTENT_COLUMN_CLASS,
-            "flex items-center gap-1 py-3 @min-[36rem]/onboarding:gap-2",
-          )}
-        >
-          {onBack ? (
-            <Button variant="ghost" size="sm" onClick={onBack}>
-              <Icon name="ArrowLeft" aria-hidden />
-              Back
-            </Button>
-          ) : null}
-          <span className="min-w-0 flex-1 text-xs text-muted-foreground">
-            {footerNote}
-          </span>
-          {secondaryLabel && onSecondary ? (
-            <Button variant="ghost" size="sm" onClick={onSecondary}>
-              {secondaryLabel}
-            </Button>
-          ) : null}
-          <Button
-            size="sm"
-            disabled={primaryDisabled || primaryBusy}
-            onClick={onPrimary}
-          >
-            {primaryBusy ? (
-              <Icon name="Spinner" aria-hidden className="animate-spin" />
-            ) : null}
-            {primaryLabel}
-            {primaryBusy ? null : <Icon name="ArrowRight" aria-hidden />}
-          </Button>
-        </div>
-      </footer>
     </div>
   );
+}
+
+export interface AgentLoadingRow {
+  loadingKey: string;
 }
 
 export interface OnboardingAgent {
@@ -210,61 +215,164 @@ export interface OnboardingAgent {
   name: string;
   provider: ExperimentalProviderIconProps["provider"];
   state: AgentSetupState;
+  setup?: "signIn" | "connect";
+  installQueued?: boolean;
+  installLog?: string;
+  subline?: ReactNode;
   expanded?: ReactNode;
 }
 
-function agentSubline(state: AgentSetupState): string {
+const AGENT_STATUS_COPY = {
+  startingSignIn: "Starting sign in…",
+  signInFailed: "Sign-in didn't finish · try again",
+  updateNeeded: "Update needed",
+  unknown: "Couldn't check this agent",
+} as const;
+
+function installActionLabel(
+  state: Extract<
+    AgentSetupState,
+    { status: "install" | "update" | "installFailed" | "installing" }
+  >,
+): string {
+  return state.status === "installFailed"
+    ? "Retry"
+    : state.status === "update"
+      ? "Update"
+      : "Install";
+}
+
+function terminalToggleLabel(terminalVisible: boolean): string {
+  return terminalVisible ? "Hide terminal" : "Show terminal";
+}
+
+function agentSubline(
+  state: AgentSetupState,
+  setup: "signIn" | "connect",
+): string | null {
   switch (state.status) {
-    case "checking":
-      return "Checking…";
     case "ready":
-      return state.detail ?? "Signed in";
+      return state.detail;
     case "signIn":
-      return state.reason === "failed"
-        ? "Sign-in didn't finish · try again"
-        : state.reason === "expired"
-          ? "Installed · your session expired"
-          : "Installed · not signed in";
-    case "signingIn":
-      return "Finish signing in below";
-    case "install":
-      return "Not installed";
+      if (state.reason !== "failed") return null;
+      return setup === "connect"
+        ? "Connecting didn't finish · try again"
+        : AGENT_STATUS_COPY.signInFailed;
     case "update":
-      return state.detail ?? "Update needed";
-    case "installing":
-      return "Installing…";
+      return state.detail ?? AGENT_STATUS_COPY.updateNeeded;
     case "installFailed":
       return state.message;
     case "unknown":
-      return state.message ?? "Couldn't check this agent";
+      return state.message ?? AGENT_STATUS_COPY.unknown;
+    case "checkFailed":
+      return state.message;
+    case "signingIn":
+      return setup === "connect"
+        ? "Choose a provider and sign in below."
+        : AGENT_STATUS_COPY.startingSignIn;
+    case "install":
+    case "installing":
+      return null;
   }
+}
+
+function RowDismissButton({
+  label,
+  tooltip,
+  onClick,
+}: {
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="size-8 text-muted-foreground"
+          aria-label={label}
+          onClick={onClick}
+        >
+          <Icon name="X" aria-hidden />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function AgentActionButton({
+  agent,
+  label,
+  busyLabel,
+  busy,
+  onClick,
+}: {
+  agent: OnboardingAgent;
+  label: string;
+  busyLabel: string;
+  busy: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button size="sm" variant="outline" disabled={busy} onClick={onClick}>
+      {busy ? (
+        <Icon name="Spinner" aria-hidden className="size-4 animate-spin" />
+      ) : (
+        <ProviderIcon
+          providerKind="agent"
+          provider={agent.provider}
+          className="size-4"
+        />
+      )}
+      {busy ? busyLabel : label}
+    </Button>
+  );
 }
 
 interface AgentRowHandlers {
   onSignIn: (id: string) => void;
   onInstall: (id: string) => void;
-  onViewInstallLog: (id: string) => void;
   onCancelSignIn: (id: string) => void;
+  onRetryCheck: (id: string) => void;
+}
+
+function RetryButton({
+  retrying,
+  onClick,
+}: {
+  retrying: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button size="sm" variant="outline" disabled={retrying} onClick={onClick}>
+      {retrying ? (
+        <Icon name="Spinner" aria-hidden className="size-4 animate-spin" />
+      ) : null}
+      Retry
+    </Button>
+  );
 }
 
 function AgentRow({
   agent,
   onSignIn,
   onInstall,
-  onViewInstallLog,
   onCancelSignIn,
+  onRetryCheck,
 }: AgentRowHandlers & { agent: OnboardingAgent }) {
   const { state } = agent;
+  const setup = agent.setup ?? "signIn";
+  const hasSubline = agent.subline !== undefined && agent.subline !== null;
+  const statusSubline = hasSubline ? null : agentSubline(state, setup);
+  const hasSubtitle = hasSubline || statusSubline !== null;
+  const inProgress = state.status === "signingIn" && hasSubtitle;
   return (
     <li className="px-3 py-3" data-agent-id={agent.id}>
-      <div
-        className={cn(
-          "items-center gap-3",
-          state.status === "installFailed"
-            ? "grid grid-cols-[1.5rem_minmax(0,1fr)] @min-[36rem]/onboarding:flex"
-            : "flex",
-        )}
-      >
+      <div className="flex items-center gap-3">
         <ProviderIcon
           providerKind="agent"
           provider={agent.provider}
@@ -275,86 +383,125 @@ function AgentRow({
         />
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-sm font-medium">{agent.name}</span>
-          <ExpandableText
-            expandLabel="Show details"
-            className={cn(
-              "text-xs text-muted-foreground",
-              state.status === "installFailed" && "text-destructive-text",
-            )}
-          >
-            {agentSubline(state)}
-          </ExpandableText>
-        </div>
-        <div className="col-start-2 flex shrink-0 items-center justify-end gap-2">
-          {state.status === "checking" || state.status === "installing" ? (
-            <Icon
-              name="Spinner"
-              aria-hidden
-              className="size-4 animate-spin text-muted-foreground"
-            />
+          {hasSubtitle ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              {inProgress ? (
+                <Icon
+                  name="Spinner"
+                  aria-hidden
+                  className="size-3.5 shrink-0 animate-spin text-subtle-foreground"
+                />
+              ) : null}
+              {hasSubline ? (
+                <span className="min-w-0 text-xs text-muted-foreground">
+                  {agent.subline}
+                </span>
+              ) : (
+                <ExpandableText
+                  expandLabel="Show details"
+                  className={cn(
+                    "min-w-0 text-xs text-muted-foreground",
+                    state.status === "ready" && "text-subtle-foreground",
+                  )}
+                >
+                  {statusSubline}
+                </ExpandableText>
+              )}
+            </span>
           ) : null}
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2">
           {state.status === "ready" ? (
-            <span className="flex items-center gap-1.5 text-xs font-medium text-success">
-              <Icon name="CircleCheck" aria-hidden className="size-4" />
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Icon name="CircleCheck" aria-hidden className="size-3.5" />
               Ready
             </span>
           ) : null}
           {state.status === "signIn" && state.canSignIn ? (
-            <Button size="sm" onClick={() => onSignIn(agent.id)}>
-              Sign in
-            </Button>
-          ) : null}
-          {state.status === "installFailed" ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => onViewInstallLog(agent.id)}
-            >
-              View log
-            </Button>
-          ) : null}
-          {(state.status === "install" ||
-            state.status === "update" ||
-            state.status === "installFailed") &&
-          state.canInstall ? (
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onInstall(agent.id)}
+              onClick={() => onSignIn(agent.id)}
             >
-              <Icon name="Download" aria-hidden />
-              {state.status === "installFailed"
-                ? "Retry"
-                : state.status === "update"
-                  ? "Update"
-                  : "Install"}
+              <ProviderIcon
+                providerKind="agent"
+                provider={agent.provider}
+                className="size-4"
+              />
+              Sign in
             </Button>
           ) : null}
+          {state.status === "installing" ||
+          ((state.status === "install" ||
+            state.status === "update" ||
+            state.status === "installFailed") &&
+            state.canInstall) ? (
+            <AgentActionButton
+              agent={agent}
+              label={installActionLabel(state)}
+              busyLabel={
+                agent.installQueued === true
+                  ? "Waiting…"
+                  : state.status === "installing" && state.update
+                    ? "Updating…"
+                    : "Installing…"
+              }
+              busy={state.status === "installing"}
+              onClick={() => onInstall(agent.id)}
+            />
+          ) : null}
+          {state.status === "checkFailed" ? (
+            <RetryButton
+              retrying={state.retrying}
+              onClick={() => onRetryCheck(agent.id)}
+            />
+          ) : null}
           {state.status === "signingIn" ? (
-            <Button
-              size="sm"
-              variant="ghost"
+            <RowDismissButton
+              label={`Cancel signing in to ${agent.name}`}
+              tooltip="Cancel"
               onClick={() => onCancelSignIn(agent.id)}
-            >
-              Cancel
-            </Button>
+            />
           ) : null}
         </div>
       </div>
       {agent.expanded}
+      {state.status === "installFailed" && agent.installLog !== undefined ? (
+        <AgentInstallErrorDetails log={agent.installLog} />
+      ) : null}
+      {state.status === "checkFailed" && state.detail !== null ? (
+        <AgentInstallErrorDetails log={state.detail} />
+      ) : null}
+    </li>
+  );
+}
+
+function AgentRowSkeleton() {
+  return (
+    <li
+      data-testid="agent-row-skeleton"
+      className="flex items-center gap-3 px-3 py-3"
+    >
+      <span className="size-6 rounded-md bg-state-hover" />
+      <span className="flex flex-1 flex-col gap-1.5">
+        <span className="h-3 w-28 rounded-sm bg-state-hover" />
+        <span className="h-2.5 w-40 rounded-sm bg-state-hover" />
+      </span>
     </li>
   );
 }
 
 interface AgentStepProps extends AgentRowHandlers {
   machineName: string | null;
-  agents: readonly OnboardingAgent[] | null;
+  agents: readonly (OnboardingAgent | AgentLoadingRow)[] | null;
+  loadFailed: { message: string; retrying: boolean } | null;
   onRecheck: () => void;
 }
 
 export function AgentStep({
   machineName,
   agents,
+  loadFailed,
   onRecheck,
   ...rowHandlers
 }: AgentStepProps) {
@@ -367,199 +514,37 @@ export function AgentStep({
             ? "Waiting for this computer to connect…"
             : `On ${machineName}`}
         </span>
-        {machineName === null ? null : (
-          <button
-            type="button"
-            onClick={onRecheck}
-            className="flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <Icon
-              name="ArrowReloadHorizontal"
-              aria-hidden
-              className="size-3.5"
-            />
-            Check again
-          </button>
-        )}
       </div>
-      {agents === null ? (
-        <ul className="divide-y divide-border-hairline rounded-lg border border-border">
+      {loadFailed !== null ? (
+        <ul className={ONBOARDING_LIST_CLASS}>
+          <li className="flex items-center gap-3 px-3 py-3">
+            <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+              {loadFailed.message}
+            </span>
+            <RetryButton retrying={loadFailed.retrying} onClick={onRecheck} />
+          </li>
+        </ul>
+      ) : agents === null ? (
+        <ul className={ONBOARDING_LIST_CLASS}>
           {[0, 1, 2].map((index) => (
-            <li key={index} className="flex items-center gap-3 px-3 py-3">
-              <span className="size-6 rounded-md bg-state-hover" />
-              <span className="flex flex-1 flex-col gap-1.5">
-                <span className="h-3 w-28 rounded-sm bg-state-hover" />
-                <span className="h-2.5 w-40 rounded-sm bg-state-hover" />
-              </span>
-            </li>
+            <AgentRowSkeleton key={index} />
           ))}
         </ul>
       ) : (
-        <ul className="divide-y divide-border-hairline rounded-lg border border-border">
-          {agents.map((agent) => (
-            <AgentRow key={agent.id} agent={agent} {...rowHandlers} />
-          ))}
+        <ul className={cn(ONBOARDING_LIST_CLASS, "overflow-hidden")}>
+          {agents.map((agent) =>
+            "loadingKey" in agent ? (
+              <AgentRowSkeleton key={`loading:${agent.loadingKey}`} />
+            ) : (
+              <AgentRow key={agent.id} agent={agent} {...rowHandlers} />
+            ),
+          )}
         </ul>
       )}
       <p className="text-xs text-muted-foreground">
-        Don't see your agent? bb picks up other ACP agents, such as opencode,
-        once they are installed.
+        Don't see your agent? bb picks up other ACP agents once you have them
+        installed.
       </p>
-    </div>
-  );
-}
-
-interface AgentSignInGuideProps {
-  agentName: string;
-  guide: SignInGuide | null;
-  code: string;
-  codeSubmitted: boolean;
-  terminalVisible: boolean;
-  terminal: ReactNode;
-  onCodeChange: (code: string) => void;
-  onSubmitCode: () => void;
-  onOpenUrl: (url: string) => void;
-  onCopy: (text: string) => void;
-  onToggleTerminal: () => void;
-  alternateLabel: string | null;
-  onUseAlternate: () => void;
-}
-
-export function AgentSignInGuide({
-  agentName,
-  guide,
-  code,
-  codeSubmitted,
-  terminalVisible,
-  terminal,
-  onCodeChange,
-  onSubmitCode,
-  onOpenUrl,
-  onCopy,
-  onToggleTerminal,
-  alternateLabel,
-  onUseAlternate,
-}: AgentSignInGuideProps) {
-  const url = guide?.url ?? null;
-  const userCode = guide?.userCode ?? null;
-  const acceptsPastedCode = guide?.acceptsPastedCode ?? false;
-  return (
-    <div className="mt-3 overflow-hidden rounded-md border border-border bg-surface-recessed">
-      <div className="flex flex-col gap-3 p-3">
-        {url === null ? (
-          terminalVisible ? (
-            <p className="text-xs text-muted-foreground">
-              Sign in to {agentName} in the terminal below.
-            </p>
-          ) : (
-            <p className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Icon
-                name="Spinner"
-                aria-hidden
-                className="size-3.5 animate-spin"
-              />
-              Starting {agentName} sign-in…
-            </p>
-          )
-        ) : (
-          <>
-            <p className="text-xs text-muted-foreground">
-              {userCode !== null
-                ? `Open the ${agentName} sign-in page and enter this code.`
-                : acceptsPastedCode
-                  ? `Sign in on the ${agentName} page, then paste the code it shows you.`
-                  : `Finish signing in on the ${agentName} page.`}
-            </p>
-            {userCode === null ? null : (
-              <div className="flex items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-3">
-                <span
-                  aria-label={`${agentName} sign-in code`}
-                  className="select-all font-mono text-xl font-semibold tracking-widest"
-                >
-                  {userCode}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-label="Copy sign-in code"
-                  onClick={() => onCopy(userCode)}
-                >
-                  <Icon name="Copy" aria-hidden />
-                </Button>
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => onOpenUrl(url)}>
-                Open sign-in page
-                <Icon name="ExternalLink" aria-hidden />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground"
-                onClick={() => onCopy(url)}
-              >
-                <Icon name="Copy" aria-hidden />
-                Copy link
-              </Button>
-            </div>
-            {acceptsPastedCode && userCode === null ? (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  onSubmitCode();
-                }}
-              >
-                <input
-                  value={code}
-                  onChange={(event) => onCodeChange(event.target.value)}
-                  aria-label={`${agentName} authorization code`}
-                  placeholder="Paste the code here"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 font-mono text-xs outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
-                />
-                <Button
-                  type="submit"
-                  size="sm"
-                  variant="outline"
-                  disabled={code.trim().length === 0}
-                >
-                  Complete
-                </Button>
-              </form>
-            ) : null}
-          </>
-        )}
-      </div>
-      {terminalVisible ? (
-        <div className="h-48 border-t border-border-hairline">{terminal}</div>
-      ) : null}
-      <div className="flex items-center gap-2 border-t border-border-hairline px-3 py-2 text-xs text-muted-foreground">
-        <Icon name="Spinner" aria-hidden className="size-3.5 animate-spin" />
-        <span className="min-w-0 flex-1">
-          {codeSubmitted
-            ? "Finishing sign-in…"
-            : "bb continues on its own as soon as you're signed in."}
-        </span>
-        {alternateLabel === null ? null : (
-          <button
-            type="button"
-            onClick={onUseAlternate}
-            className="shrink-0 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {alternateLabel}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onToggleTerminal}
-          className="shrink-0 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {terminalVisible ? "Hide terminal" : "Show terminal"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -589,6 +574,26 @@ interface ProjectsStepProps {
   onRetry: () => void;
 }
 
+function SelectAllCheckbox({
+  checked,
+  ...props
+}: Omit<CheckboxPrimitive.CheckboxProps, "className" | "children">) {
+  return (
+    <CheckboxPrimitive.Root
+      checked={checked}
+      className={`peer size-4 shrink-0 rounded-sm border border-input shadow-xs ${CONTROL_HOVER_TRANSITION} focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-foreground data-[state=checked]:bg-foreground data-[state=checked]:text-background data-[state=indeterminate]:border-foreground data-[state=indeterminate]:bg-foreground data-[state=indeterminate]:text-background`}
+      {...props}
+    >
+      <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current">
+        <Icon
+          name={checked === "indeterminate" ? "Minus" : "Check"}
+          className="size-3.5"
+        />
+      </CheckboxPrimitive.Indicator>
+    </CheckboxPrimitive.Root>
+  );
+}
+
 export function ProjectsStep({
   status,
   repos,
@@ -606,7 +611,7 @@ export function ProjectsStep({
           <Icon name="Spinner" aria-hidden className="size-3.5 animate-spin" />
           Looking for git repos you've touched recently…
         </div>
-        <ul className="divide-y divide-border-hairline rounded-lg border border-border">
+        <ul className={ONBOARDING_LIST_CLASS}>
           {[0, 1, 2, 3].map((index) => (
             <li key={index} className="flex items-center gap-3 px-3 py-3">
               <span className="size-4 rounded-sm bg-state-hover" />
@@ -648,28 +653,38 @@ export function ProjectsStep({
   }
 
   const selectableCount = repos.filter((repo) => !repo.added).length;
+  const selectedCount = repos.filter(
+    (repo) => !repo.added && selectedIds.has(repo.id),
+  ).length;
+  const allSelected = selectableCount > 0 && selectedCount === selectableCount;
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-        <span className="min-w-0 flex-1">
-          {selectedIds.size} of {selectableCount} selected
-        </span>
-        <button
-          type="button"
-          className="hover:text-foreground"
-          onClick={onSelectAll}
-        >
-          Select all
-        </button>
-        <button
-          type="button"
-          className="hover:text-foreground"
-          onClick={onSelectNone}
-        >
-          Select none
-        </button>
-      </div>
-      <ul className="divide-y divide-border-hairline rounded-lg border border-border">
+      <ul className={ONBOARDING_LIST_CLASS}>
+        <li className="flex items-center rounded-t-lg bg-surface-recessed text-xs text-muted-foreground">
+          <label
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-3 px-3 py-2",
+              selectableCount > 0 && "cursor-pointer hover:text-foreground",
+            )}
+          >
+            <SelectAllCheckbox
+              aria-label={
+                allSelected ? "Clear project selection" : "Select all projects"
+              }
+              checked={
+                allSelected ? true : selectedCount > 0 ? "indeterminate" : false
+              }
+              disabled={selectableCount === 0}
+              onCheckedChange={() =>
+                allSelected ? onSelectNone() : onSelectAll()
+              }
+            />
+            Select all
+          </label>
+          <span className="shrink-0 px-3 text-right tabular-nums">
+            Last active
+          </span>
+        </li>
         {repos.map((repo) => (
           <li key={repo.id}>
             <label
@@ -732,7 +747,7 @@ export function OnboardingPluginGrid({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-2">
       <ResourceBrowseGrid
         className={cn(
           "w-full gap-2",
@@ -743,11 +758,6 @@ export function OnboardingPluginGrid({
       >
         {children}
       </ResourceBrowseGrid>
-      <p className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Icon name="Puzzle" aria-hidden className="size-3.5 shrink-0" />
-        Want something that isn't here? Ask an agent to build a plugin at any
-        time.
-      </p>
     </div>
   );
 }
@@ -774,7 +784,6 @@ interface OnboardingPluginCardProps {
   description: string;
   icon: { icon: string | null; iconUrl: string | null; iconTinted: boolean };
   enabled: boolean;
-  pending: boolean;
   unavailableReason: string | null;
   onToggle: (enabled: boolean) => void;
 }
@@ -784,11 +793,10 @@ export function OnboardingPluginCard({
   description,
   icon,
   enabled,
-  pending,
   unavailableReason,
   onToggle,
 }: OnboardingPluginCardProps) {
-  const disabled = pending || unavailableReason !== null;
+  const disabled = unavailableReason !== null;
   return (
     <PluginCard
       leading={
@@ -796,7 +804,8 @@ export function OnboardingPluginCard({
       }
       title={name}
       description={unavailableReason ?? description}
-      descriptionLines="expandable"
+      descriptionLines={3}
+      density="compact"
       disabled={disabled}
       byline={
         <PluginAuthorByline name="BB Official" github={null} official>
@@ -810,17 +819,6 @@ export function OnboardingPluginCard({
             !disabled && "cursor-pointer",
           )}
         >
-          {pending ? (
-            <Icon
-              name="Spinner"
-              aria-hidden
-              className="size-3.5 animate-spin"
-            />
-          ) : enabled ? (
-            "On"
-          ) : (
-            "Off"
-          )}
           <Switch
             checked={enabled}
             disabled={disabled}
@@ -837,153 +835,200 @@ export function OnboardingPluginCard({
   );
 }
 
-function CopyableLine({
-  value,
-  onCopy,
-}: {
-  value: string;
-  onCopy: (value: string) => void;
-}) {
+export function AgentInstallErrorDetails({ log }: { log: string }) {
+  const [open, setOpen] = useState(false);
+  const text = stripTerminalSequences(log);
+  if (text.trim().length === 0) return null;
   return (
-    <div className="mt-3 flex items-center gap-2 rounded-md border border-border bg-surface-recessed py-1 pl-3 pr-1">
-      <code className="min-w-0 flex-1 truncate font-mono text-xs">{value}</code>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label="Copy address"
-        onClick={() => onCopy(value)}
+    <div className="mt-3">
+      <InlinePanel
+        hasBody={false}
+        toggles={
+          <DisclosureToggle expanded={open} onToggle={() => setOpen(!open)}>
+            {open ? "Hide details" : "Show details"}
+          </DisclosureToggle>
+        }
+        expanded={
+          open ? (
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap wrap-anywhere px-3 pb-3 pt-1 font-mono text-xs text-muted-foreground">
+              {text}
+            </pre>
+          ) : null
+        }
       >
-        <Icon name="Copy" aria-hidden />
-      </Button>
+        {null}
+      </InlinePanel>
     </div>
   );
 }
 
-interface DeviceRowProps {
-  icon: IconName;
-  title: string;
-  description: string;
-  action: ReactNode;
-  children?: ReactNode;
+export function AgentSignInInstruction({
+  agentName,
+  view,
+  onOpenUrl,
+}: {
+  agentName: string;
+  view: AgentSignInView;
+  onOpenUrl: (url: string) => void;
+}) {
+  const url = view.guide?.url ?? null;
+  const userCode = view.guide?.userCode ?? null;
+  const acceptsPastedCode = view.guide?.acceptsPastedCode ?? false;
+  if (url === null) {
+    return view.terminalVisible ? (
+      <>Sign in to {agentName} in the terminal below.</>
+    ) : (
+      <>Sign in to {agentName} in the terminal.</>
+    );
+  }
+  const siteName = signInSiteName(url);
+  const link = (
+    <InlineTextLink
+      href={url}
+      onOpen={(href) => {
+        onOpenUrl(href);
+        return true;
+      }}
+    >
+      {siteName ?? "your browser"}
+    </InlineTextLink>
+  );
+  const place = siteName === null ? <>in {link}</> : <>on {link}</>;
+  if (userCode !== null) {
+    return <>Enter this code {place}.</>;
+  }
+  if (acceptsPastedCode) {
+    return <>Sign in {place}, then paste the code it shows you.</>;
+  }
+  return <>Sign in {place}.</>;
 }
 
-function DeviceRow({
-  icon,
-  title,
-  description,
-  action,
-  children,
-}: DeviceRowProps) {
+interface AgentSignInPanelProps {
+  connect: boolean;
+  agentName: string;
+  view: AgentSignInView;
+  code: string;
+  codeSubmitted: boolean;
+  terminal: ReactNode;
+  onCodeChange: (code: string) => void;
+  onSubmitCode: () => void;
+  onCopy: (text: string) => void;
+  onToggleTerminal: () => void;
+}
+
+export function AgentSignInPanel({
+  connect,
+  agentName,
+  view,
+  code,
+  codeSubmitted,
+  terminal,
+  onCodeChange,
+  onSubmitCode,
+  onCopy,
+  onToggleTerminal,
+}: AgentSignInPanelProps) {
+  const url = view.guide?.url ?? null;
+  const userCode = view.guide?.userCode ?? null;
+  const acceptsPastedCode = view.guide?.acceptsPastedCode ?? false;
+  const variant: SignInPanelVariant = connect
+    ? { kind: "waiting" }
+    : url !== null && userCode !== null
+      ? {
+          kind: "code",
+          code: userCode,
+          label: `${agentName} sign-in code`,
+          onCopyCode: onCopy,
+        }
+      : url !== null && acceptsPastedCode
+        ? {
+            kind: "paste",
+            label: `${agentName} authorization code`,
+            value: code,
+            onChange: onCodeChange,
+            onSubmit: onSubmitCode,
+          }
+        : { kind: "waiting" };
+  if (!connect && !view.started) return null;
   return (
-    <li className="px-3 py-3">
-      <div className="flex items-center gap-3">
-        <Icon
-          name={icon}
-          aria-hidden
-          className="size-5 shrink-0 text-subtle-foreground"
-        />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-sm font-medium">{title}</span>
-          <span className="text-xs text-muted-foreground">{description}</span>
-        </div>
-        {action}
-      </div>
-      {children}
-    </li>
+    <div className="mt-3">
+      <SignInPanel
+        status={!connect && codeSubmitted ? "Finishing sign-in…" : undefined}
+        variant={variant}
+        toggles={
+          <DisclosureToggle
+            expanded={view.terminalVisible}
+            onToggle={onToggleTerminal}
+          >
+            {terminalToggleLabel(view.terminalVisible)}
+          </DisclosureToggle>
+        }
+        expanded={
+          view.terminalVisible ? <div className="h-48">{terminal}</div> : null
+        }
+      />
+    </div>
   );
 }
 
-export type OnboardingConnectState =
-  | { status: "on"; url: string }
-  | { status: "off" }
-  | { status: "unavailable" };
-
-interface DevicesStepProps {
-  connect: OnboardingConnectState;
-  connectSetup: ReactNode;
-  connectSetupOpen: boolean;
-  otherMachineCount: number;
-  mobileLinks: { ios: string; android: string };
-  onToggleConnectSetup: () => void;
-  onCopyConnectUrl: (url: string) => void;
-  onAddMachine: () => void;
-}
-
 export function DevicesStep({
-  connect,
-  connectSetup,
-  connectSetupOpen,
-  otherMachineCount,
-  mobileLinks,
-  onToggleConnectSetup,
-  onCopyConnectUrl,
+  hostName,
+  connectSection,
+  showMachines,
+  addMachinePanel,
   onAddMachine,
-}: DevicesStepProps) {
+  onCloseAddMachine,
+}: {
+  hostName: string | null;
+  connectSection: ReactNode;
+  showMachines: boolean;
+  addMachinePanel: ReactNode;
+  onAddMachine: () => void;
+  onCloseAddMachine: () => void;
+}) {
+  const open = addMachinePanel !== null;
   return (
-    <ul className="divide-y divide-border-hairline rounded-lg border border-border">
-      <DeviceRow
-        icon="ComputerCloud"
-        title="Open bb from any browser"
-        description={
-          connect.status === "unavailable"
-            ? "bb connect is turned off on this server. Enable its plugin to get a private getbb.app address."
-            : "bb connect gives this bb a private getbb.app address that only you can open."
-        }
-        action={
-          connect.status === "on" ? (
-            <span className="flex items-center gap-1.5 text-xs font-medium text-success">
-              <Icon name="CircleCheck" aria-hidden className="size-4" />
-              On
-            </span>
-          ) : connect.status === "off" ? (
-            <Button size="sm" variant="outline" onClick={onToggleConnectSetup}>
-              {connectSetupOpen ? "Hide" : "Set up"}
-            </Button>
-          ) : null
-        }
-      >
-        {connect.status === "on" ? (
-          <CopyableLine value={connect.url} onCopy={onCopyConnectUrl} />
-        ) : null}
-        {connect.status === "off" && connectSetupOpen ? (
-          <div className="mt-3 rounded-md border border-border p-3">
-            {connectSetup}
-          </div>
-        ) : null}
-      </DeviceRow>
-      <DeviceRow
-        icon="Laptop"
-        title="Add another machine"
-        description={
-          otherMachineCount > 0
-            ? `${otherMachineCount} other ${otherMachineCount === 1 ? "machine is" : "machines are"} already connected. Add more to run agents on a server, a desktop, or a cloud box.`
-            : "Run agents on a server, a desktop, or a cloud box and steer them all from here."
-        }
-        action={
-          <Button size="sm" variant="outline" onClick={onAddMachine}>
-            Add machine
-          </Button>
-        }
-      />
-      <DeviceRow
-        icon="Smartphone"
-        title="Get the mobile app"
-        description="Get a push when a thread needs you."
-        action={
-          <span className="flex items-center gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <a href={mobileLinks.ios} target="_blank" rel="noreferrer">
-                iOS
-              </a>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <a href={mobileLinks.android} target="_blank" rel="noreferrer">
-                Android
-              </a>
-            </Button>
-          </span>
-        }
-      />
-    </ul>
+    <div className="flex flex-col gap-3">
+      {connectSection === null ? null : (
+        <SetupOptionGroup label="Where you use bb" labelHidden={!showMachines}>
+          {connectSection}
+        </SetupOptionGroup>
+      )}
+      {showMachines ? (
+        <SetupOptionGroup label="Where agents run">
+          <SetupOptionRow
+            icon="Laptop"
+            title="Add another machine"
+            description={`${hostName === null ? "This computer" : `This computer, ${hostName},`} is your bb server. Add laptops or cloud machines that connect to it and run agents. Manage machines anytime in Settings > Machines.`}
+            actionStaysInline={open}
+            action={
+              open ? (
+                <RowDismissButton
+                  label="Close adding a machine"
+                  tooltip="Close"
+                  onClick={onCloseAddMachine}
+                />
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onAddMachine}
+                >
+                  Add a machine
+                </Button>
+              )
+            }
+            footer={
+              open ? (
+                <div className="border-t border-border-hairline bg-surface-recessed p-3">
+                  {addMachinePanel}
+                </div>
+              ) : null
+            }
+          />
+        </SetupOptionGroup>
+      ) : null}
+    </div>
   );
 }

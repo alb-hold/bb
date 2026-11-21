@@ -162,7 +162,7 @@ export function NotificationCenterView({
 }) {
   const { open, focusedId } = useNotificationCenterState();
   const notifications = useNotifications();
-  const now = Date.now();
+  const [now] = useState(Date.now);
 
   useEffect(() => {
     if (!open) {

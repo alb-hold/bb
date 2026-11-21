@@ -384,7 +384,9 @@ function isPrefixOfFirstAssistantReply(
     .orderBy(events.sequence)
     .limit(1)
     .get()?.text;
-  return firstAssistantReply?.startsWith(title) ?? false;
+  return typeof firstAssistantReply === "string"
+    ? firstAssistantReply.startsWith(title)
+    : false;
 }
 
 export function applyFallbackThreadTitle(

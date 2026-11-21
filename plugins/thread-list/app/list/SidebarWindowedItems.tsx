@@ -17,6 +17,7 @@ import {
   SIDEBAR_WINDOWED_NAV_ATTRIBUTE,
   type SidebarWindowedNavigationEntry,
 } from "./sidebarThreadShortcuts.js";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 const WINDOW_VIEWPORT_MARGIN_PX = 240;
 const DEFAULT_ROW_HEIGHT_PX = 30;
@@ -88,6 +89,7 @@ export function SidebarWindowedItems({
   getNavigationEntries,
   renderItem,
 }: SidebarWindowedItemsProps) {
+  "use no memo";
   const scrollElementRef = useSidebarContentElementRef();
   const windowingEnabled = itemKeys.length > 0 && scrollElementRef !== null;
 
@@ -191,7 +193,7 @@ export function SidebarWindowedItems({
     const promoteAll =
       !scrollElement || typeof IntersectionObserver === "undefined";
 
-    const promoteVisible = () => {
+    const readVisible = () => {
       const promoted = new Set<string>();
       if (promoteAll) {
         for (const key of itemKeys) {
@@ -212,31 +214,33 @@ export function SidebarWindowedItems({
         }
       }
 
+      return promoted;
+    };
+
+    const promoteVisible = (promoted: Set<string>) => {
       setRealizedKeys((previous) =>
         mergeRealizedKeys(previous, { add: promoted, retain: keySet }),
       );
     };
 
-    let resizeObserver: ResizeObserver | null = null;
+    let unobserveSize: (() => void) | undefined;
     let frame: number | null = null;
     if (promoteAll) {
-      promoteVisible();
+      promoteVisible(readVisible());
     } else if (scrollElement && typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver((entries) => {
-        if (
-          entries.some(
-            (entry) =>
-              entry.target === scrollElement && entry.contentRect.height > 0,
-          )
-        ) {
-          promoteVisible();
-        }
+      unobserveSize = observeSharedResize(scrollElement, {
+        read: (entry) =>
+          (entry?.contentRect.height ?? scrollElement.clientHeight) > 0
+            ? readVisible()
+            : null,
+        write: (promoted) => {
+          if (promoted) startTransition(() => promoteVisible(promoted));
+        },
       });
-      resizeObserver.observe(scrollElement);
     } else {
       frame = requestAnimationFrame(() => {
         if (!scrollElement || scrollElement.clientHeight > 0) {
-          promoteVisible();
+          promoteVisible(readVisible());
         }
       });
     }
@@ -248,7 +252,7 @@ export function SidebarWindowedItems({
       }
     }
     return () => {
-      resizeObserver?.disconnect();
+      unobserveSize?.();
       if (frame !== null) cancelAnimationFrame(frame);
     };
     // oxlint-disable-next-line react/exhaustive-deps

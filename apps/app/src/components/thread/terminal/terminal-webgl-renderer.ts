@@ -1,4 +1,5 @@
 import type { IDisposable, ITerminalAddon, Terminal } from "@xterm/xterm";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 interface WebglRendererAddon extends ITerminalAddon {
   onContextLoss: (listener: () => void) => IDisposable;
@@ -285,6 +286,7 @@ export function observeTerminalWebglVisibility({
     (isPanelOpen() && isGeometricallyVisible());
   let wasVisible = false;
   let parents: HTMLElement[] = [];
+  let unobserveResize: (() => void) | null = null;
   const syncParents = () => {
     let parent = root.parentElement;
     let index = 0;
@@ -293,7 +295,6 @@ export function observeTerminalWebglVisibility({
       index++;
     }
     if (parent === null && index === parents.length) return;
-    for (const previous of parents) resizeObserver.unobserve(previous);
     parents = [];
     for (
       parent = root.parentElement;
@@ -302,7 +303,12 @@ export function observeTerminalWebglVisibility({
     ) {
       parents.push(parent);
     }
-    for (const current of parents) resizeObserver.observe(current);
+    const releasePrevious = unobserveResize;
+    unobserveResize = observeSharedResize([root, ...parents], {
+      read: () => undefined,
+      write: syncGeometry,
+    });
+    releasePrevious?.();
   };
   const applyVisibility = (visible: boolean) => {
     const becameVisible = visible && !wasVisible;
@@ -326,7 +332,10 @@ export function observeTerminalWebglVisibility({
     if (hasObserved) intersects = visible;
     return applyVisibility(intersects && visible);
   };
-  const resizeObserver = new ResizeObserver(syncGeometry);
+  unobserveResize = observeSharedResize(root, {
+    read: () => undefined,
+    write: syncGeometry,
+  });
   const intersectionObserver = !supportsIntersectionObserver
     ? null
     : new IntersectionObserver(
@@ -343,7 +352,6 @@ export function observeTerminalWebglVisibility({
         },
         { threshold: [0, Number.EPSILON] },
       );
-  resizeObserver.observe(root);
   intersectionObserver?.observe(root);
   syncParents();
   window?.addEventListener("scroll", syncGeometry, {
@@ -357,7 +365,7 @@ export function observeTerminalWebglVisibility({
     sync: syncGeometry,
     dispose: () => {
       disposed = true;
-      resizeObserver.disconnect();
+      unobserveResize?.();
       parents = [];
       intersectionObserver?.disconnect();
       window?.removeEventListener("scroll", syncGeometry, true);

@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
+import { settleLazyModules } from "@/test/lazy-modules";
 const warm = vi.hoisted(() => ({
   panel: vi.fn(() => Promise.resolve(null)),
   xterm: vi.fn(),
@@ -62,6 +63,7 @@ it.each(["native", "other"])(
     await import("./initial-terminal-connect");
     await globalThis.__bbInitialNativeTerminalRequest.response;
     await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleLazyModules();
     if (route === "native") {
       expect(prefetchTerminalSocket).toHaveBeenCalledWith(
         expect.stringMatching(/early-terminal.*handoffOwnerToken=local-device/),

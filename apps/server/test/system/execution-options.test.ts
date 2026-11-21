@@ -1506,7 +1506,12 @@ function registerHeldModelListResponder(
     close() {},
     send(data: string) {
       const message = hostDaemonServerWsMessageSchema.parse(JSON.parse(data));
-      if (message.type === "provider-session-policy.replace") return;
+      if (
+        message.type === "provider-session-policy.replace" ||
+        message.type === "watch-set.replace"
+      ) {
+        return;
+      }
       if (message.type !== "host-rpc.request") {
         throw new Error(`Unexpected daemon websocket message ${message.type}`);
       }

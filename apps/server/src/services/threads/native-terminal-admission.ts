@@ -201,6 +201,7 @@ export async function admitNativeTerminalDispatch(
     retrying: args.systemNotice !== null,
     senderThreadId: args.senderThreadId,
     startedOnBehalfOf: args.startedOnBehalfOf,
+    systemNotice: args.systemNotice !== null,
   });
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
   const withinDecision: { outcome: NativeTerminalAdmissionOutcome | null } = {
@@ -249,7 +250,7 @@ export async function admitNativeTerminalDispatch(
     return withinDecision.outcome ?? runNativeTerminalAdmittedWork(deps, args);
   }
   if (args.claimed !== null) {
-    noteDispatchRequeued(args.thread.id);
+    noteDispatchRequeued(args.thread.id, outcome.waiter.pluginId);
   }
   return recordNativeTerminalWait(deps, {
     ...args,
@@ -286,6 +287,7 @@ function recordNativeTerminalWait(
     waitingOn: args.waitingOn,
     sendAt: args.sendAt,
     claimed: args.claimed,
+    placement: "back",
   });
   return entry === null ? { kind: "dispatched" } : { kind: "queued", entry };
 }

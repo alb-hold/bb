@@ -1,32 +1,10 @@
 Use the model menu's Subscription selector or
 `bb pool select <thread-id> <claude|codex> [<account-id>|automatic]` to read or
-choose an account for one conversation. Automatic is the default. Explicit
-choices never silently fail over and do not reorder the pool. Existing-thread
-changes require an idle or failed conversation with no queued messages. The
-read/write RPCs are `routing.selection.get` and `routing.selection.set`;
-their inputs are `{threadId, provider}` and `{threadId, provider, accountId}`,
-where `accountId: null` restores Automatic. For new threads, use the
+choose an account for one conversation. Automatic is the default. Explicit choices never silently fail over and do not reorder the pool. Existing-thread changes require an idle or failed conversation with no queued messages. The read/write RPCs are `routing.selection.get` and `routing.selection.set`; their inputs are `{threadId, provider}` and `{threadId, provider, accountId}`, where `accountId: null` restores Automatic. For new threads, use the
 `experimental_pluginCreateData: {"account-pool": {provider: "claude", accountId: "<uuid>"}}`
-field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-create-data`.
-This persists the pin before Fleet's initial admission check. The same draft
-data works for ordinary Enter/button sends and programmatic composer submissions.
-No entry means Automatic. Choices require a local pool; choose Automatic when
-proxying a parent pool. For native terminals, the hub resolves the conversation's
-current account choice at the start of each request. A retained bridge credential
-keeps the account chosen when it was issued; a new bridge turn's credential uses
-the current selection. A request already in flight keeps its choice. Native Codex launches use the same
-environment-backed provider configuration as chat turns; no token is passed in
-command arguments. Native launch credentials live only in the server process. Existing scoped
-credential files are converted to SHA-256 digests at startup; bridge credentials
-remain reusable for authentication across restarts through these digests. Older
-builds discard digest-only records and reissue a token on the next chat turn or
-thread start. Reopen a native terminal after downgrading.
-Reopen the terminal after a server restart to obtain a new credential. Machine
-token rotation also revokes derived conversation credentials after the existing
-ten-minute grace period; reopen the terminal after that grace expires.
+field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-create-data`. This persists the pin before Fleet's initial admission check. The same draft data works for ordinary Enter/button sends and programmatic composer submissions. No entry means Automatic. Choices require a local pool; choose Automatic when proxying a parent pool. For native terminals, the hub resolves the conversation's current account choice at the start of each request. A retained bridge credential keeps the account chosen when it was issued; a new bridge turn's credential uses the current selection. A request already in flight keeps its choice. Native Codex launches use the same environment-backed provider configuration as chat turns; no token is passed in command arguments. Native launch credentials live only in the server process. Existing scoped credential files are converted to SHA-256 digests at startup; bridge credentials remain reusable for authentication across restarts through these digests. Older builds discard digest-only records and reissue a token on the next chat turn or thread start. Reopen a native terminal after downgrading. Reopen the terminal after a server restart to obtain a new credential. Machine token rotation also revokes derived conversation credentials after the existing ten-minute grace period; reopen the terminal after that grace expires.
 
-The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
-or Codex credentials, and inspect its proxy routes and account quota with:
+The builtin Account Pooler plugin is disabled by default. Enable it, add Claude or Codex credentials, and inspect its proxy routes and account quota with:
 
 ```sh
 bb plugin enable account-pool
@@ -58,14 +36,9 @@ bb pool bypass get <thread-id>
 ```
 
 `bb pool bypass get <thread-id>` reads whether that thread currently bypasses
-Account Pooler routing. It is read-only; `bb pool bypass <thread-id> [--off]`
-continues to enable or disable the bypass.
+Account Pooler routing. It is read-only; `bb pool bypass <thread-id> [--off]` continues to enable or disable the bypass.
 
-Every command accepts `--json` and `--help`. `bb pool --help` lists the
-commands; `bb pool <command> --help` prints that command's arguments, options,
-and rules, including which flags cannot be combined. Unknown commands, unknown
-flags, and stray arguments are rejected with the nearest suggestion rather than
-ignored, and a failing invocation that carries `--json` also prints
+Every command accepts `--json` and `--help`. `bb pool --help` lists the commands; `bb pool <command> --help` prints that command's arguments, options, and rules, including which flags cannot be combined. Unknown commands, unknown flags, and stray arguments are rejected with the nearest suggestion rather than ignored, and a failing invocation that carries `--json` also prints
 `{"ok":false,"error":{"code","message","hint"}}` on stdout.
 
 ### One-time cleanup after upgrading
@@ -94,11 +67,7 @@ ignored, and a failing invocation that carries `--json` also prints
 
 Pooled Codex native terminals and chat bridges exclude pool variables from model-run shell environments and their shell snapshots. Codex itself retains the credential in memory to authenticate pool requests.
 
-The host reads `CODEX_HOME/config.toml` (default `~/.codex/config.toml`) without
-changing it. Existing `shell_environment_policy.exclude`, `include_only`, and
-canonical filters keep their restrictions. Invalid or conflicting policy shapes,
-legacy top-level `profile`, or `set` entries that restore pool variables refuse a
-pooled launch. Move a policy from `/etc/codex/config.toml`,
+The host reads `CODEX_HOME/config.toml` (default `~/.codex/config.toml`) without changing it. Existing `shell_environment_policy.exclude`, `include_only`, and canonical filters keep their restrictions. Invalid or conflicting policy shapes, legacy top-level `profile`, or `set` entries that restore pool variables refuse a pooled launch. Move a policy from `/etc/codex/config.toml`,
 `/etc/codex/managed_config.toml`, or an ancestor `.codex/config.toml` to the user
 file before using pooled launches. A present macOS managed-preference plist for
 `com.openai.codex` also refuses pooled launches without reading its contents;
@@ -126,6 +95,11 @@ their thread. The machine token itself is never handed to an agent. Claude Code
 also receives `ENABLE_TOOL_SEARCH=true`, so tool search stays on through the
 pool, and `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1`, so Opus keeps its 1M
 context window instead of the 200k fallback for custom base URLs.
+Claude Code skips its served model catalog behind the pool and lists only the
+models it cached under a personal login, so the pool also contributes
+`BB_CLAUDE_MODELS_URL`. The Claude Code model picker then lists the models
+that pooled accounts can use from that hub route, newest first after Claude
+Code's default, including newly released ones.
 Codex receives `CODEX_OPENAI_BASE_URL` and the secret
 `CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server and native CLI config.
 Codex image generation and editing use the same authenticated pool route.
@@ -144,8 +118,13 @@ early reset takes effect on the next turn. Use
 For an OAuth account in error, `refresh` also forces a new token with the stored
 refresh token and clears the error when that succeeds, so a spurious error does
 not require logging in again.
-An account enters error only when its OAuth refresh token is rejected (HTTP 400
-or 401 from the token endpoint) or an API key is rejected. A rejected refresh
+When the token endpoint rejects an OAuth refresh token (HTTP 400 or 401), the
+pool stores a SHA-256 fingerprint of that token, never sends it again on its
+own, even after a restart, and keeps serving the stored access token. The
+account enters error once that access token expires or upstream rejects it; an
+API key enters error when it is rejected. `bb pool account login <id>` replaces
+the login and clears both the error and the stored fingerprint.
+A rejected refresh
 token sets `signInExpired` in account JSON and `expired` in the `account list`
 Sign-in column, even while the account is disabled. Repair it with
 `bb pool account sign-in-again <id>` (aliases `login`, `relogin`, `reauth`, `reauthorize`): it starts
@@ -171,8 +150,9 @@ freshly refreshed OAuth token is treated as an upstream failure instead: the
 request gets HTTP 503, and that token is held out of routing for one minute.
 Account tables add columns for observed model-family buckets; JSON status
 exposes their utilization, reset, status, observation time, and source under
-`familyWeekly`. Selection skips an account whose requested family is spent
-while retaining it for other families. A present `metadata.user_id` account
+`familyWeekly`. Selection routes a request away from an account whose requested
+family is at or above the switch threshold while retaining it for other
+families. A present `metadata.user_id` account
 UUID is aligned with the selected OAuth account. Use `bb pool config` to
 inspect the full routing configuration and
 `bb pool config set <key> <value>` to update one value. The upstream URL keys
@@ -191,12 +171,36 @@ that family without moving the session's main pin. Session pins survive hub
 restarts, expire after 30 idle minutes, and the pool retains the 4,096 most
 recently used pins.
 
+An HTTP 408, 500, 502, 503, 504 or 529 response, or a connection failure,
+before the response starts, retries a pinned conversation on its own account
+first: up to twice, after 1 and then 2 seconds, or after the response's
+`Retry-After` when that is at most 20 seconds. Prompt caches stay with the
+account, so a move would rewrite the whole cached context. When the retries
+fail, or the wait is longer, the request fails over to the next account, and
+the session's pin moves to the account that served it, where its context is now
+cached. Conversations without a pin fail over at once. The cursor
+and session pins survive hub restarts. Session pins expire after 30 idle minutes,
+and the pool retains the 4,096 most recently used pins.
+
+The switch threshold is a preference, not a cutoff. New conversations go to
+accounts below it first, and existing conversations keep their account past it.
+When no account below it is available, accounts at or above it keep serving
+until the provider refuses them; refused accounts with extra usage or Codex
+credits come after those.
+Where the provider reports a window status, `rejected` decides whether it
+refused the window; a window without a status counts as refused from 100
+percent utilization. The pool answers with its own HTTP 429 only when no
+account can serve. Its `Retry-After`, the time in its message, and
+`provider-retry.v1.availability` count only refused windows, and `account list`
+and `status` report `exhausted` only for an account the provider refused.
+
 Claude accounts with an exhausted subscription window remain eligible as a
 fallback when Anthropic reports extra usage enabled with remaining allowance,
-or an allowed overage response header. Accounts below the switch threshold
-are preferred, including for conversations pinned to an extra-usage fallback;
-those conversations return to subscription quota when it recovers. Before using
-extra usage, the pool rechecks exhausted OAuth accounts (at most every 30 seconds).
+or an allowed overage response header. Accounts the provider still accepts are
+preferred, including for conversations pinned to an extra-usage fallback; those
+conversations return to subscription quota when it recovers. Before using
+extra usage, the pool rechecks OAuth accounts at or above the switch threshold (at
+most every 30 seconds).
 Disabled, spent, or unobserved extra usage does not override subscription limits.
 This does not enable extra usage or change spending limits on Claude.
 `account list` and `status` show an Extra usage column; JSON and the corresponding

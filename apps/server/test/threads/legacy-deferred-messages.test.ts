@@ -1,9 +1,5 @@
 import { sql } from "drizzle-orm";
-import {
-  listEvents,
-  listQueuedThreadMessages,
-  markThreadDeleted,
-} from "@bb/db";
+import { listQueuedThreadMessages, markThreadDeleted } from "@bb/db";
 import { describe, expect, it } from "vitest";
 import { deliverLegacyDeferredThreadMessages } from "../../src/services/threads/legacy-deferred-messages.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
@@ -15,12 +11,10 @@ import {
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const WORKSPACE_PATH = "/tmp/legacy-deferred-project";
 
-// Migration 0111 renames the old table into place, so a freshly migrated
-// database already carries it (empty); IF NOT EXISTS covers a harness that
-// ran the backfill once and dropped it.
 function createLegacyTable(harness: TestAppHarness): void {
   harness.db.run(
     sql`CREATE TABLE IF NOT EXISTS deferred_thread_messages_legacy (
@@ -77,11 +71,13 @@ function seedIdleThread(harness: TestAppHarness, hostId: string) {
 }
 
 describe("deliverLegacyDeferredThreadMessages", () => {
-  it("does not retain an empty renamed table from migrations", async () => {
+  it("drops the empty renamed table and is a no-op ever after", async () => {
     await withTestHarness(async (harness) => {
-      expect(legacyTableExists(harness)).toBe(false);
+      createLegacyTable(harness);
+      expect(legacyTableExists(harness)).toBe(true);
       await deliverLegacyDeferredThreadMessages(harness.deps);
       expect(legacyTableExists(harness)).toBe(false);
+      await deliverLegacyDeferredThreadMessages(harness.deps);
     });
   });
 
@@ -97,8 +93,6 @@ describe("deliverLegacyDeferredThreadMessages", () => {
           kind: "send",
           request: {
             input: [{ type: "text", text: "The held follow-up", mentions: [] }],
-            // A mode value today's schema does not know: the message must
-            // survive it, since the words are what the migration protects.
             mode: "defer-legacy",
           },
         },
@@ -106,10 +100,6 @@ describe("deliverLegacyDeferredThreadMessages", () => {
 
       await deliverLegacyDeferredThreadMessages(harness.deps);
 
-      // The thread is active, so the checkpoint queued the message behind the
-      // running turn — the same landing an ordinary send gets. `auto` mode
-      // steers a running turn, so assert on whichever the harness produced:
-      // either a queued row carrying the text, or a dispatched request.
       const queuedTexts = listQueuedThreadMessages(harness.db, thread.id)
         .map(toThreadQueuedMessage)
         .flatMap((row) => row.content)

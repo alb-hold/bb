@@ -20,7 +20,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPluginSettingsValues,
   setPluginSettingsValues,
+  startWalCheckpointer,
   type DbConnection,
+  type WalCheckpointer,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import type { Logger } from "@bb/logger";
@@ -87,7 +89,14 @@ describe("plugin settings + storage", () => {
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-storage-test-"));
     dataDir = join(workDir, "data");
     systemBroadcasts = [];
-    service = createPluginService({
+    service = createService(dataDir);
+  });
+
+  function createService(
+    serviceDataDir: string,
+    walCheckpointer?: WalCheckpointer,
+  ): PluginService {
+    return createPluginService({
       aiServices: createAiServiceRegistry(),
       telemetry: createNoopTelemetryService(),
       db,
@@ -101,11 +110,12 @@ describe("plugin settings + storage", () => {
         },
       },
       logger,
-      dataDir,
+      dataDir: serviceDataDir,
       appVersion: "0.9.0",
       loadTimeoutMs: 2000,
+      walCheckpointer,
     });
-  });
+  }
 
   afterEach(async () => {
     await service.stop();
@@ -511,7 +521,11 @@ describe("plugin settings + storage", () => {
           "INSERT INTO items (name) VALUES ('seed')",
         ]);
         const g = globalThis as any;
-        g.__sqler = { db, journalMode: db.pragma("journal_mode", { simple: true }) };
+        g.__sqler = {
+          autoVacuum: db.pragma("auto_vacuum", { simple: true }),
+          db,
+          journalMode: db.pragma("journal_mode", { simple: true }),
+        };
       }
     `;
 
@@ -524,6 +538,7 @@ describe("plugin settings + storage", () => {
       .digest("hex");
 
     function sqler(): {
+      autoVacuum: number;
       db: {
         prepare(sql: string): { get(): { count: number } };
       };
@@ -532,7 +547,7 @@ describe("plugin settings + storage", () => {
       return (globalThis as Record<string, unknown>).__sqler as never;
     }
 
-    it("vends a WAL handle, applies migrations once, and closes handles on reload", async () => {
+    it("vends an incremental WAL handle, applies migrations once, and closes handles on reload", async () => {
       const rootDir = await writePlugin(workDir, {
         name: "bb-plugin-sqler",
         serverSource: sqlerSource,
@@ -561,6 +576,7 @@ describe("plugin settings + storage", () => {
         );
 
         expect(sqler().journalMode).toBe("wal");
+        expect(sqler().autoVacuum).toBe(2);
         const countRow = sqler()
           .db.prepare("SELECT COUNT(*) AS count FROM items")
           .get();
@@ -582,6 +598,33 @@ describe("plugin settings + storage", () => {
         expect(rerunRow.count).toBe(1);
       } finally {
         compiler.mockRestore();
+      }
+    });
+
+    it("checkpoints plugin databases off the main thread and releases them when the plugin stops", async () => {
+      const checkpointedDataDir = join(workDir, "checkpointed-data");
+      const walCheckpointer = startWalCheckpointer({ logger });
+      const checkpointed = createService(checkpointedDataDir, walCheckpointer);
+      try {
+        const rootDir = await writePlugin(workDir, {
+          name: "bb-plugin-sqler",
+          serverSource: sqlerSource,
+        });
+        await checkpointed.installPath(rootDir);
+        const database = checkpointed.getApi("sqler")?.storage.database();
+        if (database === undefined) throw new Error("sqler did not load");
+        await walCheckpointer.checkpoint(database);
+        expect(database.pragma("wal_autocheckpoint", { simple: true })).toBe(0);
+
+        await checkpointed.stop();
+
+        expect(
+          existsSync(
+            join(checkpointedDataDir, "plugins", "sqler", "data.db-wal"),
+          ),
+        ).toBe(false);
+      } finally {
+        await walCheckpointer.stop();
       }
     });
 
@@ -657,7 +700,6 @@ describe("plugin settings + storage", () => {
               db.prepare("SELECT 1").get();
               g.__chatty.handles.push(db);
             }
-            // A plugin that closes the handle itself gets a fresh one next.
             for (let i = 0; i < 3; i++) {
               const db = bb.storage.database();
               db.close();

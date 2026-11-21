@@ -28,9 +28,7 @@ type GetCurrentBranchArgs = Parameters<HostWorkspace["getCurrentBranch"]>;
 type GetLocalStateFingerprintResult = Awaited<
   ReturnType<HostWorkspace["getLocalStateSnapshot"]>
 >["fingerprint"];
-type GetSharedGitRefsFingerprintResult = Awaited<
-  ReturnType<HostWorkspace["getSharedGitRefsSnapshot"]>
->["fingerprint"];
+type GetSharedGitRefsFingerprintResult = string;
 type CommitArgs = Parameters<HostWorkspace["commit"]>;
 type ProvisionWorkspaceMockArgs = Parameters<
   (options: ProvisionWorkspaceArgs) => Promise<HostWorkspace>
@@ -124,6 +122,7 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
     path,
     isGitRepo,
     isWorktree: false,
+    gitCommonDir: isGitRepo ? `${path}/.git` : null,
     getDefaultBranch: vi.fn(async () => "main"),
     getCurrentBranch: vi.fn(async (..._args: GetCurrentBranchArgs) => "main"),
     getHeadSha: vi.fn(async () => "commit-1"),
@@ -137,7 +136,11 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
       if (sharedGitRefsFingerprintError) {
         throw sharedGitRefsFingerprintError;
       }
-      return { fingerprint: sharedGitRefsFingerprint, defaultBranch: "main" };
+      return {
+        defaultBranch: "main",
+        branchNamesFingerprint: "names-1",
+        fingerprintFor: () => sharedGitRefsFingerprint,
+      };
     }),
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
     commit: vi.fn(async (..._args: CommitArgs) => ({
@@ -191,7 +194,9 @@ function createFakeRuntime() {
     resumeThread: vi.fn(async (_args: ResumeThreadArgs) => ({
       providerThreadId: "provider-1",
     })),
-    runTurn: vi.fn(async (_args: RunTurnArgs) => undefined),
+    runTurn: vi.fn(async (_args: RunTurnArgs) => ({
+      status: "started" as const,
+    })),
     steerTurn: vi.fn(async (_args: SteerTurnArgs) => ({
       status: "steered" as const,
     })),
@@ -217,6 +222,7 @@ function createFakeRuntime() {
     }),
     listRunningProviders: vi.fn((): string[] => []),
     getActiveTurnId: (threadId) => activeTurnsByThreadId.get(threadId) ?? null,
+    getActiveTurnRequestIds: () => [],
     waitForActiveTurn: async (threadId) =>
       activeTurnsByThreadId.get(threadId) ?? null,
     getProviderSession: () => null,
@@ -231,6 +237,7 @@ function createFakeRuntime() {
       ]),
     ],
     hasOpenBackgroundWork: () => openBackgroundWork,
+    listOpenBackgroundWork: () => [],
     shutdown: vi.fn(async () => undefined),
     detach: vi.fn(async () => undefined),
     adoptBridgeWorkers: vi.fn(() => []),
@@ -252,18 +259,6 @@ function createFakeRuntime() {
       }
     },
   } satisfies FakeAgentRuntime;
-}
-
-function isPidAlive(pid: number): boolean {
-  if (pid === 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function createProvisionWorkspaceMock(path: string) {
@@ -1726,24 +1721,26 @@ describe("RuntimeManager", () => {
     });
     const child = spawn(
       process.execPath,
-      ["-e", "setTimeout(() => {}, 300_000)"],
+      ["-e", "process.stdin.on('data', (chunk) => process.stdout.write(chunk))"],
       {
         cwd: directory,
         detached: true,
-        stdio: "ignore",
+        stdio: ["pipe", "pipe", "ignore"],
       },
     );
-    child.unref();
 
     try {
       await manager.forgetEnvironment("env-forgotten");
-      expect(isPidAlive(child.pid ?? 0)).toBe(true);
+      const echoed = new Promise<string>((resolveEcho, rejectEcho) => {
+        child.stdout.once("data", (chunk) => resolveEcho(String(chunk)));
+        child.once("exit", () =>
+          rejectEcho(new Error("forgetting the environment killed its process")),
+        );
+      });
+      child.stdin.write("ping\n");
+      await expect(echoed).resolves.toBe("ping\n");
     } finally {
-      if (child.pid) {
-        try {
-          process.kill(child.pid, "SIGKILL");
-        } catch {}
-      }
+      child.kill("SIGKILL");
       await fs.rm(directory, {
         recursive: true,
         force: true,

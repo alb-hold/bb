@@ -72,6 +72,12 @@ export class TerminalInputInterruptedError extends ApiError {
   }
 }
 
+export class HostConnectionLostApiError extends ApiError {
+  constructor() {
+    super(502, "host_unavailable", "Host is not connected", false);
+  }
+}
+
 function normalizeApiErrorOptions(
   options: boolean | ApiErrorOptions | undefined,
 ): ApiErrorOptions {
@@ -141,7 +147,15 @@ function errorToResponse(
       status: error.status,
       ...(error instanceof ApiError ? { body: error.body } : {}),
     };
-    const refusalKey = apiErrorRefusalKey(error);
+    const refusalKey =
+      error instanceof ApiError &&
+      error.body.code === "path_in_use" &&
+      typeof error.body.details === "object" &&
+      error.body.details !== null &&
+      "refusalKey" in error.body.details &&
+      typeof error.body.details.refusalKey === "string"
+        ? error.body.details.refusalKey
+        : undefined;
     if (refusalKey === undefined) {
       logger.error(fields, "Server error response");
     } else if (refusalLog.isNewRefusal(refusalKey)) {

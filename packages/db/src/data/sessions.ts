@@ -1,5 +1,10 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { DbConnection, DbTransaction } from "../connection.js";
+import { and, desc, eq, inArray, placeholder, sql } from "drizzle-orm";
+import {
+  prepareCachedQuery,
+  type DbConnection,
+  type DbQueryConnection,
+  type DbTransaction,
+} from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
 import { hostDaemonSessions } from "../schema.js";
 import { createHostDaemonSessionId } from "../ids.js";
@@ -146,31 +151,40 @@ export function listLatestClosedSessionsForHosts(
     .select()
     .from(hostDaemonSessions)
     .where(
-      and(
-        inArray(hostDaemonSessions.hostId, hostIds),
-        sql`${hostDaemonSessions.id} = (
-          SELECT latest.id
-          FROM host_daemon_sessions AS latest
-          WHERE latest.host_id = ${hostDaemonSessions.hostId}
-            AND latest.status = 'closed'
-          ORDER BY latest.closed_at DESC, latest.id DESC
-          LIMIT 1
+      inArray(
+        hostDaemonSessions.id,
+        sql`(
+          SELECT (
+            SELECT latest.id
+            FROM host_daemon_sessions AS latest
+              INDEXED BY host_daemon_sessions_host_status_idx
+            WHERE latest.host_id = requested.value
+              AND latest.status = 'closed'
+            ORDER BY latest.closed_at DESC, latest.id DESC
+            LIMIT 1
+          )
+          FROM json_each(${JSON.stringify(hostIds)}) AS requested
         )`,
       ),
     )
     .all();
 }
 
+const prepareGetSessionById = (db: DbQueryConnection) =>
+  db
+    .select()
+    .from(hostDaemonSessions)
+    .where(eq(hostDaemonSessions.id, placeholder("id")))
+    .prepare();
+
 export function getSessionById(
   db: SessionReadConnection,
   args: GetSessionByIdArgs,
 ) {
   return (
-    db
-      .select()
-      .from(hostDaemonSessions)
-      .where(eq(hostDaemonSessions.id, args.sessionId))
-      .get() ?? null
+    prepareCachedQuery(db, prepareGetSessionById).get({
+      id: args.sessionId,
+    }) ?? null
   );
 }
 

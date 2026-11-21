@@ -57,13 +57,14 @@ export function beginSplitDrag(config: SplitDragConfig): void {
     if (config.cancelSidebarReorderOnEngage) {
       cancelingSidebarReorder = true;
       try {
-        document.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key: "Escape",
-            code: "Escape",
-            bubbles: true,
-          }),
-        );
+        const cancelReorder = new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        });
+        cancelReorder.preventDefault();
+        document.dispatchEvent(cancelReorder);
       } finally {
         cancelingSidebarReorder = false;
       }
@@ -214,19 +215,17 @@ export function beginSplitDrag(config: SplitDragConfig): void {
 
 function swallowNextClick(): void {
   const targetWindow = window;
-  const removeClickListener = targetWindow.removeEventListener.bind(
-    targetWindow,
-  );
+  const release = (): void => {
+    targetWindow.clearTimeout(releaseTimeout);
+    targetWindow.removeEventListener("click", swallow, true);
+  };
   const swallow = (event: MouseEvent): void => {
     event.stopPropagation();
     event.preventDefault();
-    removeClickListener("click", swallow, true);
+    release();
   };
   targetWindow.addEventListener("click", swallow, true);
-  targetWindow.setTimeout(
-    () => removeClickListener("click", swallow, true),
-    300,
-  );
+  const releaseTimeout = targetWindow.setTimeout(release, 300);
 }
 
 function paneElementAt(clientX: number, clientY: number): HTMLElement | null {

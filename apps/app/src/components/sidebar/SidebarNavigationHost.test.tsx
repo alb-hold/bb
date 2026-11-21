@@ -9,15 +9,7 @@ import {
 } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExperimentalSidebarNavigationProps,
   PluginAppBuilder,
@@ -51,6 +43,7 @@ import {
   SidebarNavigationRegion,
   useSidebarNavigationCustomize,
 } from "./SidebarNavigationHost";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { SidebarNavigationModelProvider } from "./SidebarNavigationModel";
 import {
   sidebarNavigationPlacement,
@@ -193,9 +186,7 @@ function region(): HTMLElement {
   return element;
 }
 
-beforeAll(async () => {
-  await SidebarVisibilityCustomize.preload();
-});
+await SidebarVisibilityCustomize.preload();
 
 beforeEach(async () => {
   mocks.toastWarning.mockClear();
@@ -555,12 +546,12 @@ describe("sidebar navigation providers", () => {
     );
     renderHost();
 
-    fireEvent.click(screen.getByRole("button", { name: "Arrange" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Arrange" }));
 
     expect(await screen.findByTestId("nav-rail-customize")).toBeDefined();
   });
 
-  it("replaces a crashing plugin provider with the bundled provider for the same placement", () => {
+  it("replaces a crashing plugin provider with the bundled provider for the same placement", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     registerPlugin((app) =>
       app.slots.experimental_sidebarNavigation({
@@ -573,6 +564,7 @@ describe("sidebar navigation providers", () => {
       }),
     );
     renderHost();
+    await settleLazyModules();
 
     expect(region().dataset.sidebarNavigationPlacement).toBe("rail");
     expect(screen.getByTestId("app-nav-rail")).toBeDefined();
@@ -596,7 +588,7 @@ describe("sidebar navigation providers", () => {
     ).toBe("No navigation plugin is enabled.");
   });
 
-  it("renders the bundled provider for the placement as a plugin's Original", () => {
+  it("renders the bundled provider for the placement as a plugin's Original", async () => {
     registerPlugin((app) =>
       app.slots.experimental_sidebarNavigation({
         id: "nav",
@@ -609,6 +601,7 @@ describe("sidebar navigation providers", () => {
       }),
     );
     renderHost();
+    await settleLazyModules();
 
     expect(
       screen

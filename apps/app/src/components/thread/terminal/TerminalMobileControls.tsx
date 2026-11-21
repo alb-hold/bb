@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { getNativeShell } from "@/lib/native-shell/native-shell";
@@ -106,10 +107,11 @@ export function TerminalMobileControls({
     updateOverflow();
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const observer = new ResizeObserver(updateOverflow);
-    observer.observe(scroller);
-    if (controlsRef.current) observer.observe(controlsRef.current);
-    return () => observer.disconnect();
+    const controls = controlsRef.current;
+    return observeSharedResize(
+      controls ? [scroller, controls] : [scroller],
+      { read: () => undefined, write: updateOverflow },
+    );
   }, [updateOverflow]);
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };

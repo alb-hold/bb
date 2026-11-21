@@ -11,6 +11,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
+import { runThreadPurges } from "../helpers/thread-purges.js";
 
 const API = "/api/v1";
 
@@ -45,6 +46,7 @@ describe("thread deletion on a removed machine", () => {
       });
       expect(deleted.status).toBe(200);
       await runThreadLifecycleSweep(harness.deps);
+      await runThreadPurges(harness.deps);
 
       expect(getThread(harness.db, thread.id)).toBeNull();
       expect(
@@ -84,6 +86,7 @@ describe("deleting a thread with a large event history", () => {
       for (let sweep = 0; sweep < 3; sweep += 1) {
         await runThreadLifecycleSweep(harness.deps);
       }
+      await runThreadPurges(harness.deps);
 
       expect(getThread(harness.db, thread.id)).toBeNull();
       expect(

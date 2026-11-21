@@ -10,6 +10,7 @@ import {
   listLiveThreadsInEnvironment,
   listLifecycleThreadDependents,
   archiveThread,
+  deleteThreadScopedPruningCursors,
   getEnvironment,
   getNativeTerminalThread,
   listNonDeletedChildThreads,
@@ -23,10 +24,8 @@ import {
   resetActiveThreadEventPruningState,
 } from "../system/event-pruning.js";
 import { emitPluginThreadArchived } from "../plugins/plugin-thread-events.js";
-import {
-  dispatchSettledArchivedThreadProviderArchiveCommand,
-  requestThreadStopForCurrentState,
-} from "./thread-lifecycle.js";
+import { requestThreadStopForCurrentState } from "./thread-lifecycle.js";
+import { dispatchSettledArchivedThreadProviderArchiveCommand } from "./lifecycle/finish.js";
 import {
   archiveUndoGraceKeepsTerminals,
   archiveUndoGraceKeepsTurnRunning,
@@ -73,7 +72,7 @@ function archiveThreadWithLifecycleEffects(
     });
   }
   if (!archiveUndoGraceKeepsTurnRunning(archivedThread, now)) {
-    requestThreadStopForCurrentState(deps, archivedThread, args.environment);
+    requestThreadStopForCurrentState(deps, archivedThread);
   }
   dispatchSettledArchivedThreadProviderArchiveCommand(deps, {
     threadId: archivedThread.id,
@@ -83,6 +82,7 @@ function archiveThreadWithLifecycleEffects(
     mode: "archived",
     threadId: archivedThread.id,
   });
+  deleteThreadScopedPruningCursors(deps.db, archivedThread.id);
   void cancelProviderEnvironmentCreation(deps, archivedThread.id).catch(
     (error) =>
       deps.logger.warn({ error }, "Environment launch cancellation failed"),
@@ -150,11 +150,7 @@ function archiveThreadTrees(
     if (thread.deletedAt !== null) continue;
     if (thread.archivedAt !== null) {
       if (!archiveUndoGraceKeepsTurnRunning(thread, Date.now()))
-        requestThreadStopForCurrentState(
-          deps,
-          thread,
-          thread.environmentId === null ? null : resolveEnvironment(thread),
-        );
+        requestThreadStopForCurrentState(deps, thread);
       continue;
     }
     const environment = resolveEnvironment(thread);

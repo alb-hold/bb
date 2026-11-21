@@ -24,10 +24,6 @@ import type {
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../interactions/pending-interactions.js";
-import {
-  buildChildThreadBlockerSummary,
-  requestChildThreadNeedsAttentionNotification,
-} from "../../internal/interactive-requests.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -602,12 +598,6 @@ function reconcileNativeQuestions(
         "Native terminal question was not registered",
       );
       continue;
-    }
-    if (registered.outcome === "created") {
-      requestChildThreadNeedsAttentionNotification(deps, {
-        blockerSummary: buildChildThreadBlockerSummary(registered.interaction),
-        childThreadId: args.thread.id,
-      });
     }
   }
   return interrupted;

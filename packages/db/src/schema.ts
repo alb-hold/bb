@@ -16,6 +16,11 @@ import {
 } from "@bb/domain/queued-message-lifecycle";
 import { threadStatusValues } from "@bb/domain/thread-status";
 import {
+  heldTurnCompletionStatusValues,
+  threadTurnRequestKindValues,
+  threadTurnRequestPhaseValues,
+} from "@bb/domain/thread-run-state";
+import {
   startedOnBehalfOfInitiatorValues,
 } from "@bb/domain/started-on-behalf-of";
 import { threadCreateOriginValues } from "@bb/domain/thread-create-origin";
@@ -37,6 +42,7 @@ import type {
   QueuedMessageWaitHolder,
   ReasoningLevel,
   ServiceTier,
+  SystemThreadInterruptedReason,
   TerminalSessionCloseReason,
   TerminalSessionStatus,
   TerminalDefaultColors,
@@ -334,6 +340,7 @@ export const installedPlugins = sqliteTable("plugins", {
   lastFailureVersion: text("last_failure_version"),
   lastFailureAt: integer("last_failure_at"),
   lastFailureDetail: text("last_failure_detail"),
+  lastFailureLabel: text("last_failure_label"),
   activeArtifactId: text("active_artifact_id").references(
     (): AnySQLiteColumn => pluginArtifacts.id,
   ),
@@ -429,6 +436,7 @@ export const pluginStateSnapshots = sqliteTable(
       ],
     }).notNull(),
     rollbackCandidateVersion: text("rollback_candidate_version"),
+    rollbackCandidateLabel: text("rollback_candidate_label"),
     rollbackSourceFingerprint: text("rollback_source_fingerprint"),
     rollbackBbVersion: text("rollback_bb_version"),
     rollbackSdkVersion: text("rollback_sdk_version"),
@@ -516,6 +524,9 @@ export const projectSources = sqliteTable(
       table.projectId,
       table.hostId,
     ),
+    uniqueIndex("project_sources_default_project_idx")
+      .on(table.projectId)
+      .where(sql`${table.isDefault} = 1`),
     check(
       "project_sources_shape_check",
       sql`(
@@ -623,6 +634,7 @@ export const threads = sqliteTable(
     status: text("status", { enum: threadStatusValues })
       .notNull()
       .default("starting"),
+    statusChangedAt: integer("status_changed_at").notNull().default(0),
     startupContext: text("startup_context"),
     parentThreadId: text("parent_thread_id").references(
       (): AnySQLiteColumn => threads.id,
@@ -708,6 +720,57 @@ export const threads = sqliteTable(
   ],
 );
 
+export const threadTurnRequests = sqliteTable(
+  "thread_turn_requests",
+  {
+    requestId: text("request_id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: threadTurnRequestKindValues }).notNull(),
+    phase: text("phase", { enum: threadTurnRequestPhaseValues }).notNull(),
+    hostId: text("host_id").notNull(),
+    syncTitle: integer("sync_title", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    sentAt: integer("sent_at").notNull(),
+  },
+  (table) => [
+    index("thread_turn_requests_thread_idx").on(table.threadId, table.sentAt),
+  ],
+);
+
+export const threadRunStates = sqliteTable(
+  "thread_run_states",
+  {
+    threadId: text("thread_id")
+      .primaryKey()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    heldTurnId: text("held_turn_id"),
+    heldTurnStatus: text("held_turn_status", {
+      enum: heldTurnCompletionStatusValues,
+    }),
+    stopReason: text("stop_reason").$type<SystemThreadInterruptedReason>(),
+    stopRequestedAt: integer("stop_requested_at"),
+    stopSentAt: integer("stop_sent_at"),
+    stopAckedAt: integer("stop_acked_at"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("thread_run_states_stop_idx")
+      .on(table.stopRequestedAt)
+      .where(sql`${table.stopRequestedAt} IS NOT NULL`),
+    check(
+      "thread_run_states_held_check",
+      sql`(${table.heldTurnId} IS NULL) = (${table.heldTurnStatus} IS NULL)`,
+    ),
+    check(
+      "thread_run_states_stop_check",
+      sql`(${table.stopReason} IS NULL) = (${table.stopRequestedAt} IS NULL) AND (${table.stopSentAt} IS NULL OR ${table.stopRequestedAt} IS NOT NULL) AND (${table.stopAckedAt} IS NULL OR ${table.stopRequestedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const threadPluginMetadata = sqliteTable(
   "thread_plugin_metadata",
   {
@@ -718,6 +781,17 @@ export const threadPluginMetadata = sqliteTable(
     metadataJson: text("metadata_json").notNull(),
   },
   (table) => [primaryKey({ columns: [table.threadId, table.pluginId] })],
+);
+
+export const threadPurges = sqliteTable(
+  "thread_purges",
+  {
+    threadId: text("thread_id")
+      .primaryKey()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    requestedAt: integer("requested_at").notNull(),
+  },
+  (table) => [index("thread_purges_requested_idx").on(table.requestedAt)],
 );
 
 export const threadTabs = sqliteTable("thread_tabs", {
@@ -963,6 +1037,19 @@ export const maintenanceScanCursors = sqliteTable(
   ],
 );
 
+export const sweepItemFailures = sqliteTable(
+  "sweep_item_failures",
+  {
+    sweep: text("sweep").notNull(),
+    itemKey: text("item_key").notNull(),
+    attempts: integer("attempts").notNull(),
+    firstFailedAt: integer("first_failed_at").notNull(),
+    retryAt: integer("retry_at").notNull(),
+    lastError: text("last_error").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sweep, table.itemKey] })],
+);
+
 export const promptHistoryEntries = sqliteTable(
   "prompt_history_entries",
   {
@@ -1047,6 +1134,8 @@ export const queuedThreadMessages = sqliteTable(
     })
       .notNull()
       .default("steer"),
+    coalesceKey: text("coalesce_key"),
+    coalesceState: text("coalesce_state"),
     claimedAt: integer("claimed_at"),
     claimToken: text("claim_token"),
     editHeldUntil: integer("edit_held_until"),
@@ -1075,6 +1164,9 @@ export const queuedThreadMessages = sqliteTable(
       table.nextAttemptAt,
       table.id,
     ),
+    index("queued_thread_messages_coalesce_idx")
+      .on(table.threadId, table.coalesceKey)
+      .where(sql`${table.coalesceKey} IS NOT NULL`),
     index("queued_thread_messages_wait_holder_idx")
       .on(table.waitHolder, table.id)
       .where(sql`${table.waitHolder} IS NOT NULL`),
@@ -1168,24 +1260,6 @@ export const providerModelCatalogs = sqliteTable(
   ],
 );
 
-export const diffViewedFiles = sqliteTable(
-  "diff_viewed_files",
-  {
-    environmentId: text("environment_id")
-      .notNull()
-      .references(() => environments.id, { onDelete: "cascade" }),
-    targetKey: text("target_key").notNull(),
-    path: text("path").notNull(),
-    revision: text("revision").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.environmentId, table.targetKey, table.path],
-    }),
-  ],
-);
-
 export const terminalSessions = sqliteTable(
   "terminal_sessions",
   {
@@ -1233,6 +1307,9 @@ export const terminalSessions = sqliteTable(
     ),
     index("terminal_sessions_host_status_idx").on(table.hostId, table.status),
     index("terminal_sessions_daemon_session_idx").on(table.daemonSessionId),
+    index("terminal_sessions_exited_prune_idx")
+      .on(table.updatedAt, table.id)
+      .where(sql`${table.status} = 'exited'`),
   ],
 );
 

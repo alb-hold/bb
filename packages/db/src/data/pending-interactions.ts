@@ -1,9 +1,9 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { PendingInteractionStatus } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createPendingInteractionId } from "../ids.js";
-import { pendingInteractions } from "../schema.js";
+import { environments, pendingInteractions, threads } from "../schema.js";
 
 type PendingInteractionWriteConnection = DbConnection | DbTransaction;
 type PendingInteractionReadConnection = DbConnection | DbTransaction;
@@ -254,11 +254,26 @@ export function getPendingInteractionByProviderRequest(
   );
 }
 
-/**
- * Rebind an interaction that a daemon restart interrupted to the provider's
- * replayed request. The interaction id remains stable for the UI and any
- * already-rendered authorization surface.
- */
+export function listActiveProviderPendingInteractionsForHost(
+  db: PendingInteractionReadConnection,
+  args: { hostId: string },
+): PendingInteractionRow[] {
+  return db
+    .select({ interaction: pendingInteractions })
+    .from(pendingInteractions)
+    .innerJoin(threads, eq(pendingInteractions.threadId, threads.id))
+    .innerJoin(environments, eq(threads.environmentId, environments.id))
+    .where(
+      and(
+        eq(environments.hostId, args.hostId),
+        eq(pendingInteractions.originKind, "provider"),
+        inArray(pendingInteractions.status, ["pending", "resolving"]),
+      ),
+    )
+    .all()
+    .map((row) => row.interaction);
+}
+
 export function reviveInterruptedProviderInteraction(
   db: PendingInteractionWriteConnection,
   args: ReviveInterruptedProviderInteractionArgs,
@@ -312,6 +327,7 @@ export function reviveInterruptedProviderInteraction(
       .returning()
       .get() ?? null
   );
+
 }
 
 export function listActivePluginPendingInteractions(
@@ -474,7 +490,13 @@ function interruptPendingInteractionsBatched(
           and(
             ...args.extraConditions,
             inArray(pendingInteractions.threadId, threadIdsBatch),
-            inArray(pendingInteractions.status, ["pending", "resolving"]),
+            or(
+              eq(pendingInteractions.status, "pending"),
+              and(
+                eq(pendingInteractions.status, "resolving"),
+                eq(pendingInteractions.originKind, "plugin"),
+              ),
+            ),
           ),
         )
         .returning()

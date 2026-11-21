@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import {
   usePendingAttachmentUploads,
@@ -6,6 +6,7 @@ import {
 } from "@/components/promptbox/usePendingAttachmentUploads";
 import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
+import { PromptAttachmentSizeError } from "@/lib/prompt-attachment-size";
 import { BbHttpError } from "@/lib/sdk";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { InlineComposerDraftSession } from "./useActiveComposerDraft";
@@ -55,7 +56,8 @@ interface UseDraftAttachmentUploadsResult {
 }
 
 function uploadRejectionReason(error: unknown): string | null {
-  return error instanceof BbHttpError
+  return error instanceof BbHttpError ||
+    error instanceof PromptAttachmentSizeError
     ? getMutationErrorMessage({ error, fallbackMessage: "Request failed" })
     : null;
 }
@@ -118,7 +120,9 @@ export function useDraftAttachmentUploads({
 }: UseDraftAttachmentUploadsArgs): UseDraftAttachmentUploadsResult {
   const uploadPromptAttachment = useUploadPromptAttachment();
   const targetRef = useRef(target);
-  targetRef.current = target;
+  useLayoutEffect(() => {
+    targetRef.current = target;
+  });
   const [failure, setFailure] = useState<DraftAttachmentFailure>({
     targetKey: null,
     message: null,

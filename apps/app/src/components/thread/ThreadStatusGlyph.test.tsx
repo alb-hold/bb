@@ -145,7 +145,6 @@ describe("ThreadStatusGlyph", () => {
     ["background-agent", "Background agent running", "UserRoundPlus"],
     ["background-command", "Background command running", "Terminal"],
     ["plan-mode", "Plan mode active", "ListTodo"],
-    ["goal", "Goal active", "Target"],
     ["runtime", "Thread working", "Loading"],
     ["draft", "Thread has unsubmitted draft", "Edit"],
   ] satisfies [PluginSidebarThreadIndicator, string, string][])(

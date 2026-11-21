@@ -39,7 +39,7 @@ const PRUNING_INVALIDATION: SourceRequirement[] = [
   },
   {
     file: PRUNING_FILE,
-    text: "bumpThreadEventRewriteGeneration(result.threadId);",
+    text: "bumpThreadEventRewriteGeneration(db, result.threadId);",
   },
   {
     file: PRUNING_FILE,
@@ -49,15 +49,19 @@ const PRUNING_INVALIDATION: SourceRequirement[] = [
 
 const EVENT_ROW_WRITES: Record<string, InventoriedWrite> = {
   "packages/db/src/data/events.ts": {
-    writes: 3,
+    writes: 4,
     requires: [
+      {
+        file: "packages/db/src/data/events.ts",
+        text: "let sequence = (highWaterMarks[args.targetThreadId] ?? 0) + 1;",
+      },
       {
         file: "packages/db/src/data/events.ts",
         text: 'if (args.itemKind === "backgroundTask") {\n    bumpBackgroundTaskAppendGeneration(args.threadId);',
       },
       {
         file: "packages/db/src/data/events.ts",
-        text: "if (result.changes > 0) {\n    bumpThreadEventRewriteGeneration(args.threadId);",
+        text: "if (result.changes > 0) {\n    bumpThreadEventRewriteGeneration(db, args.threadId);",
       },
       ...PRUNING_INVALIDATION,
     ],
@@ -67,7 +71,7 @@ const EVENT_ROW_WRITES: Record<string, InventoriedWrite> = {
     requires: [
       {
         file: "packages/db/src/data/sweeps.ts",
-        text: "bumpThreadEventRewriteGeneration(candidate.thread_id);",
+        text: "bumpThreadEventRewriteGeneration(tx, candidate.thread_id);",
       },
     ],
   },
@@ -86,6 +90,24 @@ const EVENT_ROW_WRITES: Record<string, InventoriedWrite> = {
       {
         file: "packages/db/src/data/fork-file-change-truncation.ts",
         text: "WHERE item_kind = 'fileChange'",
+      },
+    ],
+  },
+  "packages/db/src/data/thread-purges.ts": {
+    writes: 1,
+    requires: [
+      {
+        file: "packages/db/src/data/thread-purges.ts",
+        text: "SELECT id, octet_length(data) AS bytes FROM events\n    WHERE thread_id = ${args.threadId}",
+      },
+    ],
+  },
+  "packages/db/src/history-fixture.ts": {
+    writes: 1,
+    requires: [
+      {
+        file: "packages/db/src/history-fixture.ts",
+        text: "UPDATE events SET created_at = ? - (? - sequence) * ? WHERE thread_id = ?",
       },
     ],
   },

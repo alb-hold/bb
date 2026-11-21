@@ -124,7 +124,7 @@ export function MachineRowContent({
           className="group group/machine -mx-2 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-2 transition-colors hover:bg-state-hover focus-within:bg-state-hover"
           onClick={(event) => {
             if (targetsResourceAction(event)) return;
-            navigate(detailPath);
+            void navigate(detailPath);
           }}
         >
           <Link
@@ -195,6 +195,7 @@ export function MachineRowContent({
 
 export function MachinesSettingsSection() {
   const systemConfig = useSystemConfig();
+  const [openedAt] = useState(Date.now);
   const hostsQuery = useHosts({ includeCreating: true });
   const { providers: machineProviders } = useSystemMachineProviders();
   const { localDaemonHostId, platform: localDaemonPlatform } = useHostDaemon();
@@ -230,7 +231,7 @@ export function MachinesSettingsSection() {
     return counts;
   }, [projects]);
 
-  const now = Date.now();
+  const now = Math.max(openedAt, hostsQuery.dataUpdatedAt);
   const primaryHostPlatform = systemConfig.data?.primaryHostPlatform ?? null;
   const persistentHosts = hosts?.filter((host) => host.type === "persistent");
   const attentionHosts = (hosts ?? []).flatMap((host) => {

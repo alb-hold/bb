@@ -19,11 +19,7 @@ const telemetryRequestStorage = new AsyncLocalStorage<{
 }>();
 
 export type TelemetryInitiator =
-  | "user"
-  | "agent"
-  | "automation"
-  | "plugin"
-  | "system";
+  "user" | "agent" | "automation" | "plugin" | "system";
 
 export type TurnFinishedOutcome = "succeeded" | "failed" | "stopped";
 export type TurnExecutionLocation =
@@ -218,6 +214,7 @@ export async function createTelemetryService(
           ...(request?.accessRoute
             ? { access_route: request.accessRoute }
             : {}),
+          $process_person_profile: false,
         },
         timestamp: new Date().toISOString(),
       });

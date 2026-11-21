@@ -41,13 +41,13 @@ interface UseThreadTimelineControllerArgs {
 }
 
 export interface UseThreadTimelineControllerResult {
+  goal: ThreadTimelineResponse["goal"];
   activePromptMode: ThreadTimelineResponse["activePromptMode"];
   activeThinking: ThreadTimelineResponse["activeThinking"];
   activeWorkflows: ThreadTimelineResponse["activeWorkflows"];
   activeBackgroundCommands: ThreadTimelineResponse["activeBackgroundCommands"];
   contextBoundarySeq: ThreadTimelineResponse["contextBoundarySeq"];
   contextWindowUsage: ThreadTimelineResponse["contextWindowUsage"];
-  goal: ThreadTimelineResponse["goal"];
   providerCommands: ThreadTimelineResponse["providerCommands"];
   sessionOptions: ThreadTimelineResponse["sessionOptions"];
   modelFallback: ThreadTimelineResponse["modelFallback"];
@@ -156,6 +156,86 @@ function reconcileLoadedTimeline({
   });
 }
 
+async function loadOlderTimelinePage({
+  latestTimeline,
+  nextOlderCursor,
+  refetchLatestTimeline,
+  setIsLoadingOlderTimelineRows,
+  surfaceKey,
+  threadId,
+  updateLoadedTimeline,
+}: {
+  latestTimeline: ThreadTimelineResponse | undefined;
+  nextOlderCursor: NonNullable<LoadedTimelineState["olderCursor"]>;
+  refetchLatestTimeline: () => Promise<{
+    data: ThreadTimelineResponse | undefined;
+  }>;
+  setIsLoadingOlderTimelineRows: (isLoading: boolean) => void;
+  surfaceKey: string;
+  threadId: string;
+  updateLoadedTimeline: (
+    update: (current: LoadedTimelineState) => LoadedTimelineState,
+  ) => void;
+}): Promise<void> {
+  setIsLoadingOlderTimelineRows(true);
+  try {
+    const response = await sdk.threads.timeline({
+      beforeAnchorId: nextOlderCursor.anchorId,
+      beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
+      deferContent: "true",
+      threadId,
+    });
+    const olderRows = [...response.rows];
+    updateLoadedTimeline((current) => {
+      if (
+        current.surfaceKey !== surfaceKey ||
+        !areTimelinePaginationCursorsEqual({
+          left: current.olderCursor,
+          right: nextOlderCursor,
+        })
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        olderCursor: response.timelinePage.olderCursor,
+        rows: prependOlderTimelineRows({
+          loadedRows: current.rows,
+          olderRows,
+        }),
+      };
+    });
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !isStaleTimelinePaginationCursorError(error)
+    ) {
+      throw error;
+    }
+
+    const latestTimelineResult = await refetchLatestTimeline();
+    const recoveredLatestTimeline = latestTimelineResult.data ?? latestTimeline;
+    updateLoadedTimeline((current) => {
+      if (current.surfaceKey !== surfaceKey) {
+        return current;
+      }
+      if (!recoveredLatestTimeline) {
+        return {
+          ...current,
+          olderCursor: null,
+        };
+      }
+      return recoverLoadedTimelineAfterStaleCursor({
+        current,
+        latestTimeline: recoveredLatestTimeline,
+        surfaceKey,
+      });
+    });
+  } finally {
+    setIsLoadingOlderTimelineRows(false);
+  }
+}
+
 export function useThreadTimelineController({
   enabled = true,
   surfaceKey: explicitSurfaceKey,
@@ -261,74 +341,25 @@ export function useThreadTimelineController({
       ? loadedTimeline.olderCursor
       : null;
   const hasOlderTimelineRows = nextOlderCursor !== null;
-  const loadOlderTimelineRows = useCallback(async (): Promise<void> => {
+  const loadOlderTimelineRows = useCallback((): Promise<void> => {
     if (
       !enabled ||
       !nextOlderCursor ||
       !threadId ||
       isLoadingOlderTimelineRows
     ) {
-      return;
+      return Promise.resolve();
     }
 
-    setIsLoadingOlderTimelineRows(true);
-    try {
-      const response = await sdk.threads.timeline({
-        beforeAnchorId: nextOlderCursor.anchorId,
-        beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
-        deferContent: "true",
-        threadId,
-      });
-      const olderRows = [...response.rows];
-      updateLoadedTimeline((current) => {
-        if (
-          current.surfaceKey !== surfaceKey ||
-          !areTimelinePaginationCursorsEqual({
-            left: current.olderCursor,
-            right: nextOlderCursor,
-          })
-        ) {
-          return current;
-        }
-        return {
-          ...current,
-          olderCursor: response.timelinePage.olderCursor,
-          rows: prependOlderTimelineRows({
-            loadedRows: current.rows,
-            olderRows,
-          }),
-        };
-      });
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !isStaleTimelinePaginationCursorError(error)
-      ) {
-        throw error;
-      }
-
-      const latestTimelineResult = await refetchLatestTimeline();
-      const recoveredLatestTimeline =
-        latestTimelineResult.data ?? latestTimeline;
-      updateLoadedTimeline((current) => {
-        if (current.surfaceKey !== surfaceKey) {
-          return current;
-        }
-        if (!recoveredLatestTimeline) {
-          return {
-            ...current,
-            olderCursor: null,
-          };
-        }
-        return recoverLoadedTimelineAfterStaleCursor({
-          current,
-          latestTimeline: recoveredLatestTimeline,
-          surfaceKey,
-        });
-      });
-    } finally {
-      setIsLoadingOlderTimelineRows(false);
-    }
+    return loadOlderTimelinePage({
+      latestTimeline,
+      nextOlderCursor,
+      refetchLatestTimeline,
+      setIsLoadingOlderTimelineRows,
+      surfaceKey,
+      threadId,
+      updateLoadedTimeline,
+    });
   }, [
     enabled,
     isLoadingOlderTimelineRows,
@@ -372,13 +403,13 @@ export function useThreadTimelineController({
       : latestTimelineQuery.error;
 
   return {
+    goal: latestTimeline?.goal ?? null,
     activePromptMode: latestTimeline?.activePromptMode ?? null,
     activeThinking: latestTimeline?.activeThinking ?? null,
     activeWorkflows: latestTimeline?.activeWorkflows ?? [],
     activeBackgroundCommands: latestTimeline?.activeBackgroundCommands ?? [],
     contextBoundarySeq,
     contextWindowUsage: latestTimeline?.contextWindowUsage,
-    goal: latestTimeline?.goal ?? null,
     providerCommands: latestTimeline?.providerCommands ?? null,
     sessionOptions: latestTimeline?.sessionOptions ?? null,
     modelFallback: latestTimeline?.modelFallback ?? null,

@@ -683,10 +683,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Install AppImage FUSE runtime
-        uses: ./.github/actions/install-appimage-fuse
-        timeout-minutes: 5
-
       - name: Apply the nightly version
         id: nightly_version
         env:

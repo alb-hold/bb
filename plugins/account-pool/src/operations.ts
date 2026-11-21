@@ -528,12 +528,9 @@ export class PoolOperations {
 
   async refreshUsage(id: string): Promise<AccountSummary | null> {
     if ((await this.accounts.get(id)) === null) return null;
-    try {
-      if (!(await this.hub.refreshUsage(id, true)))
-        throw new Error("Could not refresh account usage. Try again.");
-    } finally {
-      this.onAccountsChanged();
-    }
+    if (!(await this.hub.refreshUsage(id, true)))
+      throw new Error("Could not refresh account usage. Try again.");
+    this.onAccountsChanged();
     return (
       (await this.status()).accounts.find((account) => account.id === id) ??
       null

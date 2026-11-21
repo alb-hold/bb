@@ -33,6 +33,72 @@ export function scopePluginUtilities(css: string, scopeRoots: string): string {
     .join("");
 }
 
+const PLUGIN_ROOT_MARKER = /data-bb-plugin-root/g;
+const PLUGIN_NAME_MARKER = /data-bb-plugin(?![-\w])/g;
+const PLUGIN_NAME_SEARCH_RADIUS = 120;
+
+export function findUnnamedPluginRoots(js: string): number[] {
+  const names = [...js.matchAll(PLUGIN_NAME_MARKER)].map(
+    (match) => match.index,
+  );
+  const claimed = new Set<number>();
+  return [...js.matchAll(PLUGIN_ROOT_MARKER)]
+    .map((match) => match.index)
+    .filter((root) => {
+      let nearest: number | undefined;
+      for (const name of names) {
+        const distance = Math.abs(name - root);
+        if (
+          distance <= PLUGIN_NAME_SEARCH_RADIUS &&
+          !claimed.has(name) &&
+          (nearest === undefined || distance < Math.abs(nearest - root))
+        ) {
+          nearest = name;
+        }
+      }
+      if (nearest === undefined) return true;
+      claimed.add(nearest);
+      return false;
+    });
+}
+
+const ANONYMOUS_PLUGIN_ROOT_ARM =
+  /,\s*\[data-bb-plugin-root\]:not\(\[data-bb-plugin\]\)/g;
+const NAMED_PLUGIN_ROOT = /\[data-bb-plugin=("?)([a-z0-9][a-z0-9-]*)\1\]/g;
+
+export function dropAnonymousPluginRootScope(css: string): string {
+  return rewriteUtilitiesLayers(css, (body) =>
+    body.replace(ANONYMOUS_PLUGIN_ROOT_ARM, ""),
+  );
+}
+
+export function keyPluginScopeOnAttribute(css: string): string {
+  return rewriteUtilitiesLayers(css, (body) =>
+    body
+      .replace(ANONYMOUS_PLUGIN_ROOT_ARM, "")
+      .replace(
+        NAMED_PLUGIN_ROOT,
+        (_match, _quote, pluginId: string) =>
+          `[data-bb-plugin-scope-${pluginId}]`,
+      ),
+  );
+}
+
+function rewriteUtilitiesLayers(
+  css: string,
+  rewrite: (body: string) => string,
+): string {
+  return splitStatements(css)
+    .map((statement) => {
+      if (statement.body === null) return statement.prelude;
+      const body = isUtilitiesLayer(statement.prelude)
+        ? rewrite(statement.body)
+        : statement.body;
+      return `${statement.prelude}{${body}}`;
+    })
+    .join("");
+}
+
 interface HostProvidedTailwind {
   source: string;
   registrations: Set<string>;

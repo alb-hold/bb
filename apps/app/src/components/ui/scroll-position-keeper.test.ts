@@ -23,6 +23,32 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+it("can reach a row overflowing a fixed-height wrapper with a gap", () => {
+  const scrollElement = document.createElement("div");
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = "display: grid; height: 10px; gap: 5px";
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  setFakeHeight(first, 8);
+  setFakeHeight(second, 8);
+  wrapper.append(first, second);
+  scrollElement.append(wrapper);
+  const layout = installFakeFlowLayout({ scrollElement, viewportHeight: 10 });
+  restoreLayout = layout.restore;
+  const checkGeometry = () => {
+    expect(second.getBoundingClientRect().bottom).toBe(21);
+    expect(scrollElement.scrollHeight).toBe(21);
+  };
+  checkGeometry();
+  const observer = new ResizeObserver(checkGeometry);
+  observer.observe(second);
+  layout.flushResizeObservers();
+  observer.disconnect();
+  layout.userScrollTo(100);
+  expect(scrollElement.scrollTop).toBe(11);
+  expect(second.getBoundingClientRect().bottom).toBe(10);
+});
+
 function rowsOf(count: number, height = 200, prefix = "row"): RowSpec[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `${prefix}-${index}`,
@@ -333,7 +359,7 @@ describe("ScrollPositionKeeper", () => {
 
   it.each(["scroll-before-resize", "resize-before-scroll"] as const)(
     "keeps a passive shrink clamp detached in %s order and through later growth (test-change-reason: owner rule 2026-10-24; fork #124 (a70b9e0f73) keeps passive shrink clamps detached in both event orders)",
-    async (eventOrder) => {
+    (eventOrder) => {
       const rows = rowsOf(10);
       const timeline = createTimeline(rows, { floor: false });
       timeline.userScrollTo(1_400);
@@ -347,9 +373,7 @@ describe("ScrollPositionKeeper", () => {
         timeline.keeper.reconcile();
         timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
       }
-      await new Promise<void>((resolve) => {
-        window.requestAnimationFrame(() => resolve());
-      });
+      timeline.layout.runFrameCallbacks();
 
       expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
       expect(timeline.keeper.isAttached()).toBe(false);
@@ -427,8 +451,8 @@ describe("ScrollPositionKeeper", () => {
       outcome: "stays reattachable on a touch to end",
     },
   ] as const)(
-    "clears the passive shrink latch after $eventOrder and $outcome",
-    async ({ eventOrder, input }) => {
+    "clears the passive shrink latch after $eventOrder and $outcome (test-change-reason: upstream 0.50.1 installFakeFlowLayout now owns requestAnimationFrame, so frames are flushed with layout.runFrameCallbacks instead of awaiting a real frame)",
+    ({ eventOrder, input }) => {
       const rows = rowsOf(10);
       const timeline = createTimeline(rows);
       timeline.userScrollTo(1_400);
@@ -460,24 +484,20 @@ describe("ScrollPositionKeeper", () => {
         timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
         timeline.scrollElement.dispatchEvent(new TouchEvent("touchend"));
       }
-      await new Promise<void>((resolve) => {
-        window.requestAnimationFrame(() => resolve());
-      });
+      timeline.layout.runFrameCallbacks();
 
       expect(timeline.keeper.isAttached()).toBe(true);
       timeline.setRows(rows.slice(0, 8));
       timeline.keeper.reconcile();
-      await new Promise<void>((resolve) => {
-        window.requestAnimationFrame(() => resolve());
-      });
+      timeline.layout.runFrameCallbacks();
       expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
       expect(timeline.keeper.isAttached()).toBe(true);
     },
   );
 
   it.each(["scroll-before-resize", "resize-before-scroll"] as const)(
-    "reattaches on touch at the clamped end in %s order and follows growth",
-    async (eventOrder) => {
+    "reattaches on touch at the clamped end in %s order and follows growth (test-change-reason: upstream 0.50.1 installFakeFlowLayout now owns requestAnimationFrame, so frames are flushed with layout.runFrameCallbacks instead of awaiting a real frame)",
+    (eventOrder) => {
       const rows = rowsOf(10);
       const timeline = createTimeline(rows);
       timeline.userScrollTo(1_400);
@@ -495,9 +515,7 @@ describe("ScrollPositionKeeper", () => {
 
       timeline.setRows(rows.slice(0, 8));
       timeline.keeper.reconcile();
-      await new Promise<void>((resolve) => {
-        window.requestAnimationFrame(() => resolve());
-      });
+      timeline.layout.runFrameCallbacks();
       expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
       expect(timeline.keeper.isAttached()).toBe(true);
     },
@@ -1540,16 +1558,28 @@ describe("ScrollPositionKeeper", () => {
   });
 });
 
-it.each([false, true])("keeps width-reflow policy for bottom-follow=%s", (attached) => {
-  const timeline = createTimeline(rowsOf(10), { attached });
-  let width = 960;
-  Object.defineProperty(timeline.scrollElement, "clientWidth", { configurable: true, get: () => width });
-  timeline.keeper.reconcile();
-  if (!attached) timeline.userScrollTo(450);
-  const before = attached ? timeline.element("row-9").getBoundingClientRect().bottom : timeline.topOf("row-2");
-  width = 480;
-  timeline.resize("row-2", 320);
-  timeline.keeper.remeasure();
-  expect(attached ? timeline.element("row-9").getBoundingClientRect().bottom : timeline.topOf("row-2")).toBe(before);
-  expect(timeline.keeper.isAttached()).toBe(attached);
-});
+it.each([false, true])(
+  "keeps width-reflow policy for bottom-follow=%s",
+  (attached) => {
+    const timeline = createTimeline(rowsOf(10), { attached });
+    let width = 960;
+    Object.defineProperty(timeline.scrollElement, "clientWidth", {
+      configurable: true,
+      get: () => width,
+    });
+    timeline.keeper.reconcile();
+    if (!attached) timeline.userScrollTo(450);
+    const before = attached
+      ? timeline.element("row-9").getBoundingClientRect().bottom
+      : timeline.topOf("row-2");
+    width = 480;
+    timeline.resize("row-2", 320);
+    timeline.keeper.remeasure();
+    expect(
+      attached
+        ? timeline.element("row-9").getBoundingClientRect().bottom
+        : timeline.topOf("row-2"),
+    ).toBe(before);
+    expect(timeline.keeper.isAttached()).toBe(attached);
+  },
+);

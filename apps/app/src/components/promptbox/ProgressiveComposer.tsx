@@ -12,6 +12,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
@@ -19,7 +20,7 @@ import type {
   ExperimentalComposerInput,
   ExperimentalComposerRendererApi,
 } from "@get-bb/plugin-sdk";
-import { composerDraftFromPromptDraft } from "@bb/client-core";
+import { composerDraftFromPromptDraft } from "@/lib/plugin-composer-handle";
 import type { PromptTextMention } from "@bb/domain";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -51,6 +52,36 @@ type Handoff = NonNullable<
   ExperimentalComposerInput["experimental_startupHandoff"]
 >;
 type Accept = Parameters<Handoff["attach"]>[0];
+
+async function withAsyncCatchAndFinally(
+  action: () => Promise<void>,
+  onError: (error: unknown) => void,
+  finalize: () => void,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    onError(error);
+  } finally {
+    finalize();
+  }
+}
+
+function ProgressiveComposerRender({
+  children,
+  handoff,
+  rich,
+  layout,
+  controls,
+}: {
+  children: (handoff: Handoff, rich: boolean, layout: (renderer: ReactNode) => ReactNode, controls: ReactNode) => ReactNode;
+  handoff: Handoff;
+  rich: boolean;
+  layout: (renderer: ReactNode) => ReactNode;
+  controls: ReactNode;
+}) {
+  return children(handoff, rich, layout, controls);
+}
 const ACTION_LAYOUT =
   "aspect-square min-w-8 shrink-0 self-center max-md:pointer-coarse:min-w-10";
 const PREPARING_STYLE: CSSProperties = {
@@ -135,11 +166,18 @@ export function ProgressiveComposer({
   const pendingAttachments = useRef(0);
   const frame = useRef<number | null>(null);
   const current = useRef(props);
-  current.current = props;
-  const actions = useRef(composerSubmission(props.submission, props.onSubmit));
-  actions.current = composerSubmission(props.submission, props.onSubmit);
-  const draft = useRef({ text: props.value, mentions: props.mentionRanges });
-  draft.current = { text: props.value, mentions: props.mentionRanges };
+  const promptDraft = useSyncExternalStore(
+    props.draft.subscribeDraft,
+    props.draft.getCurrent,
+  );
+  const currentActions = composerSubmission(props.submission, props.onSubmit);
+  const actions = useRef(currentActions);
+  const draft = useRef(promptDraft);
+  useLayoutEffect(() => {
+    current.current = props;
+    actions.current = currentActions;
+    draft.current = promptDraft;
+  }, [currentActions, promptDraft, props]);
   const richRefState = useRef(false);
   const [attaching, setAttaching] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -151,8 +189,9 @@ export function ProgressiveComposer({
       text,
       draft.current.mentions,
     );
-    draft.current = { text, mentions };
-    current.current.onChange(text, mentions);
+    const next = { ...draft.current, text, mentions };
+    draft.current = next;
+    current.current.draft.setDraft(next);
   }, []);
   const takeOver = useCallback(() => {
     frame.current = null;
@@ -238,7 +277,7 @@ export function ProgressiveComposer({
     if (!input || rich) return;
     input.style.height = "0px";
     input.style.height = `${input.scrollHeight}px`;
-  }, [props.value, rich]);
+  }, [promptDraft.text, rich]);
   useEffect(() => {
     if (
       rich ||
@@ -274,7 +313,7 @@ export function ProgressiveComposer({
       if (
         action.requiresInput &&
         !input.value.trim() &&
-        !latest.attachments?.items?.length
+        !latest.draft.getCurrent().attachments.length
       )
         return;
       commit(input.value);
@@ -320,38 +359,42 @@ export function ProgressiveComposer({
   }, [commit, props.promptBoxRef, rich, submit]);
   const attachFiles = async (files: File[]) => {
     const attachments = current.current.attachments;
-    if (!attachments?.onAttachFiles || files.length === 0) return;
+    const onAttachFiles = attachments?.onAttachFiles;
+    if (!onAttachFiles || files.length === 0) return;
     pendingAttachments.current++;
     setAttaching(true);
     setAttachmentError(null);
-    try {
-      const added = await attachments.onAttachFiles(files);
+    await withAsyncCatchAndFinally(async () => {
+      const added = await onAttachFiles(files);
       attachments.onUpdate?.((items) => [...items, ...added]);
-    } catch (error) {
+    }, (error) => {
       const message =
         error instanceof Error ? error.message : "Could not attach files";
       setAttachmentError(message);
       appToast.error(message);
-    } finally {
+    }, () => {
       pendingAttachments.current--;
       setAttaching(pendingAttachments.current > 0);
       schedule();
-    }
+    });
   };
   const voiceActive =
     props.voice?.state === "recording" || props.voice?.state === "transcribing";
-  const empty = !props.value.trim() && !props.attachments?.items?.length;
+  const empty = !promptDraft.text.trim() && !promptDraft.attachments.length;
   const canSubmit =
-    (!actions.current.enter.requiresInput || !empty) &&
+    (!currentActions.enter.requiresInput || !empty) &&
     !props.submission?.disabled &&
     !props.submission?.isSubmitting &&
     !attaching &&
     !voiceActive;
   const primaryVoice = coarse && empty && props.voice?.isSupported;
-  return children(
-    handoff,
-    rich,
-    (renderer) => (
+  return (
+    <ProgressiveComposerRender
+      children={children}
+      handoff={handoff}
+      rich={rich}
+      controls={controls}
+      layout={(renderer) => (
       <StartupComposerLayout>
         {(api) => (
           <>
@@ -422,7 +465,7 @@ export function ProgressiveComposer({
                       )}
                       style={{
                         minHeight:
-                          !props.value &&
+                          !promptDraft.text &&
                           api.input.internal_DO_NOT_USE_composerSizing
                             ?.editorHeight == null
                             ? 44
@@ -440,7 +483,7 @@ export function ProgressiveComposer({
                       <textarea
                         ref={inputRef}
                         id={props.id}
-                        value={props.value}
+                        value={promptDraft.text}
                         placeholder={
                           props.placeholder ??
                           "Ask anything. @ to mention files, folders, or sections"
@@ -684,8 +727,8 @@ export function ProgressiveComposer({
           </>
         )}
       </StartupComposerLayout>
-    ),
-    controls,
+      )}
+    />
   );
 }
 

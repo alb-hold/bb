@@ -23,3 +23,4 @@ export type {
   AgentRuntimeSkillRoot,
   ReapedIdleProviderSession,
 } from "./types.js";
+export type { RuntimeOpenBackgroundWork } from "./runtime-background-work-state.js";

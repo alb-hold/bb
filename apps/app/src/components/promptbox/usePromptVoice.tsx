@@ -25,17 +25,21 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 const getRuntime = () => runtime !== null;
+const loadVoiceRecordingStore = () => import("@/lib/voice-recording-store");
 
 function LoadedPromptVoiceRuntime(props: ComponentProps<Runtime>) {
+  "use no memo";
   const RuntimeComponent = runtime;
   return RuntimeComponent === null ? null : <RuntimeComponent {...props} />;
 }
 
-function createDraftTarget(recordingKey: string | null): {
+function createDraftTarget(
+  recordingKey: string | null,
+  current: PromptVoiceDraftTarget | undefined,
+): {
   current: PromptVoiceDraftTarget | undefined;
   recordingKey: string | null;
 } {
-  const current: PromptVoiceDraftTarget | undefined = undefined;
   return { current, recordingKey };
 }
 
@@ -58,8 +62,10 @@ export function usePromptVoice(
   recordingKey: string | null,
 ): PromptVoiceConfig {
   const runtimeReady = useSyncExternalStore(subscribe, getRuntime, getRuntime);
-  const target = useMemo(() => createDraftTarget(recordingKey), [recordingKey]);
-  target.current = draft;
+  const target = useMemo(
+    () => createDraftTarget(recordingKey, draft),
+    [draft, recordingKey],
+  );
   const current = useRef<PromptVoiceConfig | null>(null);
   const waiting = useRef<((voice: PromptVoiceConfig | null) => void)[]>([]);
   const mounted = useRef(true);
@@ -74,17 +80,18 @@ export function usePromptVoice(
   useEffect(() => {
     mounted.current = true;
     const waiters = waiting.current;
-    let cancelled = false;
+    const controller = new AbortController();
     if (recordingKey !== null) {
-      void import("@/lib/voice-recording-store")
+      void loadVoiceRecordingStore()
         .then((store) => store.hasFailedVoiceRecordings(recordingKey))
         .then((hasRecordings) => {
-          if (!cancelled && hasRecordings) return preloadPromptVoiceRuntime();
+          if (!controller.signal.aborted && hasRecordings)
+            return preloadPromptVoiceRuntime();
         })
         .catch(() => undefined);
     }
     return () => {
-      cancelled = true;
+      controller.abort();
       mounted.current = false;
       for (const resolve of waiters.splice(0)) resolve(null);
     };

@@ -96,6 +96,7 @@ export interface ModelReasoningPickerProps {
   formatModelLabel?: (displayName: string) => string;
   reasoningValue: ReasoningLevel;
   reasoningOptions: readonly PickerOption<ReasoningLevel>[];
+  reasoningIsLoading?: boolean;
   onReasoningChange: (value: ReasoningLevel) => void;
   serviceTierValue: ServiceTier | undefined;
   serviceTierOptions: readonly ProviderOptionDescriptor[];

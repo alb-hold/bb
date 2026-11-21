@@ -786,6 +786,9 @@ export function createDeltaAssembler(
             id: bbItemId,
             command: shape.command,
             cwd: shape.cwd,
+            ...(shape.description === undefined
+              ? {}
+              : { description: shape.description }),
             ...(shape.aggregatedOutput === undefined
               ? {}
               : { aggregatedOutput: shape.aggregatedOutput }),
@@ -1061,6 +1064,9 @@ export function createDeltaAssembler(
             id: bbItemId,
             command: shape.command,
             cwd: shape.cwd,
+            ...(shape.description === undefined
+              ? {}
+              : { description: shape.description }),
             ...(aggregatedOutput === undefined ? {} : { aggregatedOutput }),
             ...(exitCode === undefined ? {} : { exitCode }),
             ...(shape.durationMs === undefined

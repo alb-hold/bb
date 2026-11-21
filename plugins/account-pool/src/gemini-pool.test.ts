@@ -8,14 +8,10 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { statusSchema } from "./contracts.js";
-import {
-  geminiQuotaRejection,
-  geminiWindowsFromQuota,
-  parseGoogleDuration,
-  parseLoadCodeAssist,
-} from "./gemini-adapter.js";
+import { createGeminiAdapter, geminiQuotaRejection, geminiWindowsFromQuota, parseGoogleDuration, parseLoadCodeAssist } from "./gemini-adapter.js";
 import {
   importGeminiCredentials,
+  keychainReadOutcome,
   parseGeminiCredentials,
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
@@ -143,6 +139,133 @@ describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
     expect(() =>
       parseGeminiCredentials(JSON.stringify({ refresh_token: "r" })),
     ).toThrow();
+  });
+});
+
+describe("Gemini credentials from the macOS keychain", () => {
+  const secret = JSON.stringify({
+    type: "authorized_user",
+    client_id: CLIENT.clientId,
+    client_secret: "fake-secret-kc",
+    refresh_token: "fake-refresh-kc",
+    project_id: "proj-kc",
+  });
+  const expected = {
+    refreshToken: "fake-refresh-kc",
+    client: { clientId: CLIENT.clientId, clientSecret: "fake-secret-kc" },
+    projectId: "proj-kc",
+  };
+
+  it("imports credentials from the antigravity-acp keychain account", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual(expected);
+    expect(readKeychain).toHaveBeenCalledWith("gemini", "antigravity-acp");
+  });
+
+  it("tries the antigravity account and decodes go-keyring credentials", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const readKeychain = vi.fn(async (_service: string, account: string) => account === "antigravity-acp"
+      ? { kind: "missing" as const }
+      : { kind: "found" as const, secret: `go-keyring-base64:${Buffer.from(secret).toString("base64")}` });
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual(expected);
+    expect(readKeychain.mock.calls.map(([service, account]) => [service, account])).toEqual([
+      ["gemini", "antigravity-acp"],
+      ["gemini", "antigravity"],
+    ]);
+  });
+
+  it("reports when neither keychain account has a sign-in", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const readKeychain = vi.fn(async () => ({ kind: "missing" as const }));
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).rejects.toThrow(/not found or usable.*without --home/u);
+  });
+
+  it("rejects unusable keychain values without exposing secret contents", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    for (const value of ["fake-secret-kc", JSON.stringify({ client_secret: "fake-secret-kc", refresh_token: "fake-refresh-kc" })]) {
+      const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret: value }));
+      let message = "";
+      try {
+        await importGeminiCredentials(undefined, { platform: "darwin", readKeychain });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toMatch(/no refresh token or OAuth client/u);
+      expect(message).not.toContain("fake-secret-kc");
+    }
+  });
+
+  it("explains keychain access outcomes", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    for (const kind of ["needs-allow", "denied", "timeout"] as const) {
+      const readKeychain = vi.fn(async () => ({ kind }));
+      await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).rejects.toThrow(/Click Allow/u);
+      await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).rejects.not.toThrow(/password/u);
+    }
+    const failed = vi.fn(async () => ({ kind: "failed" as const }));
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain: failed })).rejects.toThrow(/Unlock the login keychain/u);
+  });
+
+  it("does not read the keychain when an explicit home is supplied", async () => {
+    const home = await tempDir("bb-agy-empty-kc-");
+    const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
+    await expect(importGeminiCredentials(home, { platform: "darwin", readKeychain })).rejects.toThrow(/omit --home/u);
+    expect(readKeychain).not.toHaveBeenCalled();
+  });
+
+  it("prefers a token file in GEMINI_HOME", async () => {
+    const home = await writeSignIn({ refresh: "file-refresh-kc" });
+    vi.stubEnv("GEMINI_HOME", home);
+    const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toMatchObject({ refreshToken: "file-refresh-kc" });
+    expect(readKeychain).not.toHaveBeenCalled();
+  });
+
+  it("does not read the keychain on Linux", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
+    await expect(importGeminiCredentials(undefined, { platform: "linux", readKeychain })).rejects.toThrow(/not found or usable/u);
+    expect(readKeychain).not.toHaveBeenCalled();
+  });
+
+  it("maps macOS security command outcomes", () => {
+    expect(keychainReadOutcome(null, "secret-out", "")).toEqual({ kind: "found", secret: "secret-out" });
+    expect(keychainReadOutcome({ killed: true }, "", "")).toEqual({ kind: "timeout" });
+    expect(keychainReadOutcome({ code: 44 }, "", "")).toEqual({ kind: "missing" });
+    expect(keychainReadOutcome({ code: 36 }, "", "")).toEqual({ kind: "needs-allow" });
+    expect(keychainReadOutcome({ code: 128 }, "", "")).toEqual({ kind: "denied" });
+    expect(keychainReadOutcome({ code: 51 }, "", "")).toEqual({ kind: "denied" });
+    expect(keychainReadOutcome({ code: 2 }, "", "User canceled the operation.")).toEqual({ kind: "denied" });
+    expect(keychainReadOutcome({ code: 1 }, "", "Other error")).toEqual({ kind: "failed" });
+  });
+});
+
+describe("Gemini adapter local login", () => {
+  it("returns null when the empty GEMINI_HOME has no local sign-in", async () => {
+    const home = await tempDir("bb-agy-empty-local-login-");
+    vi.stubEnv("GEMINI_HOME", home);
+    const adapter = createGeminiAdapter({
+      refreshUrl: "https://example.invalid/token",
+      upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
+    });
+    await expect(adapter.localLogin()).resolves.toBeNull();
+  });
+
+  it("reads only the token file and never the import override", async () => {
+    const importCredentials = vi.fn(async () => {
+      throw new Error("keychain-capable import must not run during listing");
+    });
+    const adapter = createGeminiAdapter({
+      refreshUrl: "https://example.invalid/token",
+      upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
+      importCredentials,
+    });
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-empty-override-"));
+    await expect(adapter.localLogin()).resolves.toBeNull();
+    vi.stubEnv("GEMINI_HOME", await writeSignIn({ refresh: "fake-refresh-local" }));
+    await expect(adapter.localLogin()).resolves.toEqual({ email: null, planLabel: null });
+    expect(importCredentials).not.toHaveBeenCalled();
   });
 });
 

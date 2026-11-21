@@ -114,6 +114,11 @@ const TIMELINE = {
   timelineRows: rows,
 } as unknown as UseThreadTimelineControllerResult;
 
+vi.mock("@/components/thread/timeline", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/thread/timeline")>()),
+  useThreadTimelineController: () => TIMELINE,
+}));
+
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
   readonly targets = new Set<Element>();
@@ -165,7 +170,6 @@ afterEach(() => {
 function UnseenThread() {
   const { placement, hasUnseenTimelineEvents } = useThreadUnreadDividerState({
     routeThreadId: THREAD_ID,
-    anchor: "first-unread-row",
     bootstrapQuery: {
       dataUpdatedAt: 0,
       isFetchedAfterMount: false,
@@ -193,7 +197,7 @@ function UnseenThread() {
         status: "idle",
         runtime: { displayStatus: "idle" },
       })}
-      timeline={TIMELINE}
+      timelineEnabled={true}
       timelineHost={{
         environmentHostName: null,
         hasUnseenTimelineEvents: hasUnseenTimelineEvents,

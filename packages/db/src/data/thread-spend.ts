@@ -238,6 +238,10 @@ export function ensureSpendTables(db: DbConnection): void {
       ON ${DAILY_TABLE} (day)
   `);
   db.$client.exec(`
+    CREATE INDEX IF NOT EXISTS fork_thread_spend_daily_thread_idx
+      ON ${DAILY_TABLE} (thread_id)
+  `);
+  db.$client.exec(`
     CREATE TABLE IF NOT EXISTS ${CURSOR_TABLE} (
       thread_id TEXT NOT NULL,
       provider_thread_id TEXT NOT NULL,

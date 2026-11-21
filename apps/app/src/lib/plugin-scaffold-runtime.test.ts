@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { buildPluginApp, resolvePluginBuildToolchain } from "@bb/plugin-build";
 import { scaffoldPlugin } from "@bb/templates/plugin-scaffold";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { installPluginRuntime, loadPluginFrontend } from "./plugin-frontend";
 
 let root: string | undefined;
@@ -14,7 +15,7 @@ afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
 });
 
-it("provides every runtime slot declared by the built plugin scaffold", async () => {
+it("test-change-reason: upstream holds tracked lazy imports, so the build and load are settled; provides every runtime slot declared by the built plugin scaffold", async () => {
   root = await mkdtemp(
     join(
       fileURLToPath(new URL("../../", import.meta.url)),
@@ -27,10 +28,10 @@ it("provides every runtime slot declared by the built plugin scaffold", async ()
     packageName: "bb-plugin-scaffolded",
     bbVersion: "0.9.0",
   });
-  const result = await buildPluginApp(
-    targetDir,
-    "0.9.0-test",
-    await resolvePluginBuildToolchain(join(root, "toolchain")),
+  const result = await settleLazyModules(
+    resolvePluginBuildToolchain(join(root, "toolchain")).then((toolchain) =>
+      buildPluginApp(targetDir, "0.9.0-test", toolchain),
+    ),
   );
   const meta = JSON.parse(await readFile(result.metaPath, "utf8")) as {
     runtimeSlots: string[];
@@ -49,7 +50,8 @@ it("provides every runtime slot declared by the built plugin scaffold", async ()
     }
     return import(/* @vite-ignore */ pathToFileURL(result.jsPath).href);
   });
-  const loaded = await loadPluginFrontend(
+  const loaded = await settleLazyModules(
+    loadPluginFrontend(
     {
       pluginId: "scaffolded",
       bundle: {
@@ -64,6 +66,7 @@ it("provides every runtime slot declared by the built plugin scaffold", async ()
       },
     },
     { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+  ),
   );
   expect(loaded, JSON.stringify(loaded)).toMatchObject({
     status: "loaded",
