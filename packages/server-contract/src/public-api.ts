@@ -575,7 +575,10 @@ export const publicApiRoutes = {
     sidebarBootstrap: defineRoute({
       path: "/sidebar-bootstrap",
       method: "get",
-      request: noRequest(),
+      request: optionalQueryRequest<
+        EmptyInput,
+        Pick<ThreadListQuery, "limit" | "cursor">
+      >(threadListQuerySchema.pick({ limit: true, cursor: true })),
       response: jsonResponse<SidebarBootstrapResponse>(),
     }),
     get: defineRoute({

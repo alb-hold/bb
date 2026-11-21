@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { finishThreadPage, parseThreadCursor } from "./list-pagination.js";
 import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
 import { and, eq, ne } from "drizzle-orm";
@@ -117,27 +117,6 @@ import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-ev
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
 import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
-
-const cursorRowSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  createdAt: z.number().int(),
-  archivedAt: z.number().int().nullable(),
-  pinSortKey: z.string().nullable(),
-  pinnedAt: z.number().int().nullable(),
-});
-
-function parseThreadCursor(cursor: string, archiveOrder: boolean) {
-  try {
-    const value = z
-      .object({ archiveOrder: z.literal(archiveOrder), row: cursorRowSchema })
-      .parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
-    if (!archiveOrder || value.row.archivedAt !== null) return value.row;
-  } catch {
-    throw new ApiError(400, "invalid_request", "Invalid thread list cursor");
-  }
-  throw new ApiError(400, "invalid_request", "Invalid archived thread cursor");
-}
 
 const NATIVE_STATUS_LIST_LIMIT = 8;
 
@@ -454,15 +433,7 @@ export function registerThreadBaseRoutes(
           : options,
       );
       if (limit !== undefined) {
-        context.header("X-BB-Pagination", "cursor");
-        if (threads.length > limit) {
-          threads.pop();
-          const row = cursorRowSchema.parse(threads[threads.length - 1]);
-          const cursor = Buffer.from(
-            JSON.stringify({ archiveOrder: query.archived === "true", row }),
-          ).toString("base64url");
-          context.header("X-BB-Next-Cursor", cursor);
-        }
+        finishThreadPage(context, threads, limit, query.archived === "true");
       }
       void Promise.all(
         threads

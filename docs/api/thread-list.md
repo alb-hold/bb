@@ -5,3 +5,5 @@
 To read one page, pass a positive `limit`. A server supporting cursor pagination returns `X-BB-Pagination: cursor`. When another page exists, it also returns an opaque `X-BB-Next-Cursor`. Send that value as the URL-encoded `cursor` on the next request with the same filters and limit. Omit `offset` from continuation requests. Each page reflects the database at the time of that request.
 
 The SDK and CLI collect the complete result when listing without a limit. SDK callers requesting an explicit limit receive at most that many entries. Existing offset-based requests keep their ordering.
+
+`GET /api/v1/sidebar-bootstrap` returns the personal project, public projects, sections, and their visible active threads. An explicit `limit` pages threads across all projects, up to 500 per request. Project and section metadata accompany each page. Use the same continuation headers as the thread list. Without a limit the bootstrap contains every matching thread.

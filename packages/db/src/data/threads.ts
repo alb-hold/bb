@@ -528,7 +528,7 @@ export interface ListThreadsOptions {
 
 type ThreadRow = typeof threads.$inferSelect;
 
-export interface ListThreadsForProjectsOptions {
+export interface ListThreadsForProjectsOptions extends Pick<ListThreadsOptions, "limit" | "after"> {
   projectIds: readonly string[];
   archived?: boolean;
 }
@@ -1631,7 +1631,7 @@ export function listThreadsWithPendingInteractionStateForProjects(
     return [];
   }
 
-  return threadWithPendingInteractionBaseQuery(db)
+  let query = threadWithPendingInteractionBaseQuery(db)
     .where(
       and(
         inArray(threads.projectId, [...options.projectIds]),
@@ -1639,7 +1639,9 @@ export function listThreadsWithPendingInteractionStateForProjects(
       ),
     )
     .orderBy(...buildListThreadsOrderBy(options))
-    .all();
+    .$dynamic();
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  return query.all();
 }
 
 export function listLiveThreadsInEnvironment(
