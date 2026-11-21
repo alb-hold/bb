@@ -48,7 +48,7 @@ async function readText(source: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 describe("createServerClient", () => {
-  it("sends the compiled daemon protocol version on session open", async () => {
+  it("sends the compiled daemon protocol version on session open (test-change-reason: the merged session response supplies reconnect grace)", async () => {
     let requestProtocolVersion: number | undefined;
     const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
       const payload: unknown = JSON.parse(String(init?.body));
@@ -68,6 +68,7 @@ describe("createServerClient", () => {
           machineEnvironment: { revision: 0, entries: [] },
           idleProviderSessionTimeoutMinutes: 30,
           heartbeatIntervalMs: 5_000,
+          reconnectGraceMs: 30_000,
           leaseTimeoutMs: 30_000,
         },
         { status: 201 },
@@ -303,7 +304,7 @@ describe("createServerClient", () => {
     },
   );
 
-  it("sends adopted threads on session open only when there are any, so the request stays stock-shaped", async () => {
+  it("sends adopted threads on session open only when there are any, so the request stays stock-shaped (test-change-reason: the merged session response supplies reconnect grace)", async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -313,6 +314,7 @@ describe("createServerClient", () => {
           agentCpuPriority: false,
           endedInteractiveRequests: [],
           heartbeatIntervalMs: 30_000,
+          reconnectGraceMs: 30_000,
           leaseTimeoutMs: 90_000,
           idleProviderSessionTimeoutMinutes: 30,
           machineEnvironment: { revision: 0, entries: [] },
@@ -567,13 +569,11 @@ describe("createServerClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("returns accepted event mappings when posting events", async () => {
+  it("returns accepted event mappings when posting events (test-change-reason: the fork sends session settings only during session open)", async () => {
     const fetchFn = vi.fn<FetchFn>(async (input, init) => {
       expect(String(input)).toContain("/internal/session/events");
       expect(JSON.parse(String(init?.body))).toEqual({
         sessionId: "session-1",
-        agentCpuPriority: false,
-        endedInteractiveRequests: [],
         eventGroups: [
           {
             threadId: "thr_123",

@@ -17,7 +17,7 @@ import {
   gitStatusResultSchema,
 } from "bb-plugin-bb--git/contract";
 import { prependOlderTimelineRows } from "@bb/client-core";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import {
   formatThreadTimelineText,
   type ThreadTimelineTextFormat,
@@ -507,19 +507,12 @@ export function registerShowCommand(
     .description("Show thread details and pull request status")
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
     .option("--json", "Print machine-readable JSON output")
-    .option("--work-status", "Include work status (git state) in output")
-    .option("--git-diff", "Include git diff in output")
-    .option(
-      "--diff-target <type>",
-      "Diff target: uncommitted, branch_committed, all, or commit (used with --git-diff)",
-      "all",
-    )
-    .option("--diff-sha <sha>", "Commit SHA for --diff-target commit")
+    .addOption(new Option("--work-status").hideHelp())
+    .addOption(new Option("--git-diff").hideHelp())
+    .addOption(new Option("--diff-target <type>").hideHelp())
+    .addOption(new Option("--diff-sha <sha>").hideHelp())
+    .addOption(new Option("--diff-merge-base <branch>").hideHelp())
     .option("--usage", "Show token weather and compaction savings estimates")
-    .option(
-      "--diff-merge-base <branch>",
-      "Merge base branch for --diff-target branch_committed or all",
-    )
     .action(
       action(async (id: string | undefined, opts: ThreadShowCommandOptions) => {
         const threadId = requireThreadIdOrSelf(id, opts);
@@ -917,8 +910,11 @@ function printThreadStatus(
 ): void {
   const { thread } = payload;
   console.log(`Thread: ${thread.id}`);
+  const status = thread.hasPendingInteraction ? "needs-input" : thread.status;
   console.log(
-    `  Status: ${thread.hasPendingInteraction ? "needs-input" : thread.status}`,
+    thread.archivedAt === null
+      ? `  Status: ${status}`
+      : `  Status: ${status} (archived ${new Date(thread.archivedAt).toLocaleString()})`,
   );
   if (thread.queuedMessageCount > 0) {
     console.log(`  Queued messages: ${thread.queuedMessageCount}`);

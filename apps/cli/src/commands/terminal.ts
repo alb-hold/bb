@@ -1004,9 +1004,16 @@ export function registerTerminalCommands(
       action(async (terminalId: string, opts: TerminalWaitOptions) => {
         const sdk = createCliBbSdk(getUrl());
         const plan = await resolveTerminalWaitPlan({ opts, sdk, terminalId });
+        const report = await observeTerminal({ plan, sdk, terminalId });
+        const matched = report.result.observation === "matched"
+          ? opts.contains ?? opts.regex
+          : report.condition === null && report.result.observation === "exited"
+            ? "exit"
+            : undefined;
         reportTerminalObservation({
           json: opts.json === true,
-          report: await observeTerminal({ plan, sdk, terminalId }),
+          report,
+          matched,
         });
       }),
     );

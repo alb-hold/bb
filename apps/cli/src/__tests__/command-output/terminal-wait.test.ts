@@ -122,7 +122,7 @@ describe("bb terminal run and wait command output", () => {
         { kind: "environment", environmentId: "env-1" },
       ],
     ])(
-      "runs the arguments on the %s target and returns its plain output and exit code",
+      "runs the arguments on the %s target and returns its plain output and exit code (test-change-reason: the fork defaults to an 80 by 24 terminal)",
       async (_label, targetArgs, target) => {
         const create = stubTerminal({
           get: vi.fn(async () => exitedSession(3)),
@@ -152,9 +152,9 @@ describe("bb terminal run and wait command output", () => {
 
         expect(create).toHaveBeenCalledWith({
           json: {
-            cols: 200,
+            cols: 80,
             id: undefined,
-            rows: 50,
+            rows: 24,
             start: { mode: "argv", argv: ["pnpm", "test", "my file.ts"] },
             target,
             title: undefined,

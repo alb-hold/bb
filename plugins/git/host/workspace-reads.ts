@@ -1067,8 +1067,19 @@ export class WorkspaceReads {
     const committedBaseRef = mergeBaseData?.hasCommittedUnmergedChanges
       ? mergeBaseData.baseRef
       : null;
+    const committedPaths =
+      mergeBaseData?.fileCount === mergeBaseData?.files.length &&
+      mergeBaseData?.lineStatsComplete &&
+      mergeBaseData.files.every((file) => file.status === "M")
+        ? new Set(mergeBaseData.files.map((file) => file.path))
+        : null;
+    const separateEdits =
+      committedPaths !== null &&
+      snapshot.parsed.entries.every(
+        (entry) => entry.status === "M" && !committedPaths.has(entry.path),
+      );
     const sinceBaseNumstatRead =
-      committedBaseRef !== null && snapshot.parsed.entries.length > 0
+      committedBaseRef !== null && snapshot.parsed.entries.length > 0 && !separateEdits
         ? this.runGit(["diff", "--numstat", "-z", committedBaseRef, "--"], {
             cwd: this.path,
             timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
@@ -1161,10 +1172,10 @@ export class WorkspaceReads {
           }
         : committedBaseRef !== null && mergeBaseData !== null
           ? {
-              insertions: mergeBaseData.insertions,
-              deletions: mergeBaseData.deletions,
-              lineStatsComplete: mergeBaseData.lineStatsComplete,
-              fileCount: mergeBaseData.fileCount,
+              insertions: mergeBaseData.insertions + workingTreeLines.insertions,
+              deletions: mergeBaseData.deletions + workingTreeLines.deletions,
+              lineStatsComplete: mergeBaseData.lineStatsComplete && workingTreeLineStatsComplete,
+              fileCount: mergeBaseData.fileCount + trackedNumstatEntries.length,
             }
           : workingTreeTotals;
 

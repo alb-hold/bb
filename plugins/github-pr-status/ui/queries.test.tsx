@@ -147,24 +147,27 @@ async function bootRpcPlugin() {
       call.method === "upstream"
         ? { oid: null, branchName: "bb/pr" }
         : (call.input as { reads: unknown[] }).reads.map(() => ({
-            outcome: "found",
-            pullRequest: {
-              number: 7,
-              title: "Ship it",
-              state: "OPEN",
-              url: "https://github.com/acme/bb/pull/7",
-              isDraft: false,
-              autoMerge: false,
-              inMergeQueue: false,
-              baseRefName: "main",
-              headRefName: "bb/pr",
-              headRefOid: null,
-              updatedAt: "2026-10-22T00:00:00Z",
-              checks: [],
-              reviewDecision: null,
-              reviewRequestCount: 0,
-              mergeStateStatus: "CLEAN",
-              mergeable: "MERGEABLE",
+            refs: { oid: null, branchName: "bb/pr" },
+            lookup: {
+              outcome: "found",
+              pullRequest: {
+                number: 7,
+                title: "Ship it",
+                state: "OPEN",
+                url: "https://github.com/acme/bb/pull/7",
+                isDraft: false,
+                autoMerge: false,
+                inMergeQueue: false,
+                baseRefName: "main",
+                headRefName: "bb/pr",
+                headRefOid: null,
+                updatedAt: "2026-10-22T00:00:00Z",
+                checks: [],
+                reviewDecision: null,
+                reviewRequestCount: 0,
+                mergeStateStatus: "CLEAN",
+                mergeable: "MERGEABLE",
+              },
             },
           })),
   });
@@ -191,7 +194,7 @@ afterEach(() => {
 });
 
 describe("useEnvironmentPullRequest refreshes", () => {
-  it("reads registered server RPC output through the environment-keyed consumer", async () => {
+  it("reads registered server RPC output through the environment-keyed consumer (test-change-reason: host views include lookup and refs)", async () => {
     const fake = await bootRpcPlugin();
     keyedQuery.rpcCall = ({ method, keys }) =>
       fake.harness.callRpc(method, { keys });

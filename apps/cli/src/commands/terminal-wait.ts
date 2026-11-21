@@ -215,9 +215,10 @@ export async function observeTerminal(args: {
 export function reportTerminalObservation(args: {
   json: boolean;
   report: TerminalObservationReport;
+  matched?: string;
 }): void {
   const { result } = args.report;
-  if (!outputJson({ json: args.json }, result)) {
+  if (!outputJson({ json: args.json }, { ...result, matched: args.matched })) {
     if (result.output !== null) {
       process.stdout.write(result.output);
     }
