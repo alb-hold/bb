@@ -224,8 +224,10 @@ export class AccountStore {
       const names = planNamesSchema.parse(
         (await this.kv.get(PLAN_NAMES_KEY)) ?? {},
       );
-      delete names[id];
-      await this.kv.set(PLAN_NAMES_KEY, names);
+      if (Object.hasOwn(names, id)) {
+        delete names[id];
+        await this.kv.set(PLAN_NAMES_KEY, names);
+      }
       for (const key of await this.kv.list(`${PLAN_CHECKS_PREFIX}${id}:`))
         await this.kv.delete(key);
       return true;

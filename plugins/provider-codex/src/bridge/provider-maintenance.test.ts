@@ -310,11 +310,8 @@ describe("Codex credential health and usage", () => {
     });
   });
 
-  it("reports the ChatGPT plan for the new setup guide only, keeping main's empty plan label", async () => {
-    for (const [offsetSeconds, status] of [
-      [3600, "ready"],
-      [-60, "expired"],
-    ] as const) {
+  it("reports the ChatGPT plan for the new setup guide only (test-change-reason: the fork reports ready for a lapsed but renewable token)", async () => {
+    for (const offsetSeconds of [3600, -60]) {
       await writeChatGptAuth(
         createAccessToken({
           accountId: "account-123",
@@ -326,7 +323,7 @@ describe("Codex credential health and usage", () => {
 
       await expect(getCodexProviderHealth()).resolves.toMatchObject({
         health: {
-          status,
+          status: "ready",
           accountEmail: "codex@example.com",
           planLabel: null,
           internal_DO_NOT_USE_setupGuidePlanLabel: "Pro",

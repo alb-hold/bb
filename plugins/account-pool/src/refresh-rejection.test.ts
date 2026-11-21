@@ -153,7 +153,12 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
     await host.harness.lifecycle.dispose();
     await fs.rm(dataDir, { recursive: true, force: true });
   });
-  const token = await initial.hubTokens.forHost("synthetic-host");
+  const hostId = "synthetic-host";
+  const token = await initial.threadTokens.forThread(
+    { hostId, threadId: "synthetic-thread", provider, accountId: null },
+    await initial.hubTokens.forHost(hostId),
+    "process",
+  );
   const route = provider === "claude" ? "/v1/messages" : "/v1/responses";
   return {
     account,
@@ -219,7 +224,7 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
 }
 
 describe.each(["claude", "codex"] as const)(
-  "%s refresh token rejected by the token endpoint",
+  "%s refresh token rejected by the token endpoint (test-change-reason: the fork authenticates requests with a thread credential)",
   (provider) => {
     it("sends a rejected refresh token at most once from the background and errors the account after expiry", async () => {
       const pool = await createPool(provider);
