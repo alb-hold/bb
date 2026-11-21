@@ -12,6 +12,7 @@ import { createGeminiAdapter, geminiQuotaRejection, geminiWindowsFromQuota, pars
 import {
   importGeminiCredentials,
   keychainReadOutcome,
+  readAntigravityInstalledAppClient,
   parseGeminiCredentials,
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
@@ -22,6 +23,7 @@ import {
   geminiUpstreamUserAgent,
   unwrapSse,
 } from "./gemini-gateway.js";
+import { isSignInRejection } from "./provider-adapter.js";
 import { pruneGeminiHomes, writeGeminiHome } from "./gemini-home.js";
 import { PARENT_TOKEN_ENV, PARENT_URL_ENV } from "./parent-pool.js";
 import { createAccountPoolPlugin } from "./server.js";
@@ -130,15 +132,15 @@ describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
     );
   });
 
-  it("rejects a token file without a refresh token or without a client", () => {
+  it("requires a refresh token and identifies a client-less file as consumer", () => {
     expect(() =>
       parseGeminiCredentials(
         JSON.stringify({ client_id: "c", client_secret: "s" }),
       ),
     ).toThrow();
-    expect(() =>
-      parseGeminiCredentials(JSON.stringify({ refresh_token: "r" })),
-    ).toThrow();
+    expect(parseGeminiCredentials(JSON.stringify({ refresh_token: "fake-refresh" }))).toEqual({
+      refreshToken: "fake-refresh", client: null, installedAppClient: "consumer", projectId: null,
+    });
   });
 });
 
@@ -159,8 +161,62 @@ describe("Gemini credentials from the macOS keychain", () => {
   it("imports credentials from the antigravity-acp keychain account", async () => {
     vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
-    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual(expected);
+    const readInstalledAppClient = vi.fn();
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain, readInstalledAppClient })).resolves.toEqual(expected);
+    expect(readInstalledAppClient).not.toHaveBeenCalled();
     expect(readKeychain).toHaveBeenCalledWith("gemini", "antigravity-acp");
+  });
+
+  const goToken = { refresh_token: "fake-refresh-kc", access_token: "fake-access", token_type: "Bearer", expiry: "2030-01-01T00:00:00Z" };
+
+  it.each([
+    ["plain", JSON.stringify(goToken)],
+    ["go-keyring", `go-keyring-base64:${Buffer.from(JSON.stringify(goToken)).toString("base64")}`],
+    ["nested", JSON.stringify({ token: goToken })],
+    ["camelCase", JSON.stringify({ refreshToken: goToken.refresh_token })],
+    ["business", JSON.stringify(goToken)],
+  ])("resolves the installed client for a %s item", async (variant, item) => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const business = variant === "business";
+    const target = business ? "antigravity-acp-business" : "antigravity";
+    const readKeychain = vi.fn(async (_service: string, account: string) => account === target
+      ? { kind: "found" as const, secret: item }
+      : { kind: "missing" as const });
+    const readInstalledAppClient = vi.fn(async () => CLIENT);
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain, readInstalledAppClient })).resolves.toEqual({
+      refreshToken: goToken.refresh_token, client: CLIENT, projectId: null, clientSource: "antigravity-installed-app",
+    });
+    expect(readInstalledAppClient).toHaveBeenCalledWith(business ? "business" : "consumer");
+    expect(readKeychain.mock.calls.map(([, account]) => account)).toEqual(
+      business ? ["antigravity-acp", "antigravity", target] : ["antigravity-acp", target],
+    );
+  });
+
+  it("propagates a client reader failure", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const failure = new Error("synthetic reader failure");
+    await expect(importGeminiCredentials(undefined, {
+      platform: "darwin",
+      readKeychain: async () => ({ kind: "found", secret: JSON.stringify(goToken) }),
+      readInstalledAppClient: async () => { throw failure; },
+    })).rejects.toBe(failure);
+  });
+
+  it("reports only usable field names for each account", async () => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
+    const items: Record<string, string> = {
+      "antigravity-acp": JSON.stringify({ access_token: "fake-access", expiry: 0 }),
+      antigravity: JSON.stringify({ token: { refresh_token: 42 } }),
+      "antigravity-acp-business": "fake-invalid-json",
+    };
+    const result = importGeminiCredentials(undefined, {
+      platform: "darwin", readInstalledAppClient: vi.fn(),
+      readKeychain: async (_service, account) => ({ kind: "found", secret: items[account]! }),
+    });
+    await expect(result).rejects.toThrow('"antigravity-acp": present: access_token, expiry; missing: refresh_token, client_id, client_secret, token_uri');
+    await expect(result).rejects.toThrow('"antigravity": present: none; missing: refresh_token, access_token, expiry, client_id, client_secret, token_uri');
+    await expect(result).rejects.toThrow('"antigravity-acp-business": not readable as JSON');
+    await expect(result).rejects.not.toThrow(/fake-access|fake-invalid-json/u);
   });
 
   it("tries the antigravity account and decodes go-keyring credentials", async () => {
@@ -183,7 +239,7 @@ describe("Gemini credentials from the macOS keychain", () => {
 
   it("rejects unusable keychain values without exposing secret contents", async () => {
     vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
-    for (const value of ["fake-secret-kc", JSON.stringify({ client_secret: "fake-secret-kc", refresh_token: "fake-refresh-kc" })]) {
+    for (const value of ["fake-secret-kc", JSON.stringify({ client_secret: "fake-secret-kc", refresh_token: 42 })]) {
       const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret: value }));
       let message = "";
       try {
@@ -191,7 +247,7 @@ describe("Gemini credentials from the macOS keychain", () => {
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
       }
-      expect(message).toMatch(/no refresh token or OAuth client/u);
+      expect(message).toMatch(/has no refresh token that bb can read/u);
       expect(message).not.toContain("fake-secret-kc");
     }
   });
@@ -238,6 +294,78 @@ describe("Gemini credentials from the macOS keychain", () => {
     expect(keychainReadOutcome({ code: 51 }, "", "")).toEqual({ kind: "denied" });
     expect(keychainReadOutcome({ code: 2 }, "", "User canceled the operation.")).toEqual({ kind: "denied" });
     expect(keychainReadOutcome({ code: 1 }, "", "Other error")).toEqual({ kind: "failed" });
+  });
+});
+
+describe("Antigravity runtime client reader", () => {
+  const id = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";
+  const consumer = { clientId: id, clientSecret: "fake-installed-secret-consumer" };
+  const business = { clientId: id.replace("123456", "654321"), clientSecret: "fake-installed-secret-business" };
+  const markers = `_DEFAULT_CLIENT_ID = (\n "${consumer.clientId}"\n)\n_DEFAULT_CLIENT_SECRET = "${consumer.clientSecret}"\n_BUSINESS_CLIENT_ID = "${business.clientId}"\n_BUSINESS_CLIENT_SECRET = "${business.clientSecret}"`;
+
+  async function runtime(root: string, version: string, contents: string) {
+    const directory = path.join(root, version);
+    await fs.mkdir(directory);
+    const file = path.join(directory, "agy_acp_server.par");
+    await fs.writeFile(file, Buffer.concat([Buffer.from([0xff, 0, 0x81]), Buffer.from(contents)]));
+    return file;
+  }
+
+  it("reads both clients from the newest version containing a runtime", async () => {
+    const runtimeRoot = await tempDir("bb-agy-runtime-");
+    await runtime(runtimeRoot, "1.4.0", "");
+    await runtime(runtimeRoot, "1.10.0", markers);
+    await fs.mkdir(path.join(runtimeRoot, "2.0.0"));
+    await expect(readAntigravityInstalledAppClient("consumer", { runtimeRoot })).resolves.toEqual(consumer);
+    await expect(readAntigravityInstalledAppClient("business", { runtimeRoot })).resolves.toEqual(business);
+  });
+
+  it("names the missing runtime root", async () => {
+    const runtimeRoot = path.join(await tempDir("bb-agy-runtime-"), "missing");
+    const result = readAntigravityInstalledAppClient("consumer", { runtimeRoot });
+    await expect(result).rejects.toThrow("no Antigravity runtime");
+    await expect(result).rejects.toThrow(runtimeRoot);
+  });
+
+  it.each([
+    ["absent", consumer.clientSecret],
+    ["ambiguous", `${markers}\n_DEFAULT_CLIENT_SECRET = "fake-installed-secret-other"`],
+  ])("redacts %s runtime markers", async (_variant, contents) => {
+    const runtimeRoot = await tempDir("bb-agy-runtime-");
+    const file = await runtime(runtimeRoot, "1.10.0", contents);
+    const result = readAntigravityInstalledAppClient("consumer", { runtimeRoot });
+    await expect(result).rejects.toThrow(`consumer installed-app client was not found in ${file} (version 1.10.0)`);
+    await expect(result).rejects.not.toThrow(/fake-installed-secret/u);
+  });
+});
+
+describe("Gemini import refresh errors", () => {
+  it.each(["invalid_grant", "invalid_client"])("reports %s from the configured refresh endpoint", async (code) => {
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-refresh-"));
+    const refreshUrl = "https://example.invalid/token";
+    const installed = code === "invalid_grant";
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: code }, { status: 400 }));
+    const adapter = createGeminiAdapter({
+      refreshUrl, fetch, upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
+      importCredentials: async () => ({
+        refreshToken: "fake-refresh-kc", client: CLIENT, projectId: null,
+        ...(installed && { clientSource: "antigravity-installed-app" as const }),
+      }),
+    });
+    const result = adapter.importAccount();
+    await expect(result).rejects.toThrow(installed ? /installed-app client.*invalid_grant/u : /HTTP 400\. invalid_client\.$/u);
+    await expect(result).rejects.not.toThrow("fake-refresh-kc");
+    if (!installed) {
+      const message = await result.then(() => "", (error: Error) => error.message);
+      expect(isSignInRejection(message)).toBe(true);
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe(refreshUrl);
+    expect(init?.method).toBe("POST");
+    const form = new URLSearchParams(String(init?.body));
+    expect(form.get("client_id")).toBe(CLIENT.clientId);
+    expect(form.get("client_secret")).toBe(CLIENT.clientSecret);
   });
 });
 
