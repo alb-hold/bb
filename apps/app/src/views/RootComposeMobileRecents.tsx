@@ -69,6 +69,7 @@ interface RootComposeMobileRecentsProps {
   providersById: ReadonlyMap<string, ProviderInfo>;
   showCreatingRow: boolean;
   threads: readonly ThreadListEntry[];
+  completeSnapshot?: boolean;
 }
 
 function MobileRecentThreadRow({
@@ -177,13 +178,14 @@ export function RootComposeMobileRecents({
   providersById,
   showCreatingRow,
   threads,
+  completeSnapshot = true,
 }: RootComposeMobileRecentsProps) {
   const [collapsedThreadIdList, setCollapsedThreadIdList] = useAtom(
     mobileRecentsCollapsedThreadIdsAtom,
   );
   const collapsedThreadIds = useMemo(
-    () => new Set(collapsedThreadIdList),
-    [collapsedThreadIdList],
+    () => new Set(completeSnapshot ? collapsedThreadIdList : []),
+    [completeSnapshot, collapsedThreadIdList],
   );
   const draftThreadIds = usePromptDraftInputThreadIds(threads);
   const activityNow = useSecondTick(
@@ -191,16 +193,17 @@ export function RootComposeMobileRecents({
   );
   const toggleCollapsed = useCallback(
     (threadId: string) => {
+      if (!completeSnapshot) return;
       setCollapsedThreadIdList((current) =>
         current.includes(threadId)
           ? current.filter((id) => id !== threadId)
           : [...current, threadId],
       );
     },
-    [setCollapsedThreadIdList],
+    [completeSnapshot, setCollapsedThreadIdList],
   );
   useEffect(() => {
-    if (highlightedThreadId === null) return;
+    if (!completeSnapshot || highlightedThreadId === null) return;
     const ancestorIds = getMobileRecentAncestorIds({
       threadId: highlightedThreadId,
       threads,
@@ -210,7 +213,7 @@ export function RootComposeMobileRecents({
       const next = current.filter((id) => !ancestorIds.includes(id));
       return next.length === current.length ? current : next;
     });
-  }, [highlightedThreadId, setCollapsedThreadIdList, threads]);
+  }, [completeSnapshot, highlightedThreadId, setCollapsedThreadIdList, threads]);
   const recentThreads = useMemo(
     () =>
       getMobileRecentThreads({

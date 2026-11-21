@@ -107,7 +107,7 @@ async function throwHttpError(res: Response): Promise<never> {
   });
 }
 
-async function requestResponse(
+export async function requestResponse(
   responsePromise: Promise<Response>,
 ): Promise<Response> {
   const res = await responsePromise;

@@ -134,6 +134,7 @@ import {
 } from "./RootComposeSecondaryContent";
 import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { useProgressiveSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -538,6 +539,7 @@ function RootComposeSurface({
     setEnvironmentSelectionValue,
     renderPromptBox,
   } = composer;
+  const progressiveNavigation = useProgressiveSidebarNavigation(!sidebarNavigation);
   const rootPanelEnvironmentId =
     parsedEnvironment?.type === "reuse"
       ? parsedEnvironment.environmentId
@@ -681,8 +683,12 @@ function RootComposeSurface({
   }, [focusPromptBox, isPointerCoarse, location.key, shouldFocusPrompt]);
 
   const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
-    [sidebarNavigation],
+    () => sidebarNavigation
+      ? buildMobileRecentThreads({ sidebarNavigation })
+      : progressiveNavigation.preview
+        ? [...progressiveNavigation.preview.projects.flatMap((project) => project.threads), ...progressiveNavigation.preview.personalProject.threads]
+        : [],
+    [progressiveNavigation.preview, sidebarNavigation],
   );
   const systemProviders = useProviderDirectory().data;
   const mobileRecentProvidersById = useMemo(() => {
@@ -1567,6 +1573,7 @@ function RootComposeSurface({
                     providersById={mobileRecentProvidersById}
                     showCreatingRow={isSubmitting}
                     threads={mobileRecentThreads}
+                    completeSnapshot={sidebarNavigation !== undefined}
                   />
                 }
                 isSecondaryPanelOpen={isSecondaryPanelOpen}
