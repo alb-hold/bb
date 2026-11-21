@@ -251,6 +251,22 @@ describe("Gemini adapter local login", () => {
     });
     await expect(adapter.localLogin()).resolves.toBeNull();
   });
+
+  it("reads only the token file and never the import override", async () => {
+    const importCredentials = vi.fn(async () => {
+      throw new Error("keychain-capable import must not run during listing");
+    });
+    const adapter = createGeminiAdapter({
+      refreshUrl: "https://example.invalid/token",
+      upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
+      importCredentials,
+    });
+    vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-empty-override-"));
+    await expect(adapter.localLogin()).resolves.toBeNull();
+    vi.stubEnv("GEMINI_HOME", await writeSignIn({ refresh: "fake-refresh-local" }));
+    await expect(adapter.localLogin()).resolves.toEqual({ email: null, planLabel: null });
+    expect(importCredentials).not.toHaveBeenCalled();
+  });
 });
 
 describe("Gemini homes the host worker writes", () => {
