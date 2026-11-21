@@ -14,11 +14,12 @@ interface ModuleGraph {
 export interface JourneyChunk {
   name: string;
   entries: readonly string[];
+  entriesAware?: boolean;
 }
 
 export interface JourneyChunkGroup {
+  entriesAware?: boolean;
   name: (moduleId: string, graph: ModuleGraph) => string | null;
-  includeDependenciesRecursively: false;
 }
 
 const EVERY_NAME = "*";
@@ -234,7 +235,6 @@ export function journeyChunkGroups(
   rootDir: string,
   journeys: readonly JourneyChunk[],
 ): JourneyChunkGroup[] {
-  const rootPrefix = normalizePath(resolve(rootDir)) + "/";
   const absolute = journeys.map((journey) => ({
     name: journey.name,
     entries: journey.entries.map((entry) =>
@@ -243,12 +243,11 @@ export function journeyChunkGroups(
   }));
   let assignment: Map<string, string> | undefined;
   const chunkOf = (moduleId: string, graph: ModuleGraph) => {
-    if (!moduleId.startsWith(rootPrefix)) return undefined;
     assignment ??= assignJourneyChunks(graph, absolute);
     return assignment.get(moduleId);
   };
-  return journeys.map(({ name }) => ({
-    includeDependenciesRecursively: false,
+  return journeys.map(({ name, entriesAware }) => ({
+    entriesAware,
     name: (moduleId, graph) =>
       chunkOf(moduleId, graph) === name ? name : null,
   }));
