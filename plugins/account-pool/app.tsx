@@ -246,7 +246,6 @@ function untilLabel(timestamp: number): string {
 function subscriptionState(
   account: AccountSummary,
   nextAccountId: string | null | undefined,
-  threshold: number,
 ): SubscriptionState {
   if (account.signInExpired)
     return {
@@ -280,7 +279,7 @@ function subscriptionState(
       tone: "text-warning-text",
     };
   if (account.status === "exhausted") {
-    const resetAt = blockingResetAt(account, null, threshold, Date.now());
+    const resetAt = blockingResetAt(account, null, Date.now());
     return {
       label: "Used up",
       detail: resetAt === null ? null : `back ${untilLabel(resetAt)}`,
@@ -889,7 +888,7 @@ function QuotaDetail({
           {quota?.resetAt === null || quota === null
             ? ""
             : ` · ${resetLabel(quota.resetAt)}`}{" "}
-          · skipped for new conversations from {Math.round(threshold * 100)}% unless extra usage is available
+          · new conversations prefer accounts below {Math.round(threshold * 100)}%
         </div>
       </div>
     </div>
@@ -1752,7 +1751,6 @@ function AccountPoolSettings() {
                               status?.routing.claude === false
                                 ? null
                                 : nextSubscriptionId,
-                              threshold,
                             )}
                             pending={pending.size > 0}
                             refreshing={
@@ -1907,7 +1905,7 @@ function AccountPoolSettings() {
               <ConfigFieldRow
                 label="Quota switch threshold"
                 control="field"
-                description="Stop selecting an account at this quota fraction."
+                description="Prefer accounts below this quota fraction for new conversations."
                 error={configErrors.switchThreshold}
               >
                 <Input
@@ -2234,7 +2232,7 @@ function AccountDialog({
     >
       <div className="flex items-center gap-2">
         {plan === null ? null : <SettingsBadge>{plan}</SettingsBadge>}
-        <StateWord state={subscriptionState(account, null, threshold)} />
+        <StateWord state={subscriptionState(account, null)} />
       </div>
       <div className="space-y-4">
         {windows.length === 0 ? (

@@ -46,6 +46,7 @@ import {
   blockingResetAt,
   hasExtraUsage,
   isPastThreshold,
+  isQuotaExhausted,
   isUsageRestricted,
   retryAfterMilliseconds,
 } from "./quota.js";
@@ -990,12 +991,7 @@ export class AccountPoolHub {
           lastUsedHostName: null,
           ...quotaFields,
           inFlight: this.inFlightByAccount.get(account.id) ?? 0,
-          status: accountStatus(
-            account,
-            quota,
-            this.options.getSettings().switchThreshold,
-            now,
-          ),
+          status: accountStatus(account, quota, now),
           signInExpired: isSignInRejection(quota.error),
           organizationUuid: organizations.get(account.id) ?? null,
         };
@@ -1085,39 +1081,18 @@ export class AccountPoolHub {
         ({ quota }) =>
           quota.error === null &&
           !isUsageRestricted(quota, now) &&
-          (!isPastThreshold(
-            quota,
-            null,
-            this.options.getSettings().switchThreshold,
-            now,
-          ) ||
+          (!isQuotaExhausted(quota, null, now) ||
             hasExtraUsage(quota)),
       );
-    let eligible = available.filter(
-      ({ quota }) =>
-        !isPastThreshold(
-          quota,
-          "other",
-          this.options.getSettings().switchThreshold,
-          now,
-        ) || hasExtraUsage(quota),
+    const usable = available.filter(
+      ({ quota }) => !isQuotaExhausted(quota, "other", now) || hasExtraUsage(quota),
     );
-    const included = eligible.filter(
-      ({ quota }) =>
-        !isPastThreshold(
-          quota,
-          "other",
-          this.options.getSettings().switchThreshold,
-          now,
-        ),
-    );
-    if (
-      included.some(
-        ({ quota }) => quota.heldUntil === null || quota.heldUntil <= now,
-      )
-    )
-      eligible = included;
-    const bindingEligibleAccountIds = eligible.map(({ account }) => account.id);
+    const accepted = usable.filter(({ quota }) => !isQuotaExhausted(quota, "other", now));
+    const included = accepted.filter(({ quota }) => !isPastThreshold(quota, "other", threshold, now));
+    let eligible = [included, accepted].find((tier) =>
+      tier.some(({ quota }) => quota.heldUntil === null || quota.heldUntil <= now),
+    ) ?? usable;
+    const bindingEligibleAccountIds = (eligible === usable ? usable : accepted).map(({ account }) => account.id);
     eligible = eligible.filter(
       ({ quota }) => quota.heldUntil === null || quota.heldUntil <= now,
     );
@@ -1698,21 +1673,11 @@ export class AccountPoolHub {
       )
       .filter(
         ({ quota }) =>
-          !isPastThreshold(
-            quota,
-            null,
-            this.options.getSettings().switchThreshold,
-            now,
-          ) || hasExtraUsage(quota),
+          !isQuotaExhausted(quota, null, now) || hasExtraUsage(quota),
       );
     const usable = available.filter(
       ({ quota }) =>
-        !isPastThreshold(
-          quota,
-          family,
-          this.options.getSettings().switchThreshold,
-          now,
-        ) || hasExtraUsage(quota),
+        !isQuotaExhausted(quota, family, now) || hasExtraUsage(quota),
     );
     const isUnattempted = ({ account }: (typeof usable)[number]) =>
       candidateIds.has(account.id) && !attempted.has(account.id);
@@ -1721,12 +1686,7 @@ export class AccountPoolHub {
     );
     const accepted = usable.filter(
       ({ quota }) =>
-        !isPastThreshold(
-          quota,
-          family,
-          this.options.getSettings().switchThreshold,
-          now,
-        ),
+        !isQuotaExhausted(quota, family, now),
     );
     const eligible =
       [included, accepted].find((tier) =>
@@ -2268,19 +2228,9 @@ export class AccountPoolHub {
         continue;
       }
       const exhausted =
-        isPastThreshold(
-          quota,
-          family,
-          this.options.getSettings().switchThreshold,
-          now,
-        ) && !hasExtraUsage(quota);
+        isQuotaExhausted(quota, family, now) && !hasExtraUsage(quota);
       const resetAt = exhausted
-        ? blockingResetAt(
-            quota,
-            family,
-            this.options.getSettings().switchThreshold,
-            now,
-          )
+        ? blockingResetAt(quota, family, now)
         : now;
       if (resetAt === null) {
         unknown = true;

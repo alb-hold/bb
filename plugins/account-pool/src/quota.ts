@@ -200,14 +200,13 @@ function isWindowPastThreshold(
 export function blockingResetAt(
   quota: AccountQuota | AccountSummary,
   family: ModelFamily | null,
-  threshold: number,
   now: number,
 ): number | null {
   if (isUsageRestricted(quota, now))
     return quota.usageRestriction?.resetAt ?? null;
   let latest: number | null = null;
   for (const window of quotaWindows(quota, family)) {
-    if (!isWindowPastThreshold(window, threshold, now)) continue;
+    if (!isRefusedWindow(window, now)) continue;
     if (window.resetAt === null) return null;
     latest = Math.max(latest ?? window.resetAt, window.resetAt);
   }
@@ -273,14 +272,13 @@ export function isQuotaRejection(headers: Headers): boolean {
 export function accountStatus(
   account: Account,
   quota: AccountQuota,
-  threshold: number,
   now: number,
 ): AccountSummary["status"] {
   if (!account.enabled) return "disabled";
   if (quota.error !== null) return "error";
   if (quota.heldUntil !== null && quota.heldUntil > now) return "held";
   if (isUsageRestricted(quota, now)) return "exhausted";
-  if (isPastThreshold(quota, null, threshold, now) && !hasExtraUsage(quota))
+  if (isQuotaExhausted(quota, null, now) && !hasExtraUsage(quota))
     return "exhausted";
   return "ready";
 }

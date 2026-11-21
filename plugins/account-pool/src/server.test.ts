@@ -10148,7 +10148,7 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual([]);
     });
 
-    it("keeps an extra-usage eligible bound account in the binding preview", async () => {
+    it('test-change-reason: owner ruling 2026-11-21 "included" — stay on included usage past the switch threshold until the provider refuses it', async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -10180,12 +10180,12 @@ describe("Account Pool plugin", () => {
         nextAccountId: pool.fixture.account.id,
         headroom: [
           { accountId: pool.fixture.account.id, eligible: true },
-          { accountId: pool.second.id, eligible: false },
+          { accountId: pool.second.id, eligible: true },
         ],
       });
     });
 
-    it("does not report an extra-usage bound account when routing narrows below threshold", async () => {
+    it('test-change-reason: owner ruling 2026-11-21 "included" — release a paid binding when included quota is available', async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
         sevenDayUtilization: 0.2,
@@ -10198,7 +10198,7 @@ describe("Account Pool plugin", () => {
       await pool.send("thr_extrausagerebalance", "session-extrausagerebalance");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.98,
+        sevenDayUtilization: 1,
         sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         extraUsage: { status: "allowed", observedAt: now, source: "usage" },
       });
