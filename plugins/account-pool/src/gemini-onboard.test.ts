@@ -17,6 +17,7 @@ interface FakeCall {
 function fakeCodeAssist(script: {
   loads: unknown[];
   onboard?: unknown;
+  onboardReplies?: unknown[];
   operations?: unknown[];
 }) {
   const calls: FakeCall[] = [];
@@ -44,7 +45,7 @@ function fakeCodeAssist(script: {
     }
     if (rest === "/v1internal:onboardUser") {
       calls.push({ method: "onboardUser", base, body });
-      return json(script.onboard);
+      return json(script.onboardReplies?.shift() ?? script.onboard);
     }
     if (rest.startsWith("/v1internal/operations/")) {
       calls.push({ method: "getOperation", base, body });
@@ -191,6 +192,43 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       method: "onboardUser",
       body: { tierId: "g1-pro-tier" },
     });
+  });
+
+  const standard = { currentTier: { id: "standard-tier" } };
+
+  it.each(["proj-new", { id: "proj-new", name: "Project" }])(
+    "reads the project from the completed operation (%j)",
+    async (project) => {
+      const google = fakeCodeAssist({
+        loads: [standard],
+        onboardReplies: [{ done: false }, { name: "operations/new" }],
+        operations: [{ done: false }, { done: true, response: { cloudaicompanionProject: project } }],
+      });
+      expect(await google.adapter.importAccount()).toMatchObject({ geminiProject: "proj-new" });
+      expect(google.calls.map(call => call.method)).toEqual([
+        "loadCodeAssist", "onboardUser", "onboardUser", "getOperation", "getOperation", "loadCodeAssist",
+      ]);
+    },
+  );
+
+  it.each([{}, { cloudaicompanionProject: {} }])(
+    "identifies the missing standard-tier project (%j)",
+    async response => {
+      const google = fakeCodeAssist({ loads: [standard], onboard: { done: true, response } });
+      await expect(google.adapter.importAccount()).rejects.toThrow(/GOOGLE_CLOUD_PROJECT/);
+    },
+  );
+
+  it("reports malformed field paths without their values", async () => {
+    const google = fakeCodeAssist({
+      loads: [standard],
+      onboard: { done: true, response: { cloudaicompanionProject: { id: [TOKEN], name: EMAIL } } },
+    });
+    const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
+    expect(error).toContain("response.cloudaicompanionProject.id");
+    expect(error).toContain("done");
+    expect(error).not.toContain(TOKEN);
+    expect(error).not.toContain(EMAIL);
   });
 
   it("names the onboarding stage when the operation is still pending past its deadline", async () => {

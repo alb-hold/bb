@@ -102,7 +102,7 @@ const onboardOperationSchema = z
     response: z
       .object({
         cloudaicompanionProject: z
-          .union([z.string(), z.object({ id: z.string() }).passthrough()])
+          .union([z.string(), z.object({ id: z.string().nullish() }).passthrough()])
           .nullish(),
       })
       .passthrough()
@@ -475,7 +475,7 @@ function missingFields(project: string | null, tier: string | null): string {
 }
 
 function operationProject(
-  raw: string | { id: string } | null | undefined,
+  raw: string | { id?: string | null | undefined } | null | undefined,
 ): string | null {
   const id = typeof raw === "string" ? raw : (raw?.id ?? null);
   return id === null || id === "" ? null : id;
@@ -509,6 +509,16 @@ async function getCodeAssistOperation(
   return response.json().catch(() => null);
 }
 
+function onboardingFields(payload: unknown, prefix = "", depth = 0): string[] {
+  if (depth > 2 || payload === null || typeof payload !== "object" || Array.isArray(payload))
+    return [];
+  return Object.entries(payload).slice(0, 16).flatMap(([key, value]) => {
+    if (!/^@?[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key)) return [];
+    const path = prefix + key;
+    return [path, ...onboardingFields(value, path + ".", depth + 1)];
+  });
+}
+
 async function onboardCodeAssist(args: {
   doFetch: typeof fetch;
   baseUrl: string;
@@ -529,39 +539,27 @@ async function onboardCodeAssist(args: {
     const parsed = onboardOperationSchema.safeParse(payload);
     if (!parsed.success)
       throw new Error(
-        `Gemini Code Assist sent an unreadable onboarding answer (stage: onboardUser; tier id: ${args.tierId}).`,
+        `Gemini Code Assist sent an unreadable onboarding answer (stage: onboardUser; fields: ${onboardingFields(payload).join(", ").slice(0, 1024) || "none"}).`,
       );
     return parsed.data;
   };
-  let operation = readOperation(
-    await codeAssistCall(
-      args.doFetch,
-      args.baseUrl,
-      "onboardUser",
-      args.accessToken,
-      body,
-    ),
-  );
+  const onboard = () =>
+    codeAssistCall(args.doFetch, args.baseUrl, "onboardUser", args.accessToken, body);
+  let operation = readOperation(await onboard());
+  let name = operation.name;
   const deadline = Date.now() + args.timeoutMs;
   while (operation.done !== true) {
-    const name = operation.name;
-    if (name == null || name === "")
-      throw new Error(
-        `Gemini Code Assist onboarding is not finished and gave no operation to wait on (stage: onboardUser; tier id: ${args.tierId}).`,
-      );
     if (Date.now() >= deadline)
       throw new Error(
         `Gemini Code Assist onboarding was still pending after ${Math.round(args.timeoutMs / 1_000)}s (stage: onboardUser operation; tier id: ${args.tierId}). Retry in a few minutes.`,
       );
     await new Promise((resolve) => setTimeout(resolve, args.pollMs));
     operation = readOperation(
-      await getCodeAssistOperation(
-        args.doFetch,
-        args.baseUrl,
-        name,
-        args.accessToken,
-      ),
+      name
+        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken)
+        : await onboard(),
     );
+    name = operation.name || name;
   }
   if (operation.error != null)
     throw new Error(
@@ -654,6 +652,8 @@ export function createGeminiAdapter(options: {
           throw new Error(
             `Gemini Code Assist has no ${missingFields(project, info.tier)} for this account and offered no tier to onboard it to (stage: loadCodeAssist; tier id received: ${receivedTierId(loaded)}).`,
           );
+        if (tierId === "standard-tier" && project === null)
+          project = process.env.GOOGLE_CLOUD_PROJECT?.trim() || null;
         const onboarded = await onboardCodeAssist({
           doFetch,
           baseUrl: bases.prod,
@@ -666,6 +666,8 @@ export function createGeminiAdapter(options: {
         loaded = await load();
         info = parseLoadCodeAssist(loaded) ?? info;
         project = info.project ?? onboarded ?? project;
+        if (project === null && tierId === "standard-tier")
+          throw new Error("Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import.");
         if (project === null || info.tier === null)
           throw new Error(
             `Gemini Code Assist still has no ${missingFields(project, info.tier)} for this account after onboarding (stage: loadCodeAssist after onboardUser; tier id received: ${receivedTierId(loaded)}).`,
