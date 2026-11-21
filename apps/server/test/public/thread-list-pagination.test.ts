@@ -2,7 +2,10 @@ import { threads } from "@bb/db";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { createBbSdk } from "@bb/sdk/core";
 import { createHttpTransport } from "@bb/sdk/node";
-import { threadListResponseSchema } from "@bb/server-contract";
+import {
+  sidebarBootstrapResponseSchema,
+  threadListResponseSchema,
+} from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
 import { withTestHarness } from "../helpers/test-app.js";
 
@@ -17,6 +20,7 @@ describe("thread list continuation", () => {
             projectId: PERSONAL_PROJECT_ID,
             providerId: "codex",
             status: "idle",
+            latestAttentionAt: 100,
             createdAt: 100,
             updatedAt: 100,
             pinnedAt: i < 120 ? 1 : null,
@@ -26,6 +30,30 @@ describe("thread list continuation", () => {
           })
           .run();
       }
+      const route = "/api/v1/sidebar-bootstrap";
+      const complete = sidebarBootstrapResponseSchema.parse(
+        await (await harness.app.request(route)).json(),
+      );
+      const expectedIds = complete.personalProject.threads.map((row) => row.id);
+      const ids: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams({ limit: "23" });
+        if (cursor !== null) params.set("cursor", cursor);
+        const page = await harness.app.request(route + "?" + params);
+        expect(page.status).toBe(200);
+        const bootstrap = sidebarBootstrapResponseSchema.parse(
+          await page.json(),
+        );
+        expect(bootstrap.personalProject.threads.length).toBeLessThanOrEqual(
+          23,
+        );
+        ids.push(...bootstrap.personalProject.threads.map((row) => row.id));
+        cursor = page.headers.get("X-BB-Next-Cursor");
+        expect(ids.length).toBeLessThanOrEqual(expectedIds.length);
+      } while (cursor !== null);
+      expect(expectedIds.length).toBeGreaterThan(23);
+      expect(ids).toEqual(expectedIds);
       const paths: URL[] = [];
       const sdk = createBbSdk({
         transport: createHttpTransport({
