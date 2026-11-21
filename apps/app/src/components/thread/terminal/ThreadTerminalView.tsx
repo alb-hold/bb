@@ -2719,6 +2719,7 @@ export function ThreadTerminalView({
           return;
         }
         const activeBuffer = lifecycle.terminal.buffer.active;
+        if (activeBuffer.type === "alternate") return;
         const distanceFromTail = Math.max(
           0,
           activeBuffer.baseY - activeBuffer.viewportY,
@@ -2772,6 +2773,7 @@ export function ThreadTerminalView({
         if (
           !activeBuffer ||
           !lifecycle.hasRestoredViewport ||
+          activeBuffer.type === "alternate" ||
           !viewportReplaySaveGate.canSave(true) ||
           liveBottomBeforeGridResize ||
           liveBottomResizeClearFrame !== null ||

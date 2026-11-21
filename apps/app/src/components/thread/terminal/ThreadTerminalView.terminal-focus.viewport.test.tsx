@@ -21,6 +21,7 @@ import {
   useAppCommandHandler,
 } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import { readTerminalViewportAnchor, terminalViewportStorageKey } from "./terminal-viewport";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -391,7 +392,24 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     expect(screen.getByRole("button", { name: "Jump to latest output" })).toBe(
       jump,
     );
+    const readSavedAnchor = () => {
+      window.dispatchEvent(new Event("pagehide"));
+      return readTerminalViewportAnchor(sessionStorage, terminalViewportStorageKey(session.id));
+    };
+    const savedAnchor = readSavedAnchor();
+    expect(savedAnchor?.distanceFromTail).toBeGreaterThan(0);
+    await act(async () => {
+      await new Promise<void>((resolve) => getTerminal().write("\x1b[?1049h", resolve));
+    });
+    expect(getTerminal().buffer.active.type).toBe("alternate");
+    expect(readSavedAnchor()).toEqual(savedAnchor);
+    await act(async () => {
+      await new Promise<void>((resolve) => getTerminal().write("\x1b[?1049l", resolve));
+    });
+    expect(getTerminal().buffer.active.type).toBe("normal");
+    expect(readSavedAnchor()).toEqual(savedAnchor);
     scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
+    expect(readSavedAnchor()?.distanceFromTail).toBe(0);
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: "Jump to latest output" }),
