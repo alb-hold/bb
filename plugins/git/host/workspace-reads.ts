@@ -2430,7 +2430,8 @@ function joinDiffArtifactLines(parts: string[]): string {
 
 async function lstatFileOrSymlink(filePath: string): Promise<Stats | null> {
   try {
-    return await fs.lstat(filePath);
+    const stats = await fs.lstat(filePath);
+    return stats.isFile() || stats.isSymbolicLink() ? stats : null;
   } catch (error) {
     if (
       typeof error === "object" &&
