@@ -184,8 +184,8 @@ export function RootComposeMobileRecents({
     mobileRecentsCollapsedThreadIdsAtom,
   );
   const collapsedThreadIds = useMemo(
-    () => new Set(completeSnapshot ? collapsedThreadIdList : []),
-    [completeSnapshot, collapsedThreadIdList],
+    () => new Set(collapsedThreadIdList),
+    [collapsedThreadIdList],
   );
   const draftThreadIds = usePromptDraftInputThreadIds(threads);
   const activityNow = useSecondTick(
@@ -213,7 +213,12 @@ export function RootComposeMobileRecents({
       const next = current.filter((id) => !ancestorIds.includes(id));
       return next.length === current.length ? current : next;
     });
-  }, [completeSnapshot, highlightedThreadId, setCollapsedThreadIdList, threads]);
+  }, [
+    completeSnapshot,
+    highlightedThreadId,
+    setCollapsedThreadIdList,
+    threads,
+  ]);
   const recentThreads = useMemo(
     () =>
       getMobileRecentThreads({

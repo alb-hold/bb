@@ -5979,6 +5979,7 @@ export interface PluginSdkApp {
    * Experimental: see docs/api_to_audit.md.
    */
   experimental_useSidebarThreads(options?: {
+    experimental_previewRows?: boolean;
     /** Defaults to active threads only. An empty selection also means active. */
     experimental_lifecycles: readonly ("active" | "archived")[];
   }): PluginSidebarThreadsState;

@@ -209,10 +209,11 @@ export function useSidebarProjectName(
   return projectId === null ? undefined : projectNamesById.get(projectId);
 }
 
-export function useSidebarData() {
+export function useSidebarData(previewRows = false) {
   const lifecycles = useAtomValue(sidebarThreadLifecyclesAtom);
   const state = experimental_useSidebarThreads({
     experimental_lifecycles: lifecycles,
+    ...(previewRows ? { experimental_previewRows: true } : {}),
   });
   return useMemo(
     () => ({ ...getSidebarData(state), archived: state.experimental_archived }),

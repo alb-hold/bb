@@ -5615,3 +5615,5 @@ contract and parser failure/retry coverage. It is not a Plugin Guide surface.
 ## `bb.sdk.threads.experimental_listSummaries`
 
 Lists the title, project, status, pin and archive timestamps, runtime, activity and indicator used by the CLI thread table. It accepts the same selectors and limit as `threads.list`. Stabilize after the CLI and plugin callers confirm parity for the complete table across pages and older servers.
+
+The thread list renderer opts into intermediate rows using `experimental_useSidebarThreads({ experimental_lifecycles, experimental_previewRows: true })`. Use the default complete snapshot for unread transitions, counts and persisted navigation state. Stabilize after progressive rendering and complete-snapshot consumers pass the same paging regression on desktop and phone.

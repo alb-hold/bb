@@ -1,11 +1,14 @@
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useQuery,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
-import { request, requestOptions, requestResponse } from "@/lib/api";
-import { fetchWithDeviceHandoffSubmission } from "@/lib/api-server";
+import { request, requestOptions } from "@/lib/api";
 import {
   useEnvironmentListRealtimeSubscription,
   useHostListRealtimeSubscription,
@@ -21,87 +24,75 @@ import {
 } from "@/lib/sidebar-bootstrap-cache";
 
 const SIDEBAR_PAGE_SIZE = 25;
+export const sidebarNavigationPreviewQueryKey = () =>
+  ["sidebarNavigationPreview"] as const;
 
-async function fetchSidebarPage(signal?: AbortSignal, cursor?: string) {
-  const url = new URL(apiClient["sidebar-bootstrap"].$url().toString());
-  url.searchParams.set("limit", String(SIDEBAR_PAGE_SIZE));
-  if (cursor) url.searchParams.set("cursor", cursor);
-  const response = await requestResponse(
-    fetchWithDeviceHandoffSubmission(url, requestOptions(signal)?.init),
-  );
-  const data = (await response.json()) as SidebarBootstrapResponse;
-  return {
-    data,
-    paged: response.headers.get("X-BB-Pagination") !== null,
-    nextCursor: response.headers.get("X-BB-Next-Cursor"),
-  };
+export function useSidebarNavigationPreview() {
+  return useQuery<SidebarBootstrapResponse | null>({
+    queryKey: sidebarNavigationPreviewQueryKey(),
+    enabled: false,
+    staleTime: Infinity,
+  }).data;
 }
 
-export function useProgressiveSidebarNavigation(enabled = true) {
-  const queryClient = useQueryClient();
-  const previewQuery = useQuery({
-    queryKey: ["sidebar-navigation-preview"],
-    queryFn: ({ signal }) => fetchSidebarPage(signal),
-    staleTime: 30_000,
-    enabled,
-  });
-  const completeQuery = useQuery({
-    queryKey: ["sidebar-navigation-progressive"],
-    queryFn: async ({ signal }) => {
-      const first = previewQuery.data ?? await fetchSidebarPage(signal);
-      const preview = first.data;
-      if (!first.paged) {
-        queryClient.setQueryData(sidebarNavigationQueryKey(), first.data);
-        writeCachedSidebarBootstrap(first.data);
-        return { preview: first.data, complete: first.data };
-      }
-      const pages = [first.data];
-      let cursor = first.nextCursor;
-      while (cursor !== null) {
-        const page = await fetchSidebarPage(signal, cursor);
-        pages.push(page.data);
-        cursor = page.nextCursor;
-      }
-      const firstPage = pages[0] ?? preview;
-      const mergeThreads = (getRows: (page: SidebarBootstrapResponse) => SidebarBootstrapResponse["personalProject"]["threads"]) => {
-        const seen = new Set<string>();
-        return pages.flatMap(getRows).filter((thread) => {
-          if (seen.has(thread.id)) return false;
-          seen.add(thread.id);
-          return true;
-        });
-      };
-      const complete: SidebarBootstrapResponse = {
-        ...firstPage,
-        projects: firstPage.projects.map((project) => ({
-          ...project,
-          threads: mergeThreads((page) => page.projects.find((item) => item.id === project.id)?.threads ?? []),
-        })),
-        personalProject: {
-          ...firstPage.personalProject,
-          threads: mergeThreads((page) => page.personalProject.threads),
+export async function fetchSidebarNavigation({
+  client,
+  signal,
+}: {
+  client: QueryClient;
+  signal: AbortSignal;
+}): Promise<SidebarBootstrapResponse> {
+  const previewKey = sidebarNavigationPreviewQueryKey();
+  const seenCursors = new Set<string>();
+  const threadsByProject = new Map<string, Map<string, ThreadListEntry>>();
+  let cursor: string | undefined;
+  let preview: SidebarBootstrapResponse | undefined;
+  try {
+    for (;;) {
+      let next: string | undefined;
+      const page = await request<SidebarBootstrapResponse>(
+        apiClient["sidebar-bootstrap"].$get(
+          { query: { limit: String(SIDEBAR_PAGE_SIZE), cursor } },
+          requestOptions(signal),
+        ),
+        (response) => {
+          next = response.headers.get("X-BB-Next-Cursor") ?? undefined;
         },
+      );
+      signal.throwIfAborted();
+      const combine = (
+        project: SidebarBootstrapResponse["personalProject"],
+      ) => {
+        let rows = threadsByProject.get(project.id);
+        if (!rows) {
+          rows = new Map();
+          threadsByProject.set(project.id, rows);
+        }
+        for (const thread of project.threads) rows.set(thread.id, thread);
+        return { ...project, threads: [...rows.values()] };
       };
-      queryClient.setQueryData(sidebarNavigationQueryKey(), complete);
-      writeCachedSidebarBootstrap(complete);
-      return { preview, complete };
-    },
-    enabled: enabled && previewQuery.data !== undefined,
-    staleTime: 30_000,
-  });
-  return {
-    ...completeQuery,
-    preview: previewQuery.data?.data,
-    isComplete: completeQuery.data !== undefined,
-  };
-}
-
-function fetchSidebarNavigation(
-  signal?: AbortSignal,
-): Promise<SidebarBootstrapResponse> {
-  return request<SidebarBootstrapResponse>(
-    apiClient["sidebar-bootstrap"].$get(undefined, requestOptions(signal)),
-  );
+      const snapshot =
+        cursor === undefined && !next
+          ? page
+          : {
+              sections: page.sections,
+              projects: page.projects.map(combine),
+              personalProject: combine(page.personalProject),
+            };
+      if (!next) {
+        writeCachedSidebarBootstrap(snapshot);
+        return snapshot;
+      }
+      if (seenCursors.has(next))
+        throw new Error("Sidebar returned a repeated continuation");
+      seenCursors.add(next);
+      preview = client.setQueryData(previewKey, snapshot);
+      cursor = next;
+    }
+  } finally {
+    if (preview && client.getQueryData(previewKey) === preview)
+      client.setQueryData(previewKey, null);
+  }
 }
 
 export function useSidebarNavigation(options?: QueryOptions) {
@@ -113,11 +104,7 @@ export function useSidebarNavigation(options?: QueryOptions) {
 
   return useQuery<SidebarBootstrapResponse>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: async ({ signal }) => {
-      const response = await fetchSidebarNavigation(signal);
-      writeCachedSidebarBootstrap(response);
-      return response;
-    },
+    queryFn: fetchSidebarNavigation,
     enabled,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     placeholderData: () => readCachedSidebarBootstrap() ?? undefined,
@@ -129,7 +116,7 @@ export function useProjectDisplayName(
 ): string | undefined {
   const { data } = useQuery<SidebarBootstrapResponse>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: ({ signal }) => fetchSidebarNavigation(signal),
+    queryFn: fetchSidebarNavigation,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     enabled: Boolean(projectId),
   });
@@ -152,7 +139,7 @@ export function sidebarNavigationThreadSelectionQueryOptions<T>(
 ) {
   return queryOptions<SidebarBootstrapResponse, Error, T>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: ({ signal }) => fetchSidebarNavigation(signal),
+    queryFn: fetchSidebarNavigation,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     enabled: false,
     select: selectFromNavigation,
