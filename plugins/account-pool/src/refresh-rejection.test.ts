@@ -39,6 +39,7 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
   const secretsDir = path.join(dataDir, "secrets");
   let time = 1_800_000_000_000;
   const now = () => time;
+  const hostId = "synthetic-host";
   const stores = () => {
     const hubTokens = new HubTokenStore(secretsDir, now);
     return {
@@ -119,6 +120,8 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
   const startHub = async (
     current: ReturnType<typeof stores>,
   ): Promise<{ hub: AccountPoolHub; stop: () => Promise<void> }> => {
+    await current.hubTokens.initialize();
+    await current.threadTokens.initialize([hostId]);
     const hub = createHub({
       ...current,
       now,
@@ -153,7 +156,6 @@ async function createPool(provider: PoolProvider, refreshFailureStatus = 400) {
     await host.harness.lifecycle.dispose();
     await fs.rm(dataDir, { recursive: true, force: true });
   });
-  const hostId = "synthetic-host";
   const token = await initial.threadTokens.forThread(
     { hostId, threadId: "synthetic-thread", provider, accountId: null },
     await initial.hubTokens.forHost(hostId),
@@ -249,7 +251,7 @@ describe.each(["claude", "codex"] as const)(
       expect(pool.accountsChanged()).toBe(changes + 1);
     });
 
-    it("does not replay a rejected refresh token after a hub restart", async () => {
+    it("does not replay a rejected refresh token after a hub restart (test-change-reason: reload the enrolled host’s thread credentials on restart)", async () => {
       const pool = await createPool(provider);
       pool.advance(7 * MINUTE);
       await pool.tick();
