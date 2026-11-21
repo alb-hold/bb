@@ -193,14 +193,13 @@ export function RootComposeMobileRecents({
   );
   const toggleCollapsed = useCallback(
     (threadId: string) => {
-      if (!completeSnapshot) return;
       setCollapsedThreadIdList((current) =>
         current.includes(threadId)
           ? current.filter((id) => id !== threadId)
           : [...current, threadId],
       );
     },
-    [completeSnapshot, setCollapsedThreadIdList],
+    [setCollapsedThreadIdList],
   );
   useEffect(() => {
     if (!completeSnapshot || highlightedThreadId === null) return;
