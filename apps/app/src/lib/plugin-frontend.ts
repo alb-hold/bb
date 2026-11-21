@@ -14,7 +14,6 @@ import * as radixDialog from "@radix-ui/react-dialog";
 import * as radixDropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as radixPopover from "@radix-ui/react-popover";
 import * as radixTooltip from "@radix-ui/react-tooltip";
-import * as sonner from "sonner";
 import * as clsx from "clsx";
 import * as tailwindMerge from "tailwind-merge";
 import * as classVarianceAuthority from "class-variance-authority";
@@ -24,7 +23,6 @@ import { BbHttpError } from "@bb/sdk/browser";
 import { isCancelledError, type QueryClient } from "@tanstack/react-query";
 import { markEnabledPluginListStale } from "@/hooks/cache-owners/plugin-cache-owner";
 import { pluginListQueryOptions } from "@/hooks/queries/plugin-settings-queries";
-import { createPluginToast } from "@/lib/notifications/plugin-toast";
 import { appQueryClient } from "./app-query-client";
 import {
   setServerPluginsStarting,
@@ -233,7 +231,7 @@ export interface BbPluginRuntime {
   radixPopover: unknown;
   radixSelect?: unknown;
   radixTooltip: unknown;
-  sonner: unknown;
+  sonner?: unknown;
   vaul?: unknown;
   pierreDiffs?: unknown;
   pierreDiffsReact?: unknown;
@@ -269,7 +267,6 @@ export function installPluginRuntime(): BbPluginRuntime {
     radixDropdownMenu,
     radixPopover,
     radixTooltip,
-    sonner: { ...sonner, toast: createPluginToast(sonner.toast) },
     clsx,
     tailwindMerge,
     classVarianceAuthority,

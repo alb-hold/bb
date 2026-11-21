@@ -26,6 +26,14 @@ export const lazyRuntimeGroups = [
     }),
   },
   {
+    id: "plugin-toast-runtime",
+    slots: ["sonner"],
+    load: createRetryingModuleLoader(async () => {
+      const { pluginToastRuntime } = await import("./plugin-toast-runtime");
+      return { sonner: pluginToastRuntime };
+    }),
+  },
+  {
     id: "plugin-alert-runtime",
     slots: ["radixAlertDialog"],
     load: createRetryingModuleLoader(async () => ({
