@@ -234,7 +234,7 @@ export function SidebarWindowedItems({
             ? readVisible()
             : null,
         write: (promoted) => {
-          if (promoted) promoteVisible(promoted);
+          if (promoted) startTransition(() => promoteVisible(promoted));
         },
       });
     } else {
