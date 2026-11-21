@@ -55,6 +55,18 @@
  *                              that enabled terminal authentication
  * - FAKE_ACP_AUTH_OPTIONAL=1 → advertise the auth methods but never require
  *                              authenticate (a signed-in agent, as Cursor is)
+ * - FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE
+ *                            → add data.message to the auth-required error,
+ *                              as antigravity-acp does when no method is set
+ * - FAKE_ACP_FORK_AUTH_REQUIRED=1
+ *                            → always answer session/fork with the
+ *                              auth-required error, even when signed in
+ * - FAKE_ACP_OAUTH_SIGNED_OUT=1
+ *                            → authenticate oauth-personal has no saved login:
+ *                              run $BROWSER with a sign-in URL and never answer
+ * - FAKE_ACP_BROWSER_LOG     → append the $BROWSER value used for sign-in
+ * - FAKE_ACP_OAUTH_REJECT    → reject authenticate oauth-personal with this
+ *                              message (-32603) and open no browser
  * - FAKE_ACP_SESSION_NEW_ERROR
  *                            → reject session/new with this message (-32603)
  * - FAKE_ACP_EXIT_ON_SESSION_NEW=<code>
@@ -489,13 +501,22 @@ function requireAuthenticated(message) {
   ) {
     return true;
   }
+  sendAuthRequired(message);
+  return false;
+}
+
+function sendAuthRequired(message) {
   // ACP's reserved auth-required error: code -32000 with this message.
+  const dataMessage = process.env.FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE;
   send({
     jsonrpc: "2.0",
     id: message.id,
-    error: { code: -32000, message: "Authentication required" },
+    error: {
+      code: -32000,
+      message: "Authentication required",
+      ...(dataMessage ? { data: { message: dataMessage } } : {}),
+    },
   });
-  return false;
 }
 
 /**
@@ -1007,6 +1028,29 @@ async function handleMessage(message) {
         });
         return;
       }
+      if (methodId === "oauth-personal" && process.env.FAKE_ACP_OAUTH_REJECT) {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32603, message: process.env.FAKE_ACP_OAUTH_REJECT },
+        });
+        return;
+      }
+      if (
+        methodId === "oauth-personal" &&
+        process.env.FAKE_ACP_OAUTH_SIGNED_OUT === "1"
+      ) {
+        const browser = process.env.BROWSER ?? "";
+        if (process.env.FAKE_ACP_BROWSER_LOG) {
+          appendFileSync(process.env.FAKE_ACP_BROWSER_LOG, `${browser}\n`);
+        }
+        if (browser) {
+          spawn(browser, ["https://accounts.google.com/o/oauth2/auth"], {
+            stdio: "ignore",
+          }).on("error", () => {});
+        }
+        return;
+      }
       authenticatedMethod = methodId;
       send({ jsonrpc: "2.0", id: message.id, result: null });
       return;
@@ -1128,6 +1172,10 @@ async function handleMessage(message) {
       });
       return;
     case "session/fork":
+      if (process.env.FAKE_ACP_FORK_AUTH_REQUIRED === "1") {
+        sendAuthRequired(message);
+        return;
+      }
       if (!requireAuthenticated(message)) {
         return;
       }

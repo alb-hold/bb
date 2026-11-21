@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -1580,6 +1581,353 @@ describe("acp bridge", () => {
     );
     expect(response.error?.data).toMatchObject({
       recovery: { kind: "authRequired", retryable: false },
+    });
+  });
+
+  describe("an agent that needs Google sign-in selected", () => {
+    const noMethodSelected =
+      'No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key), or set "auth.type" in settings.json.';
+    const logLines = (path: string) =>
+      existsSync(path)
+        ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean)
+        : [];
+    const launchedPids = (path: string) =>
+      logLines(path).map((line) => Number(line.split(" ")[1]));
+    const authenticateMethods = (path: string) =>
+      logLines(path)
+        .map(
+          (line) => JSON.parse(line) as { method?: string; params?: unknown },
+        )
+        .filter((message) => message.method === "authenticate")
+        .map(
+          (message) =>
+            (message.params as { methodId?: string } | undefined)?.methodId,
+        );
+    const isAlive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    it("selects oauth-personal itself and lists models when this machine has a saved Google sign-in", async () => {
+      const launchLog = join(workspaceDir, "oauth-launches.txt");
+      const requestLog = join(workspaceDir, "oauth-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+      expect(authenticateMethods(requestLog)).toEqual(["oauth-personal"]);
+      expect(launchedPids(launchLog)).toHaveLength(2);
+    });
+
+    it("shows a short sign-in message with no raw agent JSON when this machine has no Google sign-in, and opens no browser", async () => {
+      const launchLog = join(workspaceDir, "signed-out-launches.txt");
+      const browserLog = join(workspaceDir, "signed-out-browser.txt");
+      const startedAt = Date.now();
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+            FAKE_ACP_OAUTH_SIGNED_OUT: "1",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_BROWSER_LOG: browserLog,
+          },
+        }),
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+      expect(response.result).toBeUndefined();
+      const message = response.error?.message ?? "";
+      expect(message).toBe(
+        "bb could not use a saved Google sign-in on this machine, and it does not open a browser to sign in. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.",
+      );
+      expect(message).not.toContain("{");
+      expect(message).not.toContain("Authentication required");
+      expect(response.error?.data).toMatchObject({
+        recovery: { kind: "authRequired", retryable: false },
+      });
+      const browsers = logLines(browserLog);
+      expect(browsers).toHaveLength(1);
+      expect(browsers[0]).toMatch(/bb-acp-browser-[^/]+\/browser$/u);
+      expect(existsSync(dirname(browsers[0] ?? ""))).toBe(false);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([]);
+      });
+    });
+
+    it("leaves a signed-in agent that advertises oauth-personal on one connection with no authenticate", async () => {
+      const launchLog = join(workspaceDir, "signed-in-launches.txt");
+      const requestLog = join(workspaceDir, "signed-in-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_OPTIONAL: "1",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(launchedPids(launchLog)).toHaveLength(1);
+    });
+
+    it("does not retry with Google sign-in for any other auth-required error", async () => {
+      const launchLog = join(workspaceDir, "other-auth-launches.txt");
+      const requestLog = join(workspaceDir, "other-auth-requests.jsonl");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE:
+              "The configured gateway rejected this account.",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_LAUNCH_LOG: launchLog,
+            FAKE_ACP_REQUEST_LOG: requestLog,
+          },
+        }),
+      );
+
+      expect(response.result).toBeUndefined();
+      expect(response.error?.data).toMatchObject({
+        recovery: { kind: "authRequired" },
+      });
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(launchedPids(launchLog)).toHaveLength(1);
+    });
+
+    it("gives the short sign-in message without trying a sign-in, and stops the agent, when bb cannot place a browser script", async () => {
+      const noScriptDir = join(workspaceDir, "no:script");
+      mkdirSync(noScriptDir);
+      const previousTmpdir = process.env["TMPDIR"];
+      process.env["TMPDIR"] = noScriptDir;
+      try {
+        const envVars = (name: string) => ({
+          FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+          FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+          FAKE_ACP_MODEL_CONFIG: "1",
+          FAKE_ACP_LAUNCH_LOG: join(workspaceDir, `${name}-launches.txt`),
+          FAKE_ACP_REQUEST_LOG: join(workspaceDir, `${name}-requests.jsonl`),
+        });
+        const listed = await waitForResponse(
+          sendModelList({ envVars: envVars("no-script-list") }),
+        );
+        const started = await startThreadResponse(envVars("no-script-thread"));
+
+        for (const [name, response] of [
+          ["no-script-list", listed],
+          ["no-script-thread", started],
+        ] as const) {
+          expect(response.error?.message).toBe(
+            "bb could not use a saved Google sign-in on this machine, and it does not open a browser to sign in. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.",
+          );
+          expect(
+            authenticateMethods(join(workspaceDir, `${name}-requests.jsonl`)),
+          ).toEqual([]);
+          const pids = launchedPids(join(workspaceDir, `${name}-launches.txt`));
+          expect(pids).toHaveLength(1);
+          await vi.waitFor(() => {
+            expect(pids.filter(isAlive)).toEqual([]);
+          });
+        }
+      } finally {
+        if (previousTmpdir === undefined) {
+          delete process.env["TMPDIR"];
+        } else {
+          process.env["TMPDIR"] = previousTmpdir;
+        }
+      }
+    });
+
+    it("reports the agent's own error when it rejects the Google sign-in without opening a browser", async () => {
+      const browserLog = join(workspaceDir, "rejected-browser.txt");
+      const response = await waitForResponse(
+        sendModelList({
+          envVars: {
+            FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+            FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+            FAKE_ACP_OAUTH_REJECT: "Google refused this account.",
+            FAKE_ACP_MODEL_CONFIG: "1",
+            FAKE_ACP_BROWSER_LOG: browserLog,
+          },
+        }),
+      );
+
+      expect(response.result).toBeUndefined();
+      expect(response.error?.message).toContain("Google refused this account.");
+      expect(response.error?.message).not.toContain("saved Google sign-in");
+      expect(logLines(browserLog)).toEqual([]);
+    });
+
+    it("starts a thread on a machine with a saved Google sign-in by selecting oauth-personal itself", async () => {
+      const launchLog = join(workspaceDir, "thread-oauth-launches.txt");
+      const { providerThreadId } = await startThread({
+        envVars: {
+          FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+          FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+          FAKE_ACP_LAUNCH_LOG: launchLog,
+        },
+      });
+
+      const turnId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "echo-auth-method", mentions: [] }],
+      });
+      await waitForResponse(turnId);
+      await waitForTurnCompleted();
+
+      expect(agentMessageTexts()).toContain("auth-method:oauth-personal");
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([pids[1]]);
+      });
+    });
+
+    it("reports a live source agent's sign-in error on a handoff fork without signing in a new process", async () => {
+      const launchLog = join(workspaceDir, "handoff-auth-launches.txt");
+      const requestLog = join(workspaceDir, "handoff-auth-requests.jsonl");
+      const envVars = {
+        FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+        FAKE_ACP_AUTH_OPTIONAL: "1",
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: `${noMethodSelected} source-agent-marker`,
+        FAKE_ACP_FORK_SESSION: "1",
+        FAKE_ACP_FORK_AUTH_REQUIRED: "1",
+        FAKE_ACP_RESUME_SESSION: "1",
+        FAKE_ACP_CLOSE_SESSION: "1",
+        FAKE_ACP_LAUNCH_LOG: launchLog,
+        FAKE_ACP_REQUEST_LOG: requestLog,
+      };
+      const forkEnvVars = {
+        ...envVars,
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: `${noMethodSelected} fork-process-marker`,
+      };
+      const source = await startThread({ envVars });
+      const response = await waitForResponse(
+        sendRequest("thread/fork", {
+          threadId: "thread-handoff-auth",
+          cwd: workspaceDir,
+          instructionMode: "append",
+          options: executionOptions({
+            providerOptions: {
+              acpLaunchSpec: acpLaunchSpec({ envVars: forkEnvVars }),
+            },
+          }),
+          sourceProviderThreadId: source.providerThreadId,
+        }),
+      );
+
+      expect(response.result).toBeUndefined();
+      expect(response.error?.message).toContain("Authentication required");
+      expect(response.error?.message).toContain("source-agent-marker");
+      expect(response.error?.message).not.toContain("fork-process-marker");
+      expect(authenticateMethods(requestLog)).toEqual([]);
+      expect(
+        loggedAcpRequests(requestLog).filter(
+          (request) => request.method === "session/fork",
+        ),
+      ).toHaveLength(1);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([pids[0]]);
+      });
+    });
+
+    it("retries a fork with no live source on the process that completed Google sign-in", async () => {
+      const launchLog = join(workspaceDir, "fork-signin-launches.txt");
+      const requestLog = join(workspaceDir, "fork-signin-requests.jsonl");
+      const response = await waitForResponse(
+        sendRequest("thread/fork", {
+          threadId: "thread-fork-signin",
+          cwd: workspaceDir,
+          instructionMode: "append",
+          options: executionOptions({
+            providerOptions: {
+              acpLaunchSpec: acpLaunchSpec({
+                envVars: {
+                  FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+                  FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+                  FAKE_ACP_FORK_SESSION: "1",
+                  FAKE_ACP_LAUNCH_LOG: launchLog,
+                  FAKE_ACP_REQUEST_LOG: requestLog,
+                },
+              }),
+            },
+          }),
+          sourceProviderThreadId: "source-not-running-here",
+        }),
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(authenticateMethods(requestLog)).toEqual(["oauth-personal"]);
+      expect(
+        loggedAcpRequests(requestLog).filter(
+          (request) => request.method === "session/fork",
+        ),
+      ).toHaveLength(2);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      expect(providerThreadIdOf(response)).toMatch(
+        new RegExp(`^fake-fork-${pids[1]}-`, "u"),
+      );
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([pids[1]]);
+      });
+    });
+
+    it("shows the same short sign-in message when a thread starts on a machine with no Google sign-in, and opens no browser", async () => {
+      const launchLog = join(workspaceDir, "thread-signed-out-launches.txt");
+      const browserLog = join(workspaceDir, "thread-signed-out-browser.txt");
+      const response = await startThreadResponse({
+        FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+        FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE: noMethodSelected,
+        FAKE_ACP_OAUTH_SIGNED_OUT: "1",
+        FAKE_ACP_LAUNCH_LOG: launchLog,
+        FAKE_ACP_BROWSER_LOG: browserLog,
+      });
+
+      expect(response.result).toBeUndefined();
+      const message = response.error?.message ?? "";
+      expect(message).toBe(
+        "bb could not use a saved Google sign-in on this machine, and it does not open a browser to sign in. Add a Google account to the Account Pooler with `bb pool account add --provider gemini --login`, then try again.",
+      );
+      expect(message).not.toContain("{");
+      expect(response.error?.data).toMatchObject({
+        recovery: { kind: "authRequired", retryable: false },
+      });
+      const browsers = logLines(browserLog);
+      expect(browsers).toHaveLength(1);
+      expect(browsers[0]).toMatch(/bb-acp-browser-[^/]+\/browser$/u);
+      expect(existsSync(dirname(browsers[0] ?? ""))).toBe(false);
+      const pids = launchedPids(launchLog);
+      expect(pids).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(pids.filter(isAlive)).toEqual([]);
+      });
     });
   });
 
@@ -6083,15 +6431,12 @@ describe("acp bridge: live session state", () => {
       return launch?.[1];
     }, "opencode discovery agent launch");
 
-    const deleted = await waitFor(
-      () => {
-        const contents = existsSync(opencodeLog)
-          ? readFileSync(opencodeLog, "utf8")
-          : undefined;
-        return contents ? contents : undefined;
-      },
-      "opencode session delete",
-    );
+    const deleted = await waitFor(() => {
+      const contents = existsSync(opencodeLog)
+        ? readFileSync(opencodeLog, "utf8")
+        : undefined;
+      return contents ? contents : undefined;
+    }, "opencode session delete");
     expect(deleted).toBe(`fake-sess-${discoveryProcessId}\n`);
     expect(
       [otherAgentLog, otherArgsLog, overAcpLog].filter((log) =>
