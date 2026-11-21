@@ -189,7 +189,7 @@ const modelRowsSchema = z.array(
 );
 const sharedCatalogEntrySchema = z.object({
   savedAt: z.number(),
-  discoveredModels: z.union([modelRowsSchema, z.object({ accountModels: modelRowsSchema })]),
+  discoveredModels: modelRowsSchema,
 });
 
 export type SharedClaudeCodeModelCatalogEntry = z.infer<
@@ -256,9 +256,9 @@ export function createClaudeCodeBridgeModelListMemo({
     envVars: Readonly<Record<string, string>>,
     scoped: boolean,
   ) => {
-    let settled: SharedClaudeCodeModelCatalogEntry | null = null;
+    let settled: { savedAt: number; discoveredModels: ClaudeModelDiscovery } | null = null;
     let pending: Promise<ClaudeCodeModelCatalog> | null = null;
-    const isFresh = (entry: SharedClaudeCodeModelCatalogEntry) =>
+    const isFresh = (entry: { savedAt: number }) =>
       entry.savedAt + ttlMs > now();
     const resolveCatalog = async (): Promise<ClaudeCodeModelCatalog> => {
       const cache = scoped ? UNSHARED_CLAUDE_CODE_MODEL_CATALOG : shared();
@@ -275,10 +275,13 @@ export function createClaudeCodeBridgeModelListMemo({
             : stored;
         return buildClaudeCodeModels(lastGood?.discoveredModels ?? []);
       }
-      const entry = { savedAt: now(), discoveredModels: await probe(envVars) };
-      settled = entry;
-      await cache.write(entry).catch(() => undefined);
-      return buildClaudeCodeModels(entry.discoveredModels);
+      const savedAt = now();
+      const discoveredModels = await probe(envVars);
+      settled = { savedAt, discoveredModels };
+      if (Array.isArray(discoveredModels)) {
+        await cache.write({ savedAt, discoveredModels }).catch(() => undefined);
+      }
+      return buildClaudeCodeModels(discoveredModels);
     };
     return () => {
       if (settled !== null && isFresh(settled)) {

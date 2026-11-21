@@ -1016,7 +1016,7 @@ const listModelsMemoized = createClaudeCodeBridgeModelListMemo({
   now: Date.now,
   ttlMs: MODEL_LIST_MEMO_TTL_MS,
   shared: () =>
-    bridgeDataDir === null
+    bridgeDataDir === null || process.env.CLAUDE_CONFIG_DIR || process.env.BB_CLAUDE_MODELS_URL
       ? UNSHARED_CLAUDE_CODE_MODEL_CATALOG
       : createSharedClaudeCodeModelCatalogFile(
           joinPath(bridgeDataDir, MODEL_CATALOG_FILE_NAME),
