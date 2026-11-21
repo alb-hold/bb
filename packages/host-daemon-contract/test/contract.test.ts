@@ -1076,8 +1076,8 @@ describe("host-daemon command schemas", () => {
     ).toBe(false);
   });
 
-  it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(265);
+  it("uses the current host-daemon protocol version (test-change-reason: the fork merged both wire contracts at version 269)", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(269);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1123,7 +1123,7 @@ describe("host-daemon command schemas", () => {
     );
   });
 
-  it("accepts only daemons that report skill canonical paths and content identities", () => {
+  it("accepts only the merged daemon protocol (test-change-reason: the fork requires its version 269 wire contract)", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(245)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(246)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(247)).toBe(false);
@@ -1144,7 +1144,11 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(262)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(263)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(264)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(265)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(265)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(266)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(267)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(268)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(269)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);
