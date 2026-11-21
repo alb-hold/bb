@@ -7,6 +7,7 @@ import type {
 } from "./contracts.js";
 import {
   importGeminiCredentials,
+  importGeminiFileCredentials,
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
 import {
@@ -587,11 +588,13 @@ export function createGeminiAdapter(options: {
     (options.fetch ?? fetch)(input, init);
   const clock = () => (options.now ?? Date.now)();
   const readCredentials = options.importCredentials ?? importGeminiCredentials;
+  const readLocalCredentials =
+    options.importCredentials ?? importGeminiFileCredentials;
   return {
     provider: "gemini",
     upstreamName: "Google Gemini",
     async localLogin() {
-      const imported = await readCredentials().catch(() => null);
+      const imported = await readLocalCredentials().catch(() => null);
       return imported === null ? null : { email: null, planLabel: null };
     },
     async importAccount(importOptions) {
