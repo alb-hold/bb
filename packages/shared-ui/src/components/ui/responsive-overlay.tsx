@@ -55,6 +55,51 @@ export function measureDrawerKeyboardOverlap({
   return overlap >= DRAWER_KEYBOARD_MIN_OVERLAP_PX ? overlap : 0;
 }
 
+function trackDrawerKeyboardInset(
+  panel: HTMLElement,
+  visualViewport: VisualViewport,
+): () => void {
+  let animationFrame: number | null = null;
+  const applyInset = () => {
+    animationFrame = null;
+    if (visualViewport.scale !== 1) {
+      resetDrawerKeyboardStyles(panel);
+      return;
+    }
+    const overlap = measureDrawerKeyboardOverlap({
+      layoutViewportHeight: panel.ownerDocument.documentElement.clientHeight,
+      visualViewportHeight: visualViewport.height,
+      visualViewportOffsetTop: visualViewport.offsetTop,
+    });
+    if (overlap === 0) {
+      panel.style.bottom = "";
+      panel.style.removeProperty(DRAWER_KEYBOARD_INSET_PROPERTY);
+      return;
+    }
+    panel.style.bottom = `${overlap}px`;
+    panel.style.setProperty(DRAWER_KEYBOARD_INSET_PROPERTY, `${overlap}px`);
+  };
+  const scheduleUpdate = () => {
+    if (animationFrame !== null) {
+      window.cancelAnimationFrame(animationFrame);
+    }
+    animationFrame = window.requestAnimationFrame(applyInset);
+  };
+
+  applyInset();
+  visualViewport.addEventListener("resize", scheduleUpdate);
+  visualViewport.addEventListener("scroll", scheduleUpdate);
+
+  return () => {
+    visualViewport.removeEventListener("resize", scheduleUpdate);
+    visualViewport.removeEventListener("scroll", scheduleUpdate);
+    if (animationFrame !== null) {
+      window.cancelAnimationFrame(animationFrame);
+    }
+    resetDrawerKeyboardStyles(panel);
+  };
+}
+
 function useDrawerKeyboardInset(
   panelRef: React.RefObject<HTMLElement | null>,
   open: boolean,
@@ -64,45 +109,7 @@ function useDrawerKeyboardInset(
     const visualViewport = window.visualViewport;
     if (panel === null || !open || !visualViewport) return;
 
-    let animationFrame: number | null = null;
-    const applyInset = () => {
-      animationFrame = null;
-      if (visualViewport.scale !== 1) {
-        resetDrawerKeyboardStyles(panel);
-        return;
-      }
-      const overlap = measureDrawerKeyboardOverlap({
-        layoutViewportHeight: panel.ownerDocument.documentElement.clientHeight,
-        visualViewportHeight: visualViewport.height,
-        visualViewportOffsetTop: visualViewport.offsetTop,
-      });
-      if (overlap === 0) {
-        panel.style.bottom = "";
-        panel.style.removeProperty(DRAWER_KEYBOARD_INSET_PROPERTY);
-        return;
-      }
-      panel.style.bottom = `${overlap}px`;
-      panel.style.setProperty(DRAWER_KEYBOARD_INSET_PROPERTY, `${overlap}px`);
-    };
-    const scheduleUpdate = () => {
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
-      }
-      animationFrame = window.requestAnimationFrame(applyInset);
-    };
-
-    applyInset();
-    visualViewport.addEventListener("resize", scheduleUpdate);
-    visualViewport.addEventListener("scroll", scheduleUpdate);
-
-    return () => {
-      visualViewport.removeEventListener("resize", scheduleUpdate);
-      visualViewport.removeEventListener("scroll", scheduleUpdate);
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
-      }
-      resetDrawerKeyboardStyles(panel);
-    };
+    return trackDrawerKeyboardInset(panel, visualViewport);
   }, [open, panelRef]);
 }
 

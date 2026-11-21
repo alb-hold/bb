@@ -1,9 +1,11 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { and, eq, gt } from "drizzle-orm";
 import { createConnection } from "./connection.js";
 import type { CreateConnectionOptions, DbConnection } from "./connection.js";
 import { migrate } from "./migrate.js";
+import { events } from "./schema.js";
 
 const TEMPLATE_PATH_ENV = "BB_TEST_MIGRATED_DB_TEMPLATE";
 
@@ -53,3 +55,24 @@ export function setupMigratedConnectionTemplate(): () => void {
     rmSync(templatePath, { force: true });
   };
 }
+
+export function listEvents(
+  db: DbConnection,
+  args: { threadId: string; afterSequence?: number },
+) {
+  return db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        args.afterSequence === undefined
+          ? undefined
+          : gt(events.sequence, args.afterSequence),
+      ),
+    )
+    .orderBy(events.sequence)
+    .all();
+}
+
+export { forgetThreadEventRewriteGenerations } from "./data/event-rewrite-generation.js";

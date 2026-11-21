@@ -22,6 +22,7 @@ import type {
   PluginWireLookup,
 } from "../services/plugins/plugin-service.js";
 import type { LoadedPlugin } from "../services/plugins/plugin-service-internal.js";
+import type { PluginCssScope } from "../services/plugins/app-bundle.js";
 import type {
   PluginMentionTrigger,
   PluginWebSocketRouteRecord,
@@ -119,6 +120,12 @@ export async function pluginCliResponse(
       "x-accel-buffering": "no",
     },
   });
+}
+
+function pluginCssScope(requested: string | undefined): PluginCssScope {
+  if (requested === "plugin-attribute-v1") return "plugin-attribute";
+  if (requested === "owned-root-v1") return "owned-root";
+  return "legacy";
 }
 
 const compressBrotli = promisify(brotliCompress);
@@ -411,6 +418,9 @@ export function registerPluginRoutes(
   const upgradePluginWebSocket = upgradeWebSocket?.(async (context) => {
     declineWebSocketCompression(context);
     const id = context.req.param("id");
+    if (id === undefined) {
+      throw new ApiError(404, "unknown_plugin", "missing plugin id");
+    }
     const subPath = pluginHttpSubPath(context, id);
     const lookup = plugins.getWebSocketRoute(id, subPath);
     if (lookup.outcome === "unknown-plugin") {
@@ -604,14 +614,18 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
+    const scope =
+      spec.kind === "css"
+        ? pluginCssScope(context.req.query("css-scope"))
+        : "legacy";
     let bytes: Buffer;
     try {
-      bytes = await asset.read(hostTailwind);
+      bytes = await asset.read({ hostTailwind, scope });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
     return appAssetResponse(context, bytes, {
-      assetKey: `${hash}:${spec.kind}:${hostTailwind}`,
+      assetKey: `${hash}:${spec.kind}:${hostTailwind}:${scope}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
       cacheControl: "public, max-age=31536000, immutable",
@@ -669,9 +683,13 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
+    const scope =
+      spec.kind === "css"
+        ? pluginCssScope(context.req.query("css-scope"))
+        : "legacy";
     let bytes: Buffer;
     try {
-      bytes = await asset.read(hostTailwind);
+      bytes = await asset.read({ hostTailwind, scope });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
@@ -680,7 +698,7 @@ export function registerPluginRoutes(
       asset.hash,
     );
     return appAssetResponse(context, bytes, {
-      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}`,
+      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}:${scope}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
       cacheControl,
@@ -741,14 +759,17 @@ export function registerPluginRoutes(
     const json: unknown = await context.req.json().catch(() => null);
     const body = pluginApplyUpdateRequestSchema.safeParse(json);
     if (!body.success) {
-      return context.json({ error: "expected an empty JSON object" }, 400);
+      return context.json(
+        { error: 'expected { "range"?: string, "expectedVersion"?: string }' },
+        400,
+      );
     }
     const pluginId = context.req.param("id");
     const job = updateJobs.start({
       pluginId,
       displayName: plugins.getDisplayName(pluginId),
       run: async () => {
-        const outcome = await plugins.applyUpdate(pluginId);
+        const outcome = await plugins.applyUpdate(pluginId, body.data);
         if (!outcome.ok) throw new Error(outcome.error);
         return outcome.result;
       },

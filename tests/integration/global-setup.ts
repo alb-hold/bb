@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setupMigratedConnectionTemplate } from "@bb/db/testing";
+import { readProcessIdentity } from "@bb/process-utils";
 import { readPositivePidFile } from "@bb/test-helpers";
 import { removePathWithRetry } from "./helpers/remove-path.js";
 import {
@@ -8,16 +9,45 @@ import {
   integrationTmpBase,
 } from "./helpers/tmp-base.js";
 import {
-  isProcessAlive,
+  isTmpRootOwnerIdentityLive,
+  shouldCheckTmpRootOwnerPidLiveness,
+} from "./helpers/tmp-owner.js";
+import {
   killProcessesHoldingFilesUnder,
 } from "./helpers/tmp-root-processes.js";
 import { setupBuiltinHostBuildRecords } from "./helpers/builtin-plugin-fixture.js";
 
+import { setupTestGitRepoTemplate } from "./helpers/seed.js";
+
 const STALE_TMP_ROOT_AGE_MS = 60 * 60_000;
+const PS_START_TIME_RESOLUTION_MS = 1_000;
 
 async function cleanupTmpRoot(tmpRoot: string): Promise<void> {
   await killProcessesHoldingFilesUnder(tmpRoot, { exclude: [] });
   await removePathWithRetry(tmpRoot);
+}
+
+async function hasLiveOwner(tmpRoot: string): Promise<boolean> {
+  const pidFilePath = path.join(tmpRoot, "parent.pid");
+  const writer = await readPositivePidFile(pidFilePath);
+  if (writer === null) return false;
+  const recordedAt = (await fs.stat(pidFilePath)).mtimeMs;
+  const identity = await readProcessIdentity(writer);
+  let pidIsAlive = false;
+  if (shouldCheckTmpRootOwnerPidLiveness(identity)) {
+    try {
+      process.kill(writer, 0);
+      pidIsAlive = true;
+    } catch (error) {
+      pidIsAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  }
+  return isTmpRootOwnerIdentityLive(
+    identity?.startedAt ?? null,
+    recordedAt,
+    PS_START_TIME_RESOLUTION_MS,
+    pidIsAlive,
+  );
 }
 
 async function listIntegrationTmpRoots(): Promise<string[]> {
@@ -40,10 +70,7 @@ async function sweepIntegrationTmpRoots(minAgeMs: number): Promise<void> {
       continue;
     }
 
-    const parentPid = await readPositivePidFile(
-      path.join(tmpRoot, "parent.pid"),
-    );
-    if (parentPid && isProcessAlive(parentPid)) {
+    if (await hasLiveOwner(tmpRoot)) {
       continue;
     }
 
@@ -54,7 +81,9 @@ async function sweepIntegrationTmpRoots(minAgeMs: number): Promise<void> {
 export default async function globalSetup(): Promise<() => Promise<void>> {
   await sweepIntegrationTmpRoots(STALE_TMP_ROOT_AGE_MS);
   const cleanupDatabaseTemplate = setupMigratedConnectionTemplate();
+  let cleanupRepoTemplate: (() => Promise<void>) | undefined;
   try {
+    cleanupRepoTemplate = await setupTestGitRepoTemplate();
     const cleanupBuiltinRecords = await setupBuiltinHostBuildRecords();
     return async () => {
       try {
@@ -62,13 +91,15 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       } finally {
         try {
           cleanupDatabaseTemplate();
-        } finally {
           await cleanupBuiltinRecords();
+        } finally {
+          await cleanupRepoTemplate?.();
         }
       }
     };
   } catch (error) {
     cleanupDatabaseTemplate();
+    await cleanupRepoTemplate?.();
     throw error;
   }
 }

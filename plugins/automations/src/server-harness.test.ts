@@ -17,7 +17,32 @@ import {
   automationResponseSchema,
   automationRunListResponseSchema,
   automationRunRpcResponseSchema,
+  type AutomationRunResponse,
 } from "./rpc-types.js";
+
+function observeCompletedRun(host: FakePluginHost, automationId: string) {
+  const { harness } = host;
+  const publish = host.bb.realtime.publish.bind(host.bb.realtime);
+  const publishSpy = vi.spyOn(host.bb.realtime, "publish");
+  const completedRun = new Promise<AutomationRunResponse>((resolve, reject) => {
+    publishSpy.mockImplementation((...args) => {
+      publish(...args);
+      void harness
+        .callRpc("automations_runs", {
+          projectId: PROJECT_ID,
+          automationId,
+        })
+        .then((result) => {
+          const { runs } = automationRunListResponseSchema.parse(result);
+          if (runs[0] !== undefined && runs[0].status !== "running") {
+            resolve(runs[0]);
+          }
+        })
+        .catch(reject);
+    });
+  });
+  return { completedRun, stop: () => publishSpy.mockRestore() };
+}
 
 function storedScriptPathPattern(automationId: string): RegExp {
   const suffix = join(sep, "scripts", automationId, "script.sh");
@@ -31,6 +56,69 @@ const THREAD_ID = "thr_target";
 const SECTION_ID = "sec_reviews";
 const FAILED_REQUEST_ID = "creq_failedturn";
 
+it.each([
+  [
+    "//server/share/scripts",
+    "check.sh",
+    "\\\\server\\share\\scripts\\check.sh",
+  ],
+  ["C:", "check.sh", "C:\\check.sh"],
+])("loads script files from remote cwd %s", async (cwd, file, expected) => {
+  const host = await bootAutomationsPlugin();
+  try {
+    host.harness.sdk.stub("files.read", async () => ({
+      content: "echo hello",
+      contentEncoding: "utf8",
+    }));
+    const result = await host.harness.runCli(
+      [
+        "create",
+        "--project",
+        PROJECT_ID,
+        "--name",
+        "Remote script",
+        "--in",
+        "30m",
+        "--script-file",
+        file,
+      ],
+      { cwd },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`${sep}check.sh`);
+    expect(host.harness.sdk.callsTo("files.read")).toEqual([
+      [expect.objectContaining({ path: expected })],
+    ]);
+  } finally {
+    await host.harness.lifecycle.dispose();
+  }
+});
+
+it("rejects a script file path that names no file", async () => {
+  const host = await bootAutomationsPlugin();
+  try {
+    const result = await host.harness.runCli(
+      [
+        "create",
+        "--project",
+        PROJECT_ID,
+        "--name",
+        "Root script",
+        "--in",
+        "30m",
+        "--script-file",
+        "/",
+      ],
+      { cwd: "/workspace" },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("--script-file must name a file");
+    expect(host.harness.sdk.callsTo("files.read")).toEqual([]);
+  } finally {
+    await host.harness.lifecycle.dispose();
+  }
+});
+
 const rpcMethods = [
   "automations_overview",
   "automations_list",
@@ -42,7 +130,6 @@ const rpcMethods = [
   "automations_resume",
   "automations_run",
   "automations_runs",
-  "provider-retry.v1.consent",
 ].sort();
 
 function project(projectId = PROJECT_ID) {
@@ -76,9 +163,11 @@ async function bootAutomationsPlugin(
     "full",
   ],
   routedPermissionModes?: Array<"accept-edits" | "auto" | "full">,
+  loopbackBaseUrl?: string,
 ): Promise<FakePluginHost> {
   const host = createFakePluginHost({
     pluginId: "automations",
+    loopbackBaseUrl,
     sdk: {
       system: { config: async () => ({ primaryHostId: "host_fake" }) },
       projects: {
@@ -157,6 +246,16 @@ async function bootAutomationsPlugin(
               },
             ] as never;
           },
+        },
+        queue: {
+          async list() {
+            return [];
+          },
+        },
+      },
+      plugins: {
+        async experimental_discoverRpc() {
+          return [];
         },
       },
     },
@@ -992,7 +1091,7 @@ describe("automations server plugin harness", () => {
         permissionMode: "auto",
         environment: {
           type: "host",
-          hostId: "host_test",
+          hostId: "host_fake",
           workspace: { type: "unmanaged", path: "/tmp/design-doctrine" },
         },
       },
@@ -1017,7 +1116,7 @@ describe("automations server plugin harness", () => {
       targetThreadId: THREAD_ID,
       environment: {
         type: "host",
-        hostId: "host_test",
+        hostId: "host_fake",
         workspace: { type: "unmanaged", path: "/tmp/design-doctrine" },
       },
     });
@@ -1045,7 +1144,7 @@ describe("automations server plugin harness", () => {
       permissionMode: "auto",
       environment: {
         type: "host",
-        hostId: "host_test",
+        hostId: "host_fake",
         workspace: {
           type: "managed-worktree",
           baseBranch: { kind: "named", name: "release" },
@@ -1060,6 +1159,78 @@ describe("automations server plugin harness", () => {
     ).toHaveLength(1);
 
     await harness.dispose();
+  });
+
+  it.each([
+    {
+      flags: ["--environment", "C:\\repo"],
+      workspace: { type: "unmanaged", path: "C:\\repo" },
+    },
+    {
+      flags: ["--new-environment", "worktree"],
+      workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
+    },
+  ])(
+    "runs $flags on the calling thread's machine",
+    async ({ flags, workspace }) => {
+      const { harness } = await bootAutomationsPlugin();
+      try {
+        harness.sdk.stub("threads.get", async ({ threadId }) => ({
+          ...makeThreadResponse({ id: threadId }),
+          environment: { hostId: "host_caller" },
+        }));
+        const result = await harness.runCli(
+          [
+            "create",
+            "--project",
+            PROJECT_ID,
+            "--name",
+            "Caller machine",
+            "--in",
+            "30m",
+            "--prompt",
+            "Check the build",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-5",
+            ...flags,
+            "--json",
+          ],
+          { threadId: THREAD_ID },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(
+          automationDetailResponseSchema.parse(JSON.parse(result.stdout ?? ""))
+            .execution,
+        ).toMatchObject({
+          environment: { type: "host", hostId: "host_caller", workspace },
+        });
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  it("rejects a date-only --at as ambiguous", async () => {
+    const { harness } = await bootAutomationsPlugin();
+    try {
+      const result = await harness.runCli([
+        "create",
+        "--project",
+        PROJECT_ID,
+        "--name",
+        "Date only",
+        "--at",
+        `${new Date().getFullYear() + 1}-01-01`,
+        "--script",
+        "echo ok",
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--at needs a time of day");
+    } finally {
+      await harness.dispose();
+    }
   });
 
   it("accepts a long prompt and keeps the automation readable afterwards", async () => {
@@ -1338,7 +1509,6 @@ describe("automations server plugin harness", () => {
       bb: host.bb as never,
       db: host.bb.storage.database(),
       pluginDataDir: "/tmp/bb-automations-test",
-      serverUrl: "http://127.0.0.1:38886",
       scriptRuns: createScriptRunScope(),
     });
     await expect(
@@ -1602,7 +1772,7 @@ describe("automations server plugin harness", () => {
     await reloaded.harness.dispose();
   });
 
-  it("discovers a late-enrolled server host before dispatching a project script", async () => {
+  it("discovers a late-enrolled server host before dispatching a project script (test-change-reason: use one completion observer for the fork’s enrollment sweep)", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const host = await bootAutomationsPlugin();
@@ -1633,6 +1803,7 @@ describe("automations server plugin harness", () => {
     let primaryHostId: string | null = null;
     harness.sdk.stub("system.config", () => ({ primaryHostId }));
     const initialCalls = harness.sdk.callsTo("system.config").length;
+    const { completedRun, stop } = observeCompletedRun(host, automation.id);
     const service = harness.runService("automation-sweep");
     try {
       await vi.waitFor(() =>
@@ -1641,51 +1812,8 @@ describe("automations server plugin harness", () => {
         ),
       );
       primaryHostId = "host_fake";
-      type AutomationRun = ReturnType<
-        typeof automationRunListResponseSchema.parse
-      >["runs"][number];
-      let resolveRunCompleted!: (run: AutomationRun) => void;
-      let rejectRunCompleted!: (error: unknown) => void;
-      const runCompleted = new Promise<AutomationRun>((resolve, reject) => {
-        resolveRunCompleted = resolve;
-        rejectRunCompleted = reject;
-      });
-      const readCompletedRun = async () => {
-        const { runs } = automationRunListResponseSchema.parse(
-          await harness.callRpc("automations_runs", {
-            projectId: PROJECT_ID,
-            automationId: automation.id,
-          }),
-        );
-        const run = runs[0];
-        if (run && run.status !== "running") resolveRunCompleted(run);
-      };
-      const originalPublish = host.bb.realtime.publish.bind(host.bb.realtime);
-      const publishSpy = vi
-        .spyOn(host.bb.realtime, "publish")
-        .mockImplementation((channel, payload) => {
-          originalPublish(channel, payload);
-          if (
-            channel === "automations" &&
-            typeof payload === "object" &&
-            payload !== null &&
-            "kind" in payload &&
-            payload.kind === "automation-runs-changed"
-          ) {
-            void Promise.resolve()
-              .then(readCompletedRun)
-              .catch(rejectRunCompleted);
-          }
-        });
-      let completedRun: AutomationRun;
-      try {
-        await vi.advanceTimersByTimeAsync(60_000);
-        await readCompletedRun();
-        completedRun = await runCompleted;
-      } finally {
-        publishSpy.mockRestore();
-      }
-      expect(completedRun).toMatchObject({
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await completedRun).toMatchObject({
         status: "succeeded",
         output: expect.stringMatching(/(?:^|\n)late enrollment OK$/),
         exitCode: 0,
@@ -1697,6 +1825,54 @@ describe("automations server plugin harness", () => {
     } finally {
       service.controller.abort();
       await service.done;
+      stop();
+      await harness.dispose();
+    }
+  });
+
+  it("points a script's bb calls at the server the plugin runs in", async () => {
+    const host = await bootAutomationsPlugin(
+      undefined,
+      undefined,
+      "http://127.0.0.1:48886",
+    );
+    const { harness } = host;
+    const created = await harness.runCli([
+      "create",
+      "--project",
+      PROJECT_ID,
+      "--name",
+      "Server URL",
+      "--in",
+      "1h",
+      "--script",
+      'printf "%s" "$BB_SERVER_URL"',
+      "--interpreter",
+      "sh",
+      "--working-directory",
+      "automation-storage",
+      "--json",
+    ]);
+    expect(created.exitCode).toBe(0);
+    const automation = automationDetailResponseSchema.parse(
+      JSON.parse(created.stdout!),
+    );
+
+    const { completedRun, stop } = observeCompletedRun(host, automation.id);
+    try {
+      const started = automationRunRpcResponseSchema.parse(
+        await harness.callRpc("automations_run", {
+          projectId: PROJECT_ID,
+          automationId: automation.id,
+        }),
+      );
+      expect(await completedRun).toMatchObject({
+        id: started.run.id,
+        status: "succeeded",
+        output: expect.stringMatching(/(?:^|\n)http:\/\/127\.0\.0\.1:48886$/),
+      });
+    } finally {
+      stop();
       await harness.dispose();
     }
   });
@@ -1765,44 +1941,309 @@ describe("automations server plugin harness", () => {
     await harness.dispose();
   });
 
-  it("declines a provider retry of a recurring run's failed turn in its target thread", async () => {
+  async function failScheduledRun(harness: FakePluginHost["harness"]) {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const { harness } = await bootAutomationsPlugin();
-    await createAgentAutomation(harness, {
-      name: "Inbox sweep",
-      trigger: { triggerType: "schedule", cron: "* * * * *", timezone: "UTC" },
-      targetThreadId: THREAD_ID,
+    const automation = await createAgentAutomation(harness, {
+      name: "Morning brief",
+      trigger: { triggerType: "schedule", cron: "0 * * * *", timezone: "UTC" },
     });
-    vi.setSystemTime(new Date("2026-01-01T00:01:05.000Z"));
-    const service = harness.runService("automation-sweep");
+    vi.setSystemTime(new Date("2026-01-01T01:00:05.000Z"));
+    const sweep = harness.runService("automation-sweep");
     await vi.waitFor(() =>
-      expect(harness.sdk.callsTo("threads.send")).toHaveLength(1),
+      expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1),
     );
-    service.controller.abort();
-    await service.done;
+    sweep.controller.abort();
+    await sweep.done;
     await harness.emitThreadEvent("thread.failed", {
-      thread: makeThreadResponse({ id: THREAD_ID, projectId: PROJECT_ID }),
+      thread: makeThreadResponse({ id: "thr_spawned", projectId: PROJECT_ID }),
       error: "Provider unavailable",
     });
+    return automation;
+  }
 
-    const answer = await harness.callRpc("provider-retry.v1.consent", {
-      threadId: THREAD_ID,
-      requestId: FAILED_REQUEST_ID,
-      reason: "Provider unavailable",
-      sendAt: Date.now() + 60_000,
+  function stubFailedThread(
+    harness: FakePluginHost["harness"],
+    state: {
+      status: "error" | "active" | "idle";
+      queuedRetryReason: string | null;
+      latestRequest: Record<string, unknown>;
+      providerRetry: "absent" | { decidedRequestId: string | null };
+      retryQueuedWithDecision?: boolean;
+    },
+  ) {
+    let decisionRead = false;
+    harness.sdk.stub(
+      "threads.get",
+      async ({ threadId }: { threadId: string }) => ({
+        ...makeThreadResponse({ id: threadId, projectId: PROJECT_ID }),
+        archivedAt: null,
+        deletedAt: null,
+        status: state.status,
+      }),
+    );
+    harness.sdk.stub(
+      "threads.queue.list",
+      async () =>
+        (state.queuedRetryReason === null &&
+        !(state.retryQueuedWithDecision === true && decisionRead)
+          ? []
+          : [
+              {
+                payload: {
+                  kind: "retry",
+                  retryOfTurnRequestId: FAILED_REQUEST_ID,
+                  attempt: 2,
+                  reason: state.queuedRetryReason ?? "Provider unavailable",
+                },
+              },
+            ]) as never,
+    );
+    harness.sdk.stub(
+      "threads.events.list",
+      async () =>
+        [
+          {
+            type: "client/turn/requested",
+            data: { ...state.latestRequest, target: { kind: "thread-start" } },
+          },
+        ] as never,
+    );
+    const providerRetry = state.providerRetry;
+    harness.sdk.stub("plugins.experimental_discoverRpc", async () =>
+      providerRetry === "absent"
+        ? []
+        : [
+            {
+              pluginId: "provider-retry",
+              displayName: "Provider retry",
+              method: "decision.get",
+            },
+          ],
+    );
+    harness.sdk.stub("plugins.callRpc", async () => {
+      decisionRead = true;
+      return providerRetry === "absent" ||
+        providerRetry.decidedRequestId === null
+        ? null
+        : {
+            requestId: providerRetry.decidedRequestId,
+            decision:
+              state.retryQueuedWithDecision === true
+                ? { kind: "retry", reason: "Provider unavailable" }
+                : { kind: "decline", reason: "not-retryable" },
+          };
+    });
+  }
+
+  async function listRuns(
+    harness: FakePluginHost["harness"],
+    automationId: string,
+  ) {
+    return automationRunListResponseSchema.parse(
+      await harness.callRpc("automations_runs", {
+        projectId: PROJECT_ID,
+        automationId,
+      }),
+    ).runs;
+  }
+
+  async function sweepAt(
+    harness: FakePluginHost["harness"],
+    at: string,
+    until: () => Promise<void>,
+  ) {
+    vi.setSystemTime(new Date(at));
+    const sweep = harness.runService("automation-sweep");
+    await vi.waitFor(until);
+    sweep.controller.abort();
+    await sweep.done;
+  }
+
+  it.each([
+    {
+      name: "provider retry queued a retry",
+      thread: {
+        status: "error",
+        queuedRetryReason: "Provider unavailable",
+        latestRequest: { requestId: FAILED_REQUEST_ID },
+        providerRetry: { decidedRequestId: null },
+      },
+      reRuns: false,
+      reason: "a retry (Provider unavailable) is queued in thread thr_spawned",
+    },
+    {
+      name: "core queued a restart resume",
+      thread: {
+        status: "error",
+        queuedRetryReason: "bb restarted",
+        latestRequest: { requestId: FAILED_REQUEST_ID },
+        providerRetry: "absent",
+      },
+      reRuns: false,
+      reason: "a retry (bb restarted) is queued in thread thr_spawned",
+    },
+    {
+      name: "a retry already ran",
+      thread: {
+        status: "active",
+        queuedRetryReason: null,
+        latestRequest: {
+          requestId: "creq_retry",
+          retryOfRequestId: FAILED_REQUEST_ID,
+          retryAttempt: 2,
+        },
+        providerRetry: { decidedRequestId: FAILED_REQUEST_ID },
+      },
+      reRuns: false,
+      reason: "a retry of the failed turn ran in thread thr_spawned",
+    },
+    {
+      name: "its retry lands mid-check",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: FAILED_REQUEST_ID },
+        providerRetry: { decidedRequestId: FAILED_REQUEST_ID },
+        retryQueuedWithDecision: true,
+      },
+      reRuns: false,
+      reason: "a retry (Provider unavailable) is queued in thread thr_spawned",
+    },
+    {
+      name: "provider retry declined the failure",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: FAILED_REQUEST_ID },
+        providerRetry: { decidedRequestId: FAILED_REQUEST_ID },
+      },
+      reRuns: true,
+      reason: null,
+    },
+    {
+      name: "provider retry is not installed",
+      thread: {
+        status: "error",
+        queuedRetryReason: null,
+        latestRequest: { requestId: FAILED_REQUEST_ID },
+        providerRetry: "absent",
+      },
+      reRuns: true,
+      reason: null,
+    },
+  ] as const)(
+    "hands a failed recurring run's retry over when $name",
+    async ({ thread, reRuns, reason }) => {
+      const { harness } = await bootAutomationsPlugin();
+      const automation = await failScheduledRun(harness);
+      stubFailedThread(harness, thread);
+
+      await sweepAt(harness, "2026-01-01T01:00:40.000Z", async () => {
+        expect(await listRuns(harness, automation.id)).toHaveLength(2);
+      });
+      const runs = await listRuns(harness, automation.id);
+
+      expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(reRuns ? 2 : 1);
+      expect(runs.map((run) => run.status)).toEqual([
+        reRuns ? "running" : "skipped",
+        "failed",
+      ]);
+      if (reason !== null) {
+        expect(runs[0]?.skipReason).toBe(
+          `failed run ${runs[1]?.id} is not re-run: ${reason}`,
+        );
+        const after = automationDetailResponseSchema.parse(
+          await harness.callRpc("automations_get", {
+            projectId: PROJECT_ID,
+            automationId: automation.id,
+          }),
+        );
+        expect(after.nextRunAt).toBe(Date.parse("2026-01-01T02:00:00.000Z"));
+      }
+      await harness.dispose();
+    },
+  );
+
+  it("waits for provider retry to decide on the failed turn before re-running it", async () => {
+    const { harness } = await bootAutomationsPlugin();
+    const automation = await failScheduledRun(harness);
+    const undecided = {
+      status: "error",
+      queuedRetryReason: null,
+      latestRequest: { requestId: FAILED_REQUEST_ID },
+      providerRetry: { decidedRequestId: null },
+    } as const;
+    stubFailedThread(harness, undecided);
+
+    await sweepAt(harness, "2026-01-01T01:00:40.000Z", async () => {
+      expect(harness.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+    });
+    expect(
+      (await listRuns(harness, automation.id)).map((run) => run.status),
+    ).toEqual(["failed"]);
+
+    stubFailedThread(harness, {
+      ...undecided,
+      queuedRetryReason: "Provider unavailable",
+    });
+    await sweepAt(harness, "2026-01-01T01:00:50.000Z", async () => {
+      expect(await listRuns(harness, automation.id)).toHaveLength(2);
+    });
+    expect(
+      (await listRuns(harness, automation.id)).map((run) => run.status),
+    ).toEqual(["skipped", "failed"]);
+    expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    await harness.dispose();
+  });
+
+  it("re-runs a failed recurring run once provider retry has not decided for a minute", async () => {
+    const { harness } = await bootAutomationsPlugin();
+    const automation = await failScheduledRun(harness);
+    stubFailedThread(harness, {
+      status: "error",
+      queuedRetryReason: null,
+      latestRequest: { requestId: FAILED_REQUEST_ID },
+      providerRetry: { decidedRequestId: null },
     });
 
-    expect(answer).toEqual({
-      kind: "decline",
-      reason: 'automation "Inbox sweep" runs again on its schedule',
+    await sweepAt(harness, "2026-01-01T01:01:10.000Z", async () => {
+      expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(2);
     });
-    expect(harness.sdk.callsTo("threads.events.list")[0]?.[0]).toEqual({
-      threadId: THREAD_ID,
-      types: ["client/turn/requested"],
-      order: "desc",
-      limit: "1",
+    const runs = await listRuns(harness, automation.id);
+
+    expect(runs.map((run) => run.status)).toEqual(["running", "failed"]);
+    expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    await harness.dispose();
+  });
+
+  it("waits while provider retry's decision cannot be read, then re-runs after a minute", async () => {
+    const { harness } = await bootAutomationsPlugin();
+    const automation = await failScheduledRun(harness);
+    stubFailedThread(harness, {
+      status: "error",
+      queuedRetryReason: null,
+      latestRequest: { requestId: FAILED_REQUEST_ID },
+      providerRetry: { decidedRequestId: null },
     });
+    harness.sdk.stub("plugins.callRpc", async () => {
+      throw new Error("The operation was aborted due to timeout");
+    });
+
+    await sweepAt(harness, "2026-01-01T01:00:40.000Z", async () => {
+      expect(harness.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+    });
+    expect(
+      (await listRuns(harness, automation.id)).map((run) => run.status),
+    ).toEqual(["failed"]);
+    expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
+
+    await sweepAt(harness, "2026-01-01T01:01:10.000Z", async () => {
+      expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    });
+    expect(
+      (await listRuns(harness, automation.id)).map((run) => run.status),
+    ).toEqual(["running", "failed"]);
     await harness.dispose();
   });
 

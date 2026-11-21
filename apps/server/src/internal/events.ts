@@ -1,21 +1,24 @@
 import { performance } from "node:perf_hooks";
 import { Buffer } from "node:buffer";
-import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   appendDaemonEventsInTransaction,
   deriveStoredEventItemFields,
-  getQueuedRetryOfTurnRequest,
+  findLastCompletedRootStoredTurn,
+  findLatestUnresolvedClientTurnRequestIdAfterSequence,
   getThread,
   getEnvironment,
   getLatestThreadSequence,
-  listCompletedTurnsByThreadIds,
+  hasRootStoredTurnStarted,
+  isTurnAimedAtByEarlierStop,
+  listStoredTurnCompletedKeys,
   listStoredDaemonReplayKeys,
   listThreadEnvironmentAssignmentsOnHost,
   MissingStoredTurnStartedError,
   recordDaemonReplayKeys,
-  events as storedEvents,
-  upsertThreadExecutionReport,
   recordWorkspaceFileChanges,
+  upsertThreadExecutionReport,
+  events as storedEvents,
 } from "@bb/db";
 import type {
   AcceptedDaemonEvent,
@@ -32,18 +35,18 @@ import {
   type HostDaemonRejectedEvent,
 } from "@bb/host-daemon-contract";
 import {
-  getThreadEventScopeTurnId,
-  maskResolvedProviderEnvironment,
   THREAD_SESSION_OPTIONS_STATE_KIND,
   THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND,
   requireThreadEventScopeTurnId,
-  systemThreadInterruptedEventDataSchema,
-  type ChildThreadOutcome,
+  getThreadEventScopeTurnId,
+  maskResolvedProviderEnvironment,
+  threadScope,
+  type ClientTurnRequestId,
   type ThreadEventType,
-  type ThreadEventTurnStatus,
 } from "@bb/domain";
 import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
+import { isArchivedCredentialRevocation } from "./archived-credential-revocation.js";
 import { dropForkUnreadEvents } from "./fork-unread-events.js";
 import type {
   AppDeps,
@@ -55,31 +58,23 @@ import {
   type ActiveThreadEventPruneRuntimeOptions,
 } from "../services/system/event-pruning.js";
 import {
-  recordSpendForInsertedEvents,
-  type SpendRollupObservationSource,
-} from "../services/system/spend-rollup.js";
-import { queueChildThreadTurnNotificationBestEffort } from "../services/threads/child-thread-notifications.js";
-import { isParentNotifiableChildThread } from "../services/threads/thread-parent.js";
+  addParentTurnNotificationFollowUp,
+  executeTurnEndFollowUpBestEffort,
+  idleFollowUpForTurnEnd,
+  parentTurnRetryContext,
+  planTurnEnd,
+  type TurnEndFollowUp,
+} from "../services/threads/turn-end-follow-ups.js";
+import type { ThreadLifecycleEffect } from "../services/threads/lifecycle/machine.js";
 import {
-  continueAfterEnvironmentDirectoryUpdate,
-  findEnvironmentDirectoryContinuation,
-  type EnvironmentDirectoryContinuation,
-} from "../services/threads/environment-directory-continuation.js";
-import {
-  runQueuedMessageDispatch,
-  type QueuedMessageDispatchWake,
-} from "../services/threads/queued-message-dispatch.js";
+  runThreadLifecycleTransaction,
+  type ThreadLifecycleOutcome,
+} from "../services/threads/lifecycle/run.js";
+import { finishThreadLifecycle } from "../services/threads/lifecycle/finish.js";
 import { deferAfterResponse } from "../services/lib/response-deferral.js";
-import {
-  isCommandTimeoutError,
-  runtimeErrorLogFields,
-} from "../services/lib/error-log-fields.js";
-import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
-import { waitForPluginTurnFailed } from "../services/plugins/plugin-thread-events.js";
-import { loadFailedTurn, retryChain } from "../services/threads/turn-failed.js";
+import { runtimeErrorLogFields } from "../services/lib/error-log-fields.js";
 import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
 import { rememberSessionModelCatalog } from "../services/providers/session-model-catalog.js";
-import { applyTurnCompletedEvent } from "./turn-completed-events.js";
 import { generateFromProviderThreadName } from "../services/threads/title-generation.js";
 import {
   getInactiveSessionLogFields,
@@ -88,12 +83,15 @@ import {
 import { getAuthenticatedDaemon } from "./auth.js";
 import { validateExtensionPayloads } from "./extension-payloads.js";
 import { validatePresentationIcons } from "./presentation-icons.js";
+import {
+  recordSpendForInsertedEvents,
+  type SpendRollupObservationSource,
+} from "../services/system/spend-rollup.js";
 import { listSharedWorkspaceActiveThreadIds } from "../services/threads/workspace-awareness.js";
 import {
   appendThreadEvent,
   getActiveTurnId,
 } from "../services/threads/thread-events.js";
-import { threadScope } from "@bb/domain";
 import {
   observeStreamTraceEventBatch,
   observeTurnTraceEventBatch,
@@ -229,20 +227,6 @@ interface TurnKeyArgs {
   turnId: string;
 }
 
-interface HasThreadCommandFailureSystemErrorForTurnDeps {
-  db: AppDeps["db"];
-}
-
-interface HasThreadCommandFailureSystemErrorForTurnArgs {
-  threadId: string;
-  turnId: string;
-}
-
-interface HasThreadStopBeforeTurnStartedArgs {
-  threadId: string;
-  turnId: string;
-}
-
 interface ActivePruneCandidate {
   latestPrunableSequence: number;
   threadId: string;
@@ -253,61 +237,6 @@ interface ResolveActivePruneCandidatesArgs {
   events: HostDaemonEventEnvelope[];
   insertedEventIndexes: number[];
 }
-
-interface AddParentTurnNotificationFollowUpArgs {
-  failedParentNotificationThreadIds: Set<string>;
-  followUps: EventEffectFollowUp[] | ParentTurnNotificationFollowUp[];
-  thread: NonNullable<ReturnType<typeof getThread>>;
-  turnStatus: ThreadEventTurnStatus;
-  retry?: ParentTurnRetryContext;
-  turnId: string | null;
-  interruption?: ChildThreadOutcome["interruption"];
-}
-
-interface ParentTurnRetryContext {
-  failedRequestId: string;
-  originalRequestId: string;
-}
-
-type RetryAfterFailure =
-  | { kind: "queued"; sendAt: number | null }
-  | { kind: "dispatched" }
-  | null;
-
-const PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS = 10_000;
-const PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS = 2 * 60 * 1_000;
-
-interface ParentTurnNotificationFollowUp {
-  kind: "parent-turn-notification";
-  childThreadId: string;
-  projectId: string;
-  parentThreadId: string;
-  title: string | null;
-  turnStatus: ThreadEventTurnStatus;
-  retry?: ParentTurnRetryContext;
-  turnId: string | null;
-  interruption?: ChildThreadOutcome["interruption"];
-}
-
-interface QueuedMessageDispatchFollowUp {
-  kind: "queued-message-dispatch";
-  wake: Extract<
-    QueuedMessageDispatchWake,
-    { kind: "thread-ready" } | { kind: "turn-started" }
-  >;
-}
-
-interface EnvironmentDirectoryContinuationFollowUp {
-  kind: "environment-directory-continuation";
-  continuation: EnvironmentDirectoryContinuation;
-  parentNotification: ParentTurnNotificationFollowUp | null;
-  threadId: string;
-}
-
-type EventEffectFollowUp =
-  | EnvironmentDirectoryContinuationFollowUp
-  | ParentTurnNotificationFollowUp
-  | QueuedMessageDispatchFollowUp;
 
 function isRootTurnStartedEvent(
   event: Extract<HostDaemonEventEnvelope["event"], { type: "turn/started" }>,
@@ -340,7 +269,6 @@ function resolveProviderIdentifiers(event: HostDaemonEventEnvelope["event"]): {
     case "provider/modelFallback":
     case "provider/rateLimits/updated":
     case "provider.env-resolved":
-    case "thread/execution/reported":
     case "thread/compacted":
     case "thread/context/cleared":
     case "thread/goal/updated":
@@ -370,6 +298,7 @@ function resolveProviderIdentifiers(event: HostDaemonEventEnvelope["event"]): {
     case "turn/mainRun/updated":
     case "provider/error":
     case "provider/unhandled":
+    case "thread/execution/reported":
       return { providerThreadId: event.providerThreadId };
     default: {
       const exhaustive: never = event;
@@ -424,68 +353,11 @@ function notifyInsertedEventThreads(
   }
 }
 
-function addParentTurnNotificationFollowUp(
-  args: AddParentTurnNotificationFollowUpArgs,
-): void {
-  if (!isParentNotifiableChildThread(args.thread, args.turnStatus)) {
-    return;
-  }
-  if (args.turnStatus === "failed") {
-    if (args.failedParentNotificationThreadIds.has(args.thread.id)) {
-      return;
-    }
-    args.failedParentNotificationThreadIds.add(args.thread.id);
-  }
-  args.followUps.push({
-    kind: "parent-turn-notification",
-    childThreadId: args.thread.id,
-    projectId: args.thread.projectId,
-    parentThreadId: args.thread.parentThreadId,
-    title: args.thread.title,
-    turnStatus: args.turnStatus,
-    ...(args.retry ? { retry: args.retry } : {}),
-    turnId: args.turnId,
-    ...(args.interruption ? { interruption: args.interruption } : {}),
-  });
-}
-
-function parentTurnRetryContext(
-  db: AppDeps["db"],
-  threadId: string,
-): ParentTurnRetryContext | undefined {
-  const failed = loadFailedTurn(db, threadId);
-  if (failed === null) return undefined;
-  return {
-    failedRequestId: failed.request.requestId,
-    originalRequestId: retryChain(failed.request).originalRequestId,
-  };
-}
-
-function retryAfterFailure(
-  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
-  args: { threadId: string; retry: ParentTurnRetryContext },
-): RetryAfterFailure {
-  const queuedRetry = getQueuedRetryOfTurnRequest(deps.db, {
-    threadId: args.threadId,
-    retryOfTurnRequestId: args.retry.originalRequestId,
-  });
-  if (queuedRetry !== null) {
-    return { kind: "queued", sendAt: queuedRetry.sendAt };
-  }
-  const latest = loadFailedTurn(deps.db, args.threadId);
-  return latest !== null &&
-    latest.request.requestId !== args.retry.failedRequestId &&
-    retryChain(latest.request).originalRequestId ===
-      args.retry.originalRequestId
-    ? { kind: "dispatched" }
-    : null;
-}
-
 async function applyEventEffects(
   deps: LoggedPendingInteractionWorkSessionDeps,
   events: HostDaemonEventEnvelope[],
-): Promise<EventEffectFollowUp[]> {
-  const followUps: EventEffectFollowUp[] = [];
+): Promise<TurnEndFollowUp[]> {
+  const followUps: TurnEndFollowUp[] = [];
   const failedParentNotificationThreadIds = new Set<string>();
   for (const entry of events) {
     try {
@@ -498,19 +370,17 @@ async function applyEventEffects(
         if (
           thread &&
           environment !== null &&
-          environment?.path !== null &&
+          environment.path !== null &&
           !environment.providerOwnsPath
         ) {
-          const filePaths = event.item.changes.map((change) => change.path);
-          const candidateThreadIds = [
-            entry.threadId,
-            ...listSharedWorkspaceActiveThreadIds(deps.db, environment),
-          ];
           const notices = recordWorkspaceFileChanges(deps.db, {
             hostId: environment.hostId,
             workspacePath: environment.path,
-            filePaths,
-            candidateThreadIds,
+            filePaths: event.item.changes.map((change) => change.path),
+            candidateThreadIds: [
+              entry.threadId,
+              ...listSharedWorkspaceActiveThreadIds(deps.db, environment),
+            ],
           });
           for (const notice of notices) {
             appendThreadEvent(deps, {
@@ -526,32 +396,32 @@ async function applyEventEffects(
         }
       }
       if (event.type === "turn/started") {
+        if (!isRootTurnStartedEvent(event)) {
+          continue;
+        }
         const turnId = requireThreadEventScopeTurnId({
           type: event.type,
           scope: event.scope,
         });
-        if (
-          hasThreadStopBeforeTurnStarted(deps, {
+        const outcome = runThreadLifecycleTransaction(deps, entry.threadId, {
+          type: "turn.started",
+          aimedAtByStop: isTurnAimedAtByEarlierStop(deps.db, {
             threadId: entry.threadId,
             turnId,
-          })
-        ) {
-          continue;
-        }
-        if (!isRootTurnStartedEvent(event)) {
-          continue;
-        }
-        followUps.push({
-          kind: "queued-message-dispatch",
-          wake: { kind: "turn-started", threadId: entry.threadId },
+          }),
+          turnId,
+          now: Date.now(),
         });
-        if (hasThreadAlreadyStartedRun(deps, entry.threadId)) {
-          continue;
-        }
-        applyLoggedThreadLifecycleEvent(deps, {
-          event: { type: "run.started" },
-          threadId: entry.threadId,
+        await finishLifecycleFromEvents(deps, outcome, followUps);
+        continue;
+      }
+
+      if (event.type === "turn/input/accepted") {
+        const outcome = runThreadLifecycleTransaction(deps, entry.threadId, {
+          type: "request.accepted",
+          requestId: event.clientRequestId,
         });
+        await finishLifecycleFromEvents(deps, outcome, followUps);
         continue;
       }
 
@@ -594,122 +464,126 @@ async function applyEventEffects(
           type: event.type,
           scope: event.scope,
         });
+        const thread = getThread(deps.db, entry.threadId);
         if (
-          event.status !== "interrupted" &&
-          hasThreadStopBeforeTurnStarted(deps, {
+          thread === null ||
+          !hasRootStoredTurnStarted(deps.db, {
             threadId: entry.threadId,
             turnId,
           })
         ) {
           continue;
         }
-        const turnCompleted = applyTurnCompletedEvent(deps, {
-          ...event,
+        const aimedAtByStop = isTurnAimedAtByEarlierStop(deps.db, {
           threadId: entry.threadId,
+          turnId,
         });
-        const continuation =
-          event.status === "completed" &&
-          turnCompleted.nextStatus === "idle" &&
-          turnCompleted.isRootTurnCompletion &&
-          !wasTurnManuallyStopped(deps, { threadId: entry.threadId, turnId })
-            ? findEnvironmentDirectoryContinuation(deps, {
-                threadId: entry.threadId,
-                turnId,
-              })
-            : null;
-        const deferredParentNotifications: ParentTurnNotificationFollowUp[] =
-          [];
-        if (
-          turnCompleted.thread &&
-          !turnCompleted.suppressFailureNotice &&
-          turnCompleted.isRootTurnCompletion &&
-          isParentNotifiableChildThread(turnCompleted.thread, event.status)
-        ) {
-          const alreadyHandledByCommandFailure =
-            event.status === "failed" &&
-            hasThreadCommandFailureSystemErrorForTurn(deps, {
-              threadId: turnCompleted.thread.id,
-              turnId,
-            });
-          const interruption =
-            event.status === "interrupted"
-              ? getTurnInterruption(deps, {
-                  threadId: turnCompleted.thread.id,
-                  turnId,
-                })
-              : undefined;
-          const manuallyStopped =
-            interruption?.reason === "manual-stop" ||
-            (event.status === "interrupted" &&
-              wasTurnManuallyStopped(deps, {
-                threadId: turnCompleted.thread.id,
-                turnId,
-              }));
-          if (!alreadyHandledByCommandFailure && !manuallyStopped) {
-            const retry =
-              event.status === "failed"
-                ? parentTurnRetryContext(deps.db, turnCompleted.thread.id)
-                : undefined;
-            addParentTurnNotificationFollowUp({
-              failedParentNotificationThreadIds,
-              followUps: continuation ? deferredParentNotifications : followUps,
-              thread: turnCompleted.thread,
-              turnStatus: event.status,
-              ...(retry ? { retry } : {}),
-              turnId,
-              ...(interruption ? { interruption } : {}),
-            });
-          }
+        if (aimedAtByStop && event.status !== "interrupted") {
+          continue;
         }
-        if (
-          event.status === "completed" &&
-          turnCompleted.nextStatus === "idle"
-        ) {
-          followUps.push(
-            continuation
-              ? {
-                  kind: "environment-directory-continuation",
-                  continuation,
-                  parentNotification: deferredParentNotifications[0] ?? null,
-                  threadId: entry.threadId,
-                }
-              : {
-                  kind: "queued-message-dispatch",
-                  wake: { kind: "thread-ready", threadId: entry.threadId },
-                },
+        const revokedAfterArchive =
+          event.status === "failed" &&
+          thread.archivedAt !== null &&
+          isArchivedCredentialRevocation(
+            deps.db,
+            entry.threadId,
+            turnId,
+            thread.archivedAt,
           );
+        const outcome = runThreadLifecycleTransaction(deps, entry.threadId, {
+          type: "turn.completed",
+          turnId,
+          status: revokedAfterArchive ? "completed" : event.status,
+        });
+        const ended = outcome.effects.find(
+          (effect) => effect.kind === "turn-ended",
+        );
+        await finishLifecycleFromEvents(deps, outcome, followUps);
+        if (
+          revokedAfterArchive ||
+          ended === undefined ||
+          ended.kind !== "turn-ended"
+        ) {
+          continue;
+        }
+        const plan = planTurnEnd(deps, {
+          aimedAtByStop,
+          failedParentNotificationThreadIds,
+          status: event.status,
+          thread,
+          turnId,
+        });
+        const idle =
+          ended.disposition === "applied" && outcome.thread?.status === "idle";
+        const idleFollowUp = idle
+          ? idleFollowUpForTurnEnd(plan, {
+              status: event.status,
+              threadId: entry.threadId,
+            })
+          : null;
+        if (
+          plan.continuation === null ||
+          !(idle || ended.disposition === "held")
+        ) {
+          followUps.push(...plan.parentNotifications);
+        }
+        if (idleFollowUp !== null) {
+          followUps.push(idleFollowUp);
         }
         continue;
       }
 
       if (
         event.type === "system/error" &&
-        event.code === "provider_process_exited"
+        (event.code === "provider_process_exited" ||
+          event.code === "provider_turn_start_failed")
       ) {
-        const thread = getThread(deps.db, entry.threadId);
-        if (!thread) {
+        if (getThread(deps.db, entry.threadId) === null) {
           continue;
         }
-        deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
-          threadIds: [entry.threadId],
-          reason:
-            "Provider process exited while awaiting user interaction; retry the thread to continue",
+        if (event.code === "provider_process_exited") {
+          deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
+            threadIds: [entry.threadId],
+            reason:
+              "Provider process exited while awaiting user interaction; retry the thread to continue",
+          });
+        }
+        const outcome = runThreadLifecycleTransaction(deps, entry.threadId, {
+          type: "provider.failed",
+          unstartedRequestId:
+            event.scope.kind === "thread"
+              ? findUnstartedTurnRequestId(deps, entry.threadId)
+              : null,
         });
-        const outcome = applyLoggedThreadLifecycleEvent(deps, {
-          event: { type: "run.failed" },
-          threadId: entry.threadId,
-        });
-        if (outcome.applied) {
-          const retry = parentTurnRetryContext(deps.db, thread.id);
+        const failedThread = getThread(deps.db, entry.threadId);
+        const failureNotice = outcome.effects.find(
+          (effect) =>
+            effect.kind === "notify-parent" &&
+            effect.notice.turnStatus === "failed",
+        );
+        if (failureNotice !== undefined && failedThread !== null) {
+          const retry = parentTurnRetryContext(deps.db, failedThread.id);
           addParentTurnNotificationFollowUp({
             failedParentNotificationThreadIds,
             followUps,
-            thread,
+            thread: failedThread,
             turnStatus: "failed",
             ...(retry ? { retry } : {}),
             turnId: null,
           });
         }
+        await finishLifecycleFromEvents(
+          deps,
+          failureNotice === undefined
+            ? outcome
+            : {
+                ...outcome,
+                effects: outcome.effects.filter(
+                  (effect) => effect !== failureNotice,
+                ),
+              },
+          followUps,
+        );
         continue;
       }
     } catch (error) {
@@ -726,106 +600,44 @@ async function applyEventEffects(
   return followUps;
 }
 
-async function executeEventFollowUpBestEffort(
+const EVENT_DEFERRED_LIFECYCLE_EFFECTS: ReadonlySet<
+  ThreadLifecycleEffect["kind"]
+> = new Set(["drain-queue"]);
+
+async function finishLifecycleFromEvents(
   deps: LoggedPendingInteractionWorkSessionDeps,
-  followUp: EventEffectFollowUp,
+  outcome: ThreadLifecycleOutcome,
+  followUps: TurnEndFollowUp[],
 ): Promise<void> {
-  try {
-    switch (followUp.kind) {
-      case "parent-turn-notification":
-        if (followUp.turnStatus === "failed" && followUp.retry) {
-          await waitForPluginTurnFailed(
-            followUp.childThreadId,
-            PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS,
-          );
-          const retry = retryAfterFailure(deps, {
-            threadId: followUp.childThreadId,
-            retry: followUp.retry,
-          });
-          if (retry?.kind === "dispatched") return;
-          if (retry?.kind === "queued") {
-            const noticeThreshold =
-              Date.now() + PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS;
-            if (retry.sendAt === null || retry.sendAt <= noticeThreshold) {
-              return;
-            }
-            await queueChildThreadTurnNotificationBestEffort(deps, {
-              childThread: {
-                id: followUp.childThreadId,
-                projectId: followUp.projectId,
-                title: followUp.title,
-              },
-              parentThreadId: followUp.parentThreadId,
-              turnId: null,
-              turnStatus: followUp.turnStatus,
-              retryScheduledAt: retry.sendAt,
-            });
-            return;
-          }
-        }
-        await queueChildThreadTurnNotificationBestEffort(deps, {
-          childThread: {
-            id: followUp.childThreadId,
-            projectId: followUp.projectId,
-            title: followUp.title,
-          },
-          parentThreadId: followUp.parentThreadId,
-          turnStatus: followUp.turnStatus,
-          turnId: followUp.turnId,
-          ...(followUp.interruption
-            ? { interruption: followUp.interruption }
-            : {}),
-        });
-        return;
-      case "queued-message-dispatch":
-        await runQueuedMessageDispatch(deps, followUp.wake);
-        return;
-      case "environment-directory-continuation": {
-        await runQueuedMessageDispatch(deps, {
-          kind: "thread-ready",
-          threadId: followUp.threadId,
-        });
-        let continued = false;
-        try {
-          continued = await continueAfterEnvironmentDirectoryUpdate(deps, {
-            ...followUp.continuation,
-            threadId: followUp.threadId,
-          });
-        } finally {
-          if (!continued && followUp.parentNotification) {
-            await executeEventFollowUpBestEffort(
-              deps,
-              followUp.parentNotification,
-            );
-          }
-        }
-        return;
-      }
+  for (const effect of outcome.effects) {
+    if (effect.kind === "drain-queue") {
+      followUps.push({
+        kind: "queued-message-dispatch",
+        wake: { kind: effect.wake, threadId: outcome.threadId },
+      });
     }
-  } catch (error) {
-    if (isCommandTimeoutError(error)) {
-      deps.logger.warn(
-        {
-          followUp,
-          ...runtimeErrorLogFields(deps.config, error),
-        },
-        "Event follow-up deferred by host timeout",
-      );
-      return;
-    }
-    deps.logger.error(
-      {
-        err: error,
-        followUp,
-      },
-      "Failed to run event follow-up",
-    );
   }
+  await finishThreadLifecycle(deps, outcome, {
+    skip: EVENT_DEFERRED_LIFECYCLE_EFFECTS,
+  });
+}
+
+function findUnstartedTurnRequestId(
+  deps: Pick<AppDeps, "db">,
+  threadId: string,
+): ClientTurnRequestId | null {
+  const lastCompletedTurn = findLastCompletedRootStoredTurn(deps.db, {
+    threadId,
+  });
+  return findLatestUnresolvedClientTurnRequestIdAfterSequence(deps.db, {
+    afterSequence: lastCompletedTurn?.completedSequence ?? 0,
+    threadId,
+  });
 }
 
 function deferEventFollowUpBatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
-  followUps: EventEffectFollowUp[],
+  followUps: TurnEndFollowUp[],
 ): void {
   if (followUps.length === 0) {
     return;
@@ -838,7 +650,7 @@ function deferEventFollowUpBatch(
     work: async () => {
       await Promise.all(
         followUps.map((followUp) =>
-          executeEventFollowUpBestEffort(deps, followUp),
+          executeTurnEndFollowUpBestEffort(deps, followUp),
         ),
       );
     },
@@ -849,219 +661,33 @@ function toTurnKey(args: TurnKeyArgs): string {
   return `${args.threadId}:${args.turnId}`;
 }
 
-function hasThreadCommandFailureSystemErrorForTurn(
-  deps: HasThreadCommandFailureSystemErrorForTurnDeps,
-  args: HasThreadCommandFailureSystemErrorForTurnArgs,
-): boolean {
-  return (
-    deps.db
-      .select({ id: storedEvents.id })
-      .from(storedEvents)
-      .where(
-        and(
-          eq(storedEvents.threadId, args.threadId),
-          eq(storedEvents.turnId, args.turnId),
-          eq(storedEvents.scopeKind, "turn"),
-          eq(storedEvents.type, "system/error"),
-          sql`json_extract(${storedEvents.data}, '$.code') = 'thread_command_failed'`,
-        ),
-      )
-      .limit(1)
-      .get() !== undefined
-  );
-}
-
-function hasThreadStopBeforeTurnStarted(
-  deps: Pick<AppDeps, "db">,
-  args: HasThreadStopBeforeTurnStartedArgs,
-): boolean {
-  const turnStarted = deps.db
-    .select({ sequence: storedEvents.sequence })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.turnId, args.turnId),
-        eq(storedEvents.type, "turn/started"),
-      ),
-    )
-    .limit(1)
-    .get();
-  if (!turnStarted) {
-    return false;
-  }
-
-  const latestTurnRequest = deps.db
-    .select({ sequence: storedEvents.sequence })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.type, "client/turn/requested"),
-        lt(storedEvents.sequence, turnStarted.sequence),
-      ),
-    )
-    .orderBy(desc(storedEvents.sequence))
-    .limit(1)
-    .get();
-  const lowerSequence = latestTurnRequest?.sequence ?? 0;
-
-  return (
-    deps.db
-      .select({ id: storedEvents.id })
-      .from(storedEvents)
-      .where(
-        and(
-          eq(storedEvents.threadId, args.threadId),
-          eq(storedEvents.type, "system/thread/interrupted"),
-          gt(storedEvents.sequence, lowerSequence),
-          lt(storedEvents.sequence, turnStarted.sequence),
-        ),
-      )
-      .limit(1)
-      .get() !== undefined
-  );
-}
-
-function wasTurnManuallyStopped(
-  deps: Pick<AppDeps, "db">,
-  args: HasThreadStopBeforeTurnStartedArgs,
-): boolean {
-  const turnStarted = deps.db
-    .select({ sequence: storedEvents.sequence })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.turnId, args.turnId),
-        eq(storedEvents.type, "turn/started"),
-      ),
-    )
-    .limit(1)
-    .get();
-  if (!turnStarted) return false;
-
-  return (
-    deps.db
-      .select({ id: storedEvents.id })
-      .from(storedEvents)
-      .where(
-        and(
-          eq(storedEvents.threadId, args.threadId),
-          eq(storedEvents.type, "system/thread/interrupted"),
-          gt(storedEvents.sequence, turnStarted.sequence),
-          sql`json_extract(${storedEvents.data}, '$.reason') = 'manual-stop'`,
-        ),
-      )
-      .limit(1)
-      .get() !== undefined
-  );
-}
-
-function getTurnInterruption(
-  deps: Pick<AppDeps, "db">,
-  args: HasThreadStopBeforeTurnStartedArgs,
-): ChildThreadOutcome["interruption"] {
-  const turnStarted = deps.db
-    .select({ sequence: storedEvents.sequence })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.turnId, args.turnId),
-        eq(storedEvents.type, "turn/started"),
-      ),
-    )
-    .limit(1)
-    .get();
-  if (!turnStarted) {
-    return undefined;
-  }
-
-  const turnCompleted = deps.db
-    .select({ sequence: storedEvents.sequence })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.turnId, args.turnId),
-        eq(storedEvents.type, "turn/completed"),
-      ),
-    )
-    .orderBy(desc(storedEvents.sequence))
-    .limit(1)
-    .get();
-  if (!turnCompleted) return undefined;
-
-  const interruption = deps.db
-    .select({ data: storedEvents.data })
-    .from(storedEvents)
-    .where(
-      and(
-        eq(storedEvents.threadId, args.threadId),
-        eq(storedEvents.type, "system/thread/interrupted"),
-        gt(storedEvents.sequence, turnStarted.sequence),
-        lt(storedEvents.sequence, turnCompleted.sequence),
-      ),
-    )
-    .orderBy(desc(storedEvents.sequence))
-    .limit(1)
-    .get();
-  return interruption
-    ? systemThreadInterruptedEventDataSchema.parse(
-        JSON.parse(interruption.data),
-      )
-    : undefined;
-}
-
-function hasThreadAlreadyStartedRun(
-  deps: Pick<AppDeps, "db">,
-  threadId: string,
-): boolean {
-  const thread = getThread(deps.db, threadId);
-  return (
-    thread?.status === "active" &&
-    thread.archivedAt === null &&
-    thread.deletedAt === null
-  );
-}
-
 function listCompletedTurnKeysForStartedEvents(
   args: ListCompletedTurnKeysForStartedEventsArgs,
 ): Set<string> {
-  const startedTurnKeys = new Set<string>();
-  const threadIds = new Set<string>();
+  const startedTurnKeys: TurnKeyArgs[] = [];
 
   for (const entry of args.batchEvents) {
     if (entry.event.type !== "turn/started") {
       continue;
     }
-    startedTurnKeys.add(
-      toTurnKey({
-        threadId: entry.threadId,
-        turnId: requireThreadEventScopeTurnId({
-          type: entry.event.type,
-          scope: entry.event.scope,
-        }),
+    startedTurnKeys.push({
+      threadId: entry.threadId,
+      turnId: requireThreadEventScopeTurnId({
+        type: entry.event.type,
+        scope: entry.event.scope,
       }),
-    );
-    threadIds.add(entry.threadId);
+    });
   }
 
-  if (startedTurnKeys.size === 0 || threadIds.size === 0) {
+  if (startedTurnKeys.length === 0) {
     return new Set<string>();
   }
 
-  const completedTurnKeys = new Set<string>();
-  for (const row of listCompletedTurnsByThreadIds(args.db, [...threadIds])) {
-    const turnKey = toTurnKey({
-      threadId: row.threadId,
-      turnId: row.turnId,
-    });
-    if (startedTurnKeys.has(turnKey)) {
-      completedTurnKeys.add(turnKey);
-    }
-  }
+  const completedTurnKeys = new Set(
+    listStoredTurnCompletedKeys(args.db, { keys: startedTurnKeys }).map(
+      toTurnKey,
+    ),
+  );
 
   for (const [index, entry] of args.batchEvents.entries()) {
     if (
@@ -1225,6 +851,81 @@ function resolvePostableEventBatchEntries(
   };
 }
 
+function storeExecutionReports<
+  TEntry extends { envelope: HostDaemonEventEnvelope },
+>(deps: AppDeps, entries: TEntry[]): TEntry[] {
+  const kept: TEntry[] = [];
+  for (const entry of entries) {
+    const { event, threadId } = entry.envelope;
+    if (event.type === "thread/execution/reported") {
+      upsertThreadExecutionReport(deps.db, {
+        threadId,
+        execution: event.execution,
+        reportedAt: Date.now(),
+      });
+    } else {
+      kept.push(entry);
+    }
+  }
+  return kept;
+}
+
+function collectSpendObservationSources(
+  deps: AppDeps,
+  args: {
+    acceptedEvents: readonly AcceptedDaemonEvent[];
+    entries: readonly { envelope: HostDaemonEventEnvelope }[];
+    insertedInputIndexes: readonly number[];
+  },
+): SpendRollupObservationSource[] {
+  const sources: SpendRollupObservationSource[] = [];
+  const providerIdByThreadId = new Map<string, string | null>();
+  for (const [position, inputIndex] of args.insertedInputIndexes.entries()) {
+    const entry = args.entries[inputIndex];
+    const accepted = args.acceptedEvents[position];
+    if (
+      entry === undefined ||
+      accepted === undefined ||
+      entry.envelope.event.type !== "thread/tokenUsage/updated"
+    )
+      continue;
+    const threadId = entry.envelope.threadId;
+    if (!providerIdByThreadId.has(threadId))
+      providerIdByThreadId.set(
+        threadId,
+        getThread(deps.db, threadId)?.providerId ?? null,
+      );
+    const providerId = providerIdByThreadId.get(threadId) ?? null;
+    if (providerId === null) continue;
+    sources.push({
+      createdAt: accepted.createdAt,
+      event: entry.envelope.event,
+      providerId,
+      sequence: accepted.sequence,
+      threadId,
+      turnId: getThreadEventScopeTurnId(entry.envelope.event.scope) ?? null,
+    });
+  }
+  return sources;
+}
+
+function dropReplayedEntries<
+  TEntry extends { envelope: HostDaemonEventEnvelope },
+>(deps: Pick<AppDeps, "db">, entries: TEntry[]): TEntry[] {
+  const stored = listStoredDaemonReplayKeys(
+    deps.db,
+    entries.flatMap(({ envelope }) =>
+      envelope.replayKey === undefined ? [] : [envelope.replayKey],
+    ),
+  );
+  return stored.size === 0
+    ? entries
+    : entries.filter(
+        ({ envelope }) =>
+          envelope.replayKey === undefined || !stored.has(envelope.replayKey),
+      );
+}
+
 interface DroppedLifecycleEvent {
   eventIndex: number;
   eventType: string;
@@ -1266,95 +967,6 @@ function dropInteractionLifecycleEvents(entries: PostableEventBatchEntry[]): {
     });
   }
   return { entries: kept, droppedLifecycleEvents };
-}
-
-function storeExecutionReports<
-  TEntry extends { envelope: HostDaemonEventEnvelope },
->(deps: AppDeps, entries: TEntry[]): TEntry[] {
-  const kept: TEntry[] = [];
-  for (const entry of entries) {
-    const { event, threadId } = entry.envelope;
-    if (event.type === "thread/execution/reported") {
-      upsertThreadExecutionReport(deps.db, {
-        threadId,
-        execution: event.execution,
-        reportedAt: Date.now(),
-      });
-      continue;
-    }
-    kept.push(entry);
-  }
-  return kept;
-}
-
-function collectSpendObservationSources(
-  deps: AppDeps,
-  args: {
-    acceptedEvents: readonly AcceptedDaemonEvent[];
-    entries: readonly { envelope: HostDaemonEventEnvelope }[];
-    insertedInputIndexes: readonly number[];
-  },
-): SpendRollupObservationSource[] {
-  const sources: SpendRollupObservationSource[] = [];
-  const providerIdByThreadId = new Map<string, string | null>();
-  for (const [position, inputIndex] of args.insertedInputIndexes.entries()) {
-    const entry = args.entries[inputIndex];
-    const accepted = args.acceptedEvents[position];
-    if (entry === undefined || accepted === undefined) {
-      continue;
-    }
-    const event = entry.envelope.event;
-    if (event.type !== "thread/tokenUsage/updated") {
-      continue;
-    }
-    const threadId = entry.envelope.threadId;
-    if (!providerIdByThreadId.has(threadId)) {
-      providerIdByThreadId.set(
-        threadId,
-        getThread(deps.db, threadId)?.providerId ?? null,
-      );
-    }
-    const providerId = providerIdByThreadId.get(threadId) ?? null;
-    if (providerId === null) {
-      continue;
-    }
-    sources.push({
-      createdAt: accepted.createdAt,
-      event,
-      providerId,
-      sequence: accepted.sequence,
-      threadId,
-      turnId: getThreadEventScopeTurnId(event.scope) ?? null,
-    });
-  }
-  return sources;
-}
-
-class ReplayedEventBatchRaceError extends Error {
-  constructor() {
-    super(
-      "A concurrent batch stored some of these replayed events first; retry to append the rest",
-    );
-    this.name = "ReplayedEventBatchRaceError";
-  }
-}
-
-function dropReplayedEntries(
-  deps: Pick<AppDeps, "db">,
-  entries: PostableEventBatchEntry[],
-): PostableEventBatchEntry[] {
-  const stored = listStoredDaemonReplayKeys(
-    deps.db,
-    entries.flatMap((entry) =>
-      entry.envelope.replayKey === undefined ? [] : [entry.envelope.replayKey],
-    ),
-  );
-  if (stored.size === 0) return entries;
-  return entries.filter(
-    (entry) =>
-      entry.envelope.replayKey === undefined ||
-      !stored.has(entry.envelope.replayKey),
-  );
 }
 
 export function registerInternalEventRoutes(
@@ -1471,7 +1083,12 @@ export function registerInternalEventRoutes(
         appendResult = deps.db.transaction(
           (tx) => {
             if (listStoredDaemonReplayKeys(deps.db, replayKeys).size > 0) {
-              throw new ReplayedEventBatchRaceError();
+              throw new ApiError(
+                503,
+                "replayed_event_batch_race",
+                "A concurrent batch stored some of these replayed events first; retry to append the rest",
+                true,
+              );
             }
             const result = appendDaemonEventsInTransaction(tx, eventInputs);
             recordDaemonReplayKeys(deps.db, { replayKeys, now: Date.now() });
@@ -1488,14 +1105,11 @@ export function registerInternalEventRoutes(
           { behavior: "immediate" },
         );
       } catch (error) {
-        if (error instanceof ReplayedEventBatchRaceError) {
-          throw new ApiError(
-            503,
-            "replayed_event_batch_race",
-            error.message,
-            true,
-          );
-        }
+        if (
+          error instanceof ApiError &&
+          error.body.code === "replayed_event_batch_race"
+        )
+          throw error;
         if (error instanceof MissingStoredTurnStartedError) {
           deps.logger.warn(
             {
@@ -1570,7 +1184,7 @@ export function registerInternalEventRoutes(
       });
 
       deferEventFollowUpBatch(deps, followUps);
-      const responseBody = {
+      const response: HostDaemonEventBatchResponse = {
         acceptedEvents: appendResult.acceptedEvents.map(
           (acceptedEvent, acceptedIndex) => {
             const inputIndex = appendResult.insertedInputIndexes[acceptedIndex];
@@ -1592,25 +1206,26 @@ export function registerInternalEventRoutes(
         ),
         rejectedEvents,
       };
-      const response = context.json(responseBody);
-      response.headers.set(
-        "content-length",
-        String(Buffer.byteLength(JSON.stringify(responseBody))),
-      );
-      deferAfterResponse({
-        config: deps.config,
-        logger: deps.logger,
-        name: "Active thread event pruning",
-        work: async () => {
-          for (const candidate of activePruneCandidates) {
-            maybePruneActiveThreadEventHistory(deps, {
-              ...candidate,
-              schedule: activeThreadPruneRuntime?.schedule,
-            });
-          }
-        },
+      const body = JSON.stringify(response);
+      if (activePruneCandidates.length > 0) {
+        deferAfterResponse({
+          config: deps.config,
+          logger: deps.logger,
+          name: "Active thread event pruning",
+          work: async () => {
+            for (const candidate of activePruneCandidates) {
+              maybePruneActiveThreadEventHistory(deps, {
+                ...candidate,
+                schedule: activeThreadPruneRuntime?.schedule,
+              });
+            }
+          },
+        });
+      }
+      return context.body(body, 200, {
+        "content-length": String(Buffer.byteLength(body)),
+        "content-type": "application/json",
       });
-      return response;
     },
   );
 }

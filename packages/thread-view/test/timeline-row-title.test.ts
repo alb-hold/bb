@@ -101,6 +101,7 @@ function commandRow(): TimelineCommandWorkRow {
     callId: "call-1",
     command: "pnpm exec turbo run test --filter=@bb/app",
     cwd: null,
+    description: null,
     source: null,
     output: "",
     exitCode: 0,
@@ -1027,6 +1028,21 @@ describe("buildTimelineRowTitle", () => {
     });
   });
 
+  it("opens files outside the workspace as local files instead of diffs", () => {
+    const outsideRow: TimelineFileChangeWorkRow = {
+      ...editedFileRow(),
+      change: {
+        ...editedFileRow().change,
+        path: "/Users/me/.bb/thread-storage/thr_1/notes.md",
+      },
+    };
+
+    expect(buildTimelineRowTitle(outsideRow, DEFAULT_OPTIONS).action).toEqual({
+      kind: "open-local-file",
+      path: "/Users/me/.bb/thread-storage/thr_1/notes.md",
+    });
+  });
+
   it("does not declare an action on non-file-change titles", () => {
     const commandRow = {
       ...baseRow("cmd-1"),
@@ -1035,6 +1051,7 @@ describe("buildTimelineRowTitle", () => {
       status: "completed" as const,
       callId: "cmd-call-1",
       command: "ls",
+      description: null,
       cwd: null,
       source: null,
       output: "",
@@ -1675,6 +1692,70 @@ describe("buildTimelineRowTitle", () => {
         ),
       ).toBe(expected);
     }
+  });
+
+  it("titles a described command with only its description outside approval states", () => {
+    const presentation = {
+      label: { pending: "Running command", completed: "Ran command" },
+      icon: { glyph: "Terminal" },
+      title: "pnpm exec turbo run test --filter=@bb/app",
+    };
+    const describedRow = (
+      overrides: Partial<TimelineCommandWorkRow>,
+    ): TimelineCommandWorkRow => ({
+      ...commandRow(),
+      startedAt: 100,
+      description: "Run the app tests",
+      presentation,
+      ...overrides,
+    });
+
+    const cases: [Partial<TimelineCommandWorkRow>, string][] = [
+      [{}, "Run the app tests (2s)"],
+      [
+        { status: "pending", completedAt: null, exitCode: null },
+        "Run the app tests",
+      ],
+      [{ status: "error", exitCode: 127 }, "Run the app tests (2s, error)"],
+      [
+        { status: "interrupted", exitCode: null },
+        "Run the app tests (2s, interrupted)",
+      ],
+      [
+        {
+          status: "pending",
+          approvalStatus: "waiting_for_approval",
+          completedAt: null,
+          exitCode: null,
+        },
+        "Waiting for approval to run pnpm exec turbo run test --filter=@bb/app",
+      ],
+      [
+        { status: "interrupted", approvalStatus: "denied", exitCode: null },
+        "Permission denied: pnpm exec turbo run test --filter=@bb/app (2s)",
+      ],
+      [
+        { description: null },
+        "Ran pnpm exec turbo run test --filter=@bb/app (2s)",
+      ],
+      [
+        { activityIntents: [searchIntent("TODO", "src")] },
+        "Searched for TODO in src",
+      ],
+    ];
+    for (const [overrides, expected] of cases) {
+      expect(
+        buildTimelineRowTitle(describedRow(overrides), DEFAULT_OPTIONS).plain,
+      ).toBe(expected);
+    }
+    expect(
+      buildTimelineRowTitle(
+        describedRow({ status: "pending", completedAt: null, exitCode: null }),
+        DEFAULT_OPTIONS,
+      ).segments,
+    ).toEqual([
+      expect.objectContaining({ text: "Run the app tests", shimmer: true }),
+    ]);
   });
 
   it("appends an (interrupted) decoration to compact exploration intents on interrupted rows", () => {

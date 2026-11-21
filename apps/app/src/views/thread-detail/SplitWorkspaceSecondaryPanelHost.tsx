@@ -1,7 +1,9 @@
+import { HEADER_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
 import { preloadThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,7 +22,6 @@ import { Button } from "@bb/shared-ui/button";
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { HEADER_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import {
   useAppCommandHandler,
@@ -86,39 +87,46 @@ export function SplitWorkspaceSecondaryPanelHost({
 
   const [isPanelVisible, setIsPanelVisible] = useState<boolean | null>(null);
   const isOpen = isPanelVisible ?? model?.isOpen ?? false;
-  const lastTargetRef = useRef<{
+  const [lastTarget, setLastTarget] = useState<{
     paneId: string;
     contentKey: string;
     isOpen: boolean;
   } | null>(null);
-
-  useLayoutEffect(() => {
-    if (model === null) {
-      lastTargetRef.current = null;
-      return;
-    }
-    const previousTarget = lastTargetRef.current;
-    lastTargetRef.current = {
+  const [visibilityPush, setVisibilityPush] = useState<{
+    open: boolean;
+  } | null>(null);
+  if (model === null) {
+    if (lastTarget !== null) setLastTarget(null);
+  } else if (
+    lastTarget === null ||
+    lastTarget.paneId !== focusedPaneId ||
+    lastTarget.contentKey !== model.contentKey ||
+    lastTarget.isOpen !== model.isOpen
+  ) {
+    setLastTarget({
       paneId: focusedPaneId,
       contentKey: model.contentKey,
       isOpen: model.isOpen,
-    };
+    });
     if (isPanelVisible === null) {
       setIsPanelVisible(model.isOpen);
-      return;
-    }
-    if (
-      previousTarget !== null &&
-      previousTarget.paneId === focusedPaneId &&
-      previousTarget.contentKey === model.contentKey
+    } else if (
+      lastTarget !== null &&
+      lastTarget.paneId === focusedPaneId &&
+      lastTarget.contentKey === model.contentKey
     ) {
-      if (model.isOpen !== previousTarget.isOpen) {
-        setIsPanelVisible(model.isOpen);
-      }
-      return;
+      setIsPanelVisible(model.isOpen);
+    } else if (model.isOpen !== isPanelVisible) {
+      setVisibilityPush({ open: isPanelVisible });
     }
-    if (model.isOpen !== isPanelVisible) model.onToggle();
-  }, [focusedPaneId, isPanelVisible, model]);
+  }
+  const pushPanelVisibility = useEffectEvent((open: boolean) => {
+    if (model !== null && model.isOpen !== open) model.onToggle();
+  });
+  useLayoutEffect(() => {
+    if (visibilityPush === null) return;
+    pushPanelVisibility(visibilityPush.open);
+  }, [visibilityPush]);
 
   useEffect(() => {
     const group = panelGroupRef.current;

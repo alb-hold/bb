@@ -17,8 +17,11 @@ import {
   dropThreadParentNotificationsColumn,
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
-  dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
+  dropQueuedMessageDeliveryColumns,
+  dropThreadStatusChangedAtColumn,
+  dropThreadRunStateTables,
+  dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
 
 const THREAD_DRAFTS_MIGRATION_TIMESTAMP = 1790322211064;
@@ -123,7 +126,10 @@ it.each([false, true])(
       dropThreadParentNotificationsColumn(db);
       dropThreadStorageDeleteSeqColumn(db);
       dropTerminalDefaultColorsColumn(db);
-      dropQueuedMessageDeliveryModeColumn(db);
+      dropQueuedMessageDeliveryColumns(db);
+      dropThreadStatusChangedAtColumn(db);
+      dropThreadRunStateTables(db);
+      dropPluginFailureLabelColumns(db);
       migrate(db);
       migrate(db);
 

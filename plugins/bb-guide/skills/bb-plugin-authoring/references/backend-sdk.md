@@ -26,7 +26,8 @@ signatures (see "Looking up the exact API" in distribution.md).
   `storagePaths` `cancelPlan` `clearGoal` `defaultExecutionOptions`
   `restoreEnvironment` `getPluginMetadata` `updatePluginMetadata`
   `experimental_listPluginMetadata` `experimental_listAncestors`
-  `experimental_listDescendants` `experimental_listCascade` `experimental_searchPromptHistory`; sub-areas `events` (`list` `wait`),
+  `experimental_listDescendants` `experimental_listCascade` `experimental_searchPromptHistory`
+  `experimental_regenerateTitle` `experimental_headState`; sub-areas `events` (`list` `wait`),
   `interactions` (`get` `list` `cancel` `resolve` `respond`), `queue`
   (`list`), `queuedMessages` (`create` `list` `update` `delete` `send`
   `reorder` `setGroupBoundary` `experimental_holdForEdit`
@@ -43,15 +44,15 @@ signatures (see "Looking up the exact API" in distribution.md).
 - `experimental_promptHistory`: `list`
 - `environments`: `list` `listProviders` `get` `update` `delete` `paths`
   `commit` `archiveThreads` `experimental_cleanup`
-  `experimental_diffViewed` `experimental_markDiffViewed`
-  `experimental_clearDiffViewed`
 - `hosts`: `list` `get` `update` `delete` `directory` `pathsExist`
   `pickFolder` `cloneDefaultPath` `providerCliStatus` `installProviderCli`
-  `retryUpdate` `experimental_listProviders` `experimental_create`
+  `experimental_startProviderCliInstall` `retryUpdate`
+  `experimental_listProviders` `experimental_create`
   `experimental_getEnrollmentCommand` `experimental_reconnect`
   `experimental_suspend` `experimental_resume` `experimental_retryCleanup`
   `experimental_reconcile` `experimental_deleteOldServerCopy`
-  `experimental_discoverRepos`, and the
+  `experimental_discoverRepos`; sub-area `experimental_providerCliInstallJobs`
+  (`list` `get` `wait`), and the
   deprecated `createJoinCode` (machine creation and suspension are in
   backend-machines.md)
 - `files`: `read` `write` `list` `listPaths` `mkdir` `move` `remove`
@@ -193,6 +194,11 @@ and `previousParentThreadId`. Threads below it move with it and get no event of
 their own. Push notifications uses all three: a parent's level limits every
 thread below it.
 
+`bb.events.on("experimental_thread.read", handler)` fires with `thread` after a
+thread becomes read: a client opened it or marked it read, or the user sent it
+a turn. Marking a thread unread does not fire it, and a thread that was already
+read can fire it again when a client re-marks it, so keep the handler cheap.
+
 Every `bb.agents.configure` callback receives its plugin's current namespace as
 a deep-frozen snapshot at top-level `context.pluginMetadata`, or `{}` when it
 is absent. The snapshot is typed deep-readonly (`ReadonlyJsonValue` values),
@@ -256,6 +262,11 @@ of a set of threads still exist.
 `threads.update` writes `title`, `sectionId`, `parentThreadId`, `model`,
 `reasoningLevel`, and `visibility`. Use `threads.timeline` (or
 `threads.output` for the last assistant text) to read a thread's messages.
+To read a thread's current to-dos, slash commands, session options, extension
+states, plan prompt mode, model fallback, or context usage, use
+`threads.experimental_headState({ threadId })`: it reads their latest stored
+state without building a timeline window, so it stays cheap on threads with
+long turns.
 For raw history, `threads.events.list` defaults to ascending order and supports
 exclusive `afterSeq` / `beforeSeq` cursors, `order: "asc" | "desc"`, and a
 non-empty typed `types` array. Combine `order: "desc"` with `beforeSeq` to page
@@ -350,9 +361,8 @@ mimeType? })`; `clientFile` accepts `Uint8Array`, `ArrayBuffer`, `Blob`, or a
 File-like value (bare bytes/Blob require `filename`). The SDK sends multipart
 bytes and returns the stable uploaded-attachment DTO whose relative `path` can
 be used in `localFile`/`localImage` prompt input. Read an existing attachment
-with `bb.sdk.projects.attachments.read({ projectId, path })`. Image MIME types
-cap at 10 MB and other files at 25 MB. There is no attachment list or
-per-attachment remove operation.
+with `bb.sdk.projects.attachments.read({ projectId, path })`. Uploads cap at
+35 MB per file. There is no attachment list or per-attachment remove operation.
 
 For filesystem-backed products that need a tree or mutations,
 `bb.sdk.files.listPaths({ path, includeFiles, includeDirectories, ... })`

@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 export function useElementWidth() {
   const [width, setWidth] = useState(0);
@@ -10,13 +11,11 @@ export function useElementWidth() {
       );
       return () => cancelAnimationFrame(frame);
     }
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries.find((entry) => entry.target === element);
-      if (entry)
-        setWidth(entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width);
+    return observeSharedResize(element, {
+      read: (entry) =>
+        entry?.borderBoxSize[0]?.inlineSize ?? entry?.contentRect.width ?? 0,
+      write: setWidth,
     });
-    observer.observe(element, { box: "border-box" });
-    return () => observer.disconnect();
   }, []);
   return { ref, width };
 }

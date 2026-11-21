@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   WRITING_TARGET_MAX_CHARS,
   type WritingCorrectionRequest,
@@ -95,7 +95,9 @@ export function useTypingAssistance(
   options: UseTypingAssistanceOptions,
 ): TypingAssistanceController {
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  useLayoutEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
   const analyzedRef = useRef(new Set<string>());
   const trackedRef = useRef(new Set<TrackedRange>());
   const suggestionsRef = useRef<TrackedSuggestion[]>([]);
@@ -466,13 +468,16 @@ export function useTypingAssistance(
     }, TRAILING_IDLE_MS);
   }, [analyzeCompleted, analyzeQueued, analyzeTrailing, clearTimers]);
 
-  continueRef.current = () => {
+  const continueAnalysis = useCallback(() => {
     if (idleTimerRef.current !== null) return;
     idleTimerRef.current = window.setTimeout(() => {
       idleTimerRef.current = null;
       if (!analyzeQueued()) analyzeCompleted();
     }, TYPING_IDLE_MS);
-  };
+  }, [analyzeCompleted, analyzeQueued]);
+  useLayoutEffect(() => {
+    continueRef.current = continueAnalysis;
+  }, [continueAnalysis]);
 
   const onTextChange = useCallback(
     (change: TextChange, programmatic: boolean) => {
@@ -587,13 +592,12 @@ export function useTypingAssistance(
     inFlightRef.current = null;
     for (const range of queuedRef.current) untrack(range);
     queuedRef.current = [];
-    setPending(false);
   }, [clearTimers, options.enabled, scheduleAnalysis, untrack]);
 
   return {
     suggestions,
     recent,
-    pending,
+    pending: options.enabled && pending,
     onTextChange,
     acceptSuggestion,
     dismissSuggestion,

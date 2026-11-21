@@ -13,6 +13,7 @@ import { createStore, Provider as JotaiProvider } from "jotai";
 import {
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -73,7 +74,7 @@ import {
 import { SplitThreadArea } from "./SplitThreadArea";
 import { applyThreadOpenToLayout } from "./splitThreadNavigation";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import { ComposerBox } from "@/components/promptbox/ComposerBox";
+import { ControlledComposerBox } from "@/test/fixtures/controlled-composer-box";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 import { LocationProbe } from "@/test/location-probe";
 
@@ -109,6 +110,16 @@ function ResponsiveFocusComposer() {
 }
 
 const composerScopeProbe = vi.hoisted(() => ({ active: false }));
+const routeCommits = vi.hoisted(
+  (): Array<{ path: string; panes: string[] }> => [],
+);
+const routeProjectCommits = vi.hoisted(
+  (): Array<{
+    path: string;
+    composerKey: string | null;
+    paneProjects: string[];
+  }> => [],
+);
 
 function ThreadComposerScope({
   projectId,
@@ -533,6 +544,7 @@ function ThreadPaneFixture({
   return (
     <div
       data-testid={`pane-${threadId}`}
+      data-project-id={projectId}
       data-focused={pane?.isFocused ? "true" : "false"}
       data-window-top-left-owner={pane?.ownsWindowTopLeft ? "true" : "false"}
     >
@@ -554,7 +566,7 @@ function ThreadPaneFixture({
           threadId,
         ) ? null : responsiveComposerProbe.enabled ? (
           <PluginComposerHostProvider value={composerHost}>
-            <ComposerBox
+            <ControlledComposerBox
               surface="thread"
               value={draft.text}
               mentionRanges={[]}
@@ -886,11 +898,33 @@ function ExternalNav({ to }: { to: string }) {
     <button
       type="button"
       data-testid="external-nav"
-      onClick={() => navigate(to)}
+      onClick={() => void navigate(to)}
     >
       go
     </button>
   );
+}
+
+function RouteCommitProbe() {
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    routeCommits.push({
+      path: pathname,
+      panes: screen
+        .queryAllByTestId(/^pane-thr-/)
+        .map((pane) => pane.getAttribute("data-testid") ?? ""),
+    });
+    routeProjectCommits.push({
+      path: pathname,
+      composerKey:
+        screen.queryByTestId("plugin-composer")?.getAttribute("data-key") ??
+        null,
+      paneProjects: screen
+        .queryAllByTestId(/^pane-thr-/)
+        .map((pane) => pane.getAttribute("data-project-id") ?? ""),
+    });
+  }, [pathname]);
+  return null;
 }
 
 function PluginPanelLifecycleHarness() {
@@ -965,6 +999,7 @@ function renderSplitArea(options: {
                   <SplitThreadArea routeContent={options.routeContent} />
                 )}
                 <LocationProbe />
+                <RouteCommitProbe />
                 {options.externalTo !== undefined ? (
                   <ExternalNav to={options.externalTo} />
                 ) : null}
@@ -993,6 +1028,8 @@ beforeEach(() => {
   responsiveComposerProbe.enabled = false;
   nativeTerminalPanes.clear();
   nativeTerminalComposerPanes.clear();
+  routeCommits.length = 0;
+  routeProjectCommits.length = 0;
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -2353,6 +2390,73 @@ describe("SplitThreadArea", () => {
           (pane) => pane.getAttribute("data-window-top-left-owner") === "true",
         ),
     ).toEqual([screen.getByTestId("pane-thr-a")]);
+  });
+
+  it("shows the destination thread in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-a");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([{ path: threadPath("thr-c"), panes: ["pane-thr-c"] }]);
+  });
+
+  it("shows the destination thread in a split in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-b"),
+      layout: twoPaneLayout("pane-2"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-b");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([
+      { path: threadPath("thr-c"), panes: ["pane-thr-a", "pane-thr-c"] },
+    ]);
+  });
+
+  it("test-change-reason: the plugin composer host publishes in a layout effect in ours and upstream alike, so the composer key follows the reconciled project one synchronous re-render after the route commit; the key is asserted on the settled tree and the pane projects on the route commit; reconciles a same-thread project switch before the destination route commits", async () => {
+    composerScopeProbe.active = true;
+    const destination = "/projects/proj-b/threads/thr-a";
+    renderSplitArea({
+      path: "/projects/proj-a/threads/thr-a",
+      layout: {
+        root: {
+          type: "pane",
+          paneId: "pane-1",
+          content: { kind: "thread", projectId: "proj-a", threadId: "thr-a" },
+        },
+        focusedPaneId: "pane-1",
+      },
+      externalTo: destination,
+    });
+    await screen.findByTestId("pane-thr-a");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+
+    const expectedKey = getPromptDraftAccessor({
+      kind: "thread",
+      projectId: "proj-b",
+      threadId: "thr-a",
+    }).storageKey;
+    expect(
+      routeProjectCommits
+        .filter((commit) => commit.path === destination)
+        .map(({ path, paneProjects }) => ({ path, paneProjects })),
+    ).toEqual([{ path: destination, paneProjects: ["proj-b"] }]);
+    expect(
+      screen.getByTestId("plugin-composer").getAttribute("data-key"),
+    ).toBe(expectedKey);
   });
 
   it("opens a created thread in the focused composer pane", async () => {

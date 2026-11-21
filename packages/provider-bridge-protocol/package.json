@@ -33,6 +33,11 @@
       "types": "./src/testing/index.ts",
       "default": "./src/testing/index.ts"
     },
+    "./scenarios": {
+      "source": "./src/testing/scenario-replay.ts",
+      "types": "./src/testing/scenario-replay.ts",
+      "default": "./src/testing/scenario-replay.ts"
+    },
     "./bridge-worker-entry": {
       "source": "./src/bridge-worker-entry.ts",
       "types": "./src/bridge-worker-entry.ts",
@@ -44,19 +49,21 @@
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "lint": "oxlint --ignore-pattern \"**/*.mjs\" src",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@bb/domain": "workspace:*",
     "@bb/process-utils": "workspace:*",
     "@bb/text-utils": "workspace:*",
-    "semver": "^7.7.4",
-    "zod": "^4.3.6"
+    "semver": "^7.8.6",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@bb/test-helpers": "workspace:*",
     "@bb/tsconfig": "workspace:*",
-    "@types/node": "^22.0.0",
-    "@types/semver": "^7.7.1",
+    "@types/node": "^22.20.5",
+    "@types/semver": "^7.8.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",

@@ -11,15 +11,8 @@ import { useSyncExternalStore } from "react";
 import type { ExperimentalBadge } from "@get-bb/plugin-sdk";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -178,9 +171,7 @@ function registerDocsBadge(badge: ExperimentalBadge) {
   registerDocs(() => useSyncExternalStore(subscribe, () => badge));
 }
 
-beforeAll(async () => {
-  await SidebarVisibilityCustomize.preload();
-});
+await SidebarVisibilityCustomize.preload();
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -203,6 +194,7 @@ describe("SidebarNavigationList", () => {
     renderList(THREAD_PATH, {
       visibleKeys: ["__bb__/extensions", "garden/docs"],
     });
+    await settleLazyModules();
 
     expect(rowLabels()).toEqual(["Plugins", "Docs", "More"]);
 
@@ -237,6 +229,7 @@ describe("SidebarNavigationList", () => {
   it("hides New thread from Customize like any other row", async () => {
     const store = createStore();
     renderList(THREAD_PATH, { store });
+    await settleLazyModules();
 
     fireEvent.keyDown(within(list()).getByRole("button", { name: "More" }), {
       key: "Enter",
@@ -301,6 +294,7 @@ describe("SidebarNavigationList", () => {
 
   it("customizes the list from More and returns focus to More", async () => {
     renderList(THREAD_PATH);
+    await settleLazyModules();
     const more = within(list()).getByRole("button", { name: "More" });
 
     fireEvent.keyDown(more, { key: "Enter" });
@@ -334,6 +328,7 @@ describe("SidebarNavigationList", () => {
 
   it("opens a row's options from its menu button and customizes from there", async () => {
     renderList(THREAD_PATH);
+    await settleLazyModules();
 
     fireEvent.keyDown(
       within(list()).getByRole("button", { name: "Docs panel options" }),

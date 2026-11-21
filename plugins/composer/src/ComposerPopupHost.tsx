@@ -2,6 +2,7 @@ import { useEffect, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { ResponsiveDrawerShell } from "@/components/ui/responsive-overlay";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import { usePortalScopeProps } from "./portal-scope.js";
 
@@ -176,13 +177,10 @@ function ComposerPopupContent({
       }
     };
     position();
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(position);
-    observer?.observe(composer);
-    if (surface !== composer) observer?.observe(surface);
-    observer?.observe(menu);
+    const unobserve = observeSharedResize([composer, surface, menu], {
+      read: () => undefined,
+      write: position,
+    });
     const positionOnScroll = (event: Event) => {
       if (event.target instanceof Node && menu.contains(event.target)) return;
       position();
@@ -192,7 +190,7 @@ function ComposerPopupContent({
     viewport?.addEventListener("resize", position);
     viewport?.addEventListener("scroll", position);
     return () => {
-      observer?.disconnect();
+      unobserve();
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", positionOnScroll, true);
       viewport?.removeEventListener("resize", position);

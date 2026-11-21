@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 vi.mock("./plugin-module-preload", () => ({
   preloadPluginModule: vi.fn(async () => true),
@@ -189,7 +190,7 @@ it("does not evaluate between IME composition events even after a long pause", a
   expect(evaluate).toHaveBeenCalledOnce();
 });
 
-it("imports dependency chunks in separate quiet tasks without fetching them twice", async () => {
+it("test-change-reason: upstream holds tracked lazy imports, so the quiet-task imports are settled; imports dependency chunks in separate quiet tasks without fetching them twice", async () => {
   const { createSettledWorkSchedule } =
     await import("./settled-split-downloads");
   const { prepareBackgroundSplit } = await import("./split-prefetch");
@@ -214,13 +215,19 @@ it("imports dependency chunks in separate quiet tasks without fetching them twic
   const schedule = createSettledWorkSchedule(() => true);
   cancel = schedule.cancel;
   const done = prepareBackgroundSplit("thread-detail", schedule.run);
-  await vi.waitFor(() => expect(evaluations).toHaveLength(1));
+  await settleLazyModules(
+    vi.waitFor(() => expect(evaluations).toHaveLength(1)),
+  );
   const inputAt = evaluations[0]!;
   await vi.advanceTimersByTimeAsync(500);
   expect(evaluations).toHaveLength(1);
-  await vi.advanceTimersByTimeAsync(600);
-  await vi.waitFor(() => expect(evaluations).toHaveLength(2));
-  await done;
+  await settleLazyModules(
+    (async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await vi.waitFor(() => expect(evaluations).toHaveLength(2));
+      await done;
+    })(),
+  );
   expect(evaluations[1]! - inputAt).toBeGreaterThanOrEqual(1_000);
   expect(fetch).not.toHaveBeenCalled();
 });

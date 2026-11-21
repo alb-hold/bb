@@ -296,32 +296,36 @@ describe("KeyboardSettingsSection", () => {
     testState.mutate.mockImplementation((overrides) => {
       testState.keybindingOverrides = overrides;
     });
-    const { rerender } = render(<KeyboardSettingsSection />);
+    render(<KeyboardSettingsSection />);
     fireEvent.click(
       screen.getByRole("button", { name: "Reset shortcut for New thread" }),
     );
-    rerender(<KeyboardSettingsSection />);
-    expect(
-      screen.getByRole("button", {
-        name: "Record shortcut for New thread, current shortcut ⇧ ⌘ O",
-      }),
-    ).toBeTruthy();
+    const macWebShortcut = {
+      name: "Record shortcut for New thread, current shortcut ⇧ ⌘ O",
+    };
+    expect(screen.getByRole("button", macWebShortcut)).toBeTruthy();
+    cleanup();
+    render(<KeyboardSettingsSection />);
+    expect(screen.getByRole("button", macWebShortcut)).toBeTruthy();
+    cleanup();
     testState.isDesktop = true;
-    rerender(<KeyboardSettingsSection />);
+    render(<KeyboardSettingsSection />);
     expect(
       screen.getByRole("button", {
         name: "Record shortcut for New thread, current shortcut ⌘ N",
       }),
     ).toBeTruthy();
+    cleanup();
     platform.mockReturnValue("Linux");
-    rerender(<KeyboardSettingsSection />);
+    render(<KeyboardSettingsSection />);
     expect(
       screen.getByRole("button", {
         name: "Record shortcut for New thread, current shortcut Ctrl + G",
       }),
     ).toBeTruthy();
+    cleanup();
     platform.mockReturnValue("Win32");
-    rerender(<KeyboardSettingsSection />);
+    render(<KeyboardSettingsSection />);
     expect(
       screen.getByRole("button", {
         name: "Record shortcut for New thread, current shortcut unassigned",
@@ -419,23 +423,6 @@ describe("KeyboardSettingsSection", () => {
     ).toBe(true);
   });
 
-  it("ranks visible label matches ahead of description matches across groups", () => {
-    render(<KeyboardSettingsSection />);
-
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Search keyboard shortcuts" }),
-      {
-        target: { value: "  SiDeBaR  " },
-      },
-    );
-
-    expect(
-      screen
-        .getAllByRole("button", { name: /^Record shortcut for / })[0]
-        ?.getAttribute("aria-label"),
-    ).toMatch(/^Record shortcut for Toggle sidebar,/);
-  });
-
   it("ranks exact labels, label prefixes, label substrings, IDs, and descriptions in order", () => {
     setPluginSlotRegistrations(
       "test-shortcuts",
@@ -458,7 +445,7 @@ describe("KeyboardSettingsSection", () => {
     fireEvent.change(
       screen.getByRole("textbox", { name: "Search keyboard shortcuts" }),
       {
-        target: { value: "sidebar" },
+        target: { value: "  SiDeBaR  " },
       },
     );
 

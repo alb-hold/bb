@@ -13,6 +13,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
 import { useSidebarHeaderControlAxisClass } from "./SidebarChrome";
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 
 const SIDEBAR_HEADER_SLOT_KIND = "sidebarHeader";
 const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
@@ -93,21 +94,24 @@ function PluginNavigationHeader({
   useLayoutEffect(() => {
     const element = slotRef.current;
     if (element === null) return;
-    const measure = (width: number) => {
-      if (element.hidden) return;
-      const controlSize = readControlSize(element);
+    const measure = (width: number) =>
+      element.hidden ? null : { width, controlSize: readControlSize(element) };
+    const apply = (next: { width: number; controlSize: number } | null) => {
+      if (next === null) return;
       setSize((current) =>
-        current.width === width && current.controlSize === controlSize
+        current.width === next.width && current.controlSize === next.controlSize
           ? current
-          : { width, controlSize },
+          : next,
       );
     };
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      if (entry) measure(Math.floor(entry.contentRect.width));
+    const unobserve = observeSharedResize(element, {
+      read: (entry) =>
+        entry === undefined ? null : Math.floor(entry.contentRect.width),
+      write: (width) => {
+        apply(width === null ? null : measure(width));
+      },
     });
-    observer.observe(element);
-    return () => observer.disconnect();
+    return unobserve;
   }, [isCompactViewport]);
 
   const props = {

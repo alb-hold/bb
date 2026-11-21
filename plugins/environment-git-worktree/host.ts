@@ -1,12 +1,14 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
+import { emitOutput } from "bb-environment-provider-host/transcript";
 import {
   REMOVE_DEADLINE_MS,
   removalDeadlineReason,
 } from "bb-environment-provider-host/remove-timeout";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
 import {
+  ensureGitRepo,
   readDefaultBranchRefs,
   WorkspaceError,
 } from "bb-environment-provider-host/git";
@@ -24,6 +26,7 @@ import {
 } from "./host/paths.js";
 import {
   createWorktree,
+  deleteOwnedBranch,
   inspectWorktreeRemoval,
   listAdoptableWorktrees,
   removeWorktree,
@@ -135,7 +138,8 @@ export function createWorktreeHostEntry() {
     experimental_signals: worktreeHostSignals,
     handlers: {
       async defaultBaseBranch(input) {
-        const refs = await readDefaultBranchRefs(input.sourcePath);
+        const repo = await ensureGitRepo(input.sourcePath);
+        const refs = await readDefaultBranchRefs(repo);
         return {
           branch: resolveDefaultWorktreeBaseBranch({
             defaultBranch: refs.defaultBranch ?? null,
@@ -222,6 +226,7 @@ export function createWorktreeHostEntry() {
             status: "created",
             path: created.path,
             baseBranch: baseBranch?.ref ?? null,
+            ownsBranch: created.ownsBranch,
           } as const;
         } catch (error) {
           if (context.signal.aborted) throw error;
@@ -304,25 +309,48 @@ export function createWorktreeHostEntry() {
               break;
             }
           }
+          let result:
+            | { status: "removed"; message?: string }
+            | { status: "retained" | "failed"; message: string };
           if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
             const notice = worktreeHolderScopeNotice();
-            return {
+            result = {
               status: "removed",
               ...(targets.length > 0 && notice !== null
                 ? { message: notice }
                 : {}),
             } as const;
-          }
-          if (outcome.kept.length > 0 && outcome.unknown.length === 0) {
-            return {
+          } else if (outcome.kept.length > 0 && outcome.unknown.length === 0) {
+            result = {
               status: "retained",
               message: describeRemovalOutcome(outcome),
             } as const;
+          } else {
+            result = {
+              status: "failed",
+              message: describeRemovalOutcome(outcome),
+            } as const;
           }
-          return {
-            status: "failed",
-            message: describeRemovalOutcome(outcome),
-          } as const;
+          if (result.status !== "removed") return result;
+          if (input.ownedBranch !== null) {
+            try {
+              await deleteOwnedBranch({
+                repositoryPath: input.ownedBranch.repositoryPath,
+                branchName: input.ownedBranch.name,
+                baseBranch: input.ownedBranch.baseBranch,
+                onProgress,
+                signal: context.signal,
+              });
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              emitOutput(
+                onProgress,
+                "branch-cleanup",
+                `Kept branch ${input.ownedBranch.name}: ${describeError(error)}`,
+              );
+            }
+          }
+          return result;
         } catch (error) {
           if (context.signal.aborted) throw error;
           return { status: "failed", message: describeError(error) } as const;

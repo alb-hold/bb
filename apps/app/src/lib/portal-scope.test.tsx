@@ -59,10 +59,38 @@ describe("usePortalScopeProps", () => {
     expect(scoped.length).toBe(2);
     for (const root of scoped) {
       expect(root.getAttribute("data-bb-plugin")).toBe("test-plugin");
+      expect(root.getAttribute("data-bb-plugin-scope-test-plugin")).toBe("");
     }
     expect(
       baseElement.querySelectorAll("[data-bb-portaled-overlay]").length,
     ).toBe(2);
+  });
+
+  it("keeps a nested plugin portal owned by its nearest React context", () => {
+    const { baseElement } = render(
+      <PluginContext.Provider value="outer-plugin">
+        <div data-bb-plugin="outer-plugin" data-bb-plugin-root="">
+          <PluginContext.Provider value="inner-plugin">
+            {openDialog()}
+          </PluginContext.Provider>
+        </div>
+      </PluginContext.Provider>,
+    );
+
+    const dialog = baseElement.querySelector('[role="dialog"]');
+    expect(dialog?.getAttribute("data-bb-plugin")).toBe("inner-plugin");
+    expect(dialog?.closest('[data-bb-plugin="outer-plugin"]')).toBeNull();
+    const portals = baseElement.querySelectorAll("[data-bb-portaled-overlay]");
+    expect(portals).toHaveLength(2);
+    for (const portal of portals) {
+      expect(portal.getAttribute("data-bb-plugin")).toBe("inner-plugin");
+      expect(portal.hasAttribute("data-bb-plugin-scope-inner-plugin")).toBe(
+        true,
+      );
+      expect(portal.hasAttribute("data-bb-plugin-scope-outer-plugin")).toBe(
+        false,
+      );
+    }
   });
 
   it("leaves host-tree dialogs unscoped so plugin CSS cannot match them", () => {

@@ -19,6 +19,7 @@ import {
   type ComponentProps,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type RefObject,
   type SetStateAction,
 } from "react";
 import { useRouteState } from "@/hooks/useRouteState";
@@ -187,6 +188,50 @@ interface PreservedScrollPosition {
   top: number;
 }
 
+function restorePreservedScrollPositionsUntilSettled(
+  workspaceRef: RefObject<HTMLDivElement | null>,
+  positions: Map<HTMLElement, PreservedScrollPosition>,
+): () => void {
+  const restore = (): boolean => {
+    const workspace = workspaceRef.current;
+    let corrected = false;
+    for (const [element, position] of positions) {
+      if (workspace === null || !workspace.contains(element)) {
+        positions.delete(element);
+        continue;
+      }
+      if (
+        element.scrollLeft === position.left &&
+        element.scrollTop === position.top
+      ) {
+        continue;
+      }
+      element.scrollLeft = position.left;
+      element.scrollTop = position.top;
+      corrected = true;
+    }
+    return corrected;
+  };
+
+  restore();
+  let frame: number | null = null;
+  let framesRemaining = 5;
+  const restoreUntilSettled = () => {
+    const corrected = restore();
+    framesRemaining -= 1;
+    frame =
+      corrected && framesRemaining > 0
+        ? window.requestAnimationFrame(restoreUntilSettled)
+        : null;
+  };
+  frame = window.requestAnimationFrame(restoreUntilSettled);
+  return () => {
+    if (frame !== null) {
+      window.cancelAnimationFrame(frame);
+    }
+  };
+}
+
 function usePreservedSplitScrollPositions(maximizedPaneId: string | null) {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const positionsRef = useRef(new Map<HTMLElement, PreservedScrollPosition>());
@@ -219,44 +264,10 @@ function usePreservedSplitScrollPositions(maximizedPaneId: string | null) {
     }
     previousMaximizedPaneIdRef.current = maximizedPaneId;
 
-    const restore = (): boolean => {
-      const workspace = workspaceRef.current;
-      let corrected = false;
-      for (const [element, position] of positionsRef.current) {
-        if (workspace === null || !workspace.contains(element)) {
-          positionsRef.current.delete(element);
-          continue;
-        }
-        if (
-          element.scrollLeft === position.left &&
-          element.scrollTop === position.top
-        ) {
-          continue;
-        }
-        element.scrollLeft = position.left;
-        element.scrollTop = position.top;
-        corrected = true;
-      }
-      return corrected;
-    };
-
-    restore();
-    let frame: number | null = null;
-    let framesRemaining = 5;
-    const restoreUntilSettled = () => {
-      const corrected = restore();
-      framesRemaining -= 1;
-      frame =
-        corrected && framesRemaining > 0
-          ? window.requestAnimationFrame(restoreUntilSettled)
-          : null;
-    };
-    frame = window.requestAnimationFrame(restoreUntilSettled);
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-    };
+    return restorePreservedScrollPositionsUntilSettled(
+      workspaceRef,
+      positionsRef.current,
+    );
   }, [maximizedPaneId]);
 
   return { captureVisibleScrollPositions, workspaceRef };
@@ -293,30 +304,35 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     [routeContent, routeThread],
   );
 
+  const [reconciliation, setReconciliation] = useState<{
+    content: PaneContent;
+    from: SplitLayout | null;
+    layout: SplitLayout;
+  } | null>(null);
+  let layout = storedLayout;
+  if (currentContent !== null) {
+    if (reconciliation?.content !== currentContent) {
+      const next = {
+        content: currentContent,
+        from: storedLayout,
+        layout: reconcileLayoutForContent(storedLayout, currentContent),
+      };
+      setReconciliation(next);
+      layout = next.layout;
+    } else if (storedLayout === reconciliation.from) {
+      layout = reconciliation.layout;
+    }
+  }
+
   useEffect(() => {
-    if (currentContent === null) {
+    if (reconciliation === null) {
       return;
     }
     setLayout((previous) =>
-      reconcileLayoutForContent(previous, currentContent),
+      reconcileLayoutForContent(previous, reconciliation.content),
     );
-  }, [currentContent, setLayout]);
+  }, [reconciliation, setLayout]);
 
-  const layout = useMemo(() => {
-    if (currentContent === null) return storedLayout;
-    if (storedLayout === null)
-      return reconcileLayoutForContent(null, currentContent);
-    const focusedContent = findPane(
-      storedLayout.root,
-      storedLayout.focusedPaneId,
-    )?.content;
-    return currentContent.kind === "thread" &&
-      focusedContent?.kind === "thread" &&
-      currentContent.threadId === focusedContent.threadId &&
-      currentContent.projectId !== focusedContent.projectId
-      ? reconcileLayoutForContent(storedLayout, currentContent)
-      : storedLayout;
-  }, [storedLayout, currentContent]);
   useTerminalMountGate(
     "terminal-split-layout",
     "workspace",
@@ -423,6 +439,10 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   const [keyboardFocusRequest, setKeyboardFocusRequest] = useState<{
     paneId: string;
   } | null>(null);
+  const keyboardFocusObserverRef = useRef<MutationObserver | null>(null);
+  const keyboardFocusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   useEffect(() => {
     if (keyboardFocusRequest === null) return;
     const paneId = keyboardFocusRequest.paneId;
@@ -432,11 +452,12 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
       workspace?.querySelectorAll<HTMLElement>("[data-split-pane-id]") ?? [],
     ).find((element) => element.dataset.splitPaneId === paneId);
     if (!root || !pane || layout?.focusedPaneId !== paneId) return;
-    let observer: MutationObserver | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => {
-      observer?.disconnect();
-      clearTimeout(timeout);
+      keyboardFocusObserverRef.current?.disconnect();
+      keyboardFocusObserverRef.current = null;
+      if (keyboardFocusTimeoutRef.current !== null)
+        clearTimeout(keyboardFocusTimeoutRef.current);
+      keyboardFocusTimeoutRef.current = null;
     };
     const finish = () => {
       cancelAnimationFrame(frame);
@@ -445,6 +466,8 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
         current === keyboardFocusRequest ? null : current,
       );
     };
+    document.addEventListener("pointerdown", finish, true);
+    document.addEventListener("keydown", finish, true);
     const focus = () => {
       if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
         return false;
@@ -474,23 +497,21 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
               "input:not(:disabled), textarea:not(:disabled), [contenteditable='true'], button:not(:disabled), a[href], [tabindex='0']",
             );
       (control ?? root).focus({ preventScroll: true });
-      observer = new MutationObserver(() => {
+      keyboardFocusObserverRef.current = new MutationObserver(() => {
         if (document.activeElement !== root) {
           finish();
           return;
         }
         if (focus()) finish();
       });
-      observer.observe(root, {
+      keyboardFocusObserverRef.current.observe(root, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ["contenteditable", "disabled"],
       });
-      timeout = setTimeout(finish, 1000);
+      keyboardFocusTimeoutRef.current = setTimeout(finish, 1000);
     });
-    document.addEventListener("pointerdown", finish, true);
-    document.addEventListener("keydown", finish, true);
     return () => {
       cancelAnimationFrame(frame);
       cancel();
@@ -1252,7 +1273,13 @@ function StandalonePaneContent({
         {panelChrome ? (
           <div className="flex h-full min-h-0 flex-col">
             <AppPageHeader
-              center={<PluginPanelHeaderCenter chrome={panelChrome} />}
+              center={
+                <PluginPanelHeaderCenter
+                  chrome={panelChrome}
+                  panel={panel}
+                  subPath={content.subPath}
+                />
+              }
               actions={
                 panel ? (
                   <PluginPanelHeaderActions
@@ -1402,7 +1429,13 @@ function NonThreadPaneContent({
               onPointerDown={beginPaneDrag ? handlePointerDown : undefined}
             >
               {panelChrome ? (
-                <PluginPanelHeaderCenter chrome={panelChrome} />
+                <PluginPanelHeaderCenter
+                  chrome={panelChrome}
+                  panel={panel}
+                  subPath={
+                    content.kind === "plugin-panel" ? content.subPath : ""
+                  }
+                />
               ) : (
                 <p
                   className={cn(

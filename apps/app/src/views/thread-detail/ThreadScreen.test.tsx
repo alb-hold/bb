@@ -1,16 +1,25 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+import type { ComponentType, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
+import type { ThreadTimelineEditMessageHandler } from "@/components/thread/timeline";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import type { ThreadDetailSentMessageEdit } from "./ThreadDetailPromptArea";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
 import type { ThreadResponse } from "@bb/server-contract";
 
@@ -23,7 +32,23 @@ const mocks = vi.hoisted(() => ({
   pageShellProps: [] as Array<Record<string, unknown>>,
   promptAreaProps: [] as Array<Record<string, unknown>>,
   surfaceProps: [] as Array<Record<string, unknown>>,
+  timeline: null as UseThreadTimelineControllerResult | null,
+  toastWarning: vi.fn(),
+  editMessageMutateAsync: vi.fn(),
 }));
+
+let activeScreenWrapper: ComponentType<{ children: ReactNode }> = ({
+  children,
+}) => <>{children}</>;
+
+vi.mock("@/components/ui/app-toast", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/ui/app-toast")>();
+  return {
+    ...actual,
+    appToast: { ...actual.appToast, warning: mocks.toastWarning },
+  };
+});
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
   isPendingInteractionStateUnknown: (
@@ -49,11 +74,21 @@ vi.mock("@/hooks/queries/system-queries", () => ({
 }));
 
 vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
-  const mutation = () => ({ isPending: false, mutateAsync: vi.fn() });
   return {
-    useCreateThreadQueuedMessage: mutation,
-    useEditThreadMessage: mutation,
-    useSendThreadMessage: mutation,
+    useCreateThreadQueuedMessage: () => ({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn(),
+      isPending: false,
+    }),
+    useEditThreadMessage: () => ({
+      mutateAsync: mocks.editMessageMutateAsync,
+      isPending: false,
+    }),
+    useSendThreadMessage: () => ({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn(),
+      isPending: false,
+    }),
   };
 });
 
@@ -62,6 +97,7 @@ vi.mock("@/components/thread/timeline", async (importOriginal) => {
     await importOriginal<typeof import("@/components/thread/timeline")>();
   return {
     ...actual,
+    useThreadTimelineController: () => mocks.timeline,
     ThreadTimelineSurface: (props: Record<string, unknown>) => {
       mocks.surfaceProps.push(props);
       const addToChat = props.onSelectionAddToChat as
@@ -102,15 +138,16 @@ const THREAD = makeThreadResponse({
   runtime: { displayStatus: "active" },
 });
 
-const TIMELINE = {
+const TIMELINE: UseThreadTimelineControllerResult = {
   activeBackgroundCommands: [],
   activePromptMode: null,
   activeThinking: null,
   activeWorkflows: [],
   contextBoundarySeq: null,
-  contextWindowUsage: null,
+  contextWindowUsage: undefined,
   goal: null,
   hasOlderTimelineRows: false,
+  hasUnseenTimelineEvents: false,
   isCatchingUpTimeline: false,
   isLoadingOlderTimelineRows: false,
   loadOlderTimelineRows: async () => {},
@@ -121,7 +158,7 @@ const TIMELINE = {
   timelineError: null,
   timelineLoading: false,
   timelineRows: [],
-} as unknown as UseThreadTimelineControllerResult;
+};
 
 const SIDE_CHAT_PRESENTATION: ThreadScreenPresentation = {
   kind: "panel",
@@ -165,7 +202,21 @@ function renderScreen(
   } = {},
 ) {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
-  return render(
+  activeScreenWrapper = Wrapper;
+  mocks.timeline = overrides.timeline ?? TIMELINE;
+  return render(screenElement(presentation, overrides));
+}
+
+function screenElement(
+  presentation: ThreadScreenPresentation,
+  overrides: {
+    hasUnseenTimelineEvents?: boolean;
+    thread?: ThreadResponse;
+    timeline?: UseThreadTimelineControllerResult;
+  } = {},
+) {
+  const Wrapper = activeScreenWrapper;
+  return (
     <Wrapper>
       <ThreadScreen
         composer={{
@@ -179,7 +230,7 @@ function renderScreen(
         projectId={THREAD.projectId}
         resolveMentionLink={() => null}
         thread={overrides.thread ?? THREAD}
-        timeline={overrides.timeline ?? TIMELINE}
+        timelineEnabled={true}
         timelineHost={{
           environmentHostName: null,
           includePluginMessageActions: false,
@@ -187,8 +238,46 @@ function renderScreen(
           unreadDividerPlacement: null,
         }}
       />
-    </Wrapper>,
+    </Wrapper>
   );
+}
+
+function timelineWithRowIds(
+  rowIds: readonly string[],
+): UseThreadTimelineControllerResult {
+  return {
+    ...TIMELINE,
+    timelineRows: rowIds.map((id) =>
+      conversationRow({ id, role: "user", text: "/compact" }),
+    ),
+  };
+}
+
+function latestSentMessageEdit(): ThreadDetailSentMessageEdit | undefined {
+  return mocks.promptAreaProps.at(-1)!.sentMessageEdit as
+    | ThreadDetailSentMessageEdit
+    | undefined;
+}
+
+function startEditingMessage(messageId: string) {
+  const onEditMessage = mocks.surfaceProps.at(-1)!
+    .onEditMessage as ThreadTimelineEditMessageHandler;
+  act(() => {
+    onEditMessage({
+      expectedRequestSequence: 1,
+      input: [{ type: "text", text: "/compact", mentions: [] }],
+      messageId,
+    });
+  });
+}
+
+function submitSentMessageEdit() {
+  act(() => {
+    latestSentMessageEdit()!.onSubmit({
+      execution: null,
+      input: [{ type: "text", text: "/compact keep it short", mentions: [] }],
+    });
+  });
 }
 
 function makePluginInteraction(): PendingInteraction {
@@ -218,6 +307,9 @@ beforeEach(() => {
   mocks.pageShellProps = [];
   mocks.promptAreaProps = [];
   mocks.surfaceProps = [];
+  mocks.timeline = null;
+  mocks.editMessageMutateAsync.mockReset();
+  mocks.toastWarning.mockReset();
 });
 
 it("includes an idle signaled child in the parent banner", () => {
@@ -363,6 +455,75 @@ describe("ThreadScreen", () => {
     expect(mocks.promptAreaProps.at(-1)!.composerFocusRequestKey).not.toBe(
       focusKeyBefore,
     );
+  });
+
+  it("keeps a submitted edit quiet when its own rewrite removes the edited message first", async () => {
+    let resolveEdit!: () => void;
+    mocks.editMessageMutateAsync.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveEdit = resolve;
+      }),
+    );
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
+    startEditingMessage("msg_1");
+    submitSentMessageEdit();
+
+    mocks.timeline = timelineWithRowIds(["msg_2"]);
+    view.rerender(screenElement({ kind: "page" }));
+    expect(mocks.toastWarning).not.toHaveBeenCalled();
+    expect(latestSentMessageEdit()).toBeDefined();
+
+    await act(async () => {
+      resolveEdit();
+    });
+    expect(latestSentMessageEdit()).toBeUndefined();
+    expect(mocks.toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("discards an unsubmitted edit whose message leaves the timeline", () => {
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
+    startEditingMessage("msg_1");
+
+    mocks.timeline = timelineWithRowIds(["msg_2"]);
+    view.rerender(screenElement({ kind: "page" }));
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "The message being edited is no longer available.",
+    );
+    expect(latestSentMessageEdit()).toBeUndefined();
+  });
+
+  it("discards a failed edit whose message left the timeline while it was submitting", async () => {
+    let rejectEdit!: (error: Error) => void;
+    mocks.editMessageMutateAsync.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        rejectEdit = reject;
+      }),
+    );
+    const view = renderScreen(
+      { kind: "page" },
+      { timeline: timelineWithRowIds(["msg_1"]) },
+    );
+    startEditingMessage("msg_1");
+    submitSentMessageEdit();
+    mocks.timeline = timelineWithRowIds(["msg_2"]);
+    view.rerender(screenElement({ kind: "page" }));
+    expect(mocks.toastWarning).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rejectEdit(new Error("edit failed"));
+    });
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "The message being edited is no longer available.",
+    );
+    expect(latestSentMessageEdit()).toBeUndefined();
   });
 });
 

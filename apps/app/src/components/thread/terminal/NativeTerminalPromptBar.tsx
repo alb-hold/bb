@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { Button } from "@bb/shared-ui/button";
 import {
   COMPOSER_SHELL_CLASS,
@@ -99,6 +100,38 @@ function pastedFiles(clipboard: Pick<DataTransfer, "files" | "items">): File[] {
   });
 }
 
+function withSyncFinally<T>(action: () => T, finalize: () => void): T {
+  try {
+    return action();
+  } finally {
+    finalize();
+  }
+}
+
+async function uploadPromptAttachments(
+  files: readonly File[],
+  projectId: string,
+  uploadAttachment: (
+    projectId: string,
+    file: File,
+  ) => Promise<UploadedPromptAttachment>,
+  onUploaded: (attachment: UploadedPromptAttachment) => void,
+  onPendingChange: (delta: number) => void,
+): Promise<string[]> {
+  onPendingChange(files.length);
+  const failed: string[] = [];
+  for (const file of files) {
+    try {
+      onUploaded(await uploadAttachment(projectId, file));
+    } catch {
+      failed.push(file.name);
+    } finally {
+      onPendingChange(-1);
+    }
+  }
+  return failed;
+}
+
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
@@ -177,16 +210,14 @@ export function NativeTerminalPromptBar({
         const selectionEnd = element.selectionEnd;
         programmaticRef.current = true;
         lastChangeRef.current = null;
-        let applied = false;
-        try {
+        const applied = withSyncFinally(() => {
           element.setSelectionRange(start, end);
-          applied =
-            replacement.length > 0
-              ? document.execCommand("insertText", false, replacement)
-              : start === end || document.execCommand("delete");
-        } finally {
+          return replacement.length > 0
+            ? document.execCommand("insertText", false, replacement)
+            : start === end || document.execCommand("delete");
+        }, () => {
           programmaticRef.current = false;
-        }
+        });
         if (applied && textRef.current !== current) {
           const change = lastChangeRef.current;
           if (change !== null) {
@@ -234,7 +265,6 @@ export function NativeTerminalPromptBar({
       sdk.writingAssistance.correct({ ...request, signal }),
   });
   const assistRef = useRef(assist);
-  assistRef.current = assist;
 
   const insertDictation = useCallback(
     (piece: string) => {
@@ -304,18 +334,15 @@ export function NativeTerminalPromptBar({
 
   const uploadFiles = async (files: readonly File[]) => {
     setAttachError(null);
-    setPendingUploads((count) => count + files.length);
-    const failed: string[] = [];
-    for (const file of files) {
-      try {
-        const uploaded = await upload.mutateAsync({ projectId, file });
-        setAttachments((current) => [...current, uploaded]);
-      } catch {
-        failed.push(file.name);
-      } finally {
-        setPendingUploads((count) => count - 1);
-      }
-    }
+    const failed = await uploadPromptAttachments(
+      files,
+      projectId,
+      (targetProjectId, file) =>
+        upload.mutateAsync({ projectId: targetProjectId, file }),
+      (attachment) =>
+        setAttachments((current) => [...current, attachment]),
+      (delta) => setPendingUploads((count) => count + delta),
+    );
     if (failed.length > 0) {
       setAttachError(`Failed to attach ${failed.join(", ")}`);
     }
@@ -328,7 +355,7 @@ export function NativeTerminalPromptBar({
     });
   };
 
-  const submitNow = () => {
+  const submitNow = useCallback(() => {
     const sentText = textRef.current;
     const sentMessage = sentText.trim();
     const sentAttachments = attachments;
@@ -360,8 +387,10 @@ export function NativeTerminalPromptBar({
         },
       },
     );
-  };
-  submitRef.current = submitNow;
+  }, [attachments, pendingUploads, projectId, send, threadId, applyValue]);
+  useLayoutEffect(() => {
+    submitRef.current = submitNow;
+  }, [submitNow]);
 
   const submit = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
@@ -518,14 +547,13 @@ export function NativeTerminalPromptBar({
       "[data-native-composer]",
     );
     if (!shell) return;
-    let previousWidth = shell.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (shell.clientWidth === previousWidth) return;
-      previousWidth = shell.clientWidth;
+    const updateWidth = () => {
       measureInput();
+    };
+    return observeSharedResize(shell, {
+      read: () => undefined,
+      write: updateWidth,
     });
-    observer.observe(shell);
-    return () => observer.disconnect();
   }, [measureInput]);
 
   const isCompactViewport = useIsCompactViewport();

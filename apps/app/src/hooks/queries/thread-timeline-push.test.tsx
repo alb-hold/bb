@@ -2,24 +2,23 @@
 
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultExperiments } from "@bb/domain";
 import type {
   ReceivedThreadTimelineSignal,
   ThreadTimelineReadResponse,
   ThreadTimelineResponse,
+  TimelineRowPatchOperation,
 } from "@bb/server-contract";
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useThreadTimelineRealtimeSubscription } from "@/hooks/useRealtimeSubscription";
 import { sdk } from "@/lib/sdk";
 import { wsManager } from "@/lib/ws";
-import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { makeThreadTimelineResponse } from "@/test/fixtures/thread-responses";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
   applyThreadTimelineSignal,
   COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT,
 } from "../cache-owners/thread-timeline-push-owner";
-import { systemConfigQueryKey, threadTimelineQueryKey } from "./query-keys";
+import { threadTimelineQueryKey } from "./query-keys";
 import { useThreadTimeline } from "./thread-panel-queries";
 
 vi.mock("@/lib/sdk", () => ({
@@ -89,26 +88,9 @@ describe("pushed thread timeline", () => {
     deferContent: true,
   } as const;
 
-  function setTimelinePush(
-    queryClient: ReturnType<typeof createQueryClientTestHarness>["queryClient"],
-    timelinePush: boolean,
-  ) {
-    queryClient.setQueryData(
-      systemConfigQueryKey(),
-      makeSystemConfig({
-        experiments: { ...defaultExperiments, timelinePush },
-      }),
-    );
-  }
-
-  function seedTimeline(
-    maxSeq: number,
-    timelinePush = true,
-    tag = `timeline-${maxSeq}`,
-  ) {
+  function seedTimeline(maxSeq: number, tag = `timeline-${maxSeq}`) {
     mockMatchMedia([]);
     const harness = createQueryClientTestHarness();
-    setTimelinePush(harness.queryClient, timelinePush);
     harness.queryClient.setQueryData(
       threadTimelineQueryKey("thread-1"),
       makeThreadTimelineResponse({ rows: [firstRow], maxSeq, tag }),
@@ -136,6 +118,27 @@ describe("pushed thread timeline", () => {
     };
   }
 
+  function patchSignal(
+    ops: TimelineRowPatchOperation[],
+    afterTag: string,
+    maxSeq: number,
+  ): ReceivedThreadTimelineSignal {
+    return {
+      type: "thread-timeline",
+      target,
+      timeline: {
+        maxSeq,
+        tag: `timeline-${maxSeq}`,
+        delta: {
+          afterTag,
+          upsertRows: [],
+          patchRows: [{ id: "row-1", ops }],
+          fields: {},
+        },
+      },
+    };
+  }
+
   function cachedTimeline(
     queryClient: ReturnType<typeof createQueryClientTestHarness>["queryClient"],
   ) {
@@ -146,8 +149,7 @@ describe("pushed thread timeline", () => {
 
   it("subscribes to the window the query fetches", () => {
     mockMatchMedia([COMPACT_VIEWPORT_QUERY]);
-    const { queryClient, wrapper } = createQueryClientTestHarness();
-    setTimelinePush(queryClient, true);
+    const { wrapper } = createQueryClientTestHarness();
     renderHook(() => useThreadTimeline("thread-1"), { wrapper });
     expect(useThreadTimelineRealtimeSubscription).toHaveBeenCalledWith(
       "thread-1",
@@ -159,22 +161,6 @@ describe("pushed thread timeline", () => {
     );
   });
 
-  it("neither subscribes nor applies pushes while the experiment is off", () => {
-    const { queryClient, wrapper } = seedTimeline(7, false);
-    renderHook(() => useThreadTimeline("thread-1", { staleTime: Infinity }), {
-      wrapper,
-    });
-    expect(useThreadTimelineRealtimeSubscription).toHaveBeenLastCalledWith(
-      "thread-1",
-      { deferContent: true, enabled: false, segmentLimit: null },
-    );
-    applyThreadTimelineSignal(queryClient, deltaSignal("timeline-7"));
-    expect(cachedTimeline(queryClient)).toMatchObject({
-      maxSeq: 7,
-      rows: [firstRow],
-    });
-  });
-
   it("applies a delta built on the held window without fetching", () => {
     const { queryClient } = seedTimeline(7);
     applyThreadTimelineSignal(queryClient, deltaSignal("timeline-7"));
@@ -184,16 +170,39 @@ describe("pushed thread timeline", () => {
     expect(sdk.threads.timeline).not.toHaveBeenCalled();
   });
 
+  it("applies a row patch, and refetches instead of rendering a patch that does not fit the held row", async () => {
+    const { queryClient, wrapper } = seedTimeline(7);
+    renderHook(() => useThreadTimeline("thread-1", { staleTime: Infinity }), {
+      wrapper,
+    });
+    applyThreadTimelineSignal(
+      queryClient,
+      patchSignal([["append", ["title"], " grew"]], "timeline-7", 8),
+    );
+    expect(cachedTimeline(queryClient)?.rows).toEqual([
+      { ...firstRow, title: "First row grew" },
+    ]);
+    applyThreadTimelineSignal(
+      queryClient,
+      patchSignal([["append", ["missing"], " grew"]], "timeline-8", 9),
+    );
+    expect(cachedTimeline(queryClient)).toMatchObject({
+      maxSeq: 8,
+      rows: [{ ...firstRow, title: "First row grew" }],
+    });
+    await waitFor(() => {
+      expect(sdk.threads.timeline).toHaveBeenCalledWith(
+        expect.objectContaining({ afterTag: "timeline-8" }),
+      );
+    });
+  });
+
   it("refetches from its own tag when a delta was built on another window", async () => {
     for (const held of [
       { maxSeq: 8, tag: "timeline-8" },
       { maxSeq: 7, tag: "idle-built-7" },
     ]) {
-      const { queryClient, wrapper } = seedTimeline(
-        held.maxSeq,
-        true,
-        held.tag,
-      );
+      const { queryClient, wrapper } = seedTimeline(held.maxSeq, held.tag);
       renderHook(() => useThreadTimeline("thread-1", { staleTime: Infinity }), {
         wrapper,
       });

@@ -1,11 +1,14 @@
-import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
+import { registerSpendRoutes } from "./routes/spend.js";
+import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
+import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
+import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 import {
   recheckEnvironmentProvisioning,
   recheckEnvironmentProviderCreations,
 } from "./services/threads/thread-environment-providers.js";
-import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import {
   enrolledInstallerScript,
   enrolledWindowsInstallerScript,
@@ -19,12 +22,12 @@ import {
   INSTALL_MACHINE_SCRIPT_PATH,
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
-import { getExperiments } from "@bb/db";
 import { createNodeWebSocket } from "@hono/node-ws";
 import {
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
 } from "@bb/server-contract";
+import type { IncomingMessage } from "node:http";
 import {
   declineWebSocketCompression,
   WEB_SOCKET_COMPRESSION,
@@ -35,12 +38,15 @@ import {
   type TunnelIngressManager,
 } from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { Hono } from "hono";
-import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+import {
+  APP_SHELL_PLUGIN_LIST_ELEMENT_ID,
+  terminalWebSocketQuerySchema,
+  type PluginListResponse,
+} from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
@@ -53,12 +59,8 @@ import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerUiPreferenceRoutes } from "./routes/ui-preferences.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
-import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
-import { registerSpendRoutes } from "./routes/spend.js";
-import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
-import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
 import { registerPluginInstallJobRoutes } from "./routes/plugin-install-jobs.js";
@@ -71,6 +73,7 @@ import {
 } from "./services/plugins/plugin-service.js";
 import { setPluginAgentContributions } from "./services/plugins/plugin-agent-contributions.js";
 import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
+import { setPathPluginPreserver } from "./services/plugins/path-plugin-preservation.js";
 import { setPluginHookProvider } from "./services/plugins/plugin-hook-registry.js";
 import {
   setEnvironmentProviderRecheckHandler,
@@ -85,6 +88,7 @@ import { setPluginMachineProviderBridge } from "./services/plugins/plugin-machin
 import { invalidateEnvironmentProviderMachineAvailability } from "./services/environments/provider-machine-availability.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
+import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
 import type { ActiveThreadEventPruneRuntimeOptions } from "./services/system/event-pruning.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
@@ -106,7 +110,6 @@ import {
   getThreadListSlowApiRequestFields,
   runEventLoopWork,
 } from "./services/system/event-loop-work.js";
-import { setTurnTelemetryDeps } from "./services/system/turn-telemetry.js";
 import { runWithTelemetryRequest } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
@@ -114,13 +117,8 @@ import {
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
-  authorizeDaemonArrival,
-  createDaemonSocketMessageQueue,
-  enqueueDaemonSocketFrame,
-  logDroppedDaemonFrame,
-  onDaemonSocketClose,
-  onDaemonSocketMessage,
-  onDaemonSocketOpen,
+  createDaemonSocketEvents,
+  endDaemonSessionChannels,
   validateDaemonWebSocket,
 } from "./ws/daemon-protocol.js";
 import { roundDurationMs } from "@bb/process-utils";
@@ -129,11 +127,15 @@ import {
   onTerminalSocketMessage,
   onTerminalSocketOpen,
 } from "./ws/terminal-protocol.js";
+import { terminalClientProtocolOptions } from "./ws/terminal-client-options.js";
 import {
   createBbAppArtifactService,
   type BbAppArtifactService,
 } from "./services/install/bb-app-artifact.js";
-import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
+import {
+  HOST_DAEMON_PROTOCOL_VERSION,
+  HOST_DAEMON_WS_RESUME_FROM_QUERY_PARAM,
+} from "@bb/host-daemon-contract";
 import {
   createPluginCatalogService,
   type PluginCatalogService,
@@ -153,7 +155,6 @@ import {
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
-import { handleUnclaimedPluginAnswer } from "./services/interactions/deliver-unclaimed-answer.js";
 import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
@@ -201,6 +202,10 @@ function assertWebSocketProtocolOptions(
     throw new Error("WebSocket server does not expose protocol options");
   }
 }
+
+const nativeExitHandlingRegistered = new WeakSet<
+  ServerAppDeps["terminalSessions"]
+>();
 
 interface ServerApp {
   app: Hono;
@@ -258,7 +263,6 @@ interface StaticResponseHeadersArgs {
   contentEncoding?: string;
   contentLength?: number;
   contentType: string;
-  etag?: string;
   urlPath: string;
 }
 
@@ -305,9 +309,6 @@ function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
   const headers = new Headers();
   headers.set("content-type", args.contentType);
   headers.set("cache-control", staticCacheControlForPath(args.urlPath));
-  if (args.etag !== undefined) {
-    headers.set("etag", args.etag);
-  }
   if (args.contentEncoding !== undefined) {
     headers.set("content-encoding", args.contentEncoding);
     headers.set("vary", "Accept-Encoding");
@@ -318,35 +319,9 @@ function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
   return headers;
 }
 
-const shellEtagCache = new Map<
-  string,
-  { etag: string; mtimeMs: number; size: number }
->();
-
-async function shellEtag(filePath: string): Promise<string | undefined> {
-  try {
-    const fileStat = await stat(filePath);
-    const cached = shellEtagCache.get(filePath);
-    if (
-      cached !== undefined &&
-      cached.size === fileStat.size &&
-      cached.mtimeMs === fileStat.mtimeMs
-    ) {
-      return cached.etag;
-    }
-    const digest = createHash("sha256")
-      .update(await readFile(filePath))
-      .digest("hex");
-    const etag = `W/"${digest.slice(0, 32)}"`;
-    shellEtagCache.set(filePath, {
-      etag,
-      mtimeMs: fileStat.mtimeMs,
-      size: fileStat.size,
-    });
-    return etag;
-  } catch {
-    return undefined;
-  }
+export function renderJsonScriptElement(id: string, value: unknown): string {
+  const json = JSON.stringify(value).replace(/</gu, "\\u003c");
+  return `<script type="application/json" id="${id}">${json}</script>`;
 }
 
 const STATIC_MIME_TYPES: Record<string, string> = {
@@ -364,29 +339,39 @@ const STATIC_MIME_TYPES: Record<string, string> = {
   ".map": "application/json",
 };
 
-export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
+export function registerStaticAppRoutes(
+  app: Hono,
+  staticDir: string,
+  renderShellHead: () => string,
+): void {
   const root = resolve(staticDir);
+  const shellPath = join(root, "index.html");
 
-  const serveStaticAppFile = async (args: {
+  const serveAppShell = async (
+    ifNoneMatchHeader: string | undefined,
+  ): Promise<Response> => {
+    const template = await readFile(shellPath, "utf8");
+    const html = template.replace(
+      "</head>",
+      () => `${renderShellHead()}</head>`,
+    );
+    const etag = `W/"${createHash("sha256").update(html).digest("hex").slice(0, 32)}"`;
+    const headers = new Headers();
+    headers.set("cache-control", STATIC_INDEX_CACHE_CONTROL);
+    headers.set("etag", etag);
+    if (requestMatchesEntityTag(ifNoneMatchHeader, etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    headers.set("content-type", "text/html");
+    return new Response(html, { headers });
+  };
+
+  const serveStaticFile = async (args: {
     acceptEncodingHeader: string | undefined;
     contentType: string;
     filePath: string;
-    ifNoneMatchHeader: string | undefined;
     urlPath: string;
   }): Promise<Response> => {
-    const etag =
-      args.contentType === "text/html"
-        ? await shellEtag(args.filePath)
-        : undefined;
-    if (
-      etag !== undefined &&
-      requestMatchesEntityTag(args.ifNoneMatchHeader, etag)
-    ) {
-      const headers = new Headers();
-      headers.set("cache-control", staticCacheControlForPath(args.urlPath));
-      headers.set("etag", etag);
-      return new Response(null, { status: 304, headers });
-    }
     const precompressedFile = await findPrecompressedStaticFile({
       acceptEncodingHeader: args.acceptEncodingHeader,
       contentType: args.contentType,
@@ -399,7 +384,6 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
           contentEncoding: precompressedFile.encoding,
           contentLength: precompressedFile.contentLength,
           contentType: args.contentType,
-          etag,
           urlPath: args.urlPath,
         }),
       });
@@ -408,27 +392,29 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
     return new Response(content, {
       headers: createStaticResponseHeaders({
         contentType: args.contentType,
-        etag,
         urlPath: args.urlPath,
       }),
     });
   };
 
   app.get("*", async (context) => {
+    const ifNoneMatchHeader = context.req.header("if-none-match");
     const urlPath = context.req.path === "/" ? "/index.html" : context.req.path;
     const filePath = join(root, urlPath);
     if (!filePath.startsWith(root)) {
       return context.notFound();
     }
+    if (filePath === shellPath) {
+      return serveAppShell(ifNoneMatchHeader);
+    }
     try {
       const fileStat = await stat(filePath);
       if (fileStat.isFile()) {
-        return await serveStaticAppFile({
+        return await serveStaticFile({
           acceptEncodingHeader: context.req.header("accept-encoding"),
           contentType:
             STATIC_MIME_TYPES[extname(filePath)] ?? "application/octet-stream",
           filePath,
-          ifNoneMatchHeader: context.req.header("if-none-match"),
           urlPath,
         });
       }
@@ -436,13 +422,7 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
     if (urlPath.startsWith("/assets/")) {
       return context.notFound();
     }
-    return serveStaticAppFile({
-      acceptEncodingHeader: context.req.header("accept-encoding"),
-      contentType: "text/html",
-      filePath: join(root, "index.html"),
-      ifNoneMatchHeader: context.req.header("if-none-match"),
-      urlPath: "/index.html",
-    });
+    return serveAppShell(ifNoneMatchHeader);
   });
 }
 
@@ -499,31 +479,23 @@ export function closeWebSocketServer(
   }
 
   return new Promise<void>((resolvePromise, reject) => {
-    let settled = false;
-    const finish = (error?: WebSocketCloseError) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(forceCloseTimeout);
-      if (error) reject(error);
-      else resolvePromise();
-    };
     const forceCloseTimeout = setTimeout(() => {
       for (const client of args.server.clients) {
         client.terminate();
       }
-      finish();
     }, args.forceCloseAfterMs);
     forceCloseTimeout.unref();
 
     args.server.close((error: WebSocketCloseError) => {
-      finish(error);
+      clearTimeout(forceCloseTimeout);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolvePromise();
     });
   });
 }
-
-const nativeExitHandlingRegistered = new WeakSet<
-  ServerAppDeps["terminalSessions"]
->();
 
 export function createApp(
   deps: ServerAppDeps,
@@ -865,6 +837,7 @@ export function createApp(
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
+    walCheckpointer: deps.walCheckpointer,
     telemetry: deps.telemetry,
     pendingInteractions: deps.pendingInteractions,
     dataDir: deps.config.dataDir,
@@ -895,23 +868,30 @@ export function createApp(
         pluginId,
       });
     },
+    // `bb.experimental_hooks.recheck()`: a plugin whose wait condition
+    // may have changed asks core to re-attempt the plugin-queued rows. Core
+    // owns the walk, the coalescing and the pacing; the plugin owns knowing
+    // when to ask.
     requestQueueDrain: () => {
       requestQueuedMessageDispatch(deps, { kind: "plugin-recheck" });
     },
     watchBuiltinPluginSources:
       process.env.BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD === "1",
   });
+  // Messages queued while a thread awaited user interaction stop waiting once
+  // that interaction settles (#1650); the idle drain then delivers them.
   deps.pendingInteractions.setThreadInteractionSettledListener((threadId) => {
     requestQueuedMessageDispatch(deps, {
       kind: "interaction-settled",
       threadId,
     });
   });
-  deps.pendingInteractions.setUnclaimedPluginAnswerListener((answer) =>
-    handleUnclaimedPluginAnswer(deps, answer),
-  );
-  setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
+  setPathPluginPreserver(deps.db, (directory) =>
+    pluginService.preservePathPluginsInside(directory),
+  );
+  // Bridge the dispatch pipeline to this service's hooks. Until this runs
+  // there are no hooks, which is exactly the zero-overhead path.
   setPluginHookProvider(pluginService.hooks);
   setPluginEnvironmentProviderBridge(pluginService.environmentProviders);
   setEnvironmentProvisioningRecheckHandler((threadId) =>
@@ -930,8 +910,9 @@ export function createApp(
   setEnvironmentProviderRecheckHandler((pluginId) => {
     invalidateEnvironmentProviderMachineAvailability();
     deps.hub.notifySystem(["config-changed"]);
-    void recheckEnvironmentProviderCreations(deps, pluginId);
+    recheckEnvironmentProviderCreations(deps, pluginId);
   });
+  // Bridge runtime-config assembly to plugin skills + context (§4.4).
   setPluginAgentContributions(pluginService);
   const serverMove = createServerMoveCoordinator(
     createDefaultServerMoveEnvironment({
@@ -1074,11 +1055,7 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
-      if (!getExperiments(deps.db).websocketCompression) {
-        declineWebSocketCompression(context);
-      }
-      const origin = context.req.header("origin");
-      const isAppClient = origin !== undefined;
+      const isAppClient = context.req.header("origin") !== undefined;
       return {
         onOpen: (_event, socket) =>
           onClientSocketOpen(deps.hub, socket, isAppClient),
@@ -1095,29 +1072,32 @@ export function createApp(
       assertBrowserWebSocketAllowed(context);
       declineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
+      if (terminalId === undefined) {
+        throw new ApiError(404, "terminal_not_found", "missing terminal id");
+      }
       const query = terminalWebSocketQuerySchema.safeParse({
+        handoffOwnerToken: context.req.query("handoffOwnerToken"),
         outputAcks: context.req.query("outputAcks"),
         resizeAcks: context.req.query("resizeAcks"),
         sinceSeq: context.req.query("sinceSeq"),
-        handoffOwnerToken: context.req.query("handoffOwnerToken"),
       });
       if (!query.success) {
         throw new ApiError(
           400,
           "invalid_terminal_socket_query",
-          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks and resizeAcks must be 0 or 1",
+          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks must be 0 or 1",
         );
       }
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
-            rawReplay: context.req.header("origin") === undefined,
-            outputAcks: query.data.outputAcks,
+            ...terminalClientProtocolOptions(
+              context.req.header("origin"),
+              socket.protocol,
+            ),
             handoffOwnerToken: query.data.handoffOwnerToken,
+            outputAcks: query.data.outputAcks,
             resizeAcks: query.data.resizeAcks,
-            resizeSeqEcho:
-              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL ||
-              socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,
@@ -1141,101 +1121,51 @@ export function createApp(
     "/internal/ws",
     upgradeWebSocket(async (context) => {
       declineWebSocketCompression(context);
-      const websocketContext = await validateDaemonWebSocket(deps, {
+      const target = await validateDaemonWebSocket(deps, {
         authorizationHeader: context.req.header("authorization"),
         protocolHeader: context.req.header("sec-websocket-protocol"),
+        resumeFrom:
+          context.req.query(HOST_DAEMON_WS_RESUME_FROM_QUERY_PARAM) ?? null,
         sessionId: context.req.query("sessionId") ?? null,
       });
-      const daemonMessageQueue = createDaemonSocketMessageQueue<
-        () => void | Promise<void>
-      >({
-        handle: (message) => message(),
-        onError: (error) => {
-          deps.logger.error(
-            { err: error },
-            "Daemon socket message queue failed",
-          );
-        },
-      });
+      const events = createDaemonSocketEvents(
+        deps,
+        target,
+        pluginService,
+        serverMove,
+      );
       return {
-        onOpen: (_event, socket) => {
-          const daemonOpen = onDaemonSocketOpen(deps, {
-            ...websocketContext,
-            socket,
-          });
-          return daemonOpen.then(
-            () => daemonMessageQueue.release(),
-            (error: unknown) => {
-              deps.logger.error(
-                { err: error, sessionId: websocketContext.sessionId },
-                "Daemon socket open reconciliation failed",
-              );
-              daemonMessageQueue.release();
-            },
-          );
-        },
-        onMessage: (event, socket) =>
-          enqueueDaemonSocketFrame({
-            authorize: (messageType) =>
-              authorizeDaemonArrival(deps, {
-                hostId: websocketContext.hostId,
-                messageType,
-                sessionId: websocketContext.sessionId,
-                socket,
-              }),
-            enqueue: (message, priority, acceptedAtArrival) =>
-              daemonMessageQueue.enqueue(
-                () =>
-                  onDaemonSocketMessage(
-                    deps,
-                    {
-                      acceptedAtArrival,
-                      hostId: websocketContext.hostId,
-                      message,
-                      raw: event.data,
-                      sessionId: websocketContext.sessionId,
-                      socket,
-                    },
-                    pluginService,
-                    serverMove,
-                  ),
-                priority,
-              ),
-            onInvalid: (rejection) =>
-              logDroppedDaemonFrame(
-                deps.logger,
-                {
-                  hostId: websocketContext.hostId,
-                  sessionId: websocketContext.sessionId,
-                },
-                rejection,
-              ),
-            raw: event.data,
-            recordActivity: () =>
-              deps.hub.recordDaemonActivity(websocketContext.sessionId),
-          }),
-        onClose: () => {
-          daemonMessageQueue.close();
-          onDaemonSocketClose(deps, websocketContext.sessionId);
-        },
+        onOpen: (_event, socket) => events.onOpen(socket),
+        onMessage: (event, socket) => events.onMessage(socket, event.data),
+        onClose: (event, socket) => events.onClose(socket, event.reason),
       };
     }),
   );
 
   if (options?.staticDir) {
-    registerStaticAppRoutes(app, options.staticDir);
+    registerStaticAppRoutes(app, options.staticDir, () =>
+      renderJsonScriptElement(APP_SHELL_PLUGIN_LIST_ELEMENT_ID, {
+        plugins: pluginService.list(),
+      } satisfies PluginListResponse),
+    );
   } else {
     app.get("/", (context) => context.text("bb server"));
   }
 
   return {
     app,
-    closeWebSockets: () =>
-      closeWebSocketServer({
+    closeWebSockets: () => {
+      endDaemonSessionChannels(
+        deps.hub,
+        WEB_SOCKET_SHUTDOWN_CODE,
+        WEB_SOCKET_SHUTDOWN_REASON,
+      );
+      return closeWebSocketServer({
         forceCloseAfterMs: WEB_SOCKET_SHUTDOWN_FORCE_CLOSE_MS,
         reason: WEB_SOCKET_SHUTDOWN_REASON,
         server: wss,
-      }),
+      });
+    },
     injectWebSocket,
     pluginService,
     pluginCatalogService,

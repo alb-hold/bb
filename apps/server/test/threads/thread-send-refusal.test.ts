@@ -102,7 +102,11 @@ describe("a send the daemon refuses", () => {
         { trace: { spans: [] } },
       );
 
-      expect(await response).toEqual({ ok: true, delivery: "sent" });
+      expect(await response).toEqual({
+        ok: true,
+        delivery: "sent",
+        messageSequence: expect.any(Number),
+      });
     });
   });
 
@@ -114,6 +118,7 @@ describe("a send the daemon refuses", () => {
       expect(await send(harness, thread)).toEqual({
         ok: true,
         delivery: "sent",
+        messageSequence: expect.any(Number),
       });
       expect(Date.now() - startedAt).toBeLessThan(1_500);
       await nextSubmit(harness, thread.id);

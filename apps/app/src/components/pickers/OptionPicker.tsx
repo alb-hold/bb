@@ -71,7 +71,7 @@ export function OptionPicker<T extends string>({
   contentClassName,
   muted,
   defaultOpen,
-  modal,
+  modal = false,
   align = "start",
   displayOverride,
   disabled,

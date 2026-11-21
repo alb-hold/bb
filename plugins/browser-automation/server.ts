@@ -1,5 +1,5 @@
+import { experimental_resolveHostPath as resolveHostPath } from "@get-bb/plugin-sdk";
 import { randomUUID } from "node:crypto";
-import { posix, win32 } from "node:path";
 import type {
   BbPluginApi,
   PluginCliContext,
@@ -51,6 +51,7 @@ const hardDeadline = (session: Session) =>
     ? Math.min(session.expiresAt, session.createdAt + maxLifetimeMs)
     : session.createdAt + maxLifetimeMs;
 const previewWaitMs = 5_000;
+const runCallGraceMs = 10_000;
 const keyFor = (threadId: string, sessionId: string) =>
   `sessions/${encodeURIComponent(threadId)}/${sessionId}`;
 
@@ -386,7 +387,13 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       record.lastUsed + idleTimeoutMs,
       hardDeadline(record.session),
     );
-    await save(record);
+    try {
+      await save(record);
+    } catch (error) {
+      bb.log.warn(
+        `Browser Automation could not persist session activity: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   async function run(
     input: z.output<typeof rpcContract.run.input>,
@@ -409,7 +416,11 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
           script: input.script,
           timeoutMs: input.timeoutMs,
         },
-        { hostId: record.session.hostId, signal },
+        {
+          hostId: record.session.hostId,
+          signal,
+          timeoutMs: input.timeoutMs + runCallGraceMs,
+        },
       );
       if (result.exitCode === 124)
         await finish(record, "stopped").catch(() => {});
@@ -546,20 +557,13 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       if (request.scriptFile) {
         if (!request.scriptHost)
           throw new Error("Script file requires an explicit source host");
-        const pathApi =
-          context.cwd && win32.isAbsolute(context.cwd) ? win32 : posix;
-        const path =
-          win32.isAbsolute(request.scriptFile) ||
-          posix.isAbsolute(request.scriptFile)
-            ? request.scriptFile
-            : pathApi.resolve(context.cwd ?? ".", request.scriptFile);
-        if (
-          !context.cwd &&
-          !posix.isAbsolute(request.scriptFile) &&
-          !win32.isAbsolute(request.scriptFile)
-        )
+        const path = resolveHostPath({
+          rootPath: context.cwd ?? "",
+          path: request.scriptFile,
+        });
+        if (path === null)
           throw new Error(
-            "Relative script files require the invoking CLI working directory",
+            "Invalid script file path; relative paths require the invoking CLI working directory",
           );
         const file = await bb.sdk.files.read({
           hostId: request.scriptHost,

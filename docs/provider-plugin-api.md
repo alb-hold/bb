@@ -441,8 +441,11 @@ mobile such a tint falls back to the neutral row colour (never to black).
 
 Genericity rule: model fallback, context cleared, compaction skipped, and
 background work stay core. Provider-specific concepts (Codex goals, the Codex
-`macos` permission profile) are that plugin's extension kinds. Core keeps no
-table of tool names.
+`macos` permission profile) are that plugin's extension kinds. The plugin's
+app reads a kind's latest state with `experimental_useThreadExtensionState`
+and draws it itself; the Codex Goal card is a thread-scoped composer banner
+that renders `experimental_CollapsibleStackCard`.
+Core keeps no table of tool names.
 
 ## 4. Interactions
 
@@ -527,7 +530,7 @@ app.slots.experimental_timelineRenderer({ kind, component });
 
 Core kinds always use core renderers, customized through `presentation` only.
 A provider plugin's frontend bundle loads like every other plugin's: in the
-deferred boot pass after the first route paints, not on first paint and not
+deferred boot pass after the first screen paints, not on first paint and not
 only when one of its providers is in use. Everything its `app.tsx` registers —
 a settings section, nav panel, palette action, provider icon,
 pending-interaction form, or `app.composer.customize` chrome — is present from
@@ -542,6 +545,15 @@ The provider directory is available to plugins through
 mark is the icon its plugin declared — a path or declared icon served as
 `logoUrl` and drawn as a `currentColor` mask, or a host glyph name; core
 vendors no brand marks.
+
+`bb.sdk.providers.models`, `bb provider models`, and
+`GET /api/v1/system/execution-options` wait for model discovery when no good
+catalog is cached, so a recent discovery failure such as a timeout is retried
+instead of answered from cache; a failure of that retry is reported in
+`modelLoadError`. Concurrent reads share one discovery request. Interactive
+pickers pass `preferCached: true` to answer immediately from the cache,
+including a recent model-load failure, while discovery refreshes in the
+background.
 
 ## 6. Distribution
 

@@ -1,16 +1,24 @@
 import { sweepProviderLifecycles } from "../../../apps/server/src/services/environments/environment-engine.js";
 import { randomUUID } from "node:crypto";
+import * as net from "node:net";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import {
   ensurePersonalProject,
+  getAppSettings,
+  getAutoAppUpdate,
+  getSkippedAppUpdate,
+  setAutoAppUpdate,
+  setExperiments,
+  setSkippedAppUpdate,
   listRunningThreads,
+  startWalCheckpointer,
   type DbConnection,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
-import { defaultFeatureFlags } from "@bb/domain";
+import { defaultFeatureFlags, type ExperimentUpdates } from "@bb/domain";
 import {
   acquireDaemonLock,
   createHostDaemonApp,
@@ -42,6 +50,8 @@ import {
 import { SkillTreeRegistry } from "../../../apps/server/src/services/skills/injected-skills.js";
 import { PluginHostArtifactRegistry } from "../../../apps/server/src/services/plugins/plugin-host-artifact-registry.js";
 import { createAppUpdateService } from "../../../apps/server/src/services/system/app-update.js";
+import { createScheduledAppUpdateService } from "../../../apps/server/src/services/system/app-update-schedule.js";
+import { createAppUpdateSendHold } from "../../../apps/server/src/services/system/app-update-send-hold.js";
 import { createCliCommandService } from "../../../apps/server/src/services/system/cli-command.js";
 import { createAppVersionService } from "../../../apps/server/src/services/system/app-version.js";
 import { createProviderNativeRootsCache } from "../../../apps/server/src/services/providers/native-roots.js";
@@ -101,6 +111,7 @@ export interface RunningTestServer {
   hub: NotificationHub;
   terminalSessions: TerminalSessionLifecycle;
   machineAuth: Awaited<ReturnType<typeof createMachineAuthService>>;
+  pendingInteractions: PendingInteractionLifecycle;
   providerRegistry: ProviderRegistryService;
 }
 
@@ -110,6 +121,7 @@ export interface IntegrationHarness {
   crashDaemon(): Promise<void>;
   daemonDataDir: string;
   daemonApp: HostDaemonApp;
+  dropDaemonConnections(): number;
   db: DbConnection;
   hostId: string;
   hub: NotificationHub;
@@ -122,6 +134,8 @@ export interface IntegrationHarness {
 }
 
 interface CreateHarnessOptions {
+  experiments?: ExperimentUpdates;
+  proxyDaemonConnection?: boolean;
   serverPort?: number;
   bindHost?: "127.0.0.1" | "0.0.0.0";
   staticDir?: string;
@@ -198,7 +212,11 @@ async function startIntegrationServer(
   });
 
   const db = createMigratedConnection();
+  const walCheckpointer = startWalCheckpointer({ logger: testLogger });
   ensurePersonalProject(db);
+  if (options.experiments !== undefined) {
+    setExperiments(db, options.experiments);
+  }
   const hub = new NotificationHub();
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
@@ -268,16 +286,51 @@ async function startIntegrationServer(
     config,
     logger: testLogger,
   });
-  const appUpdate = createAppUpdateService({
-    currentCommit: null,
-    appSurface: "web",
-    appVersion,
-    config,
-    countRunningThreads: () => listRunningThreads(db).length,
-    launcher: null,
+  const countRunningThreads = (): number => listRunningThreads(db).length;
+  const notifyAppUpdateChanged = (): void =>
+    hub.notifySystem(["app-update-changed"]);
+  const appUpdate = createScheduledAppUpdateService({
+    autoCheckMs: null,
+    countRunningThreads,
+    inner: createAppUpdateService({
+      currentCommit: null,
+      appSurface: "web",
+      appVersion,
+      config,
+      countRunningThreads,
+      launcher: null,
+      logger: testLogger,
+      mode: null,
+      notifyChanged: notifyAppUpdateChanged,
+      threadsResumeAfterRestart: () =>
+        getAppSettings(db).resumeThreadsAfterRestart,
+      sendHold: createAppUpdateSendHold({
+        aiServices,
+        config,
+        db,
+        hub,
+        lifecycleDedupers,
+        logger: testLogger,
+        machineAuth,
+        pendingInteractions,
+        pluginHostArtifacts,
+        providerRegistry,
+        skillTreeRegistry,
+        telemetry,
+        terminalSessions,
+      }),
+    }),
     logger: testLogger,
-    mode: null,
-    notifyChanged: () => hub.notifySystem(["app-update-changed"]),
+    notifyChanged: notifyAppUpdateChanged,
+    onChangedMessage: (listener) => hub.onChangedMessage(listener),
+    autoUpdate: {
+      get: () => getAutoAppUpdate(db),
+      set: (enabled) => setAutoAppUpdate(db, enabled),
+    },
+    skippedUpdate: {
+      get: () => getSkippedAppUpdate(db),
+      set: (key) => setSkippedAppUpdate(db, key),
+    },
   });
   const serverDeps = {
     appUpdate,
@@ -309,6 +362,7 @@ async function startIntegrationServer(
     skillTreeRegistry,
     telemetry,
     terminalSessions,
+    walCheckpointer,
     watchInterests,
   };
   const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
@@ -363,6 +417,7 @@ async function startIntegrationServer(
     hub,
     terminalSessions,
     machineAuth,
+    pendingInteractions,
     providerRegistry,
     async close(): Promise<void> {
       await pluginService.stop();
@@ -377,6 +432,51 @@ async function startIntegrationServer(
       });
       await closeWebSockets();
       await closed;
+      await walCheckpointer.stop();
+    },
+  };
+}
+
+interface DaemonConnectionProxy {
+  close(): Promise<void>;
+  dropConnections(): number;
+  url: string;
+}
+
+async function startDaemonConnectionProxy(
+  serverUrl: string,
+): Promise<DaemonConnectionProxy> {
+  const upstream = new URL(serverUrl);
+  const sockets = new Set<net.Socket>();
+  const track = (socket: net.Socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  };
+  const proxy = net.createServer((client) => {
+    const target = net.connect(Number(upstream.port), upstream.hostname);
+    track(client);
+    track(target);
+    client.on("error", () => target.destroy());
+    target.on("error", () => client.destroy());
+    client.pipe(target).pipe(client);
+  });
+  await new Promise<void>((resolve) =>
+    proxy.listen(0, upstream.hostname, resolve),
+  );
+  const address = proxy.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Daemon connection proxy has no port");
+  }
+  return {
+    url: `http://${upstream.hostname}:${address.port}`,
+    dropConnections() {
+      const dropped = sockets.size;
+      for (const socket of sockets) socket.resetAndDestroy();
+      return dropped;
+    },
+    close() {
+      for (const socket of sockets) socket.destroy();
+      return new Promise((resolve) => proxy.close(() => resolve()));
     },
   };
 }
@@ -385,6 +485,7 @@ async function startHarnessDaemon(
   dataDir: string,
   server: RunningTestServer,
   testWorktreeHolderScan?: WorktreeHolderScan,
+  serverUrl = server.baseUrl,
 ): Promise<HarnessDaemonResources> {
   const releaseLock = await acquireDaemonLock(dataDir);
 
@@ -406,7 +507,7 @@ async function startHarnessDaemon(
       localApiConfig: null,
       logger: testLogger,
       releaseLock,
-      serverUrl: server.baseUrl,
+      serverUrl,
     });
     for (
       let attempt = 1;
@@ -461,6 +562,9 @@ export async function createIntegrationHarness(
   });
 
   let server: RunningTestServer | null = null;
+  const daemonProxy: { current: DaemonConnectionProxy | null } = {
+    current: null,
+  };
   let daemonResources: HarnessDaemonResources | null = null;
   let cleanedUp = false;
   let harness: IntegrationHarness | null = null;
@@ -476,10 +580,14 @@ export async function createIntegrationHarness(
       return;
     }
 
+    const daemonServerUrl = options.proxyDaemonConnection
+      ? (daemonProxy.current ??= await startDaemonConnectionProxy(server.baseUrl)).url
+      : server.baseUrl;
     daemonResources = await startHarnessDaemon(
       daemonDataDir,
       server,
       options.testWorktreeHolderScan,
+      daemonServerUrl,
     );
     if (daemonResources.hostId !== harness.hostId) {
       const mismatchedResources = daemonResources;
@@ -538,6 +646,7 @@ export async function createIntegrationHarness(
       .shutdownAll("stop")
       .catch(() => undefined);
     await shutdownDaemon("integration-cleanup").catch(() => undefined);
+    await daemonProxy.current?.close().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await killProcessesHoldingFilesUnder(tmpRoot, {
       exclude: [process.pid, process.ppid],
@@ -550,10 +659,14 @@ export async function createIntegrationHarness(
     const api = createPublicApiClient(server.baseUrl, {
       fetch: createIntegrationFetch(),
     });
+    const daemonServerUrl = options.proxyDaemonConnection
+      ? (daemonProxy.current ??= await startDaemonConnectionProxy(server.baseUrl)).url
+      : server.baseUrl;
     daemonResources = await startHarnessDaemon(
       daemonDataDir,
       server,
       options.testWorktreeHolderScan,
+      daemonServerUrl,
     );
     await waitForHostConnected(api);
     await persistHostId({
@@ -568,6 +681,12 @@ export async function createIntegrationHarness(
       daemonDataDir,
       daemonApp: daemonResources.daemonApp,
       db: server.db,
+      dropDaemonConnections() {
+        if (daemonProxy.current === null) {
+          throw new Error("Pass proxyDaemonConnection to drop connections");
+        }
+        return daemonProxy.current.dropConnections();
+      },
       hostId: daemonResources.hostId,
       hub: server.hub,
       repoDir,

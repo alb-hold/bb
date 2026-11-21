@@ -36,9 +36,9 @@ interface GetPullRequestForCurrentBranchArgs {
   refresh: boolean;
 }
 
-interface RunPullRequestActionForCurrentBranchArgs {
+interface RunPullRequestActionArgs {
   cwd: string;
-  localBranch: string;
+  url: string;
   action: HostPullRequestAction;
 }
 
@@ -208,9 +208,47 @@ function normalizeCheckName(object: JsonObject): string {
   if (explicitName && explicitName.trim()) return explicitName.trim();
   const context = getString(object, "context");
   if (context && context.trim()) return context.trim();
-  const workflowName = getString(object, "workflowName");
-  if (workflowName && workflowName.trim()) return workflowName.trim();
   return "Unnamed check";
+}
+
+interface CheckWorkflowRun {
+  workflow: string;
+  runNumber: number;
+}
+
+const checkWorkflowRuns = new WeakMap<
+  GitHubPullRequestCheck,
+  CheckWorkflowRun
+>();
+
+function normalizeCheckWorkflowRun(
+  object: JsonObject,
+): CheckWorkflowRun | null {
+  const run = asObject(asObject(object.checkSuite)?.workflowRun);
+  if (run === null) return null;
+  const workflowId = getNumber(asObject(run.workflow) ?? {}, "databaseId");
+  const event = getString(run, "event");
+  const runNumber = getNumber(run, "runNumber");
+  if (workflowId === null || event === null || runNumber === null) return null;
+  return { workflow: `${workflowId}:${event}`, runNumber };
+}
+
+function dropSupersededWorkflowRuns(
+  checks: GitHubPullRequestCheck[],
+): GitHubPullRequestCheck[] {
+  const latestRuns = new Map<string, number>();
+  for (const check of checks) {
+    const run = checkWorkflowRuns.get(check);
+    if (run === undefined) continue;
+    latestRuns.set(
+      run.workflow,
+      Math.max(latestRuns.get(run.workflow) ?? 0, run.runNumber),
+    );
+  }
+  return checks.filter((check) => {
+    const run = checkWorkflowRuns.get(check);
+    return run === undefined || run.runNumber === latestRuns.get(run.workflow);
+  });
 }
 
 function normalizeChecks(value: unknown): GitHubPullRequestCheck[] {
@@ -261,9 +299,8 @@ function normalizeGitHubPullRequestView(
     updatedAt: getString(object, "updatedAt"),
     checks: normalizeChecks(object.statusCheckRollup),
     reviewDecision: normalizeReviewDecision(object.reviewDecision),
-    reviewRequestCount: Array.isArray(object.reviewRequests)
-      ? object.reviewRequests.length
-      : (getNumber(asObject(object.reviewRequests) ?? {}, "totalCount") ?? 0),
+    reviewRequestCount:
+      getNumber(asObject(object.reviewRequests) ?? {}, "totalCount") ?? 0,
     mergeStateStatus: normalizeMergeStateStatus(object.mergeStateStatus),
     mergeable: normalizeMergeable(object.mergeable),
   };
@@ -501,20 +538,13 @@ function runGh(
   );
 }
 
-export function parseGitHubPullRequestView(
-  stdout: string,
-): GitHubPullRequestView | null {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    return null;
-  }
-  let json: unknown;
+function parsePullRequestViewUrl(stdout: string): string | null {
   try {
-    json = JSON.parse(trimmed);
+    const url = getString(asObject(JSON.parse(stdout)) ?? {}, "url");
+    return url === null ? null : new URL(url).toString();
   } catch {
     return null;
   }
-  return normalizeGitHubPullRequestView(json);
 }
 
 type PullRequestTargetLookup =
@@ -691,10 +721,13 @@ function parseGitRemoteRepository(
   return { host: host.toLowerCase(), owner, repository };
 }
 
-async function getPullRequestTarget(
+type BranchConfigRead =
+  | { outcome: "read"; config: Map<string, string> }
+  | Extract<HostPullRequestLookup, { outcome: "unavailable" }>;
+
+async function readBranchConfig(
   args: Pick<GetPullRequestForCurrentBranchArgs, "cwd" | "localBranch">,
-): Promise<PullRequestTargetLookup> {
-  const branchConfigPrefix = `branch.${args.localBranch}`;
+): Promise<BranchConfigRead> {
   const escapedBranch = escapeGitConfigRegexp(args.localBranch);
   let configResult: GitCommandResult;
   try {
@@ -703,7 +736,7 @@ async function getPullRequestTarget(
         "config",
         "--null",
         "--get-regexp",
-        `^(branch\\.${escapedBranch}\\.(remote|merge)|remote\\..*\\.url)$`,
+        `^(branch\\.${escapedBranch}\\.(remote|merge|pushremote)|remote\\.pushdefault|remote\\..*\\.(url|gh-resolved))$`,
       ],
       {
         cwd: args.cwd,
@@ -723,8 +756,17 @@ async function getPullRequestTarget(
       configResult.stderr.trim(),
     );
   }
+  return {
+    outcome: "read",
+    config: parseNullTerminatedGitConfig(configResult.stdout),
+  };
+}
 
-  const config = parseNullTerminatedGitConfig(configResult.stdout);
+function getPullRequestTarget(
+  localBranch: string,
+  config: Map<string, string>,
+): PullRequestTargetLookup {
+  const branchConfigPrefix = `branch.${localBranch}`;
   const remote = config.get(`${branchConfigPrefix}.remote`) ?? "";
   const remoteRef = config.get(`${branchConfigPrefix}.merge`) ?? "";
   const remoteBranchPrefix = "refs/heads/";
@@ -733,7 +775,7 @@ async function getPullRequestTarget(
   }
 
   const upstreamBranch = remoteRef.slice(remoteBranchPrefix.length);
-  if (!upstreamBranch || upstreamBranch === args.localBranch) {
+  if (!upstreamBranch || upstreamBranch === localBranch) {
     return { outcome: "current-branch" };
   }
 
@@ -811,26 +853,12 @@ function unambiguousTopRemote(
   return candidates.size === 1 ? [...candidates.values()][0]! : null;
 }
 
-async function resolveBranchReadTarget(
-  args: Pick<GetPullRequestForCurrentBranchArgs, "cwd" | "localBranch">,
+function resolveBranchReadTarget(
+  localBranch: string,
+  config: Map<string, string>,
   target: Exclude<PullRequestTargetLookup, { outcome: "unavailable" }>,
-): Promise<Extract<ReadTarget, { kind: "branch" }> | null> {
-  const branchKey = `branch.${args.localBranch}`;
-  const escapedBranch = escapeGitConfigRegexp(args.localBranch);
-  const configResult = await runGit(
-    [
-      "config",
-      "--null",
-      "--get-regexp",
-      `^(branch\\.${escapedBranch}\\.(remote|pushremote)|remote\\.pushdefault|remote\\..*\\.(url|gh-resolved))$`,
-    ],
-    {
-      cwd: args.cwd,
-      allowFailure: true,
-      timeoutMs: GIT_UPSTREAM_LOOKUP_TIMEOUT_MS,
-    },
-  );
-  const config = parseNullTerminatedGitConfig(configResult.stdout);
+): Extract<ReadTarget, { kind: "branch" }> | null {
+  const branchKey = `branch.${localBranch}`;
   const remotes: {
     name: string;
     repository: GitRemoteRepository;
@@ -886,7 +914,7 @@ async function resolveBranchReadTarget(
     host: base.host,
     owner: base.owner,
     repository: base.repository,
-    branch: args.localBranch,
+    branch: localBranch,
     headOwner:
       pushRepository === null || sameOwner(pushRepository.owner)
         ? null
@@ -904,9 +932,16 @@ function unconfiguredHostMessage(host: string): string {
 export async function prepareCurrentBranchRead(
   args: GetPullRequestForCurrentBranchArgs,
 ): Promise<PreparedRead> {
-  const target = await getPullRequestTarget(args);
+  const branchConfig = await readBranchConfig(args);
+  if (branchConfig.outcome === "unavailable")
+    return preparedResult(branchConfig);
+  const target = getPullRequestTarget(args.localBranch, branchConfig.config);
   if (target.outcome === "unavailable") return preparedResult(target);
-  const branchTarget = await resolveBranchReadTarget(args, target);
+  const branchTarget = resolveBranchReadTarget(
+    args.localBranch,
+    branchConfig.config,
+    target,
+  );
   if (branchTarget === null)
     return preparedResult({
       outcome: "unavailable",
@@ -921,35 +956,26 @@ export async function getPullRequestForCurrentBranch(
   return startRead(await prepareCurrentBranchRead(args));
 }
 
-export async function runPullRequestActionForCurrentBranch(
-  args: RunPullRequestActionForCurrentBranchArgs,
+async function runCheckedPullRequestAction(
+  args: RunPullRequestActionArgs,
+  readLookup: () => Promise<HostPullRequestLookup>,
+  actionTarget?: { host: string; owner: string; repository: string },
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const target = await getPullRequestTarget(args);
-  if (target.outcome === "unavailable") {
-    return { ok: false, message: target.message };
-  }
-  const branchTarget = await resolveBranchReadTarget(args, target);
-  if (branchTarget === null) {
-    return { ok: false, message: UNRESOLVED_REPOSITORY_MESSAGE };
-  }
-  const host = await AdmittedGitHubHost.admit(branchTarget.host, args.cwd);
-  if (host === null) {
-    return { ok: false, message: admissionRefusal(branchTarget.host) };
-  }
-  const selector =
-    branchTarget.headOwner === null
-      ? branchTarget.branch
-      : `${branchTarget.headOwner}:${branchTarget.branch}`;
+  const url = new URL(args.url);
+  const [owner, repository, segment, number] = url.pathname
+    .split("/")
+    .filter(Boolean);
   if (
-    [branchTarget.branch, branchTarget.headOwner ?? "", selector].some((part) =>
-      UNSAFE_SELECTOR_PATTERN.test(part),
-    )
-  ) {
-    return {
-      ok: false,
-      message: "Refusing a pull request branch that gh could read as an option",
-    };
-  }
+    !owner ||
+    !repository ||
+    segment !== "pull" ||
+    !/^\d+$/.test(number ?? "")
+  )
+    return { ok: false, message: "Invalid pull request URL" };
+  const branchTarget = actionTarget ?? { host: url.host, owner, repository };
+  const host = await AdmittedGitHubHost.admit(branchTarget.host, args.cwd);
+  if (host === null)
+    return { ok: false, message: admissionRefusal(branchTarget.host) };
   const verb = args.action.operation === "merge" ? "merge" : "update";
   const displayedIdentity: Array<[string, string | number | null]> = [
     ["host", args.action.expectedHost],
@@ -965,7 +991,7 @@ export async function runPullRequestActionForCurrentBranch(
       };
     }
   }
-  const lookup = await enqueueRead(branchTarget, args.cwd, true);
+  const lookup = await readLookup();
   if (lookup.outcome === "unavailable") {
     return { ok: false, message: lookup.message };
   }
@@ -1035,6 +1061,56 @@ export async function runPullRequestActionForCurrentBranch(
     return { ok: false, message: describeGhActionFailure(ghArgs, error) };
   }
   return { ok: true };
+}
+
+export async function runPullRequestAction(
+  args: RunPullRequestActionArgs,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  return runCheckedPullRequestAction(args, () =>
+    getPullRequestByUrl(args.url, args.cwd),
+  );
+}
+
+export async function runPullRequestActionForCurrentBranch(args: {
+  cwd: string;
+  localBranch: string;
+  action: HostPullRequestAction;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const branchConfig = await readBranchConfig(args);
+  if (branchConfig.outcome === "unavailable")
+    return { ok: false, message: branchConfig.message };
+  const target = getPullRequestTarget(args.localBranch, branchConfig.config);
+  if (target.outcome === "unavailable")
+    return { ok: false, message: target.message };
+  const branchTarget = resolveBranchReadTarget(
+    args.localBranch,
+    branchConfig.config,
+    target,
+  );
+  if (branchTarget === null)
+    return { ok: false, message: UNRESOLVED_REPOSITORY_MESSAGE };
+  const selector =
+    branchTarget.headOwner === null
+      ? branchTarget.branch
+      : `${branchTarget.headOwner}:${branchTarget.branch}`;
+  if (
+    [branchTarget.branch, branchTarget.headOwner ?? "", selector].some((part) =>
+      UNSAFE_SELECTOR_PATTERN.test(part),
+    )
+  )
+    return {
+      ok: false,
+      message: "Refusing a pull request branch that gh could read as an option",
+    };
+  return runCheckedPullRequestAction(
+    {
+      cwd: args.cwd,
+      url: `https://${branchTarget.host}/${branchTarget.owner}/${branchTarget.repository}/pull/${args.action.expectedNumber ?? 0}`,
+      action: args.action,
+    },
+    async () => startRead(await prepareRead(branchTarget, args.cwd, true)),
+    branchTarget,
+  );
 }
 
 type ReadTarget =
@@ -1119,7 +1195,8 @@ function fields(cursor: string | null, mergeQueue: boolean): string {
     baseRefName headRefName headRefOid updatedAt reviewDecision reviewRequests(first: ${REVIEW_REQUESTS_PAGE}) { totalCount }
     mergeStateStatus mergeable isCrossRepository headRepositoryOwner { login }
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: ${CHECK_CONTEXTS_PAGE}${cursor === null ? "" : `, after: ${JSON.stringify(cursor)}`}) {
-      nodes { ... on CheckRun { name status conclusion detailsUrl startedAt }
+      nodes { ... on CheckRun { name status conclusion detailsUrl startedAt
+          checkSuite { workflowRun { runNumber event workflow { databaseId } } } }
         ... on StatusContext { context state targetUrl createdAt } }
       pageInfo { hasNextPage endCursor }
     } } } } }`;
@@ -1188,15 +1265,25 @@ async function decodeRead(
   const nodes = Array.isArray(commits?.nodes) ? commits.nodes : [];
   const commit = asObject(asObject(nodes[0])?.commit);
   const contexts = asObject(asObject(commit?.statusCheckRollup)?.contexts);
+  const contextNodes = Array.isArray(contexts?.nodes)
+    ? contexts.nodes.flatMap((node): JsonObject[] => {
+        const object = asObject(node);
+        return object === null ? [] : [object];
+      })
+    : [];
   const view = normalizeGitHubPullRequestView({
     ...raw,
-    statusCheckRollup: contexts?.nodes ?? [],
+    statusCheckRollup: contextNodes,
   });
   if (view === null)
     return {
       outcome: "unavailable",
       message: "GitHub returned an invalid pull request",
     };
+  view.checks.forEach((check, index) => {
+    const run = normalizeCheckWorkflowRun(contextNodes[index] ?? {});
+    if (run !== null) checkWorkflowRuns.set(check, run);
+  });
   view.inMergeQueue =
     view.isDraft || view.state !== "OPEN"
       ? false
@@ -1224,6 +1311,7 @@ async function decodeRead(
       };
     view.checks.push(...next.pullRequest.checks);
   }
+  view.checks = dropSupersededWorkflowRuns(view.checks);
   return { outcome: "found", pullRequest: view };
 }
 

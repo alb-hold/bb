@@ -133,6 +133,7 @@ const THREAD_SWEEP_TIMEOUT_MS = 15_000;
 const THREAD_SWEEP_LOOKUP_TIMEOUT_MS = 5_000;
 const THREAD_SWEEP_RETRY_MS = 60_000;
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
+const CLAUDE_MODELS_ROUTE = "/claude/v1/models";
 const HOST_PROXY_CALL_TIMEOUT_MS = 8_000;
 const HOST_PROXY_SYNC_DEBOUNCE_MS = 100;
 const HOST_PROXY_RETRY_MS = 2_000;
@@ -171,6 +172,7 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    "BB_CLAUDE_MODELS_URL",
     "HTTPS_PROXY",
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
@@ -857,7 +859,6 @@ export function createAccountPoolPlugin(
         reason:
           "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
       },
-      ...(await subscriptionCacheEntries()),
     ];
     const actorRoutes = new ActorRouteIssuer({
       threadTokens,
@@ -889,7 +890,10 @@ export function createAccountPoolPlugin(
       canServe,
       launchEnv: async (provider) =>
         provider === "claude"
-          ? (await claudePolicyEntries()).flatMap((entry) =>
+          ? [
+              ...(await claudePolicyEntries()),
+              ...(await subscriptionCacheEntries()),
+            ].flatMap((entry) =>
               typeof entry.value === "string"
                 ? [{ name: entry.name, value: entry.value }]
                 : [],
@@ -1164,6 +1168,13 @@ export function createAccountPoolPlugin(
               "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
           },
           ...(await claudePolicyEntries()),
+          {
+            name: "BB_CLAUDE_MODELS_URL",
+            value: { serverPath: `${HUB_BASE_PATH}${CLAUDE_MODELS_ROUTE}` },
+            reason:
+              "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
+          },
+          ...(await subscriptionCacheEntries()),
           ...(proxy === null
             ? hasConfiguredParentPool
               ? ARTIFACT_PROXY_ENV.map((name) => ({
@@ -1361,6 +1372,12 @@ export function createAccountPoolPlugin(
     for (const id of STATIC_GEMINI_MODEL_IDS) routeGeminiModel(id);
     for (const ids of Object.values(geminiServedModels))
       for (const id of ids) routeGeminiModel(id);
+    bb.http.route(
+      "GET",
+      CLAUDE_MODELS_ROUTE,
+      (context) => hub.handle(context.req.raw, "claude", CLAUDE_MODELS_ROUTE),
+      { auth: "none" },
+    );
     bb.http.route(
       "GET",
       "/v1/models",

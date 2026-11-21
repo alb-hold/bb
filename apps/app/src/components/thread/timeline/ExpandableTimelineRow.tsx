@@ -145,12 +145,9 @@ function ExpandableTimelineRowComponent({
   const [manualExpansionOverride, setManualExpansionOverride] =
     useTimelineReasoningExpansion(reasoningExpansionKey);
   const [terminalAutoExpandedLatch, setTerminalAutoExpandedLatch] =
-    useState(terminalAutoExpanded);
-  useEffect(() => {
-    if (terminalAutoExpanded) {
-      setTerminalAutoExpandedLatch(true);
-    }
-  }, [terminalAutoExpanded]);
+    useState(false);
+  if (terminalAutoExpanded && !terminalAutoExpandedLatch)
+    setTerminalAutoExpandedLatch(true);
   const isExpanded =
     expandable &&
     (forceExpanded ||

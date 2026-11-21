@@ -138,6 +138,8 @@ export function NativeThreadTerminalMain({
   const { refetch } = nativeQuery;
   const terminalsUpdatedAt = terminalsQuery.dataUpdatedAt;
   const [composerEngaged, setComposerEngaged] = useState(false);
+  if (!paneIsFocused && composerEngaged) setComposerEngaged(false);
+  const isComposerEngaged = paneIsFocused && composerEngaged;
   const onFocusWithin = (event: FocusEvent<HTMLDivElement>) => {
     if (
       event.target instanceof Element &&
@@ -146,10 +148,6 @@ export function NativeThreadTerminalMain({
       setComposerEngaged(true);
     }
   };
-
-  useEffect(() => {
-    if (!paneIsFocused) setComposerEngaged(false);
-  }, [paneIsFocused]);
 
   useEffect(() => {
     if (state.kind === "live") return;
@@ -209,7 +207,7 @@ export function NativeThreadTerminalMain({
         <NativeTerminalPanel
           initialSession={session ?? undefined}
           attentionShownAsBanner
-          autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}
+          autoFocus={paneIsFocused && !isTouchDevice && !isComposerEngaged}
           isPanelOpen
           isPanelPersistedOpen
           onOpenLink={onOpenLink}

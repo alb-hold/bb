@@ -29,6 +29,20 @@ async function requestVoiceTranscription({
   return transcription.text;
 }
 
+function createPromptVoiceDraft(
+  target: { current: PromptVoiceDraftTarget | undefined },
+): PromptVoiceDraftTarget | undefined {
+  if (!target.current) return undefined;
+  return {
+    getCurrent: () => {
+      if (!target.current) throw new Error("Composer is no longer available");
+      return target.current.getCurrent();
+    },
+    setDraft: (value) => target.current?.setDraft(value),
+    submit: () => target.current?.submit?.(),
+  };
+}
+
 export function usePromptVoiceRuntime(
   promptBoxRef: RefObject<PromptBoxHandle | null>,
   draft: PromptVoiceDraftTarget | undefined,
@@ -120,18 +134,7 @@ export const PromptVoiceRuntime = memo(function PromptVoiceRuntime({
   publish: (voice: PromptVoiceConfig | null) => void;
 }) {
   const draft = useMemo<PromptVoiceDraftTarget | undefined>(
-    () =>
-      target.current
-        ? {
-            getCurrent: () => {
-              if (!target.current)
-                throw new Error("Composer is no longer available");
-              return target.current.getCurrent();
-            },
-            setDraft: (value) => target.current?.setDraft(value),
-            submit: () => target.current?.submit?.(),
-          }
-        : undefined,
+    () => createPromptVoiceDraft(target),
     [target],
   );
   const voice = usePromptVoiceRuntime(promptBoxRef, draft, recordingKey);

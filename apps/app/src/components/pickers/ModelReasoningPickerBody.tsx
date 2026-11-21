@@ -112,6 +112,7 @@ export function ModelReasoningPickerBody({
   formatModelLabel,
   reasoningValue,
   reasoningOptions,
+  reasoningIsLoading = false,
   onReasoningChange,
   serviceTierValue,
   serviceTierOptions,
@@ -198,14 +199,15 @@ export function ModelReasoningPickerBody({
     ...providerRouting,
     providerId: isPreviewing ? previewProviderId : undefined,
   });
+  const previewProviders = previewQuery.data?.providers;
   const previewProvider = useMemo(
     () =>
       isPreviewing
-        ? previewQuery.data?.providers.find(
+        ? previewProviders?.find(
             (provider) => provider.id === previewProviderId,
           )
         : undefined,
-    [isPreviewing, previewProviderId, previewQuery.data?.providers],
+    [isPreviewing, previewProviderId, previewProviders],
   );
   const previewCatalogIsVerified =
     isPreviewing &&
@@ -856,6 +858,9 @@ export function ModelReasoningPickerBody({
         selectionBlocked={previewSelectionBlocked}
         onModelSelect={handleModelSelect}
         showReasoningSection={showReasoningSection}
+        showReasoningPlaceholder={
+          reasoningIsLoading && hasSelectedModel && !modelIsLoading
+        }
         reasoningValue={activeReasoningValue}
         reasoningOptions={activeReasoningOptions}
         onReasoningSelect={handleReasoningSelect}

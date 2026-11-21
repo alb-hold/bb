@@ -11,8 +11,10 @@ import { AppToasterView } from "@/components/AppToasterView";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { NotificationCenter } from "@/components/notifications/NotificationCenter";
 import { appToast } from "@/components/ui/app-toast";
+import { settleLazyModules } from "@/test/lazy-modules";
 import {
   getNotificationCenterState,
+  getNotifications,
   openNotificationCenter,
   resetNotificationStore,
 } from "./notification-store";
@@ -55,9 +57,12 @@ it("keeps notification details open when dismissing the toast restores composer 
   });
   fireEvent.click(showMore);
   await act(async () => {
-    await vi.dynamicImportSettled();
+    await settleLazyModules();
   });
   expect(getNotificationCenterState().open).toBe(true);
+  expect(getNotificationCenterState().focusedId).toBe(
+    getNotifications()[0]?.id,
+  );
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
   });
@@ -88,7 +93,7 @@ it.each([false, true])(
       openNotificationCenter();
     });
     await act(async () => {
-      await vi.dynamicImportSettled();
+      await settleLazyModules();
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
@@ -124,7 +129,7 @@ it.each([false, true])(
       openNotificationCenter();
     });
     await act(async () => {
-      await vi.dynamicImportSettled();
+      await settleLazyModules();
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);

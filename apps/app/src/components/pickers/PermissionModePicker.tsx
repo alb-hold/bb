@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useState } from "react";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
@@ -72,11 +72,13 @@ export function PermissionModePicker({
     () => addPermissionModeCompactLabels(options),
     [options],
   );
-  const lastValue = useRef<PermissionMode | undefined>(value);
-  if (!pending && value !== undefined) lastValue.current = value;
+  const [lastValue, setLastValue] = useState<PermissionMode | undefined>(value);
+  if (!pending && value !== undefined && value !== lastValue) {
+    setLastValue(value);
+  }
   const displayValue = pending
-    ? lastValue.current
-    : (value ?? lastValue.current);
+    ? lastValue
+    : (value ?? lastValue);
   const modeLabel =
     compactOptions.find((option) => option.value === displayValue)?.label ??
     (displayValue === undefined

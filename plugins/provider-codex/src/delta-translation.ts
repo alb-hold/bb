@@ -392,7 +392,7 @@ function getCodexErrorHttpStatusCode(
   if ("responseTooManyFailedAttempts" in errorInfo) {
     return errorInfo.responseTooManyFailedAttempts.httpStatusCode;
   }
-  if ("activeTurnNotSteerable" in errorInfo) {
+  if ("activeTurnNotSteerable" in errorInfo || "unrecognized" in errorInfo) {
     return null;
   }
   if ("unrecognized" in errorInfo) {
@@ -415,7 +415,10 @@ function getProviderErrorCategory(
         return "rate-limit";
       case "serverOverloaded":
       case "flexUnavailable":
+      case "policyCapacityUnavailable":
         return "overloaded";
+      case "modelNotFound":
+        return "bad-request";
       case "cyberPolicy":
       case "misalignmentPolicyViolation":
       case "tooManyDenials":

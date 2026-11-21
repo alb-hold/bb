@@ -1,12 +1,19 @@
-import { withEffectiveDisplayStatus, type ThreadListEntry } from "@bb/domain";
-import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
+import type { ThreadListEntry } from "@bb/domain";
+import type {
+  PluginSidebarThread,
+  PluginSidebarThreadActivity,
+  PluginThreadStatusThread,
+} from "@get-bb/plugin-sdk";
 import {
   getThreadListIndicatorLabel,
-  isNativeActivityUnconfirmed,
   isThreadRead,
-  nativeActivityEvidenceKind,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
+} from "@bb/client-core";
+import { withEffectiveDisplayStatus } from "@bb/domain";
+import {
+  isNativeActivityUnconfirmed,
+  nativeActivityEvidenceKind,
 } from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
@@ -16,6 +23,36 @@ import {
 import { getThreadDisplayTitle } from "./thread-title";
 import { getThreadRoutePath } from "./route-paths";
 
+type PluginSidebarThreadActivityWithRetiredGoals = PluginSidebarThreadActivity;
+
+export function toThreadStatusThread(
+  entry: ThreadListEntry,
+  now = Date.now(),
+): PluginThreadStatusThread {
+  const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
+    entry.runtime,
+    now,
+  );
+  const activity: PluginSidebarThreadActivityWithRetiredGoals = {
+    workflows: entry.activity.activeWorkflowCount,
+    backgroundAgents: entry.activity.activeBackgroundAgentCount,
+    backgroundCommands: entry.activity.activeBackgroundCommandCount,
+    planMode: entry.activity.activePlanModeCount,
+    goals: entry.activity.activeGoalCount,
+  };
+  return {
+    status: entry.status,
+    runtimeStatus: nativeActivityUnconfirmed
+      ? "idle"
+      : entry.runtime.displayStatus,
+    queuedWork: entry.queuedWork,
+    hasPendingInteraction: entry.hasPendingInteraction,
+    activity,
+    isUnread: !isThreadRead(entry),
+    parentThreadId: entry.parentThreadId,
+  };
+}
+
 export function toPluginSidebarThread(
   entry: ThreadListEntry,
   hostNamesById: ReadonlyMap<string, string> = new Map(),
@@ -24,19 +61,26 @@ export function toPluginSidebarThread(
   nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
   entry = withEffectiveDisplayStatus(entry);
+  const statusThread = toThreadStatusThread(entry, now);
   const indicatorState = threadListIndicatorStateForThread(
     entry,
     false,
     now,
     nativeActivityUnconfirmed,
   );
-  const indicator = resolveThreadListIndicator({
+  const forkIndicator = resolveThreadListIndicator({
     ...indicatorState,
     isAutomationWoken:
       indicatorState.isAutomationWoken || entry.listIndicator === "woke",
   });
+  const indicatorLabel = getThreadListIndicatorLabel(
+    forkIndicator,
+    entry.queuedFailedCount,
+  );
 
   return {
+    ...statusThread,
+    experimental_queuedFailedCount: entry.queuedFailedCount,
     id: entry.id,
     projectId: entry.projectId,
     title: entry.title,
@@ -45,7 +89,6 @@ export function toPluginSidebarThread(
       getThreadDisplayTitle(entry),
       titleResources,
     ),
-    parentThreadId: entry.parentThreadId,
     parentNotifications: entry.parentNotifications,
     lifecycleOwnerThreadId: entry.lifecycleOwnerThreadId,
     sourceThreadId: entry.sourceThreadId,
@@ -72,22 +115,8 @@ export function toPluginSidebarThread(
             ),
           },
         }),
-    queuedWork: entry.queuedWork,
-    experimental_queuedFailedCount: entry.queuedFailedCount,
-    hasPendingInteraction: entry.hasPendingInteraction,
-    activity: {
-      workflows: entry.activity.activeWorkflowCount,
-      backgroundAgents: entry.activity.activeBackgroundAgentCount,
-      backgroundCommands: entry.activity.activeBackgroundCommandCount,
-      planMode: entry.activity.activePlanModeCount,
-      goals: entry.activity.activeGoalCount,
-    },
-    indicator,
-    indicatorLabel: getThreadListIndicatorLabel(
-      indicator,
-      entry.queuedFailedCount,
-    ),
-    isUnread: !isThreadRead(entry),
+    indicator: forkIndicator,
+    indicatorLabel,
     isPinned: entry.pinnedAt !== null,
     pinnedAt: entry.pinnedAt,
     pinSortKey: entry.pinSortKey,

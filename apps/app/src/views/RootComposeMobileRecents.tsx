@@ -12,11 +12,11 @@ import {
   RecentThreadProviderMark,
   RecentThreadCollapseMark,
   RECENT_THREAD_COLLAPSE_CLASS,
-  recentThreadRowIndicatorState,
   RecentThreadRowContent,
   RecentThreadsSection,
   RECENT_THREAD_ROW_CLASS,
   RECENT_THREAD_BODY_CLASS,
+  recentThreadRowIndicatorState,
 } from "./RootComposeRecentRows";
 import {
   useCallback,
@@ -27,6 +27,10 @@ import {
 } from "react";
 import { useAtom } from "jotai";
 import type { ProviderInfo, ThreadListEntry } from "@bb/domain";
+import {
+  getThreadListIndicatorLabel,
+  resolveThreadListIndicator,
+} from "@bb/client-core";
 import { RouteAnchor } from "@/components/ui/app-route-anchor";
 import { ThreadActionsContextMenu } from "@/components/thread/ThreadActionsMenu";
 import { threadListEntryActionTarget } from "@/lib/thread-actions/thread-action-target";
@@ -35,10 +39,6 @@ import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-cl
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
 import { getThreadRoutePath, isProjectlessProjectId } from "@/lib/route-paths";
-import {
-  getThreadListIndicatorLabel,
-  resolveThreadListIndicator,
-} from "@bb/client-core";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
 import { findEnvironmentDisplayProvider } from "@/lib/environment-workspace-display";
@@ -47,6 +47,9 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
+
+export const MOBILE_RECENT_ROW_HEIGHT_PX = 52;
+export const MOBILE_RECENT_LABEL_HEIGHT_PX = 24;
 
 const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-13";
 

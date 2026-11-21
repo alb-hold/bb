@@ -12,7 +12,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
-import { waitForReadinessCondition } from "./ThreadTerminalView.terminal-focus-test-utils";
+import { waitForReadinessCondition, deferResizeDelivery } from "./ThreadTerminalView.terminal-focus-test-utils";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
@@ -21,6 +21,7 @@ import {
   useAppCommandHandler,
 } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import { readTerminalViewportAnchor, terminalViewportStorageKey } from "./terminal-viewport";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -228,7 +229,11 @@ function prepareMobileTerminal(): void {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(private readonly callback: ResizeObserverCallback) {}
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = deferResizeDelivery(callback);
+      }
 
       disconnect(): void {}
 
@@ -387,7 +392,24 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     expect(screen.getByRole("button", { name: "Jump to latest output" })).toBe(
       jump,
     );
+    const readSavedAnchor = () => {
+      window.dispatchEvent(new Event("pagehide"));
+      return readTerminalViewportAnchor(sessionStorage, terminalViewportStorageKey(session.id));
+    };
+    const savedAnchor = readSavedAnchor();
+    expect(savedAnchor?.distanceFromTail).toBeGreaterThan(0);
+    await act(async () => {
+      await new Promise<void>((resolve) => getTerminal().write("\x1b[?1049h", resolve));
+    });
+    expect(getTerminal().buffer.active.type).toBe("alternate");
+    expect(readSavedAnchor()).toEqual(savedAnchor);
+    await act(async () => {
+      await new Promise<void>((resolve) => getTerminal().write("\x1b[?1049l", resolve));
+    });
+    expect(getTerminal().buffer.active.type).toBe("normal");
+    expect(readSavedAnchor()).toEqual(savedAnchor);
     scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
+    expect(readSavedAnchor()?.distanceFromTail).toBe(0);
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: "Jump to latest output" }),
@@ -1124,6 +1146,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         ),
       },
     });
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 38, rows: 5 },
+      });
+      await Promise.resolve();
+    });
     await waitForReadinessCondition(() => {
       expect(getTerminal().cols).toBe(38);
       expect(getTerminal().rows).toBe(5);
@@ -1262,7 +1291,11 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = deferResizeDelivery(callback);
+        }
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(

@@ -39,6 +39,13 @@ function notifyPosition(anchor: BottomAnchorContextValue): void {
   });
 }
 
+function paint(): void {
+  act(() => {
+    vi.advanceTimersToNextFrame();
+    vi.runOnlyPendingTimers();
+  });
+}
+
 function mockElementRect(
   element: HTMLElement,
   { bottom, top }: { bottom: number; top: number },
@@ -93,7 +100,14 @@ function scrollElementAt(top: number, bottom: number): HTMLElement {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.useFakeTimers({
+    toFake: [
+      "setTimeout",
+      "clearTimeout",
+      "requestAnimationFrame",
+      "cancelAnimationFrame",
+    ],
+  });
 });
 
 afterEach(() => {
@@ -115,6 +129,20 @@ describe("useAutoLoadOlderRows", () => {
     mockElementRect(sentinel, { top: -400, bottom: -380 });
     notifyPosition(anchor);
 
+    expect(onLoadOlderRows).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the next page three viewport heights before the reader reaches the top", () => {
+    const onLoadOlderRows = vi.fn(() => Promise.resolve());
+    const anchor = createBottomAnchor(scrollElementAt(0, 800));
+    const { sentinel } = renderAutoLoad({ anchor, onLoadOlderRows });
+
+    mockElementRect(sentinel, { top: -2_520, bottom: -2_500 });
+    notifyPosition(anchor);
+    expect(onLoadOlderRows).not.toHaveBeenCalled();
+
+    mockElementRect(sentinel, { top: -2_320, bottom: -2_300 });
+    notifyPosition(anchor);
     expect(onLoadOlderRows).toHaveBeenCalledTimes(1);
   });
 
@@ -148,7 +176,28 @@ describe("useAutoLoadOlderRows", () => {
     await act(async () => {
       rerender({ isLoading: false });
     });
+    paint();
     expect(onLoadOlderRows).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks the sentinel after the frame reconciles a prepended page, not inside its commit", async () => {
+    const onLoadOlderRows = vi.fn(() => Promise.resolve());
+    const anchor = createBottomAnchor(scrollElementAt(0, 500));
+    const { rerender, sentinel } = renderAutoLoad({ anchor, onLoadOlderRows });
+
+    mockElementRect(sentinel, { top: 100, bottom: 120 });
+    notifyPosition(anchor);
+    await act(async () => {
+      rerender({ isLoading: true });
+    });
+    await act(async () => {
+      rerender({ isLoading: false });
+    });
+    expect(onLoadOlderRows).toHaveBeenCalledTimes(1);
+    mockElementRect(sentinel, { top: -3_800, bottom: -3_780 });
+    paint();
+
+    expect(onLoadOlderRows).toHaveBeenCalledTimes(1);
   });
 
   it("does not load again when a prepend moves the sentinel out of range", async () => {

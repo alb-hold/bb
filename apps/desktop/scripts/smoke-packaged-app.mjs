@@ -14,7 +14,6 @@ import {
 import { createPackagedAppLaunchArguments } from "./packaged-app-launch.mjs";
 import { assertElectronRuntime } from "./assert-electron-runtime.mjs";
 import { resolvePackagedAppBinary } from "./packaged-app-paths.mjs";
-import { smokePackagedNpm } from "./smoke-packaged-npm.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopPackageRoot = resolve(scriptDirectory, "..");

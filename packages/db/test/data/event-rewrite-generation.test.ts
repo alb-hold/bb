@@ -12,6 +12,10 @@ import {
   type InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
+import {
+  getThreadConversationOutlineRecord,
+  upsertThreadConversationOutlineRecord,
+} from "../../src/data/thread-conversation-outlines.js";
 import { createProject } from "../../src/data/projects.js";
 import { migrateNextCompletedEventItemOutput } from "../../src/data/sweeps.js";
 import {
@@ -42,6 +46,7 @@ function setup() {
   });
   const createCodexThread = () =>
     createThread(db, noopNotifier, {
+      status: "idle",
       projectId: project.id,
       providerId: "codex",
     }).id;
@@ -66,11 +71,17 @@ function pruneThreadEvents(
 }
 
 function expectGenerationBump(
+  db: DbConnection,
   threadId: string,
   bumped: boolean,
   mutate: () => void,
   conversationOutlineBumped = bumped,
 ): void {
+  upsertThreadConversationOutlineRecord(db, {
+    itemsJson: "[]",
+    projectionKey: "stored",
+    threadId,
+  });
   const before = getThreadEventRewriteGeneration(threadId);
   const outlineBefore = getThreadConversationOutlineRewriteGeneration(threadId);
   mutate();
@@ -78,6 +89,11 @@ function expectGenerationBump(
   expect(
     getThreadConversationOutlineRewriteGeneration(threadId) !== outlineBefore,
   ).toBe(conversationOutlineBumped);
+  expect(getThreadConversationOutlineRecord(db, threadId)).toEqual(
+    conversationOutlineBumped
+      ? null
+      : { itemsJson: "[]", projectionKey: "stored" },
+  );
 }
 
 function resolvedDeltaCase(name: string, text: string): RewriteCase {
@@ -287,12 +303,13 @@ describe("thread event rewrite generation", () => {
       message(otherThreadId, 1),
     ]);
 
-    expectGenerationBump(threadId, false, () => {
+    expectGenerationBump(db, threadId, false, () => {
       expect(testCase.noop(db, threadId)).toBe(0);
     });
     insertEvents(db, noopNotifier, testCase.between?.(threadId) ?? []);
     const otherBefore = getThreadEventRewriteGeneration(otherThreadId);
     expectGenerationBump(
+      db,
       threadId,
       true,
       () => {
@@ -305,14 +322,14 @@ describe("thread event rewrite generation", () => {
 
   it("changes when a completed output is migrated and not when the scanned output fits", () => {
     const fits = setup();
-    expectGenerationBump(fits.threadId, false, () => {
+    expectGenerationBump(fits.db, fits.threadId, false, () => {
       expect(insertCommandOutput(fits.db, fits.threadId, "small")).toBe(
         "scanned",
       );
     });
 
     const oversized = setup();
-    expectGenerationBump(oversized.threadId, true, () => {
+    expectGenerationBump(oversized.db, oversized.threadId, true, () => {
       expect(
         insertCommandOutput(
           oversized.db,
@@ -325,7 +342,7 @@ describe("thread event rewrite generation", () => {
 
   it("does not change for daemon appends, increasing inserts or ignored duplicates", () => {
     const { db, threadId } = setup();
-    expectGenerationBump(threadId, false, () => {
+    expectGenerationBump(db, threadId, false, () => {
       insertEvents(db, noopNotifier, [
         message(threadId, 1),
         message(threadId, 2),
@@ -361,8 +378,14 @@ describe("thread event rewrite generation", () => {
       message(threadId, 4),
     ]);
     const otherBefore = getThreadEventRewriteGeneration(otherThreadId);
+    const otherOutline = {
+      itemsJson: "[]",
+      projectionKey: "other",
+      threadId: otherThreadId,
+    };
+    upsertThreadConversationOutlineRecord(db, otherOutline);
 
-    expectGenerationBump(threadId, true, () => {
+    expectGenerationBump(db, threadId, true, () => {
       expect(
         insertEvents(db, noopNotifier, [
           message(otherThreadId, 1),
@@ -371,5 +394,9 @@ describe("thread event rewrite generation", () => {
       ).toBe(2);
     });
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
+    expect(getThreadConversationOutlineRecord(db, otherThreadId)).toEqual({
+      itemsJson: otherOutline.itemsJson,
+      projectionKey: otherOutline.projectionKey,
+    });
   });
 });

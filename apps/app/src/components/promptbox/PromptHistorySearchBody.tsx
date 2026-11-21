@@ -55,6 +55,17 @@ function stopReactPropagation(event: SyntheticEvent): void {
 const HIGHLIGHT_CLASS =
   "rounded-sm bg-[var(--sidebar-search-match)] px-0.5 py-px text-foreground";
 
+async function withAsyncFinally<T>(
+  action: () => Promise<T>,
+  finalize: () => void,
+): Promise<T> {
+  try {
+    return await action();
+  } finally {
+    finalize();
+  }
+}
+
 function HighlightedText({
   ranges,
   text,
@@ -179,7 +190,7 @@ export function PromptHistorySearchBody({
       if (insertingId !== null) return;
       setInsertingId(option.entry.id);
       const commit = beginInsertion();
-      try {
+      await withAsyncFinally(async () => {
         const prepared = await prepareDraftForProject(option, projectId);
         if (!commit(prepared.draft)) return;
         if (prepared.omittedAttachmentCount > 0) {
@@ -188,9 +199,9 @@ export function PromptHistorySearchBody({
           });
         }
         onClose();
-      } finally {
+      }, () => {
         setInsertingId(null);
-      }
+      });
     },
     [beginInsertion, insertingId, onClose, projectId],
   );

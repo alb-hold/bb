@@ -39,9 +39,6 @@
   ],
   "mac": {
     "category": "public.app-category.developer-tools",
-    "extendInfo": {
-      "NSMicrophoneUsageDescription": "bb uses your microphone for voice input and sites you allow in the in-app browser."
-    },
     "minimumSystemVersion": "13.0.0",
     "entitlements": "build/entitlements.mac.plist",
     "entitlementsInherit": "build/entitlements.mac.inherit.plist",
@@ -51,6 +48,7 @@
     "identity": null,
     "notarize": false,
     "extendInfo": {
+      "NSAppleEventsUsageDescription": "bb lets agents you run control other apps on this Mac, such as Computer Use.",
       "NSAppDataUsageDescription": "An agent in one of your bb threads, or a command it runs, is trying to read files that belong to another app, such as its settings or saved data. Allow it if you asked for work that involves that app. If you choose Don't Allow, those files stay unreadable and the command may skip them or stop with an error.",
       "NSAppBundlesUsageDescription": "An agent in one of your bb threads or a command it runs is trying to change or delete another application. Allow it only if you asked an agent to install, update or remove that app.",
       "NSDesktopFolderUsageDescription": "An agent in one of your bb threads or a command it runs, or a file you picked in bb, is trying to use files in your Desktop folder. Allow it if you asked a thread to work with files there.",

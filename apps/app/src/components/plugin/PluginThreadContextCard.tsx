@@ -18,6 +18,7 @@ import { Button } from "@bb/shared-ui/button";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { Popover, PopoverContent, PopoverTrigger } from "@bb/shared-ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { HEADER_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
@@ -27,7 +28,7 @@ import {
   type GroupedPlacement,
 } from "@/lib/grouped-placement";
 import {
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginThreadContextCardRowSlot,
   type PluginThreadContextCardSectionSlot,
 } from "@/lib/plugin-slots";
@@ -57,7 +58,7 @@ type ThreadContextCardSectionEntry =
   | { owner: "core"; slot: CoreThreadContextCardSection }
   | { owner: "plugin"; slot: PluginThreadContextCardSectionSlot };
 
-export type ThreadContextCardLayout = "gutter" | "shift" | "overlay";
+export type ThreadContextCardLayout = "gutter" | "shift" | "banner";
 
 const TRANSCRIPT_MAX_WIDTH_PX = 760;
 const CARD_WIDTH_PX = 288;
@@ -73,7 +74,7 @@ export function resolveThreadContextCardLayout(
     TRANSCRIPT_MAX_WIDTH_PX
   )
     return "shift";
-  return "overlay";
+  return "banner";
 }
 
 const pinnedAtom = createSyncedPreferenceAtom("threadContextCard.pinned");
@@ -109,8 +110,11 @@ export function ThreadContextCardProvider({
   coreSections: readonly CoreThreadContextCardSection[];
   children: ReactNode;
 }) {
-  const { threadContextCardRows, threadContextCardSections } = usePluginSlots();
-  const [layout, setLayout] = useState<ThreadContextCardLayout>("overlay");
+  const threadContextCardRows = usePluginSlotKind("threadContextCardRows");
+  const threadContextCardSections = usePluginSlotKind(
+    "threadContextCardSections",
+  );
+  const [layout, setLayout] = useState<ThreadContextCardLayout>("banner");
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [cardHasContent, setCardHasContent] = useState(false);
   const [cardRevealedForThreadId, setCardRevealedForThreadId] = useState<
@@ -192,10 +196,7 @@ export function WithoutThreadContextCard({
   );
 }
 
-function isCardShown(
-  state: ThreadContextCardPaneState,
-  pinned: boolean,
-): boolean {
+function isCardShown(state: ThreadContextCardPaneState, pinned: boolean): boolean {
   return state.cardRevealed || (pinned && state.cardHasContent);
 }
 
@@ -337,19 +338,16 @@ export function ThreadContextCard() {
       "[data-scroll-overlay]",
     );
     if (!overlay || !setLayout) return;
-    const measure = () =>
-      setLayout(resolveThreadContextCardLayout(overlay.clientWidth));
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(overlay);
-    return () => observer.disconnect();
+    const measure = () => resolveThreadContextCardLayout(overlay.clientWidth);
+    setLayout(measure());
+    return observeSharedResize(overlay, { read: measure, write: setLayout });
   }, [setLayout]);
 
   if (state === null) return null;
   return (
     <>
       <span ref={probeRef} aria-hidden className="hidden" />
-      {state.layout !== "overlay" ? (
+      {state.layout !== "banner" ? (
         <div
           role="group"
           aria-label="Thread context"
@@ -380,7 +378,7 @@ export function ThreadContextCardHeaderButton() {
   const state = useThreadContextCardPaneState();
   const [pinned, setPinned] = useAtom(pinnedAtom);
   if (state === null) return null;
-  if (state.layout !== "overlay") {
+  if (state.layout !== "banner") {
     const shown = isCardShown(state, pinned);
     const label = shown ? "Unpin thread context" : "Pin thread context";
     return (

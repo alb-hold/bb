@@ -1,18 +1,16 @@
 import { z } from "zod";
 
 export const experimentKeys = [
-  "applicationLinks",
+  "agentCpuPriority",
   "compactExpiredCache",
+  "keyedPluginCss",
   "serverMove",
   "performanceDiagnostics",
   "pluginUpdates",
-  "sidebarMultiSelect",
+  "resumeDaemonSessions",
   "skipFocusedThreadNotifications",
   "threadContextCard",
-  "threadRowMetadata",
-  "timelinePush",
-  "unreadDividerAtAnswer",
-  "websocketCompression",
+  "walCheckpointWorker",
 ] as const;
 export const experimentKeySchema = z.enum(experimentKeys);
 export type ExperimentKey = z.infer<typeof experimentKeySchema>;
@@ -27,31 +25,27 @@ export const experimentUpdatesSchema = z.partialRecord(
 export type ExperimentUpdates = z.infer<typeof experimentUpdatesSchema>;
 
 export const defaultExperiments: Experiments = {
-  applicationLinks: false,
+  agentCpuPriority: false,
   compactExpiredCache: false,
+  keyedPluginCss: false,
   serverMove: false,
   performanceDiagnostics: false,
   pluginUpdates: false,
-  sidebarMultiSelect: false,
+  resumeDaemonSessions: false,
   skipFocusedThreadNotifications: false,
   threadContextCard: false,
-  threadRowMetadata: false,
-  timelinePush: false,
-  unreadDividerAtAnswer: false,
-  websocketCompression: false,
+  walCheckpointWorker: false,
 };
 
 export const earlyAdopterExperiments: Experiments = {
-  applicationLinks: true,
+  agentCpuPriority: true,
   compactExpiredCache: true,
+  keyedPluginCss: true,
   serverMove: false,
   performanceDiagnostics: false,
   pluginUpdates: true,
-  sidebarMultiSelect: true,
+  resumeDaemonSessions: true,
   skipFocusedThreadNotifications: true,
-  threadContextCard: false,
-  threadRowMetadata: true,
-  timelinePush: true,
-  unreadDividerAtAnswer: true,
-  websocketCompression: true,
+  threadContextCard: true,
+  walCheckpointWorker: true,
 };

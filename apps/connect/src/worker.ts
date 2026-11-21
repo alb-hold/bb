@@ -1,4 +1,3 @@
-import { drizzle } from "drizzle-orm/d1";
 import { escapeHtmlText } from "@bb/text-utils";
 import {
   GATE_OAUTH_AUTH_KIND,
@@ -10,9 +9,9 @@ import {
   RESERVED_HANDLES,
   handleAppLinkAssociationRequest,
   parseVisitorHost,
-  schema,
   sha256Hex,
 } from "@bb/connect-db";
+import { openGateDb } from "./connect-db.js";
 import {
   getSetCookies,
   refreshAccountSessionCookies,
@@ -40,6 +39,7 @@ import {
 import {
   desktopSessionSetCookie,
   issueDesktopSessionCookie,
+  recordDesktopSessionUse,
   verifyDesktopSessionCookie,
 } from "./desktop-session.js";
 import { serveWithCache } from "./cache.js";
@@ -532,14 +532,19 @@ const gate = {
       );
     }
 
-    const db = drizzle(env.DB, { schema });
+    const { db } = openGateDb(env);
     const isTunnelDial = url.pathname === "/__tunnel";
     const resolved = await resolveLabel(
       label,
       db,
       isTunnelDial ? { fresh: true } : undefined,
     );
-    if (!resolved) return text(`bb connect: no server for "${label}"\n`, 404);
+    if (!resolved) {
+      return text(
+        `bb connect: no server for "${label}"\n`,
+        isTunnelDial ? 403 : 404,
+      );
+    }
 
     const routingKey =
       resolved.kind === "machine" ? resolved.routingKey : label;
@@ -715,6 +720,9 @@ const gate = {
         )
       : null;
     const desktopUserId = verifiedDesktop?.userId ?? null;
+    if (verifiedDesktop?.unrecordedUse) {
+      ctx.waitUntil(recordDesktopSessionUse(verifiedDesktop.unrecordedUse, db));
+    }
     if (!sessionUserId && !desktopUserId) {
       return signInPage(label, appUrl, url.toString());
     }

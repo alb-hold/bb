@@ -61,7 +61,7 @@ it("records on the first press after the runtime download completes", async () =
   vi.useRealTimers();
   expect(download.imports).toBe(0);
   fireEvent.click(screen.getByRole("button", { name: "Mic" }));
-  await waitFor(() => expect(download.imports).toBe(1));
+  await vi.waitFor(() => expect(download.imports).toBe(1));
   expect(download.start).not.toHaveBeenCalled();
   await act(async () => download.release());
   await waitFor(() => expect(download.start).toHaveBeenCalledTimes(1), {

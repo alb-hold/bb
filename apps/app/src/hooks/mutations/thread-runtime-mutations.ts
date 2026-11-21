@@ -508,7 +508,7 @@ export function useStopThread() {
 
 export function cancelThreadPlanMutationOptions(queryClient: QueryClient) {
   return mutationOptions({
-    meta: { errorMessage: "Failed to exit Plan mode." },
+    meta: { showErrorToast: false },
     mutationFn: async (threadId: string) => {
       await sdk.threads.cancelPlan({ threadId });
     },

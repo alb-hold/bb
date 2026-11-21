@@ -1,4 +1,5 @@
 import * as React from "react";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { stickyOffsetCss, useStickyOffset } from "./stickyOffset.js";
@@ -44,14 +45,15 @@ export function SidebarContentElementProvider({
       );
     update();
     element.addEventListener("scroll", update, { passive: true });
-    const resize =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
-    resize?.observe(element);
     const anchor = anchorRef.current;
-    if (anchor) for (const child of anchor.children) resize?.observe(child);
+    const targets = anchor ? [element, ...anchor.children] : [element];
+    const unobserve = observeSharedResize(targets, {
+      read: () => undefined,
+      write: update,
+    });
     return () => {
       element.removeEventListener("scroll", update);
-      resize?.disconnect();
+      unobserve();
       element.removeAttribute("data-more-below");
     };
   }, [element]);

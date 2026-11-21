@@ -52,10 +52,11 @@ children inherit those entries. Restart bb after changing these settings;
 existing sockets and workers keep their startup configuration.
 
 Built-in proxy support requires Node 22.21+ or 24.5+ (or Node 26); on older
-supported Node releases the launcher omits `--use-env-proxy`. Libraries that create their own agents
-or sockets can also bypass Node's global proxy support, including daemon
-WebSockets; these launch defaults do not configure those libraries or the OS
-proxy settings.
+supported Node releases the launcher omits `--use-env-proxy`. The daemon's
+server WebSocket and bb connect tunnel use Node's global agents, so they follow
+the same proxy and `NO_PROXY` settings. Libraries that create their own agents
+or sockets can still bypass Node's global proxy support; these launch defaults
+do not configure those libraries or the OS proxy settings.
 
 ## Host executable discovery
 
@@ -125,7 +126,8 @@ These entries are startup-only:
 - `BB_HOST_DAEMON_PORT` and `BB_INHERITED_SKILLS_ROOTS`
 - `BB_CONNECT_GATE_KEYS_URL`, `BB_LOG_LEVEL`,
   `BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD`, `BB_MARKETPLACE_URL`,
-  `BB_PERF_DIAGNOSTICS`, `BB_POSTHOG_API_KEY`, and `BB_TELEMETRY`
+  `BB_PERF_DIAGNOSTICS`, `BB_POSTHOG_API_KEY`, `BB_QUERY_PLAN_AUDIT`, and
+  `BB_TELEMETRY`
 - `BB_SERVER_BIND_HOST`, `BB_SERVER_PORT`, and all `BB_FF_*` feature flags
 
 Setting or unsetting one still reloads any other pending changes, but running
@@ -204,7 +206,10 @@ with `sdk.system.version({ force: true })`, or by rerunning `bb updates`.
   Stable installs follow the `latest` dist-tag and nightly builds `nightly`.
 - **Source checkouts** update only from a clean `main` that fast-forwards to
   `origin/main`; bb fast-forwards, runs `pnpm install --frozen-lockfile`,
-  rebuilds, and restarts.
+  rebuilds, and restarts. The sidebar badges a source update once the server
+  is more than 30 commits behind `origin/main`, or six hours after the oldest
+  missing commit was committed. `available.behindSince` in
+  `GET /api/v1/system/app-update` and `bb updates app` report that commit time.
 
 bb does not roll back an update; a version that fails to start runs again on
 the next start, and an older release may not open a database the new version
@@ -235,23 +240,24 @@ change the host-daemon protocol.
 
 ## Common Keys
 
-| Key                            | Set with                                           | When to set             | Used for                                                                                                                                                                                                                                                                   |
-| ------------------------------ | -------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BB_APP_URL`                   | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links, allowed browser origins, and the allowed DNS hostname for requests. Leave empty for local-only use. Live when set with `bb-app config`.                                                                                     |
-| `BB_EXTERNAL_URL`              | `bb-app env`, or environment                       | Startup-only            | Internet-facing HTTPS base URL for generated public links; the fallback for `machineServerUrl`.                                                                                                                                                                            |
-| `BB_MARKETPLACE_URL`           | `bb-app env`, or environment                       | Startup-only testing    | Manifest URL of the reserved `bb-community` marketplace. Default `https://getbb.app/marketplace/v2/marketplace.json` (falls back to v1 on 404); a custom URL is requested without fallback. Changes only `bb-community`.                                                   |
-| `BB_CONNECT_GATE_KEYS_URL`     | `bb-app env`, or environment                       | Startup-only testing    | Public key set the bb connect next tunnel ingress verifies gate assertions with. Default `https://getbb.app/.well-known/bb-connect-gate-keys.json`. See [connect-next.md](connect-next.md).                                                                                |
-| `BB_SERVER_URL`                | `bb-app config`                                    | Remote CLI/host use     | Server targeted by the standalone `bb` CLI and `host-daemon` commands on this machine. Defaults to `http://127.0.0.1:38886`. It does not change where `npx bb-app` binds.                                                                                                  |
-| `BB_SERVER_BIND_HOST`          | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host: `127.0.0.1` (default) or `0.0.0.0`. Not a `bb-app config` key. See [Startup Flags](#startup-flags).                                                                                                                                                  |
-| `BB_SERVER_PORT`               | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`.                                                                                                                                                                                                                                   |
-| `BB_HOST_DAEMON_PORT`          | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`.                                                                                                                                                                                                                           |
-| `BB_LOG_LEVEL`                 | `bb-app config`                                    | Startup-only debugging  | `trace`, `debug`, `info`, `warn`, `error`, or `fatal`.                                                                                                                                                                                                                     |
-| `BB_TELEMETRY`                 | `bb-app env`, or environment                       | Startup-only            | `false` always disables anonymous usage telemetry, overriding the `telemetryEnabled` setting.                                                                                                                                                                              |
-| `BB_SKIP_ONBOARDING`           | Environment                                        | Startup-only            | Default false. `1` marks first-run setup completed at startup when it is not yet, so the setup screen is skipped. Settings → General can still replay it. `pnpm dev`, `pnpm start:worktree`, and `pnpm desktop:worktree` default it to `1`; an explicit `0` retains setup. |
-| `BB_PERF_DIAGNOSTICS`          | `bb-app env`, environment, or `--perf-diagnostics` | Startup-only            | Default false. Permits the `performanceDiagnostics` experiment; see [Experiments](#experiments).                                                                                                                                                                           |
-| `BB_CLI_ERROR_LOG`             | Environment of the `bb` process                    | Optional                | `0` stops the CLI recording failed invocations (command path, error code, no argument values) to `<dataDir>/logs/cli-errors.jsonl`. See `bb guide overview`.                                                                                                               |
-| `BB_ACCOUNT_POOL_PARENT_URL`   | Set automatically by a parent bb server            | Nested bb servers       | Account Pooler hub of the bb server whose thread launched this one. When present the Account Pooler plugin is enabled on first run and proxies to that parent; `bb pool parent isolate` opts out. Not a `bb-app config` key.                                               |
-| `BB_ACCOUNT_POOL_PARENT_TOKEN` | Set automatically by a parent bb server            | Nested bb servers       | Machine token this nested server presents to the parent hub. Both parent variables must be well formed or proxying stays off.                                                                                                                                              |
+| Key                            | Set with                                           | When to set             | Used for                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------ | -------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_APP_URL`                   | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links, allowed browser origins, and the allowed DNS hostname for requests. Leave empty for local-only use. Live when set with `bb-app config`.                                                                                                                                              |
+| `BB_EXTERNAL_URL`              | `bb-app env`, or environment                       | Startup-only            | Internet-facing HTTPS base URL for generated public links; the fallback for `machineServerUrl`.                                                                                                                                                                                                                                     |
+| `BB_MARKETPLACE_URL`           | `bb-app env`, or environment                       | Startup-only testing    | Manifest URL of the reserved `bb-community` marketplace. Default `https://getbb.app/marketplace/v2/marketplace.json` (falls back to v1 on 404); a custom URL is requested without fallback. Changes only `bb-community`.                                                                                                            |
+| `BB_CONNECT_GATE_KEYS_URL`     | `bb-app env`, or environment                       | Startup-only testing    | Public key set the bb connect next tunnel ingress verifies gate assertions with. Default `https://getbb.app/.well-known/bb-connect-gate-keys.json`. See [connect-next.md](connect-next.md).                                                                                                                                         |
+| `BB_SERVER_URL`                | `bb-app config`                                    | Remote CLI/host use     | Server targeted by the standalone `bb` CLI and `host-daemon` commands on this machine. Defaults to `http://127.0.0.1:38886`. It does not change where `npx bb-app` binds.                                                                                                                                                           |
+| `BB_SERVER_BIND_HOST`          | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host: `127.0.0.1` (default) or `0.0.0.0`. Not a `bb-app config` key. See [Startup Flags](#startup-flags).                                                                                                                                                                                                           |
+| `BB_SERVER_PORT`               | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`.                                                                                                                                                                                                                                                                                            |
+| `BB_HOST_DAEMON_PORT`          | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`.                                                                                                                                                                                                                                                                                    |
+| `BB_LOG_LEVEL`                 | `bb-app config`                                    | Startup-only debugging  | `trace`, `debug`, `info`, `warn`, `error`, or `fatal`.                                                                                                                                                                                                                                                                              |
+| `BB_TELEMETRY`                 | `bb-app env`, or environment                       | Startup-only            | `false` always disables anonymous usage telemetry, overriding the `telemetryEnabled` setting.                                                                                                                                                                                                                                       |
+| `BB_SKIP_ONBOARDING`           | Environment                                        | Startup-only            | Default false. `1` marks first-run setup completed at startup when it is not yet, so the setup screen is skipped. Settings → General can still replay it. `pnpm dev`, `pnpm start:worktree`, and `pnpm desktop:worktree` default it to `1`; an explicit `0` retains setup.                                                          |
+| `BB_PERF_DIAGNOSTICS`          | `bb-app env`, environment, or `--perf-diagnostics` | Startup-only            | Default false. Permits the `performanceDiagnostics` experiment; see [Experiments](#experiments).                                                                                                                                                                                                                                    |
+| `BB_QUERY_PLAN_AUDIT`          | Environment                                        | Startup-only debugging  | Default false. `1` logs `Slow SQLite query plan` for each query whose plan walks a large table or picks a weaker index; see [diagnostics](debugging-and-qa.md#slow-sqlite-query-plans). `pnpm dev`, `pnpm start:worktree`, and `pnpm desktop:worktree` default it to `1`. The `performanceDiagnostics` experiment also turns it on. |
+| `BB_CLI_ERROR_LOG`             | Environment of the `bb` process                    | Optional                | `0` stops the CLI recording failed invocations (command path, error code, no argument values) to `<dataDir>/logs/cli-errors.jsonl`. See `bb guide overview`.                                                                                                                                                                        |
+| `BB_ACCOUNT_POOL_PARENT_URL`   | Set automatically by a parent bb server            | Nested bb servers       | Account Pooler hub of the bb server whose thread launched this one. When present the Account Pooler plugin is enabled on first run and proxies to that parent; `bb pool parent isolate` opts out. Not a `bb-app config` key.                                                                                                        |
+| `BB_ACCOUNT_POOL_PARENT_TOKEN` | Set automatically by a parent bb server            | Nested bb servers       | Machine token this nested server presents to the parent hub. Both parent variables must be well formed or proxying stays off.                                                                                                                                                                                                       |
 
 BB accepts request hosts that are `localhost`, IP addresses (including LAN and
 Tailscale IPs), or the hostname in `BB_APP_URL`. For a custom DNS name or
@@ -334,20 +340,119 @@ when it was finished or skipped; `bb settings replay-onboarding`, or Settings �
 General → Setup guide, clears it so the guide shows again. The projects step
 lists what `bb project discover` and
 `bb.sdk.hosts.experimental_discoverRepos({ hostId })` return.
+Every install gets the same guide. `GET /api/v1/system/setup-guide` stays for
+older apps and always returns `{ "variant": "new" }`.
 
 **Anonymous usage telemetry.** PostHog events carry a random install id, app
 version, install kind, platform, OS release, architecture, and Node version.
+Every event sets `$process_person_profile: false`, so PostHog keeps no person
+profile for an install.
 The server sends events such as `app_started`, `telemetry_disabled`, `thread_created`,
-`user_message_sent`, `turn_finished`, and `plugin_installed`. The app reports setup-guide and
+`user_message_sent`, and `plugin_installed`. The app reports setup-guide and
 first-send events through `POST /api/v1/system/telemetry/events`
 (`sdk.system.experimental_recordTelemetryEvent`), such as `onboarding_started`,
 `onboarding_step_reached`, `onboarding_step_completed`,
 `onboarding_step_skipped`, `onboarding_finished`, `onboarding_agent_state`,
-`onboarding_sign_in`, `new_thread_submit` (started, accepted, or failed),
+`onboarding_sign_in`, `onboarding_left`, `onboarding_error`, `new_thread_submit` (started,
+accepted, or failed),
 `plugin_creation_started` (no properties; sent when you choose New plugin in
 the app or run `bb plugin new`, so it records intent, not a finished plugin),
 and `release_notes_opened` from Settings → Updates (`view` `inline` when the
 notes open under the bb row, `web` for the full notes on getbb.app).
+`onboarding_operation` records setup-guide work by `operation`: `import`
+(selected repos imported together, or one folder added through "Add a folder
+that isn't listed", with `item_count` 1), `remote_access` (`started` when
+getbb.app sign-in starts, a pairing code is submitted, or Turn on is pressed,
+not when the bb connect panel is merely opened), and `add_machine` (`started`
+when the machine setup command is shown). Continue on the projects
+step counts as completed only when a project was selected or added during the
+guide (by either route), and Continue on the plugins step only when a featured
+plugin is on; otherwise each counts as skipped.
+`onboarding_exposed` (`entry` `first_run` or `replay`) marks the setup guide
+being shown.
+`onboarding_operation` records a setup-guide action's `started`,
+`succeeded`, or `failed` outcome with counts only. A Projects step `scan` records nothing after the guide's first
+successful scan, such as the rescan after an import, and adds `timed_out`
+(true when the repo scan ran
+out of time and the list may be partial) and `unreadable_count` (how many
+folders the scan was not allowed to open, such as macOS Documents or Desktop;
+never their paths). A failed Projects `import` reports `item_count` (repos
+selected) and `succeeded_count` (imported before the failure). Plugins step
+`install` (a featured plugin that wasn't installed yet), `enable`, and
+`disable` carry the plugin's public id in `resource_id`; `install` succeeds or
+fails when its install job finishes, not when the request is accepted, even
+if the guide moved to another step meanwhile; a cancelled install job records
+no outcome. `load` records `succeeded` the first time the Agent step's agent
+states or the Plugins step's catalog load, with `duration_ms` (time from the
+step first opening to the data arriving), and `failed` the first time they
+fail to load before any data arrives, each at most once per step per guide (a
+failed background refresh after the data loaded is not a load failure); the Agent
+step also fails with `timed_out` when no agent's own check has answered after 10
+seconds. An agent whose check fails shows its own Retry, which rechecks only
+that agent; when every check fails, one Retry rechecks just those agents.
+`finish` records only `failed`,
+with the step the guide closed from, when saving that setup was finished
+fails. Every `failed` outcome except `remote_access` adds `failure_reason`:
+`no_host` (no computer was available: once per guide for `scan` and agent
+`load`), `host_unavailable`, `timed_out`,
+`not_found`, `permission`, `command_failed` (the agent install command, plugin
+install job, or new machine's setup ran and failed), or `other`. A failed
+`remote_access` adds `failure_stage`: `sign_in` (getbb.app sign-in couldn't
+start or ended denied, expired, or failed), `pairing` (a pairing code was
+rejected), or `turn_on` (turning remote access on failed); a retry after a
+failure records a new `started`. A failed `sign_in` or `pairing` stage also
+adds `failure_detail`: `denied`, `expired`, `login_failed`, `rate_limited`,
+`service_unavailable`, `account_unavailable`, or `network` for sign-in, and
+the rejected code's reason (`invalid_code`, `expired_code`, `already_used`,
+`network`, `unauthorized`, `profile_unavailable`, `superseded`, or
+`account_unavailable`) for pairing; anything else is `other`. An agent
+`install` or `update` that fails with `command_failed` adds `failure_detail`,
+classified on this computer from the install's output, and `exit_code` when
+the command exited: `not_found` (the installer or a command it needs is
+missing), `permission`, `network`, `disk_full`, `npm_error`,
+`verification_failed` (the command exited 0 but the agent still isn't
+installed or updated), `unavailable` (the install is no longer offered),
+`in_progress` (another agent install was running), `signal`, `exit_nonzero`,
+or `other`. Only the class and the number are sent, never the output, paths,
+or messages. `add_machine` can fail before `started` when the setup command
+couldn't be prepared.
+`onboarding_left` (`step`, the step on screen, and `entry`) is sent at most
+once per guide, in either guide, when the page unloads (the browser's
+`pagehide`: closing the tab or window, reloading, or navigating away) while the
+guide is open and before `onboarding_finished`; switching tabs or apps doesn't
+count. It goes as a keepalive request so it survives the unload. In the
+desktop app, closing the window sends it, but quitting the app while a guide
+is open may not when the app runs its own bb server, which stops before the
+window unloads.
+`onboarding_error` (`step`, the step on screen, `entry`, and `kind`) is sent
+while a guide is open, in either guide, when the app hits an error: `render`
+(the guide itself crashed and the app showed its error screen), `uncaught` (an
+uncaught error anywhere in the app window), or `unhandled_rejection` (an
+unhandled promise rejection). It is sent at most once per `kind` and step and
+at most five times per guide, and carries no error message, stack, or file
+name. Crashes of the desktop app's main process, the bb server, or a machine's
+host daemon aren't reported.
+A failed `new_thread_submit` adds `failure_reason` (`host_unavailable`,
+`timed_out`, `not_found`, `permission`, or `other`), from the same mapping as
+setup-guide failures; `started` and `accepted` carry no reason.
+`onboarding_agent_state` (`agent_installed` and `agent_ready`, each `null`
+when unknown) also carries `agent_statuses`, an object from each shipped
+agent's public id the host reports (such as `claude-code` or `codex`) to its
+status: `ready`, `not_installed`, `unauthenticated`, `expired`,
+`unsupported_version`, or `unknown`. Custom agents are left out, and
+`agent_statuses` is absent when the agent states fail to load. It is sent
+again only when one of these values changes.
+`onboarding_sign_in` carries the agent's public id in `resource_id`
+(custom agents report `other`, as agent installs do). A `failed` sign-in adds
+`failure_reason`: `command_failed` (the sign-in command exited non-zero, with
+`failure_detail` `not_found` for exit 127, `permission` for 126, `signal` when
+killed, or `exit_nonzero`, plus `exit_code`; or the agent reported the
+sign-in failed, with `failure_detail` `login_failed`), `no_host`, `not_found`
+(the agent's state wasn't loaded), or `unsupported`
+(the agent has no sign-in command) when it couldn't start, and
+`host_unavailable`, `timed_out`, `not_found`, `permission`, or `other` when
+its terminal couldn't be created. A sign-in that couldn't start records only
+`failed`, without `started`.
 `bb plugin new` sends `plugin_creation_started` with `app_surface` `api`, skips
 it inside a bb agent thread (so an agent acting on New plugin isn't counted
 twice), and skips it silently when no bb server answers within 2 seconds. The
@@ -364,13 +469,49 @@ runs into an existing thread report `automation`. `bb thread spawn` run inside a
 sends that thread as `senderThreadId`; the new thread reports `agent` when the sender has a
 turn running, and `user` otherwise.
 
-`turn_finished` sends `outcome` (`succeeded`, `failed`, or `stopped`),
-`error_category` (`none`, `auth`, `billing`, `rate_limit`, `limit_reached`,
-`provider_unavailable`, `start_failed`, `process_exited`, `host_lost`, or `other`),
-`provider` (a shipped built-in provider ID, otherwise `other`), and
-`install_turn_number`, in addition to the standard event properties. The stored
-per-install number increments atomically on each enabled finish. It pauses while
-telemetry is off and resumes at the next number when enabled again.
+Resume interrupted threads after a restart is available in Settings → General (default off). Toggle it with `bb settings general resumeThreadsAfterRestart true` or `false`, or through the SDK’s `system.updateGeneralSettings`. Existing experiment opt-ins are preserved.
+
+- `resumeThreadsAfterRestart` resumes threads a
+  restart cut off. When a machine's daemon comes back as a new process (bb
+  quit, crashed, or updated, or the machine restarted), the server marks the
+  turns it was running as interrupted (`host-daemon-restarted`) and the
+  background tasks it was tracking as stopped, as before, and then queues a
+  retry with reason "bb restarted", scheduled 5 seconds out (the queue sweep
+  sends it on its next pass after that), for:
+  - each running turn it cut off;
+  - each idle thread with background work the restart stopped, such as a
+    background command its agent was waiting on (the retry re-runs the
+    thread's latest turn).
+
+  The retry is the same row as `bb thread retry`, titled "Resume after bb
+  restarted" in the app's queue and in `bb thread queue list`. When the provider had
+  accepted the turn's input, it sends an agent-only message instead of
+  "Please continue.": it says bb restarted, names the command the turn was
+  running and any background work the restart stopped (command and
+  description, one per line when there are several, up to ten), says the
+  restart, not the user, cut them off, and asks the agent to check their
+  effects before continuing or rerunning them. Otherwise it sends the original input. A message you send
+  (or Send now) before it goes out overtakes it. Turns stopped by the user,
+  threads waiting on a question or approval, and archived threads are not
+  resumed, and a turn is not retried again once its retry chain reaches
+  attempt 4 (three restarts in a row). A child thread that resumes does not notify its parent
+  that it was interrupted; the parent hears when the child finishes.
+  `bb thread wait` keeps waiting on a thread whose resume is queued.
+  Updating bb counts as a restart, so threads that Update now (or
+  `bb updates app apply --yes`) cuts resume after the update. With the
+  setting on, the Update now dialog, the CLI prompt, and the
+  `threads_running` error say "Updating restarts bb, and they resume after
+  the update" instead of "interrupts them".
+  The setting also makes every queued retry, including `bb thread retry` and
+  provider-retry ones, go first: a new retry row is placed at the front of the
+  thread's queue, and while a live retry (not Not sent, not exhausted) is
+  queued, the queue does not automatically send the thread's other rows; one
+  that comes up is re-queued as `thread-busy` and sends after the retry's turn
+  ends. That is what keeps messages queued or steered while the daemon was down
+  behind the resume. Without the experiment, a `--send-at` message or a row a
+  plugin releases can go out ahead of a retry scheduled for later (for example
+  a provider-retry row waiting hours for a subscription window) and overtake
+  it; with it, those rows wait for the retry.
 
 ## AI services
 
@@ -1507,6 +1648,49 @@ history; if the thread is running, submission stops the current turn and waits
 for it to settle before atomically replacing that message and every later turn
 while keeping workspace changes.
 
+## Notifications, row metadata, and idle updates
+
+The push-notifications plugin removes a
+thread's notifications once the thread is read on any client (opened, marked
+read, or sent a message). Registered phones and tablets get a silent push
+(`{"kind":"dismiss","threadId":…}`; `_contentAvailable` on iOS, data-only on
+Android) that the mobile app's background task uses to remove that thread's
+delivered notifications, and open web and desktop clients close the system
+notification they are showing for it. Phones need a mobile app version with
+the background task; an older Android app in the foreground would list the
+silent push as a blank notification.
+
+Thread row metadata adds Metadata to the built-in
+thread list's Organize → Rows menu. With it checked (`showRowMetadata`), plugins draw details such as
+GitHub PR Status's pull request number on a line under each thread title.
+
+Updating when idle lets bb update itself once no
+thread is running instead of interrupting them. Settings → Updates gains an
+"Restart and update bb automatically" switch ("Restart and update the server
+automatically" when the desktop app talks to a separate server), saved as the `autoAppUpdate` app
+setting and off until you turn it on; `bb updates app auto on|off` does the
+same. While it is on, bb checks for an update right away, 30 seconds after the
+server starts, and every hour (a `git fetch` of origin/main in source
+mode, the npm registry, or the desktop updater) and installs what it finds
+once no thread is running; turning it off stops the checks and drops a
+waiting update. The Server row then reads "Updates when all threads are
+idle", with Update now (which still asks before interrupting) and Skip this
+version in its menu. Skip this version (or `bb updates app cancel`) skips that
+version (stored as the `skippedAppUpdate` app setting) until a newer one
+appears, and the automatic check also skips a version whose last update
+attempt failed; Update still installs a skipped version.
+`bb updates app apply --when-idle` waits for threads once, without the
+switch, so an agent can update bb from its own thread. bb starts a waiting
+update after running threads stay at zero for five seconds and waits again if
+a thread starts before it restarts. From the moment bb decides to restart
+into an update (Update, Update now, a waiting update, or
+`bb updates app apply`) until it
+stops, new sends, including Send now and retries, wait in the thread's queue
+as "Sending after bb restarts to update" (`app-update` in `bb thread queue`)
+instead of starting turns the restart would cut. bb sends them when it starts
+again, after any resume `resumeThreadsAfterRestart` queues, in order; if the
+update is deferred, cancelled, or fails, it sends them at once. See `bb guide machines`.
+
 ## Experiments
 
 Experimental surfaces are changed in Settings → Experiments or with
@@ -1516,18 +1700,22 @@ bb stores only the experiments you set; the others follow the shipped default.
 The `earlyAdopter` general setting (the Become an early adopter banner on
 Settings → Experiments, `bb settings general earlyAdopter on`) switches the
 shipped default to the early adopter default: experiments marked Early adopter
-(currently `applicationLinks`, `timelinePush`, `compactExpiredCache`,
-`pluginUpdates`, `sidebarMultiSelect`, `skipFocusedThreadNotifications`,
-`threadRowMetadata`, `unreadDividerAtAnswer`, and `websocketCompression`) turn
-on, and the rest stay off. An experiment you set yourself keeps your value
+(currently `agentCpuPriority`, `compactExpiredCache`, `keyedPluginCss`,
+`pluginUpdates`, `resumeDaemonSessions`, `skipFocusedThreadNotifications`,
+`threadContextCard`, and `walCheckpointWorker`) turn on, and the rest stay off. An experiment you set yourself keeps your value
 either way.
 `/system/config` and `sdk.system.config()` return the resolved values in
 `experiments`.
 
-- `applicationLinks` (on for early adopters) enables explicit app links such as
-  `linear://` and `slack://` in rendered Markdown and the plugin
-  `navigate.openUrl` path. The viewing device asks before opening unless the
-  scheme was saved with Always allow. See [App links](#app-links).
+- `agentCpuPriority` (on for early adopters) keeps bb responsive when agents saturate the CPU. The
+  host daemon starts provider processes and environment setup and teardown
+  scripts at nice 10 (below-normal on Windows), inherited by
+  the builds and tests they run; terminals keep normal priority. On macOS the
+  launcher also starts the server and daemon with application scheduling
+  (`taskpolicy -a`). Turning it on or off takes effect after restarting bb,
+  including the restart an update performs: running provider processes serve
+  new threads too, and a lowered process cannot be raised again. See
+  [slow database operations](debugging-and-qa.md#slow-database-operations).
 - `compactExpiredCache` (on for early adopters) reports `compactionOfferAt` on a thread's context
   usage (timeline `contextWindowUsage` and `bb thread context`) once the
   provider has reported a prompt-cache lifetime, the provider supports manual
@@ -1536,13 +1724,24 @@ either way.
   next send passes `compactFirst` so the server runs `/compact` and queues the
   message behind it. Clicking the chip keeps the full history for that one
   send.
+
+- `keyedPluginCss` (on for early adopters) makes the app request each plugin's
+  stylesheet with `css-scope=plugin-attribute-v1`. bb then keys the plugin's
+  utilities on an attribute named after the plugin,
+  `data-bb-plugin-scope-<id>`, so style updates inside other plugins' UI, such
+  as the sidebar and composer, skip that plugin's rules. The app adds the
+  attribute to every element labeled `data-bb-plugin`, including ones a plugin
+  creates itself. The app reads the experiment when it loads a plugin's
+  stylesheet, so a toggle applies after a reload. See
+  [Plugin Stylesheet Version Skew](debugging-and-qa.md#plugin-stylesheet-version-skew).
 - `serverMove` enables Move server here in Settings → Machines,
   `bb server move`, `bb server export`, and old server copy deletion; while off
   those routes return 403 `server_move_experiment_disabled` (status and cancel
   stay available). See `bb guide machines`.
 - `performanceDiagnostics` turns on server performance diagnostics: slow
-  database, API, and event-loop logging, periodic performance samples, and
-  continuous V8 CPU profiles written every 30 seconds to
+  database, API, and event-loop logging, slow SQLite query plan warnings,
+  periodic performance samples, and continuous V8 CPU profiles written every
+  30 seconds to
   `<dataDir>/logs/performance/`. Profiles are kept for 12 hours with a 1 GB
   total cap (oldest first), and a profile over 12 MiB is discarded. It needs
   startup permission from `BB_PERF_DIAGNOSTICS=1` or the launcher flag
@@ -1559,22 +1758,20 @@ either way.
   badge counts plugin updates. While it is off, the six-hourly background check,
   `bb plugin outdated`, `bb plugin update`, and Settings → Installed plugins
   work as before.
-- `sidebarMultiSelect` (on for early adopters) lets the built-in thread list
-  select several threads: Cmd/Ctrl+Shift-click toggles a row (starting from the
-  open thread), Shift-click selects the visible range from the last clicked row,
-  and a plain click, Cmd/Ctrl-click, Escape, or a click outside the sidebar
-  clears the selection.
-  Right-clicking a selected row offers Mark read/unread, Pin/Unpin,
-  Notifications, Move to section, Archive (Unarchive when every selected
-  thread is archived), and Delete for the whole selection. Archive and Delete
-  ask once for the whole selection, counting child threads that are not
-  selected, and act on the topmost selected threads; Archive skips the
-  question when the Archive confirmation setting is off. Dragging a selected row moves
-  every selected thread onto a section, under a thread, or into Pinned, or drops
-  them onto a composer as one mention per thread. Cmd/Ctrl-click still opens a
-  thread in a split. Plugins read it with
-  `experimental_useExperiment("sidebarMultiSelect")`.
-- `threadContextCard` moves a running thread's
+- `resumeDaemonSessions` (on for early adopters) lets a machine's daemon
+  session outlive a dropped WebSocket. When the socket closes for any reason
+  other than the daemon shutting down, the server keeps the session active for
+  30 seconds: terminals, pending host requests, Connect sharing and the host's
+  connected status stay as they are, and messages for the daemon queue up. A
+  daemon that reconnects in time resumes the same session with
+  `/internal/ws?sessionId=…&resumeFrom=<n>`, and each side re-sends only the
+  messages the other has not acknowledged. Past 30 seconds the session ends as
+  `expired` and the daemon opens a new one. While the experiment is off, the
+  server ends the session as soon as the socket closes, and session open
+  returns `reconnectGraceMs: 0`, so the daemon opens a new session after every
+  drop. It applies from the next disconnect.
+
+- `threadContextCard` (on for early adopters) moves a running thread's
   details into the thread context card at the upper-right of its pane: bb's parent
   thread and child threads, the Git plugin's changes, which open the Diff tab,
   and GitHub PR Status's pull request. The context row above the
@@ -1583,14 +1780,11 @@ either way.
   their context row, and a new thread's composer is unchanged.
   A header button opens the card or pins it: a pinned card sits beside the
   transcript in a wide pane and moves the transcript aside in a medium one,
-  and a narrow pane or window opens it over the transcript. Phones keep the
-  context row above the composer and show no card. Plugins read how a pane
+  and a narrow pane or window keeps the context row above the composer and
+  opens the card over the transcript. Phones keep the context row above the
+  composer and show no card. Plugins read how a pane
   shows thread context with `experimental_useThreadContextKind()`.
-- `threadRowMetadata` (on for early adopters) adds Metadata to the built-in
-  thread list's Organize → Rows menu. With it checked (`showRowMetadata`), plugins draw details such as
-  GitHub PR Status's pull request number on a line under each thread title.
-  While the experiment is off the sidebar ignores `showRowMetadata`. Plugins
-  read it with `experimental_useExperiment("threadRowMetadata")`.
+
 - `skipFocusedThreadNotifications` (on for early adopters) makes the
   push-notifications plugin skip the web and desktop system notification for a
   thread that is open in a visible, focused bb window or browser tab of the same
@@ -1600,27 +1794,22 @@ either way.
   plugin reads it with
   `experimental_useExperiment("skipFocusedThreadNotifications")` and follows a
   toggle live.
-- `timelinePush` makes an open thread view subscribe to its latest timeline
-  window over the WebSocket (`thread-timeline` subscription target); the server
-  pushes the full window once, then row deltas after new events, instead of the
-  client refetching the latest window after every update. A missed push falls
-  back to the delta request used when it is off. Open views follow a toggle
-  live.
-- `unreadDividerAtAnswer` (on for early adopters) moves the NEW divider in an unread thread from the
-  first row after your read point to the answer of a turn that finished while
-  you were away: the turn's final assistant message, or the error that ended
-  it. The turn's tool calls and in-between notes stay above the divider. A
-  message that started a new turn keeps the divider above it, a turn that is
-  still running or has no answer keeps the old placement, and the divider never
-  lands on your own message. It applies the next time you open a thread.
-- `websocketCompression` (on for early adopters) lets the realtime client
-  WebSocket (`/ws`) negotiate `permessage-deflate`, so messages of 1 KB or more,
-  such as timeline pushes, are compressed (about 4x for timeline JSON). It
-  helps clients that reach the server over a network, including bb connect
-  next; the bb connect relay re-frames messages and does not carry it.
-  Terminal, host daemon, and plugin WebSockets are never compressed. The server
-  reads the experiment when a client connects, so a toggle applies when the
-  app reconnects.
+
+- `walCheckpointWorker` (on for early adopters) moves SQLite WAL checkpoints for `bb.db` and plugin
+  `data.db` files off the server's main thread. A background worker thread
+  opens its own connection to each database and runs `wal_checkpoint(PASSIVE)`
+  every 100 ms, and right away again while the WAL holds 4,096 frames or more
+  and is still growing; the server's own connections set
+  `wal_autocheckpoint=0`, so a commit no longer copies the WAL into the
+  database file and fsyncs it. If sustained writes grow the WAL past 16,384
+  frames across two worker passes, the server checkpoints the small remaining
+  tail itself between tasks and logs "Sustained writes outpaced the WAL
+  checkpoint worker". The hourly incremental vacuum waits for a worker pass
+  around each chunk instead of checkpointing inline. If the worker exits or
+  cannot open a database, those connections go back to checkpointing on
+  commit and bb logs a warning; a worker that had started restarts after
+  10 seconds. The experiment applies live: turning it off stops the worker
+  after a final checkpoint and restores `wal_autocheckpoint=1000`.
 
 ## Thread Timeline Window
 
@@ -1631,9 +1820,16 @@ bytes, events, or CPU: one large turn can need substantially more work. Pages
 target 4 MiB of rendered rows. The API and SDK contract is in
 [timeline-pagination.md](timeline-pagination.md).
 
+When you open a thread whose turn finished while you were away, the NEW
+divider sits above the turn's answer: its final assistant message, or the
+error that ended it. The turn's tool calls and in-between notes stay above the
+divider. A message that started a new turn keeps the divider above it, a turn
+that is still running or has no answer puts it above the first row after your
+read point, and the divider never lands on your own message.
+
 Timeline builds slower than 150 ms log `Thread timeline build blocked the event
-loop`, and event-loop stalls over 500 ms log `Event loop stalled`, both at
-`info`.
+loop` with main-thread CPU time and context-switch counts, and event-loop
+stalls over 500 ms log `Event loop stalled`, both at `info`.
 
 ## Plugins
 
@@ -1647,7 +1843,13 @@ inside the bb server process.
 Plugin state lives under the data dir:
 
 ```
-<dataDir>/plugins/<id>/data.db     Per-plugin SQLite database
+<dataDir>/plugins/<id>/data.db     Per-plugin SQLite database (when it uses
+                                   incremental auto-vacuum, bb returns its
+                                   free pages to disk hourly)
+<dataDir>/plugins/snapshots/<id>/  Rollback copy of a plugin's state taken
+                                   before an update; deleted once the update
+                                   settles, or at the next restart after a
+                                   rollback
 <dataDir>/plugins/<id>/secrets/    Secret settings and the plugin HTTP token
 <dataDir>/plugins/<id>/logs/       bb.log output (plugin.log, JSONL, rotated
                                    at 5MB; read with `bb plugin logs <id>`)
@@ -1714,11 +1916,12 @@ skills.
 | `artifactsEnabled`           | `false` | Sets `CLAUDE_CODE_ARTIFACT=1` so Claude Code loads its Artifact tools (read, publish, and edit claude.ai artifacts), which it withholds from SDK sessions by default; when off, bb leaves any inherited value alone. Claude may publish private pages without asking. |
 | `sandboxEnabled`             | `true`  | Runs Bash in Claude Code's sandbox in Accept Edits and Approve for me modes; `false` uses Claude Code's own approvals and sandbox settings.                                                                                                                           |
 | `fullAccessApprovalsEnabled` | `false` | Shows Claude Code's own prompts in Full Access (`permissions.ask` rules, PreToolUse hooks that answer `ask`, and built-in safety checks); `false` approves every request. Applies from the next turn without a restart.                                               |
+| `commandDescriptionsEnabled` | `false` | Titles Bash command rows with Claude's short description of the command instead of the command itself; approval prompts and the expanded row still show the command. Takes effect from each thread's next message; existing rows keep their titles.                   |
 
 Set them with `bb plugin config provider-claude-code set <key> <value>`. Unless
 noted, a change restarts the thread's Claude process before its next turn,
 keeping the conversation. Memory, native subagents, and the Workflow tool are toggled on
-the provider's page in Settings → Providers (see `bb guide providers`).
+the plugin's page in Settings → Plugins → Claude Code provider (see `bb guide providers`).
 
 Two host-daemon environment variables reach the Claude Code bridge:
 `BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary (otherwise bb uses
@@ -1750,11 +1953,11 @@ account-pool`), except that a nested server with `BB_ACCOUNT_POOL_PARENT_URL`
 enables it. Account tokens and per-machine hub tokens are 0600 files under
 `<dataDir>/plugins/account-pool/secrets/accounts/`.
 
-| Setting                    | Default                                 | Effect                                                                                     |
-| -------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `switchThreshold`          | `0.98`                                  | Shared or model-family quota fraction at which an account stops receiving matching traffic |
-| `anthropicUpstreamBaseUrl` | `https://api.anthropic.com`             | Upstream for Claude traffic; only for tests and QA with a fake upstream                    |
-| `codexUpstreamBaseUrl`     | `https://chatgpt.com/backend-api/codex` | Upstream for Codex traffic; only for tests and QA with a fake upstream                     |
+| Setting                    | Default                                 | Effect                                                                                                                                             |
+| -------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `switchThreshold`          | `0.98`                                  | Shared or model-family quota fraction from which other accounts are preferred; the account still serves matching traffic until upstream refuses it |
+| `anthropicUpstreamBaseUrl` | `https://api.anthropic.com`             | Upstream for Claude traffic; only for tests and QA with a fake upstream                                                                            |
+| `codexUpstreamBaseUrl`     | `https://chatgpt.com/backend-api/codex` | Upstream for Codex traffic; only for tests and QA with a fake upstream                                                                             |
 
 Inspect and change them with `bb pool config` and
 `bb pool config set <key> <value>`. Values stored through `bb.settings` by
@@ -1769,6 +1972,13 @@ unlimited by default; each host defaults to Auto (one thread per available
 processor), a blank host field restores Auto, and `0` pauses new work for that
 scope. Configure it on its autosaving plugin page or with
 `bb concurrency-limit status|global|host`; see the `concurrency-limit` skill.
+
+### GitHub Star
+
+The builtin GitHub Star plugin (`bb--github-star`) asks once for a star on
+GitHub after more than five prompts, when the window has been idle for 30
+seconds. The server records that it asked, so no other window or device asks
+again. Disable the plugin to never be asked.
 
 ### Keep Awake
 
@@ -1958,7 +2168,8 @@ row's Customize actions, or `bb thread-list prefs get|set|reset <key>`
 | `threadLifecycles`    | `["active"]`                      | `["active"]`, `["archived"]`, or both; empty and duplicate values are rejected                                                              |
 | `rowActions`          | `["bb--core/archive"]`            | Up to three thread action keys in display order; see below                                                                                  |
 | `showProviderIcons`   | `false`                           | Shows the provider icon before each thread title                                                                                            |
-| `showRowMetadata`     | `false`                           | Shows plugins' metadata on a line under each thread title; needs the `threadRowMetadata` experiment                                         |
+| `showRowMetadata`     | `false`                           | Shows plugins' metadata on a line under each thread title                                                                                   |
+| `showEmptyProjects`   | `true`                            | `false` hides project groups with no visible threads when organized by project                                                              |
 | `collapsed*`          | `[]`                              | Collapsed sections, projects, threads, environments, custom sections, and machines                                                          |
 
 `rowActions` keys are `bb--core/<id>` (`split`, `newThreadInEnvironment`,
@@ -1966,6 +2177,19 @@ row's Customize actions, or `bb thread-list prefs get|set|reset <key>`
 or a plugin's `<pluginId>/<actionId>`. Bare legacy ids and `core/<id>` keys
 migrate to current keys. A key whose action is hidden for a row, or whose
 plugin is not installed, is skipped on that row.
+
+Cmd/Ctrl+Shift-click toggles a row in a multi-thread selection (starting from
+the open thread), Shift-click selects the visible range from the last clicked
+row, and a plain click, Cmd/Ctrl-click, Escape, or a click outside the sidebar
+clears the selection. Right-clicking a selected row offers Mark read/unread,
+Pin/Unpin, Notifications, Move to section, Archive (Unarchive when every
+selected thread is archived), and Delete for the whole selection. Archive and
+Delete ask once for the whole selection, counting child threads that are not
+selected, and act on the topmost selected threads; Archive skips the question
+when the Archive confirmation setting is off. Dragging a selected row moves
+every selected thread onto a section, under a thread, or into Pinned, or drops
+them onto a composer as one mention per thread. Cmd/Ctrl-click still opens a
+thread in a split.
 
 ### Connect and bb account
 
@@ -2006,6 +2230,12 @@ every enrolled machine's daemon also serves the ports shared from it with
 | Connect next setting | Default | Effect                                                                      |
 | -------------------- | ------- | --------------------------------------------------------------------------- |
 | `enabled`            | `true`  | "Reach this bb at its next address (beta)". Also `bb connect-next on\|off`. |
+
+The realtime client WebSocket (`/ws`) negotiates `permessage-deflate`, so
+messages of 1 KB or more, such as timeline pushes, are compressed (about 4x for
+timeline JSON). It helps clients that reach the server over a network,
+including connect next; the bb connect relay re-frames messages and does not
+carry it. Terminal, host daemon, and plugin WebSockets are never compressed.
 
 | Variable                 | Effect                                                                                                                            |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -2153,13 +2383,9 @@ backup before rolling back to a build predating the tolerant-reader fix #5286.
 
 ## App links
 
-Enable App links in Settings → Experiments or run
-`bb settings experiment applicationLinks true`. The experiment is a server
-setting shared by its clients. Disable it with
-`bb settings experiment applicationLinks false`.
-
 Explicit Markdown links such as `[Review note](reflect://note/Project%20X)`
-become clickable while enabled. Bare custom-scheme text is not auto-linked.
+and links plugins open through `navigate.openUrl` open in their apps, for
+example `linear://` and `slack://`. Bare custom-scheme text is not auto-linked.
 The shared web UI asks before opening an app on the viewing device; choose
 Always allow to remember that URL scheme. All clients save approvals in
 localStorage for this BB site on this device. They do not sync between devices,

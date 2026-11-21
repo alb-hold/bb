@@ -221,9 +221,13 @@ export function ProjectDetailSettingsView() {
     useState<ProjectSourceDeleteDialogTarget | null>(null);
   const [machineSetupTarget, setMachineSetupTarget] =
     useState<ProjectMachineSetupDialogTarget | null>(null);
+  const [now] = useState(Date.now);
 
   const projects = sidebarNavigationQuery.data?.projects;
-  const project = projects?.find((entry) => entry.id === projectId) ?? null;
+  const project = useMemo(
+    () => projects?.find((entry) => entry.id === projectId) ?? null,
+    [projectId, projects],
+  );
   const projectSources = project?.sources;
   const sources = useMemo(() => projectSources ?? [], [projectSources]);
   const projectName = project?.name ?? "";
@@ -345,7 +349,6 @@ export function ProjectDetailSettingsView() {
       : (PERMISSION_MODE_OPTIONS.find(
           (option) => option.value === defaults.permissionMode,
         )?.label ?? defaults.permissionMode);
-  const now = Date.now();
 
   return (
     <PageShell contentClassName="pt-4 md:pt-5">
@@ -612,7 +615,9 @@ export function ProjectDetailSettingsView() {
           deleteProject.mutate(id, {
             onSuccess: () => {
               setDeleteTarget(null);
-              navigate(getSettingsRoutePath("projects"), { replace: true });
+              void navigate(getSettingsRoutePath("projects"), {
+                replace: true,
+              });
             },
           })
         }

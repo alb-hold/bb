@@ -92,6 +92,7 @@ it("reports a worktree retained when a holder appears during quarantined removal
     operationId: "remove-after-quarantine-holder",
     pathKey: "thr_unreadable",
     path: fixture.path,
+    ownedBranch: null,
   });
 
   expect(removed).toMatchObject({
@@ -124,6 +125,7 @@ it("reports the Linux non-root holder scan limit after removing a worktree", asy
       operationId: "remove-non-root-holder-limit",
       pathKey: "thr_unreadable",
       path: fixture.path,
+      ownedBranch: null,
     });
 
     expect(removed).toMatchObject({
@@ -222,6 +224,7 @@ async function expectKept(
     operationId: "remove",
     pathKey: "thr_unreadable",
     path: fixture.path,
+    ownedBranch: null,
   };
   const removed = await fixture.harness.experimental_call("remove", input);
   expect(removed).toMatchObject({
@@ -283,6 +286,7 @@ describe("a program whose /proc entries cannot be read", () => {
       operationId: "remove",
       pathKey: "thr_unreadable",
       path: fixture.path,
+      ownedBranch: null,
     });
 
     expect(removed, JSON.stringify(removed)).toMatchObject({

@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useSecondaryPanelActionsTarget } from "@/components/secondary-panel/SecondaryPanelActions";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { browserPlatform } from "@/lib/app-keybindings";
@@ -46,21 +46,33 @@ function readSearchDecorations() {
 
 export function TerminalSearch({
   addon,
+  terminalRef,
+  hasTerminal,
   terminal,
   touch = false,
   hideTrigger = false,
   terminalId,
   open,
+  focusRequest = 0,
   onOpenChange,
 }: {
   addon: TerminalSearchAddonInstance | null;
-  terminal: Terminal | null;
+  terminalRef?: RefObject<Terminal | null>;
+  hasTerminal?: boolean;
+  terminal?: Terminal | null;
   touch?: boolean;
   hideTrigger?: boolean;
   terminalId?: string;
   open: boolean;
+  focusRequest?: number | null;
   onOpenChange: (open: boolean) => void;
 }) {
+  const getActiveTerminal = useCallback(
+    () => terminalRef?.current ?? terminal ?? null,
+    [terminal, terminalRef],
+  );
+  const terminalAvailable =
+    hasTerminal ?? (terminalRef !== undefined || terminal != null);
   const panelActions = useSecondaryPanelActionsTarget();
   const actionsTarget = panelActions?.target;
   const showTrigger =
@@ -85,12 +97,13 @@ export function TerminalSearch({
   }, [setOpen]);
 
   useEffect(() => {
-    if (!terminal) return;
+    const currentTerminal = getActiveTerminal();
+    if (!currentTerminal) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const activeElement = document.activeElement;
       const focusWithinSearch =
         searchRootRef.current?.contains(activeElement) ?? false;
-      const focusWithinTerminal = terminal.textarea === activeElement;
+      const focusWithinTerminal = currentTerminal.textarea === activeElement;
       const shortcut = getTerminalSearchShortcut(
         event,
         browserPlatform(),
@@ -99,7 +112,7 @@ export function TerminalSearch({
       if (
         shortcut === "open" &&
         addon &&
-        terminal.textarea === document.activeElement
+        currentTerminal.textarea === document.activeElement
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -113,14 +126,19 @@ export function TerminalSearch({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [addon, close, open, setOpen, terminal]);
+  }, [addon, close, terminalAvailable, open, setOpen, getActiveTerminal]);
 
   useEffect(() => {
-    if (!open || !addon || !terminal) return;
+    const currentTerminal = getActiveTerminal();
+    if (focusRequest === null) {
+      inputRef.current?.blur();
+      return;
+    }
+    if (!open || !addon || !currentTerminal) return;
     const controller = createTerminalSearchController(
       addon,
       setState,
-      () => terminal.focus(),
+      () => currentTerminal.focus(),
       readSearchDecorations(),
     );
     controllerRef.current = controller;
@@ -130,7 +148,7 @@ export function TerminalSearch({
       controller.close(false);
       if (controllerRef.current === controller) controllerRef.current = null;
     };
-  }, [addon, open, terminal]);
+  }, [addon, focusRequest, terminalAvailable, open, getActiveTerminal]);
 
   const toggleOption = (option: "caseSensitive" | "wholeWord" | "regex") => {
     const value = !state[option];
@@ -142,7 +160,7 @@ export function TerminalSearch({
     <button
       type="button"
       aria-label="Search terminal output"
-      disabled={!addon || !terminal}
+      disabled={!addon || !terminalAvailable}
       onPointerDown={(event) => event.preventDefault()}
       onClick={() => setOpen(true)}
       className={cn(

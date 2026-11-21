@@ -9,6 +9,7 @@ export const THREAD_TIMELINE_WINDOW_FIELD_KEYS = [
   "activeBackgroundCommands",
   "pendingTodos",
   "goal",
+  "extensionStates",
   "providerCommands",
   "sessionOptions",
   "modelFallback",

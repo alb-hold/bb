@@ -262,6 +262,7 @@ export function MachineSettingsHeader({
 export function MachineSettingsView() {
   const { hostId } = useParams<{ hostId: string }>();
   const navigate = useNavigate();
+  const [openedAt] = useState(Date.now);
   const hostsQuery = useHosts();
   const { providers: machineProviders } = useSystemMachineProviders();
   const systemConfig = useSystemConfig();
@@ -341,7 +342,7 @@ export function MachineSettingsView() {
     });
   }, [machine?.providerStatus, providerRoster]);
 
-  const now = Date.now();
+  const now = Math.max(openedAt, hostsQuery.dataUpdatedAt);
   const platformLabel =
     host !== null &&
     host.id === localDaemonHostId &&
@@ -608,7 +609,7 @@ export function MachineSettingsView() {
       <MachineRemoveDialog
         target={removeOpen ? host : null}
         onOpenChange={setRemoveOpen}
-        onRemoved={() => navigate(getSettingsRoutePath("machines"))}
+        onRemoved={() => void navigate(getSettingsRoutePath("machines"))}
       />
 
       <MachineReconnectDialog

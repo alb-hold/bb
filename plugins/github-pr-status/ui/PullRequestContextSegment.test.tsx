@@ -7,14 +7,19 @@ import {
   renderHook,
   screen,
 } from "@testing-library/react";
+
 import type { ExperimentalThreadContextSegmentReference } from "@get-bb/plugin-sdk/app";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import type { EnvironmentPullRequest, PullRequest } from "../contract";
+
 import {
   PullRequestSegmentAction,
   PullRequestSegmentSummary,
   usePullRequestSegmentVisible,
 } from "./PullRequestContextSegment";
+
 
 const sdk = vi.hoisted(() => ({
   rows: {} as Record<string, EnvironmentPullRequest>,
@@ -25,27 +30,34 @@ const sdk = vi.hoisted(() => ({
   threadContextKind: "banner" as "banner" | "card",
 }));
 
-vi.mock("@get-bb/plugin-sdk/app", () => ({
-  experimental_useRpcKeyedQuery: () => ({
-    data: sdk.rows,
-    error: null,
-    refetch: async () => {},
-  }),
-  experimental_useRpcMutation: ({ method }: { method: string }) => ({
-    mutate: (input: unknown) => {
-      sdk.mutationCalls.push({ method, input });
-      return sdk.mutate(input);
+
+vi.mock("@get-bb/plugin-sdk/app", async () => {
+  const { createContext, useContext } = await import("react");
+  const threadContext = createContext(sdk);
+  return {
+    experimental_useRpcKeyedQuery: () => ({
+      data: sdk.rows,
+      error: null,
+      refetch: async () => {},
+    }),
+    experimental_useRpcMutation: ({ method }: { method: string }) => ({
+      mutate: (input: unknown) => { sdk.mutationCalls.push({ method, input }); return sdk.mutate(input); },
+      isPending: sdk.isPending,
+    }),
+    useBbNavigate: () => ({ openUrl: () => false }),
+    useSettings: () => ({ values: sdk.settings, isLoading: false }),
+    experimental_useThreadContextKind: function useThreadContextKind() {
+      return useContext(threadContext).threadContextKind;
     },
-    isPending: sdk.isPending,
-  }),
-  useBbNavigate: () => ({ openUrl: () => false }),
-  useSettings: () => ({ values: sdk.settings, isLoading: false }),
-  experimental_useThreadContextKind: () => sdk.threadContextKind,
-}));
+  };
+});
+
+
 
 vi.mock("sonner", () => ({
   toast: { loading: vi.fn(), success: vi.fn(), error: vi.fn() },
 }));
+
 
 const PULL_REQUEST: PullRequest = {
   number: 128,
@@ -74,21 +86,27 @@ const PULL_REQUEST: PullRequest = {
   attention: "ready_to_merge",
 };
 
+
 const SELF = {
   key: "bb--github-pr-status/pull-request",
   pluginId: "bb--github-pr-status",
 };
+
 const CHANGED_FILES = { key: "bb--git/changed-files", pluginId: "bb--git" };
+
 const PARENT = { key: "bb--core/parent-thread", pluginId: "bb--core" };
+
 
 function show(pullRequest: PullRequest) {
   sdk.rows = { env_1: { outcome: "available", pullRequest } };
 }
 
+
 const PARTS = {
   summary: PullRequestSegmentSummary,
   action: PullRequestSegmentAction,
 };
+
 
 function renderPart(
   part: keyof typeof PARTS,
@@ -107,8 +125,10 @@ function renderPart(
   );
 }
 
+
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   sdk.rows = {};
   sdk.settings = { showPullRequest: true };
   sdk.isPending = false;
@@ -118,7 +138,36 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+
 describe("pull request context segment", () => {
+  it("keeps hook order stable as settings load and toggle", () => {
+    show(PULL_REQUEST);
+    sdk.settings = undefined;
+    const errors = vi.spyOn(console, "error");
+    const { result, rerender } = renderHook(() =>
+      usePullRequestSegmentVisible({
+        threadId: "thr_1",
+        projectId: "proj_1",
+        environment: { id: "env_1" },
+      }),
+    );
+    expect(result.current).toBe(false);
+
+    sdk.settings = { showPullRequest: true };
+    rerender();
+    expect(result.current).toBe(true);
+
+    sdk.settings = { showPullRequest: false };
+    rerender();
+    expect(result.current).toBe(false);
+
+    sdk.settings = { showPullRequest: true };
+    rerender();
+    expect(result.current).toBe(true);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+
   it("shows only when the thread's environment has a pull request", () => {
     show(PULL_REQUEST);
     const input = { threadId: "thr_1", projectId: "proj_1" };
@@ -146,6 +195,7 @@ describe("pull request context segment", () => {
     ).toBe(false);
   });
 
+
   it("hides while the pane shows thread context in the card", () => {
     show(PULL_REQUEST);
     sdk.threadContextKind = "card";
@@ -159,6 +209,7 @@ describe("pull request context segment", () => {
       ).result.current,
     ).toBe(false);
   });
+
 
   it.each([
     ["off", { showPullRequest: false }],
@@ -177,6 +228,7 @@ describe("pull request context segment", () => {
     ).toBe(false);
   });
 
+
   it("labels a standalone pull request without a redundant open state", () => {
     show(PULL_REQUEST);
     const { container } = renderPart("summary");
@@ -190,12 +242,14 @@ describe("pull request context segment", () => {
     expect(container.querySelector("[data-promptbox-hide-compact]")).toBeNull();
   });
 
+
   it("keeps a standalone terminal state label", () => {
     show({ ...PULL_REQUEST, state: "closed", attention: "closed" });
     expect(renderPart("summary").container.textContent).toContain(
       "PR #128 · Closed",
     );
   });
+
 
   it.each([
     ["beside changed files", [SELF, CHANGED_FILES], "PR #128", true],
@@ -215,6 +269,7 @@ describe("pull request context segment", () => {
       container.querySelector("[data-promptbox-hide-compact]") !== null,
     ).toBe(hiddenInCompact);
   });
+
 
   it.each([
     ["checks_pending", false, null],
@@ -258,6 +313,7 @@ describe("pull request context segment", () => {
     },
   );
 
+
   it("keeps failed-check detail accessible without a visible label", () => {
     show({
       ...PULL_REQUEST,
@@ -275,6 +331,7 @@ describe("pull request context segment", () => {
     expect(markup).not.toContain(">Checks failing</span>");
     expect(markup).toContain('title="Open, Checks failing"');
   });
+
 
   it.each([
     ["checked open", PULL_REQUEST, "min-w-13"],
@@ -295,6 +352,7 @@ describe("pull request context segment", () => {
       ["min-w-8", "min-w-13"].filter((name) => link.classList.contains(name)),
     ).toEqual([width]);
   });
+
 
   it("offers Mark ready for a draft", () => {
     show({ ...PULL_REQUEST, state: "draft", attention: "draft" });
@@ -317,6 +375,7 @@ describe("pull request context segment", () => {
       { method: "markReady", input: { environmentId: "env_1", ...identity } },
     ]);
   });
+
 
   it("merges with the remembered method and remembers a new one", () => {
     window.localStorage.setItem("bb.pullRequest.mergeMethod", "squash");
@@ -350,6 +409,7 @@ describe("pull request context segment", () => {
     ]);
   });
 
+
   it("disables the actions while one runs", () => {
     sdk.isPending = true;
     show({ ...PULL_REQUEST, state: "draft", attention: "draft" });
@@ -360,6 +420,7 @@ describe("pull request context segment", () => {
         .hasAttribute("disabled"),
     ).toBe(true);
   });
+
 
   it.each([
     [

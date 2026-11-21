@@ -5,6 +5,8 @@ import {
   cleanup,
   renderHook as renderHookBase,
 } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { QueryClient } from "@tanstack/react-query";
 import { getDefaultStore } from "jotai";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
@@ -19,7 +21,6 @@ import {
   useSidebarThreadRowStatuses,
   useSidebarThreadShortcut,
   useSidebarThreads,
-  useSidebarThreadEntry,
 } from "./plugin-sidebar-hooks";
 import {
   clearPluginThreadRowStatuses,
@@ -27,15 +28,21 @@ import {
 } from "./plugin-thread-row-status";
 import { useEnvironmentProviders } from "./plugin-sdk-hooks";
 import { SidebarThreadShortcutKeysContext } from "@/components/sidebar/sidebarThreadShortcuts";
-import { SidebarThreadEntriesTestProvider } from "@/test/sidebarThreadEntriesTestProvider";
 import { sidebarNavigationQueryKey } from "@/hooks/queries/query-keys";
 import { createRealtimeCacheEffects } from "@/hooks/realtime-cache-effects";
 
-const renderHook: typeof renderHookBase = (callback, options) =>
-  renderHookBase(callback, {
-    wrapper: SidebarThreadEntriesTestProvider,
+const renderHook: typeof renderHookBase = (callback, options) => {
+  const queryClient = new QueryClient();
+  if (state.data !== undefined) {
+    queryClient.setQueryData(sidebarNavigationQueryKey(), state.data);
+  }
+  return renderHookBase(callback, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
     ...options,
   });
+};
 
 const actions = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -402,17 +409,6 @@ describe("sidebar lifecycle selection", () => {
     expect(result.current.status).toBe("ready");
     expect(result.current.threads).toHaveLength(1);
     expect(result.current.experimental_archived?.status).toBe("error");
-  });
-
-  it("resolves archived entries for host-owned row actions and status", () => {
-    const archived = makeThreadListEntry({
-      id: "thr_archived",
-      archivedAt: 42,
-    });
-    state.data = payload([]);
-    archiveQuery.data = { pages: [[archived]] };
-    const { result } = renderHook(() => useSidebarThreadEntry(archived.id));
-    expect(result.current).toBe(archived);
   });
 });
 

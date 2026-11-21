@@ -10,7 +10,7 @@ import {
   useAppCommandHandler,
   useIsAppCommandModifierHeld,
 } from "@/components/commands/AppCommandProvider";
-import { ComposerBox } from "./ComposerBox";
+import { ControlledComposerBox } from "@/test/fixtures/controlled-composer-box";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 
 const testState = vi.hoisted(() => ({
@@ -72,7 +72,7 @@ function renderComposer(extra: React.ReactNode = null) {
       <AppCommandProvider>
         <SidebarToggleHandler />
         {extra}
-        <ComposerBox
+        <ControlledComposerBox
           surface="thread"
           value=""
           mentionRanges={[]}
@@ -174,7 +174,9 @@ describe("prompt editor app shortcuts", () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Control", ctrlKey: true }),
       );
-      act(() => vi.advanceTimersByTime(700));
+      act(() => {
+        vi.advanceTimersByTime(700);
+      });
       expect(screen.getByText("hint-held")).toBeDefined();
 
       act(() => {

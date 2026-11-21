@@ -1,13 +1,14 @@
+import { getThreadListIndicatorLabel, type ThreadListIndicatorKind } from "@bb/client-core";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
-import {
-  getThreadListIndicatorLabel,
-  type ThreadListIndicatorKind,
-} from "@bb/client-core";
 import type {
   PluginComposerThreadRowStatus,
+  PluginSidebarThreadIndicator,
   PluginThreadStatusGlyphProps,
 } from "@get-bb/plugin-sdk";
+import {
+  threadIndicatorLabel,
+} from "@get-bb/plugin-sdk/internal/thread-status";
 import { pluginIconName } from "@/components/plugin/PluginIcon";
 import {
   SIDEBAR_STATUS_ICON_CLASS,
@@ -17,17 +18,17 @@ import {
 } from "@bb/shared-ui/sidebar-row-classes";
 
 const WORKING_ACTIVITY_ICONS = {
+  goal: "Target",
   workflow: "Workflow",
   "background-agent": "UserRoundPlus",
   "background-command": "Terminal",
   "plan-mode": "ListTodo",
-  goal: "Target",
-} satisfies Partial<Record<ThreadListIndicatorKind, IconName>>;
+} satisfies Partial<Record<PluginSidebarThreadIndicator, IconName>>;
 
 const WAITING_ICONS = {
   "waiting-for-input": "CircleQuestion",
   "queued-waiting": "Clock",
-} satisfies Partial<Record<ThreadListIndicatorKind, IconName>>;
+} satisfies Partial<Record<PluginSidebarThreadIndicator, IconName>>;
 
 function ThreadDraftIndicator({
   hideIdleLabel = false,
@@ -36,7 +37,7 @@ function ThreadDraftIndicator({
   hideIdleLabel?: boolean;
   size: "default" | "compact";
 }) {
-  const label = getThreadListIndicatorLabel("draft");
+  const label = threadIndicatorLabel("draft");
   return (
     <Icon
       name="Edit"
@@ -221,7 +222,7 @@ export function ThreadStatusGlyph({
         <Icon
           name="CircleX"
           className={cn("text-destructive", iconSizeClass)}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={threadIndicatorLabel(indicator) ?? undefined}
         />
       );
     case "queued-failed":
@@ -240,7 +241,7 @@ export function ThreadStatusGlyph({
         <Icon
           name={WAITING_ICONS[kind]}
           className={cn("text-muted-foreground/75", iconSizeClass)}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={threadIndicatorLabel(indicator) ?? undefined}
         />
       );
     case "activity-unreported":
@@ -254,8 +255,8 @@ export function ThreadStatusGlyph({
     case "workflow":
     case "background-agent":
     case "background-command":
-    case "plan-mode":
     case "goal":
+    case "plan-mode":
       return (
         <Icon
           name={WORKING_ACTIVITY_ICONS[kind]}
@@ -264,7 +265,7 @@ export function ThreadStatusGlyph({
             SIDEBAR_WORKING_STATUS_COLOR_CLASS,
             iconSizeClass,
           )}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={threadIndicatorLabel(indicator) ?? undefined}
         />
       );
     case "runtime":
@@ -276,7 +277,7 @@ export function ThreadStatusGlyph({
             SIDEBAR_WORKING_STATUS_COLOR_CLASS,
             iconSizeClass,
           )}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={threadIndicatorLabel(indicator) ?? undefined}
         />
       );
     case "draft":
@@ -287,7 +288,7 @@ export function ThreadStatusGlyph({
       return (
         <span
           className={SIDEBAR_SUCCESS_STATUS_DOT_CLASS}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={threadIndicatorLabel(indicator) ?? undefined}
         />
       );
     case "none":

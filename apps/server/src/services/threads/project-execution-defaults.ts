@@ -1,10 +1,10 @@
 import {
   getProjectExecutionDefaults,
+  getThread,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
 import type {
   ProjectExecutionDefaults,
-  RecordedThreadExecutionOptions,
   ResolvedThreadExecutionOptions,
   Thread,
 } from "@bb/domain";
@@ -14,10 +14,13 @@ import type {
   ThreadCreateServiceRequestInput,
 } from "./thread-create-request.js";
 import {
-  buildProviderThreadExecutionDefaults,
   resolveCreateThreadExecutionDefaults,
+  resolveThreadExecutionDefaults,
+  type ThreadExecutionDefaults,
+  type ThreadParentExecution,
 } from "./thread-default-policy.js";
 import { getLastExecutionOptions } from "./thread-events.js";
+import { isLiveParentThread } from "./thread-parent.js";
 
 interface RememberProjectExecutionDefaultsForCreateArgs {
   execution: ResolvedThreadExecutionOptions;
@@ -27,13 +30,13 @@ interface RememberProjectExecutionDefaultsForCreateArgs {
 interface ResolveProjectExecutionDefaultsForCreateArgs {
   executionInputSources?: ThreadCreateServiceRequestInput["executionInputSources"];
   model?: ThreadCreateServiceRequestInput["model"];
-  parentThread: Pick<Thread, "id" | "providerId"> | null;
+  parentThread: Thread | null;
   projectId: string;
   providerId?: ThreadCreateServiceRequestInput["providerId"];
 }
 
 interface ResolvedProjectExecutionDefaultsForCreate {
-  executionDefaults: ProjectExecutionDefaults | null;
+  defaultModel: string | null;
   providerId: string;
   providerFallbackCandidates: readonly string[];
   requestedModel: string | null;
@@ -59,27 +62,50 @@ function shouldRememberProjectExecutionDefaults(args: {
   return args.origin === "app";
 }
 
-interface InheritableParentExecution {
-  execution: RecordedThreadExecutionOptions;
-  providerId: string;
-}
-
-function resolveInheritableParentExecution(
-  deps: Pick<AppDeps, "db" | "providerRegistry">,
-  parentThread: Pick<Thread, "id" | "providerId"> | null,
-): InheritableParentExecution | null {
-  if (parentThread === null) {
-    return null;
-  }
-  const { providerId } = parentThread;
-  if (
-    deps.providerRegistry.disabledProviderIds().has(providerId) ||
-    deps.providerRegistry.get(providerId)?.info.available !== true
-  ) {
+function loadThreadParentExecution(
+  deps: Pick<AppDeps, "db">,
+  parentThread: Thread | null,
+): ThreadParentExecution | null {
+  if (parentThread === null || !isLiveParentThread({ parentThread })) {
     return null;
   }
   const execution = getLastExecutionOptions(deps, parentThread.id);
-  return execution === null ? null : { execution, providerId };
+  return execution === null
+    ? null
+    : { execution, providerId: parentThread.providerId };
+}
+
+export function loadThreadExecutionDefaults(
+  deps: Pick<AppDeps, "db" | "providerRegistry">,
+  thread: Pick<Thread, "parentThreadId" | "projectId" | "providerId">,
+  projectDefaults?: ProjectExecutionDefaults | null,
+): ThreadExecutionDefaults {
+  return resolveThreadExecutionDefaults(deps.providerRegistry, {
+    parent: loadThreadParentExecution(
+      deps,
+      thread.parentThreadId === null
+        ? null
+        : getThread(deps.db, thread.parentThreadId),
+    ),
+    projectDefaults:
+      projectDefaults === undefined
+        ? getProjectExecutionDefaults(deps.db, {
+            projectId: thread.projectId,
+            providerId: thread.providerId,
+          })
+        : projectDefaults,
+    providerId: thread.providerId,
+  });
+}
+
+function isSelectableProvider(
+  registry: AppDeps["providerRegistry"],
+  providerId: string,
+): boolean {
+  return (
+    !registry.disabledProviderIds().has(providerId) &&
+    registry.get(providerId)?.info.available === true
+  );
 }
 
 function resolveRequestedCreateExecutionValue<TValue>({
@@ -114,30 +140,25 @@ export function resolveProjectExecutionDefaultsForCreate(
     sources: args.executionInputSources,
     value: args.model,
   });
-  const parent = resolveInheritableParentExecution(deps, args.parentThread);
-  const resolution = resolveCreateThreadExecutionDefaults(
-    deps.providerRegistry,
-    {
-      requestedProviderId: requestedProviderId ?? parent?.providerId,
+  const parent = loadThreadParentExecution(deps, args.parentThread);
+  const { providerId, providerFallbackCandidates } =
+    resolveCreateThreadExecutionDefaults(deps.providerRegistry, {
+      requestedProviderId:
+        requestedProviderId ??
+        (parent !== null &&
+        isSelectableProvider(deps.providerRegistry, parent.providerId)
+          ? parent.providerId
+          : undefined),
       storedDefaults,
-    },
-  );
-  const { providerId, providerFallbackCandidates } = resolution;
-  const executionDefaults =
-    parent !== null && providerId === parent.providerId
-      ? {
-          ...(resolution.executionDefaults ??
-            buildProviderThreadExecutionDefaults(deps.providerRegistry, {
-              providerId,
-              model: parent.execution.model,
-            })),
-          model: parent.execution.model,
-          reasoningLevel: parent.execution.reasoningLevel,
-        }
-      : resolution.executionDefaults;
+    });
+  const defaults = resolveThreadExecutionDefaults(deps.providerRegistry, {
+    parent,
+    projectDefaults: storedDefaults,
+    providerId,
+  });
 
   return {
-    executionDefaults,
+    defaultModel: defaults.model,
     providerId,
     providerFallbackCandidates,
     requestedModel: requestedModel ?? null,

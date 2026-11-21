@@ -1,4 +1,4 @@
-import { waitFor } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 
 export function waitForReadiness<T>(
   promise: Promise<T>,
@@ -27,4 +27,16 @@ export async function waitForReadinessCondition<T>(
       terminalError ? `${failureMessage}: ${terminalError}` : failureMessage,
     );
   }
+}
+
+export function deferResizeDelivery(
+  callback: ResizeObserverCallback,
+): ResizeObserverCallback {
+  return (entries, observer) => {
+    queueMicrotask(() => {
+      act(() => {
+        callback(entries, observer);
+      });
+    });
+  };
 }

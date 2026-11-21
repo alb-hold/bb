@@ -21,7 +21,7 @@ import {
   PluginComposerHostProvider,
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
-import { ComposerBox } from "./ComposerBox";
+import { ControlledComposerBox } from "@/test/fixtures/controlled-composer-box";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 
 const SHORTCUT = {
@@ -112,7 +112,7 @@ function Composer({
         data-app-composer=""
         data-app-composer-role={role}
       >
-        <ComposerBox
+        <ControlledComposerBox
           surface="thread"
           value=""
           mentionRanges={[]}
@@ -256,14 +256,14 @@ describe("composer commands", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("opens prompt search with Ctrl+R only in the focused composer that has history search", () => {
+  it("opens prompt search with Ctrl+R only in the focused composer that has history search", async () => {
     const { editorIn } = renderComposers({ searchHistory: true });
 
     press(editorIn("side"), "r");
     expect(screen.queryByRole("dialog")).toBeNull();
 
     press(editorIn("main"), "r");
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Search prompt history")).toBeTruthy();
   });
 

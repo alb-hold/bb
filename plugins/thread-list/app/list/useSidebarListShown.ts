@@ -1,5 +1,12 @@
-import { createContext, useContext, useLayoutEffect, useState } from "react";
+import {
+  createContext,
+  startTransition,
+  useContext,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { useSidebarContentElementRef } from "../ui/sidebar.js";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 export const SidebarListVisibleContext = createContext<boolean | undefined>(
   undefined,
@@ -17,12 +24,14 @@ export function useSidebarListShown(): boolean {
       const fallback = setTimeout(() => setShown(true));
       return () => clearTimeout(fallback);
     }
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries.find((entry) => entry.target === element);
-      if (entry) setShown(entry.contentRect.height > 0);
+    return observeSharedResize(element, {
+      read: (entry) =>
+        entry === undefined ? undefined : entry.contentRect.height > 0,
+      write: (nextShown) => {
+        if (nextShown === undefined) return;
+        startTransition(() => setShown(nextShown));
+      },
     });
-    observer.observe(element);
-    return () => observer.disconnect();
   }, [visible, canObserve, scrollElementRef]);
   return visible ?? (canObserve ? shown : true);
 }

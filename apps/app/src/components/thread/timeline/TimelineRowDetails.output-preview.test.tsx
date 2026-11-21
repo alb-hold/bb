@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineCommandWorkRow } from "@bb/server-contract";
 import { createDeferredPromise } from "@bb/test-helpers";
 import { commandRow } from "@/test/fixtures/thread-timeline-rows";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { sdk } from "@/lib/sdk";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
@@ -73,14 +74,14 @@ afterEach(() => {
 });
 
 describe("previewed command output", () => {
-  it("shows the preview with a retry when the full-output load fails", async () => {
+  it("test-change-reason: upstream holds tracked lazy imports, so the terminal block preload is settled; shows the preview with a retry when the full-output load fails", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const request = createDeferredPromise<never>();
     timelineTurnSummaryDetails.mockReturnValue(request.promise);
     const view = renderExpandedRow(previewedCommandRow());
 
+    await settleLazyModules(Promise.resolve(LazyTerminalOutputBlock.preload()));
     await act(async () => {
-      await LazyTerminalOutputBlock.preload();
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(timelineTurnSummaryDetails).toHaveBeenCalledTimes(1);

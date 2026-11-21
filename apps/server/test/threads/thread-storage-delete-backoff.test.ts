@@ -37,6 +37,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { runThreadPurges } from "../helpers/thread-purges.js";
 
 const TICK_MS = 10_000;
 const CAP_TICK_MS = 30_000;
@@ -491,6 +492,7 @@ describe("refused thread storage deletes", () => {
       expect(refusedThreadRequests[1]).toBeLessThanOrEqual(
         refusedThreadRetryAtMs + 60_000,
       );
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
     });
   });
@@ -538,6 +540,7 @@ describe("refused thread storage deletes", () => {
       expect(refusedThreadRequests[0]).toBeLessThanOrEqual(
         refusedThreadRetryAtMs + threadsDueAheadOfRefusedThread * 60_000,
       );
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
     });
   });
@@ -601,7 +604,9 @@ describe("refused thread storage deletes", () => {
           [behind],
           [failingHead],
         ]);
+        await runThreadPurges(harness.deps);
         expect(getThread(harness.db, behind)).toBeNull();
+        await runThreadPurges(harness.deps);
         expect(getThread(harness.db, failingHead)).toBeNull();
         expect(
           warn.mock.calls.filter(
@@ -893,6 +898,7 @@ describe("refused thread storage deletes", () => {
 
       expect(handedOffBySlot).toEqual([[], [threadX]]);
       expect(restarts).toBe(1);
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, threadX)).toBeNull();
       expect(getThread(harness.db, threadY)).not.toBeNull();
     });
@@ -1072,6 +1078,7 @@ describe("refused thread storage deletes", () => {
       expect(slotServingA).toBeGreaterThanOrEqual(0);
       expect(slotServingA).toBeLessThanOrEqual(dueRowsAheadOfA.length);
       expect(requestsBySlot.flat()).toContain(alwaysRefusedThreadId);
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, threadA)).toBeNull();
     });
   });

@@ -405,6 +405,7 @@ interface PreparedWorkspaceWriteGitRoots {
 }
 
 interface PrepareWorkspaceWriteGitRootsArgs {
+  supportsAgentsEnabled: boolean;
   command: CodexSessionConstructionInput;
 }
 
@@ -527,6 +528,7 @@ export function createCodexEventTranslator(
     }
     return {
       config: buildCodexConfig({
+        supportsAgentsEnabled: args.supportsAgentsEnabled,
         additionalWorkspaceWriteRoots,
         gitWritableRoots: writableRoots,
         options: command.options,

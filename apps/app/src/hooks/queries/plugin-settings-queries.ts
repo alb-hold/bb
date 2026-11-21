@@ -1,6 +1,7 @@
 import type {
   InstalledPlugin,
   PluginCachePruneResponse,
+  PluginRangeUpgrade,
   PluginSafeModeUpdateResponse,
   PluginSettingDescriptor,
   PluginSettingsResponse,
@@ -39,6 +40,7 @@ export interface PluginUpdateState {
   blockedVersion: string | null;
   blockedLabel: string | null;
   blockedReasons: string[];
+  rangeUpgrade: PluginRangeUpgrade | null;
   lastCheckAt: number | null;
   lastFailure: PluginUpdateFailure | null;
 }
@@ -72,6 +74,7 @@ export interface PluginListItem {
   category?: string;
   publisherLabel: string | null;
   sourceDisplay: string;
+  sourceNotice: string | null;
   updateState: PluginUpdateState;
 }
 
@@ -98,6 +101,7 @@ export const EMPTY_PLUGIN_UPDATE_STATE: PluginUpdateState = {
   blockedVersion: null,
   blockedLabel: null,
   blockedReasons: [],
+  rangeUpgrade: null,
   lastCheckAt: null,
   lastFailure: null,
 };
@@ -133,6 +137,7 @@ export function toPluginListItem(plugin: InstalledPlugin): PluginListItem {
     category: plugin.category,
     publisherLabel: plugin.publisherLabel,
     sourceDisplay: plugin.sourceDisplay,
+    sourceNotice: plugin.sourceNotice,
     updateState: {
       outcome: state.outcome ?? null,
       detail: state.detail ?? null,
@@ -141,6 +146,7 @@ export function toPluginListItem(plugin: InstalledPlugin): PluginListItem {
       blockedVersion: state.blockedVersion ?? null,
       blockedLabel: state.blockedLabel ?? null,
       blockedReasons: state.blockedReasons ?? [],
+      rangeUpgrade: state.rangeUpgrade ?? null,
       lastCheckAt: toEpochMs(state.lastCheckAt),
       lastFailure:
         state.lastFailure === undefined

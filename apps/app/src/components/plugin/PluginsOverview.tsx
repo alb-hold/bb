@@ -170,10 +170,11 @@ export function PluginsOverview({
           Number(left.publisherLabel === null) -
           Number(right.publisherLabel === null);
         if (publisherResult !== 0) return publisherResult;
-        return (
-          (left.name ?? left.id).localeCompare(right.name ?? right.id) ||
-          left.id.localeCompare(right.id)
+        const nameResult = (left.name ?? left.id).localeCompare(
+          right.name ?? right.id,
         );
+        if (nameResult !== 0) return nameResult;
+        return left.id.localeCompare(right.id);
       });
   }, [
     installedEntries,
@@ -189,7 +190,7 @@ export function PluginsOverview({
   });
 
   const startCreatePlugin = (prompt?: string) => {
-    navigate(getRootComposeRoutePath(), {
+    void navigate(getRootComposeRoutePath(), {
       state: {
         focusPrompt: true,
         initialPrompt: prompt ?? CREATE_PLUGIN_PROMPT,

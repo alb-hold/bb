@@ -1,80 +1,40 @@
 import type { ThreadTimelineResponse } from "@bb/server-contract";
 import type { ThreadStatus } from "@bb/domain";
 import type { ThreadTimelinePageRequest } from "./timeline-pagination.js";
+import {
+  createThreadDerivedCache,
+  type ThreadDerivedCache,
+} from "./thread-derived-cache.js";
+import { timelineWindowJsonLength } from "./timeline-window-tag.js";
 
-const DEFAULT_MAX_ENTRIES = 128;
-const DEFAULT_MAX_CACHEABLE_ROWS = 200;
+const MAX_ENTRIES = 512;
+const MAX_BYTES = 64 * 1024 * 1024;
+const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
 
-interface ThreadTimelineCacheOptions {
-  maxEntries?: number;
-  maxCacheableRows?: number;
-}
-
-interface ThreadTimelineCache {
-  getOrBuild(
-    threadId: string,
-    key: string,
-    build: () => ThreadTimelineResponse,
-  ): ThreadTimelineResponse;
-  invalidateThread(threadId: string): void;
-  readonly size: number;
-}
-
-interface ThreadTimelineCacheEntry {
-  response: ThreadTimelineResponse;
-  threadId: string;
-}
-
-export function createThreadTimelineCache(
-  options: ThreadTimelineCacheOptions = {},
-): ThreadTimelineCache {
-  const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-  const maxCacheableRows =
-    options.maxCacheableRows ?? DEFAULT_MAX_CACHEABLE_ROWS;
-  const entries = new Map<string, ThreadTimelineCacheEntry>();
-
-  return {
-    getOrBuild(threadId, key, build) {
-      const cached = entries.get(key);
-      if (cached !== undefined) {
-        entries.delete(key);
-        entries.set(key, cached);
-        return cached.response;
-      }
-
-      const value = build();
-      if (value.rows.length <= maxCacheableRows) {
-        entries.set(key, { response: value, threadId });
-        while (entries.size > maxEntries) {
-          const oldest = entries.keys().next().value;
-          if (oldest === undefined) {
-            break;
-          }
-          entries.delete(oldest);
-        }
-      }
-      return value;
+export function createThreadTimelineWindowCache(): ThreadDerivedCache<ThreadTimelineResponse> {
+  return createThreadDerivedCache<ThreadTimelineResponse>({
+    maxEntries: MAX_ENTRIES,
+    bytes: {
+      maxBytes: MAX_BYTES,
+      maxEntryBytes: MAX_ENTRY_BYTES,
+      measure: timelineWindowJsonLength,
     },
-    invalidateThread(threadId) {
-      for (const [key, entry] of entries) {
-        if (entry.threadId === threadId) {
-          entries.delete(key);
-        }
-      }
-    },
-    get size() {
-      return entries.size;
-    },
-  };
+  });
 }
 
 export interface ThreadTimelineCacheKeyArgs {
   threadId: string;
+  page: ThreadTimelinePageRequest;
+  deferContent: boolean;
+  includeNestedRows: boolean;
+}
+
+export interface ThreadTimelineCacheRevisionArgs {
   maxSeq: number;
+  page: ThreadTimelinePageRequest;
+  rewriteGeneration: number;
   status: ThreadStatus;
   surface: string;
-  page: ThreadTimelinePageRequest;
-  summaryOnly: boolean;
 }
 
 function pageKeyPart(page: ThreadTimelinePageRequest): string {
@@ -87,11 +47,19 @@ export function buildThreadTimelineCacheKey(
   args: ThreadTimelineCacheKeyArgs,
 ): string {
   return [
-    args.maxSeq,
     args.threadId,
-    args.status,
-    args.surface,
     pageKeyPart(args.page),
-    args.summaryOnly ? "1" : "0",
+    args.deferContent ? "1" : "0",
+    args.includeNestedRows ? "1" : "0",
   ].join("|");
+}
+
+export function buildThreadTimelineCacheRevision(
+  args: ThreadTimelineCacheRevisionArgs,
+): string {
+  return JSON.stringify(
+    args.page.kind === "older"
+      ? [args.rewriteGeneration, args.surface]
+      : [args.rewriteGeneration, args.maxSeq, args.status, args.surface],
+  );
 }

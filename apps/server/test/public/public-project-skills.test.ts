@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { setExperiments } from "@bb/db";
 import { defaultExperiments } from "@bb/domain";
 import {
+  registrySkillInstallJobResponseSchema,
   skillContentResponseSchema,
   skillFilesResponseSchema,
   skillListResponseSchema,
@@ -1082,6 +1083,48 @@ describe("public project skills route", () => {
     });
   });
 
+  it("runs a registry install as a job that outlives its request", async () => {
+    await withTestHarness(async (harness) => {
+      const filePath = "/data/skills/find-skills/SKILL.md";
+      installServerRegistrySkillMock.mockResolvedValueOnce({ filePath });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              registryHtml({
+                source: "github.com/vercel-labs/skills",
+                skillId: "find-skills",
+              }),
+              { status: 200 },
+            ),
+        ),
+      );
+      const registrySkillId = "github.com/vercel-labs/skills/find-skills";
+
+      const started = await harness.app.request(
+        "/api/v1/skills-registry/install-jobs",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ registrySkillId }),
+        },
+      );
+      expect(started.status).toBe(202);
+      const { job } = registrySkillInstallJobResponseSchema.parse(
+        await readJson(started),
+      );
+      await vi.waitFor(async () => {
+        const current = await harness.app.request(
+          `/api/v1/skills-registry/install-jobs/${job.id}`,
+        );
+        expect(await readJson(current)).toEqual({
+          job: { id: job.id, registrySkillId, state: "completed", filePath },
+        });
+      });
+    });
+  });
+
   it("rejects obsolete provider install fields", async () => {
     await withTestHarness(async (harness) => {
       const response = await harness.app.request(
@@ -1449,6 +1492,7 @@ describe("public project skills route", () => {
 
         const skill = matches[0];
         if (skill === undefined) throw new Error("Expected plugin skill");
+        const requestsBeforeRead = stub.requests.length;
         const query = new URLSearchParams({
           skillId: skill.id,
           environmentId: "",
@@ -1461,11 +1505,7 @@ describe("public project skills route", () => {
         expect(
           skillContentResponseSchema.parse(await readJson(contentResponse)),
         ).toMatchObject({ content: "# Plugin reference\n" });
-        expect(
-          stub.requests.some(
-            (request) => request.command.type === "host.read_file",
-          ),
-        ).toBe(false);
+        expect(stub.requests.slice(requestsBeforeRead)).toEqual([]);
       });
     } finally {
       await rm(workDir, { recursive: true, force: true });
@@ -1699,7 +1739,7 @@ describe("public project skills route", () => {
 
       for (const [hiddenPath, status] of [
         [".env", 404],
-        ["references/../../secrets.md", 404],
+        ["references/../../secrets.md", 400],
         ["/etc/passwd", 400],
       ] as const) {
         query.set("path", hiddenPath);

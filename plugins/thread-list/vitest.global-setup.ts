@@ -1,60 +1,14 @@
-import { execFile } from "node:child_process";
-import { existsSync, globSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { findChromium, warmUpChromium } from "./vitest.chromium.js";
 import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
   export interface ProvidedContext {
     threadListPluginCss: string | null;
     threadListChromiumPath: string | null;
-  }
-}
-
-const execFileAsync = promisify(execFile);
-
-function findChromium(): string | null {
-  const candidates = [
-    process.env.BB_TEST_CHROMIUM,
-    ...globSync(
-      join(homedir(), ".cache/ms-playwright/chromium-*/chrome-linux*/chrome"),
-    ),
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-  ];
-  return (
-    candidates.find(
-      (candidate): candidate is string =>
-        candidate !== undefined && existsSync(candidate),
-    ) ?? null
-  );
-}
-
-async function warmUpChromium(chromiumPath: string): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "bb-chromium-warmup-"));
-  try {
-    await execFileAsync(
-      chromiumPath,
-      [
-        "--headless",
-        `--user-data-dir=${join(dir, "profile")}`,
-        "--no-sandbox",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--no-first-run",
-        "--dump-dom",
-        "about:blank",
-      ],
-      { timeout: 120_000 },
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
   }
 }
 

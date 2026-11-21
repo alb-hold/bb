@@ -46,6 +46,7 @@ import {
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
+  getCollapsedChildActivity,
   NO_COLLAPSED_CHILD_ACTIVITY,
   type CollapsedChildActivity,
   type ThreadListIndicatorState,
@@ -66,20 +67,18 @@ import {
   useSidebarThreadRowStatus,
   useSidebarThreadShortcut,
   useSdk,
-  type PluginSidebarSplitPane,
   type PluginThreadActionsContextMenuProps,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarSplitPane,
   type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { useThreadListPullRequest } from "./pull-request-query.js";
-import {
-  NO_THREAD_IDS,
-  useThreadsHaveDraft,
-} from "../list/sidebarDraftPresence.js";
+import { useThreadsHaveDraft } from "../list/sidebarDraftPresence.js";
 import { useAutomationWokeAt } from "../model/automation-woke.js";
 import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
@@ -147,6 +146,7 @@ import {
 } from "../list/ThreadRowActionsCustomize.js";
 
 const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
+const NO_THREAD_IDS: readonly { id: string }[] = [];
 
 export const SidebarProvidersContext = createContext<
   PluginProvidersState["providers"]
@@ -185,7 +185,8 @@ export type ThreadRowOptions =
       kind: "parent";
       isCollapsed: boolean;
       childCount: number;
-      childActivity: CollapsedChildActivity;
+      childActivity?: CollapsedChildActivity;
+      hiddenThreads?: readonly SidebarThread[];
       stickyLevel?: number;
       onToggleCollapsed: (threadId: string) => void;
     });
@@ -259,7 +260,7 @@ function getThreadRowStyle(depth: number): CSSProperties {
   };
 }
 
-function renderThreadRowContainer({
+function ThreadRowContainer({
   children,
   className,
   containerRef,
@@ -315,7 +316,9 @@ export function CollapsedThreadStatusGlyph({
   activity,
   pluginStatus = null,
 }: CollapsedThreadStatusGlyphProps) {
-  const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
+  const hasUnsubmittedDraft = useThreadsHaveDraft(
+    activity.threadIds.map((id) => ({ id })),
+  );
   const statusProps: ThreadListIndicatorState = {
     hasPendingInteraction: activity.pending,
     hasTerminalAttention: activity.terminalAttention,
@@ -482,6 +485,15 @@ function isNativeActivityNotConfirmed(
 
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
 const CUSTOMIZE_ROW_ACTIONS_KEY = "thread-list/customizeRowActions";
+
+function runOrDeferCustomize(
+  compact: boolean,
+  pending: { current: (() => void) | null },
+  begin: () => void,
+): void {
+  if (compact) begin();
+  else pending.current = begin;
+}
 
 function renderThreadActionsTrigger(props: PluginThreadActionsTriggerProps) {
   return (
@@ -658,17 +670,17 @@ function ThreadRowComponent({
     },
     [startEditingFromDoubleClick],
   );
-  const miniMap = useThreadSplitMiniMap(thread.id);
+  const split = experimental_useSidebarThreadSplit(
+    thread.id,
+    multiSelection === null ? undefined : { dragThreadIds: multiSelection },
+  );
+  const miniMap = split.layout?.panes ?? null;
+  const isOpenInSplit = miniMap !== null;
   const { startedAt: automationStartedAt, elapsedMinutes } =
     useAutomationWokeAt(
       thread.id,
       miniMap === null && thread.archivedAt === null,
     );
-  const isOpenInSplit = miniMap !== null;
-  const split = experimental_useSidebarThreadSplit(
-    thread.id,
-    multiSelection === null ? undefined : { dragThreadIds: multiSelection },
-  );
   const onSplitDragPointerDown = split.splitProps.onPointerDown;
   const splitAvailable = split.isAvailable;
   const openInSplit = useCallback(() => {
@@ -697,8 +709,7 @@ function ThreadRowComponent({
               icon: "FilterHorizontal",
               run: () => {
                 const begin = () => customizeRowActions(thread.id);
-                if (isCompactViewport) begin();
-                else pendingMenuCustomize.current = begin;
+                runOrDeferCustomize(isCompactViewport, pendingMenuCustomize, begin);
               },
             },
           },
@@ -711,13 +722,18 @@ function ThreadRowComponent({
   const isParentCollapsed = parentOptions?.isCollapsed ?? false;
   const childCount = parentOptions?.childCount ?? 0;
   const childActivity =
-    parentOptions?.childActivity ?? NO_COLLAPSED_CHILD_ACTIVITY;
+    parentOptions?.childActivity ??
+    (parentOptions === null
+      ? NO_COLLAPSED_CHILD_ACTIVITY
+      : getCollapsedChildActivity(parentOptions.hiddenThreads ?? []));
   const hasChildren = childCount > 0;
   const reserveActionSpace =
     crossProjectLabel !== null || (isParentRow && hasChildren);
   const hasHiddenChildren = isParentRow && isParentCollapsed && hasChildren;
   const hiddenChildrenHaveDraft = useThreadsHaveDraft(
-    hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
+    hasHiddenChildren
+      ? childActivity.threadIds.map((id) => ({ id }))
+      : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
     hasTerminalAttention: threadStatus.hasTerminalAttention ||
@@ -834,11 +850,12 @@ function ThreadRowComponent({
       reportRowStateHeight.report(stickyRowReporterId, value);
     };
     report();
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
-    observer?.observe(element);
+    const unobserve = observeSharedResize(element, {
+      read: () => undefined,
+      write: report,
+    });
     return () => {
-      observer?.disconnect();
+      unobserve();
       reportRowStateHeight.remove(stickyRowReporterId);
     };
   }, [rowElement, reportsRowState, reportRowStateHeight, stickyRowReporterId]);
@@ -1344,23 +1361,27 @@ function ThreadRowComponent({
     </>
   );
 
-  const row = renderThreadRowContainer({
-    children: rowContent,
-    className: rowClassName,
-    containerRef,
-    dragBindings: rowDragBindings,
-    nestTargetState,
-    reorderPlacement,
-    selected: isSelected,
-    onClick: isEditing ? undefined : handleRowClick,
-    onClickCapture:
-      !isEditing && options.consumeClickSuppression
-        ? handleRowClickCapture
-        : undefined,
-    onSplitDragPointerDown: isEditing ? undefined : onSplitDragPointerDown,
-    stickyLevel: parentOptions?.stickyLevel,
-    style: rowStyle,
-  });
+  const row = (
+    <ThreadRowContainer
+      className={rowClassName}
+      containerRef={containerRef}
+      dragBindings={rowDragBindings}
+      nestTargetState={nestTargetState}
+      reorderPlacement={reorderPlacement}
+      selected={isSelected}
+      onClick={isEditing ? undefined : handleRowClick}
+      onClickCapture={
+        !isEditing && options.consumeClickSuppression
+          ? handleRowClickCapture
+          : undefined
+      }
+      onSplitDragPointerDown={isEditing ? undefined : onSplitDragPointerDown}
+      stickyLevel={parentOptions?.stickyLevel}
+      style={rowStyle}
+    >
+      {rowContent}
+    </ThreadRowContainer>
+  );
 
   const bulkMenuProps: Pick<
     PluginThreadActionsContextMenuProps,

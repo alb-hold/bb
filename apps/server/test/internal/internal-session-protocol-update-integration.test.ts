@@ -9,6 +9,7 @@ import {
 function sessionArgs(hostId: string) {
   return {
     activeThreads: [],
+    openThreadWork: [],
     adoptedThreads: [],
     dataDir: `/tmp/${hostId}`,
     hostId,

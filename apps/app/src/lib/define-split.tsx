@@ -53,6 +53,7 @@ export function defineSplit<P extends object>({
   mountWhen,
   keepMounted = false,
   unmounted: Unmounted,
+  suspends = true,
 }: {
   id: string;
   load: () => Promise<ComponentType<P>>;
@@ -62,6 +63,7 @@ export function defineSplit<P extends object>({
   mountWhen?: (props: P) => boolean;
   keepMounted?: boolean;
   unmounted?: ComponentType<P>;
+  suspends?: boolean;
 }) {
   let pending: Promise<{ default: ComponentType<P> }> | null = null;
   let loaded: ComponentType<P> | null = null;
@@ -150,12 +152,29 @@ export function defineSplit<P extends object>({
     );
   }
 
+  function MountAfterLoad(props: P) {
+    const [ready, setReady] = useState(() => loaded !== null);
+    useEffect(() => {
+      if (ready) return;
+      let live = true;
+      void warm().then(() => {
+        if (live) setReady(true);
+      });
+      return () => {
+        live = false;
+      };
+    }, [ready]);
+    return ready ? <SplitContent {...props} /> : <Loading {...props} />;
+  }
+
+  const Content = suspends ? SplitContent : MountAfterLoad;
+
   function SplitComponent(props: P) {
     const wanted = mountWhen?.(props) ?? true;
     const [mountedBefore, setMountedBefore] = useState(wanted);
     if (wanted && !mountedBefore) setMountedBefore(true);
     if (wanted || (keepMounted && mountedBefore)) {
-      return <SplitContent {...props} />;
+      return <Content {...props} />;
     }
     return Unmounted ? <Unmounted {...props} /> : null;
   }

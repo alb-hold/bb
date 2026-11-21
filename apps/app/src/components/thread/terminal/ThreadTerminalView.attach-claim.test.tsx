@@ -13,6 +13,7 @@ import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import { importTerminalModules } from "./terminal-modules";
+import { settleLazyModules } from "@/test/lazy-modules";
 import { readTerminalFontMetrics } from "./terminal-font";
 import {
   readCachedTerminalGrid,
@@ -381,7 +382,7 @@ describe("native terminal attach claim timing", () => {
           ? { cols, rows: 36 }
           : {}),
       });
-      await importTerminalModules();
+      await settleLazyModules(importTerminalModules());
       vi.useFakeTimers();
       testState.deferSocketOpen = true;
       let adoptedAt: number | undefined;

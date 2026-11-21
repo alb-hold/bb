@@ -60,6 +60,7 @@ function reconnect(
       localApiPort: null,
       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
       activeThreads: args.activeThreadIds.map((threadId) => ({ threadId })),
+      openThreadWork: [],
       undeliveredEventThreadIds: [],
     }),
   });

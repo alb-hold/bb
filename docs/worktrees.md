@@ -45,8 +45,10 @@ pnpm bb thread spawn \
   --prompt "..."
 ```
 
-Omit `--base-branch` for bb's smart default. Explicit values are exact:
-`main` is local and `origin/main` is remote.
+Omit `--base-branch` for bb's smart default. A bare name such as `main` uses
+`origin/main` when the local branch is equal to it or behind it, and the local
+branch when it is ahead or has diverged. `origin/main` and full refs such as
+`refs/heads/main` are used exactly as given.
 
 New worktree branches start at the selected base without tracking it as an
 upstream, even when Git's `branch.autoSetupMerge` is enabled. Publish with
@@ -136,10 +138,20 @@ provider process, its background jobs (dev servers, MCP servers, `nohup`
 jobs), and any process you started there yourself, such as a shell you `cd`'d
 into the worktree or an editor terminal. Each process gets `SIGTERM`, then
 `SIGKILL` after a short grace period. Then `git worktree remove --force` runs
-and the directory is deleted. The branch is left behind, so work you committed
-to it survives the worktree. If you want to keep uncommitted work, commit and
-push (or open a PR) from inside the worktree before letting the thread go, and
-move your own shells out of the worktree first if you want to keep them.
+and the directory is deleted.
+
+bb then deletes the branch it created for the worktree, but only when nothing
+would be lost: no other worktree has it checked out, and every commit on it is
+on a remote, a tag, or the base it started from, or the branch was
+squash-merged into that base. Otherwise the branch is kept, so work you
+committed but never pushed survives the worktree, even if another local branch
+also has it. Branches you check out or create yourself
+inside a worktree are never deleted, and neither are the branches of worktrees
+bb did not create. Restoring an archived thread whose branch was deleted
+recreates it from the remote branch when one exists, or from the base. If you
+want to keep uncommitted work, commit and push (or open a PR) from inside the
+worktree before letting the thread go, and move your own shells out of the
+worktree first if you want to keep them.
 
 ## Run teardown with `.bb-env-teardown.sh`
 

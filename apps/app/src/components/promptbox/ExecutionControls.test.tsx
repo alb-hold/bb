@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { settleLazyModules } from "@/test/lazy-modules";
 import {
   cleanup,
   fireEvent,
@@ -7,7 +8,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
   ExecutionControls,
@@ -44,6 +45,7 @@ function makeExecutionControlsProps(
     reasoning: {
       value: "medium",
       options: [{ value: "medium", label: "Medium" }],
+      isLoading: false,
       onChange: vi.fn(),
     },
   };
@@ -54,7 +56,7 @@ function renderExecutionControls(props: ExecutionControlsProps) {
   return render(<ExecutionControls {...props} />, { wrapper });
 }
 
-beforeAll(() => ModelReasoningMenu.preload());
+await ModelReasoningMenu.preload();
 
 afterEach(async () => {
   cleanup();
@@ -568,7 +570,7 @@ describe("ExecutionControls", () => {
     expect(chip.textContent).toContain("GPT-5");
   });
 
-  it("hides provider tabs when the provider is locked", () => {
+  it("hides provider tabs when the provider is locked", async () => {
     renderExecutionControls(makeExecutionControlsProps());
 
     fireEvent.click(
@@ -577,11 +579,13 @@ describe("ExecutionControls", () => {
       }),
     );
 
+    await settleLazyModules();
+
     expect(screen.queryByText("Model")).not.toBeNull();
     expect(screen.queryByTitle("Claude Code")).toBeNull();
   });
 
-  it("shows provider tabs when provider changes are allowed", () => {
+  it("shows provider tabs when provider changes are allowed", async () => {
     renderExecutionControls(makeExecutionControlsProps(vi.fn()));
 
     fireEvent.click(
@@ -589,6 +593,8 @@ describe("ExecutionControls", () => {
         name: /^Provider, model and reasoning/,
       }),
     );
+
+    await settleLazyModules();
 
     expect(screen.queryByTitle("Claude Code")).not.toBeNull();
   });

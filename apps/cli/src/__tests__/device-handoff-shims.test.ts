@@ -9,18 +9,26 @@ import {
   chmod,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const fixtures: string[] = [];
 const shimSource = new URL("../../bin/", import.meta.url);
 
 afterEach(async () => {
+  const leaked: string[] = [];
+  for (const path of fixtures) {
+    const calls = await readFile(join(path, "sentinel-log"), "utf8").catch(
+      () => "",
+    );
+    if (calls !== "") leaked.push(calls);
+  }
   await Promise.all(
     fixtures
       .splice(0)
       .map((path) => rm(path, { force: true, recursive: true })),
   );
+  expect(leaked).toEqual([]);
 });
 
 async function createFixture(): Promise<{
@@ -34,6 +42,15 @@ async function createFixture(): Promise<{
   const realBin = join(directory, "real-bin");
   await mkdir(shimBin);
   await mkdir(realBin);
+  const sentinelBin = join(directory, "sentinel-bin");
+  await mkdir(sentinelBin);
+  for (const name of ["open", "xdg-open", "sensible-browser"]) {
+    await writeFile(
+      join(sentinelBin, name),
+      `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> '${join(directory, "sentinel-log")}'\nexit 99\n`,
+      { mode: 0o755 },
+    );
+  }
   for (const name of [
     "bb-device-handoff-shim",
     "pbcopy",
@@ -85,7 +102,7 @@ function runShim(args: {
     {
       env: {
         ...process.env,
-        PATH: `${args.shimBin}:${args.realBin}:/usr/bin:/bin`,
+        PATH: `${args.shimBin}:${args.realBin}:${join(dirname(args.realBin), "sentinel-bin")}:/usr/bin:/bin`,
         ...args.env,
       },
     },

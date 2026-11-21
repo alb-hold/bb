@@ -19,12 +19,14 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
+import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { type ThreadActionMenuSurface } from "./ThreadActionMenuItems";
 import {
   ThreadActionsMenuItems,
@@ -65,13 +67,10 @@ const ThreadActionsTriggerSlot = forwardRef<
       console.error(`experimental_ThreadActionsMenu: \`trigger\` ${problem}`);
     }
   }, [hostClassName]);
+  const composedRef = useComposedRefs(ref, element);
   return render({
     ...props,
-    ref: (node: HTMLButtonElement | null) => {
-      element.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref !== null) ref.current = node;
-    },
+    ref: composedRef,
   });
 });
 
@@ -244,6 +243,13 @@ function DesktopContextMenuShell({
   dragging,
 }: ContextMenuShellProps) {
   const [open, setOpen] = useState(false);
+  const [closedForDrag, setClosedForDrag] = useState(false);
+  if (dragging && open) {
+    setOpen(false);
+    setClosedForDrag(true);
+  } else if (!dragging && closedForDrag) {
+    setClosedForDrag(false);
+  }
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen && dragging) return;
@@ -252,9 +258,10 @@ function DesktopContextMenuShell({
     },
     [dragging, onOpenChange],
   );
+  const notifyClosedForDrag = useEffectEvent(() => onOpenChange?.(false));
   useEffect(() => {
-    if (dragging && open) handleOpenChange(false);
-  }, [dragging, handleOpenChange, open]);
+    if (closedForDrag) notifyClosedForDrag();
+  }, [closedForDrag]);
   return (
     <ContextMenu modal={false} open={open} onOpenChange={handleOpenChange}>
       <ContextMenuTrigger

@@ -7,6 +7,7 @@ import {
   render,
   renderHook,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import type {
   AvailableModel,
@@ -259,13 +260,13 @@ function renderPicker({
         onModelChange={onModelChange}
         reasoningValue={reasoningValue}
         reasoningOptions={pickerReasoningOptions}
+        reasoningIsLoading={false}
         onReasoningChange={onReasoningChange}
         serviceTierValue={serviceTierValue}
         serviceTierOptions={serviceTierOptions}
         onServiceTierChange={onServiceTierChange}
         serviceTierSupportByProvider={serviceTierSupportByProvider}
         muted={muted}
-        modal={false}
         handoff={handoff}
         agentSections={agentSections}
         onAgentOptionChange={onAgentOptionChange}
@@ -302,122 +303,121 @@ function renderPicker({
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  document.body.replaceChildren();
   commandHandlers.clear();
   vi.clearAllMocks();
 });
 
-describe("ModelReasoningPicker", () => {
-  it.each([
-    ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol", "GPT-6.1-Sol"],
-    [
-      "claude-code",
-      "Claude Opus 5.5 (1M)",
-      "Claude ",
-      "Opus 5.5",
-      "Opus 5.5 (1M)",
-    ],
-    [
-      "acp:custom",
-      "Organization Custom ACP Production Model",
-      "Organization ",
-      "Custom ACP Production Model",
-      "Custom ACP Production Model",
-    ],
-  ])(
-    "preserves the distinguishing compact name for %s",
-    (providerId, label, brandPrefix, identity, selectionLabel) => {
-      renderPicker({
-        compact: true,
-        selectedProviderId: providerId,
-        pickerProviderOptions: [
-          { value: providerId, label: providerId, brandPrefix },
-        ],
-        modelValue: "selected",
-        modelOptions: [{ value: "selected", label }],
-      });
-      const trigger = screen.getByRole("button", {
-        name: /^Provider, model and reasoning/,
-      });
-      const name = trigger.querySelector("[data-model-name]")!;
-      expect(name.textContent).toContain(identity);
-      expect(name.className).not.toContain("truncate");
-      expect(trigger.textContent).not.toContain("Medium");
-      const description = `${providerId}: ${selectionLabel} · Medium reasoning`;
-      expect(trigger.getAttribute("aria-description")).toBe(description);
-      expect(trigger.getAttribute("aria-label")).toBe(
-        `Provider, model and reasoning: ${description}`,
-      );
-      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
-        description,
-      );
-    },
-  );
-
-  it.each([
-    ["Cursor Agent", "Agent"],
-    ["Independent Model", "Independent Model"],
-  ])(
-    "keeps the phone selection label identifiable for %s",
-    (label, expected) => {
-      renderPicker({
-        compact: true,
-        selectedProviderId: "cursor",
-        pickerProviderOptions: [
-          { value: "cursor", label: "Cursor", brandPrefix: "Cursor " },
-        ],
-        modelValue: "selected",
-        modelOptions: [{ value: "selected", label }],
-      });
-      const description = `Cursor: ${expected} · Medium reasoning`;
-      const trigger = screen.getByRole("button", {
-        name: `Provider, model and reasoning: ${description}`,
-      });
-      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
-        expected,
-      );
-      expect(trigger.textContent).not.toContain("Medium");
-      expect(trigger.getAttribute("aria-description")).toBe(description);
-      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
-        description,
-      );
-    },
-  );
-
-  beforeAll(() =>
-    Promise.all([
-      ModelReasoningMenu.preload(),
-      ModelReasoningPickerBody.preload(),
-    ]),
-  );
-
-  it("keeps closed provider shortcuts in the active handoff before the menu mounts", () => {
-    const onStart = vi.fn();
-    const onSelect = vi.fn();
-    const { onSelectedProviderChange } = renderPicker({
-      handoff: {
-        active: true,
-        sourceProviderId: "codex",
-        onStart,
-        onExit: vi.fn(),
-        onSelect,
-      },
+it.each([
+  ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol", "GPT-6.1-Sol"],
+  [
+    "claude-code",
+    "Claude Opus 5.5 (1M)",
+    "Claude ",
+    "Opus 5.5",
+    "Opus 5.5 (1M)",
+  ],
+  [
+    "acp:custom",
+    "Organization Custom ACP Production Model",
+    "Organization ",
+    "Custom ACP Production Model",
+    "Custom ACP Production Model",
+  ],
+])(
+  "preserves the distinguishing compact name for %s",
+  (providerId, label, brandPrefix, identity, selectionLabel) => {
+    renderPicker({
+      compact: true,
+      selectedProviderId: providerId,
+      pickerProviderOptions: [
+        { value: providerId, label: providerId, brandPrefix },
+      ],
+      modelValue: "selected",
+      modelOptions: [{ value: "selected", label }],
     });
     const trigger = screen.getByRole("button", {
       name: /^Provider, model and reasoning/,
     });
-    act(() => {
-      expect(
-        commandHandlers.get("modelPicker.cycleProvider")?.({ target: trigger }),
-      ).toBe(true);
-    });
-    expect(onStart).toHaveBeenCalledTimes(1);
-    expect(onSelectedProviderChange).not.toHaveBeenCalled();
-    act(() => {
-      commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
-    });
-    expect(onSelect).not.toHaveBeenCalled();
-  });
+    const name = trigger.querySelector("[data-model-name]")!;
+    expect(name.textContent).toContain(identity);
+    expect(name.className).not.toContain("truncate");
+    expect(trigger.textContent).not.toContain("Medium");
+    const description = `${providerId}: ${selectionLabel} · Medium reasoning`;
+    expect(trigger.getAttribute("aria-description")).toBe(description);
+    expect(trigger.getAttribute("aria-label")).toBe(
+      `Provider, model and reasoning: ${description}`,
+    );
+    expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+      description,
+    );
+  },
+);
 
+it.each([
+  ["Cursor Agent", "Agent"],
+  ["Independent Model", "Independent Model"],
+])("keeps the phone selection label identifiable for %s", (label, expected) => {
+  renderPicker({
+    compact: true,
+    selectedProviderId: "cursor",
+    pickerProviderOptions: [
+      { value: "cursor", label: "Cursor", brandPrefix: "Cursor " },
+    ],
+    modelValue: "selected",
+    modelOptions: [{ value: "selected", label }],
+  });
+  const description = `Cursor: ${expected} · Medium reasoning`;
+  const trigger = screen.getByRole("button", {
+    name: `Provider, model and reasoning: ${description}`,
+  });
+  expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+    expected,
+  );
+  expect(trigger.textContent).not.toContain("Medium");
+  expect(trigger.getAttribute("aria-description")).toBe(description);
+  expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+    description,
+  );
+});
+
+beforeAll(() =>
+  Promise.all([
+    ModelReasoningMenu.preload(),
+    ModelReasoningPickerBody.preload(),
+  ]),
+);
+
+it("keeps closed provider shortcuts in the active handoff before the menu mounts", () => {
+  const onStart = vi.fn();
+  const onSelect = vi.fn();
+  const { onSelectedProviderChange } = renderPicker({
+    handoff: {
+      active: true,
+      sourceProviderId: "codex",
+      onStart,
+      onExit: vi.fn(),
+      onSelect,
+    },
+  });
+  const trigger = screen.getByRole("button", {
+    name: /^Provider, model and reasoning/,
+  });
+  act(() => {
+    expect(
+      commandHandlers.get("modelPicker.cycleProvider")?.({ target: trigger }),
+    ).toBe(true);
+  });
+  expect(onStart).toHaveBeenCalledTimes(1);
+  expect(onSelectedProviderChange).not.toHaveBeenCalled();
+  act(() => {
+    commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
+  });
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
+describe("ModelReasoningPicker", () => {
   it.each([
     ["ArrowRight", "medium", "high"],
     ["ArrowLeft", "high", "medium"],
@@ -496,20 +496,35 @@ describe("ModelReasoningPicker", () => {
     expect(document.activeElement).toBe(model);
   });
 
-  it("does not change reasoning when the submenu handles an arrow", () => {
+  it("does not change reasoning when the submenu handles an arrow", async () => {
     const { onReasoningChange } = renderPicker({
-      moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+      moreModelOptions: [
+        { value: "blocked", label: "Blocked", disabled: true },
+        { value: "legacy", label: "Legacy" },
+      ],
     });
     fireEvent.click(
       screen.getByRole("button", {
         name: /^Provider, model and reasoning/,
       }),
     );
-    const moreModels = screen.getByRole("button", { name: "More models" });
+    const moreModels = await screen.findByRole("button", {
+      name: "More models",
+    });
+    expect(moreModels.getAttribute("aria-haspopup")).toBe("dialog");
     act(() => moreModels.focus());
     fireEvent.keyDown(moreModels, {
       key: "ArrowRight",
     });
+    const dialog = await screen.findByRole("dialog", { name: "More models" });
+    const legacy = screen.getByRole("button", { name: "Legacy" });
+    expect(dialog.contains(legacy)).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(legacy));
+    fireEvent.keyDown(legacy, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(legacy);
+    expect(onReasoningChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(legacy, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(moreModels);
     expect(onReasoningChange).not.toHaveBeenCalled();
   });
 
@@ -533,7 +548,6 @@ describe("ModelReasoningPicker", () => {
     expect(onReasoningChange).not.toHaveBeenCalled();
   });
 
-
   it("shows the provider name on the compact trigger when catalog load failed", () => {
     renderPicker({
       compact: true,
@@ -542,7 +556,9 @@ describe("ModelReasoningPicker", () => {
       modelLoadFailed: true,
       hasMultipleProviders: false,
       onSelectedProviderChange: null,
-      pickerProviderOptions: [{ value: "codex", label: "Codex", brandPrefix: "GPT-" }],
+      pickerProviderOptions: [
+        { value: "codex", label: "Codex", brandPrefix: "GPT-" },
+      ],
     });
     const trigger = screen.getByRole("button", {
       name: /^Provider, model and reasoning/,
@@ -971,7 +987,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Handoff to new thread" }),
+      screen.getByRole("button", { name: "Hand off to new thread" }),
     );
     expect(onStart).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
@@ -1007,7 +1023,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Handoff to new thread" }),
+      screen.getByRole("button", { name: "Hand off to new thread" }),
     );
     fireEvent.click(screen.getByTitle("Claude Code"));
 
@@ -1057,7 +1073,7 @@ describe("ModelReasoningPicker", () => {
         screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
-        screen.getByRole("button", { name: "Handoff to new thread" }),
+        screen.getByRole("button", { name: "Hand off to new thread" }),
       );
       fireEvent.click(screen.getByTitle("Claude Code"));
       await screen.findByText("Opus 4.7");
@@ -1106,7 +1122,7 @@ describe("ModelReasoningPicker", () => {
         screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
-        screen.getByRole("button", { name: "Handoff to new thread" }),
+        screen.getByRole("button", { name: "Hand off to new thread" }),
       );
       fireEvent.click(screen.getByTitle("Claude Code"));
       await screen.findByText("Opus 4.7");
@@ -1736,7 +1752,7 @@ describe("ModelReasoningPicker service tiers", () => {
     expect(screen.queryByRole("switch")).toBeNull();
   });
 
-  it("greys out a model the chosen options rule out and never selects it", () => {
+  it("greys out a model the chosen options rule out and never selects it", async () => {
     const { onModelChange } = renderPicker({
       modelOptions: [
         { value: "gpt-5.5", label: "GPT-5.5" },
@@ -1747,6 +1763,14 @@ describe("ModelReasoningPicker service tiers", () => {
           disabledReason: "Turn off Daybreak to use this model",
         },
         { value: "o3", label: "o3" },
+      ],
+      moreModelOptions: [
+        {
+          value: "legacy",
+          label: "Legacy",
+          disabled: true,
+          disabledReason: "Turn off Daybreak to use Legacy",
+        },
       ],
     });
     const trigger = screen.getByRole("button", {
@@ -1761,6 +1785,13 @@ describe("ModelReasoningPicker service tiers", () => {
       .closest("button");
     expect(blocked?.disabled).toBe(true);
     if (blocked) fireEvent.click(blocked);
+    fireEvent.pointerOver(screen.getByRole("button", { name: "More models" }));
+    const legacy = await screen.findByRole("button", {
+      name: "Legacy",
+    });
+    expect(legacy.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTitle("Turn off Daybreak to use Legacy")).toBeTruthy();
+    fireEvent.click(legacy);
     expect(onModelChange).toHaveBeenCalledTimes(1);
   });
 

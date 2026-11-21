@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
-  BUNDLED_MARKETPLACE_NAME,
+  catalogRangeForInstalledSource,
   entryOverview,
   entryScreenshotUrls,
   entryRepositoryUrl,
@@ -11,7 +11,6 @@ import {
   marketplaceEntryCategory,
   marketplaceEntryCollections,
   marketplaceCollections,
-  parseBundledMarketplaceManifest,
   parseMarketplaceManifest,
   resolveEntryIcon,
   resolvedEntrySource,
@@ -226,24 +225,6 @@ describe("marketplace manifest schema", () => {
       expect(parsed.plugins[0]?.author).toEqual({ name: "Acme" });
     });
 
-    it("rejects unknown source keys", () => {
-      expect(() =>
-        parseMarketplaceManifest(
-          manifestV2([
-            entry({
-              source: {
-                npm: {
-                  package: "bb-plugin-widgets",
-                  regsitry: "https://npm.test/",
-                },
-              },
-            }),
-          ]),
-          "manifest",
-        ),
-      ).toThrow(/invalid manifest/iu);
-    });
-
     it("skips an invalid semver entry with a warning", () => {
       const warnings: string[] = [];
       const parsed = parseMarketplaceManifest(
@@ -312,21 +293,6 @@ describe("marketplace manifest schema", () => {
         id: "security",
         displayName: "Security",
       });
-    });
-
-    it("reserves bundled sources for the built-in marketplace", () => {
-      const bundled = {
-        schemaVersion: 2,
-        name: BUNDLED_MARKETPLACE_NAME,
-        displayName: "BB Official",
-        plugins: [entry({ source: { bundled: { plugin: "docs" } } })],
-      };
-      expect(() =>
-        parseMarketplaceManifest(bundled, "fetched marketplace"),
-      ).toThrow(/not allowed in fetched or third-party documents/u);
-      expect(
-        parseBundledMarketplaceManifest(bundled, "bundled marketplace"),
-      ).toMatchObject({ name: BUNDLED_MARKETPLACE_NAME });
     });
   });
 
@@ -503,6 +469,41 @@ describe("marketplace manifest schema", () => {
             }),
           ]),
         ).toThrow(/git ref/);
+      }
+    });
+
+    it("follows a catalog range only for the installed repository, subdirectory, and tag prefix", () => {
+      const ranged = firstEntry([
+        entry({
+          source: {
+            git: {
+              url: "https://github.com/acme/plugins.git",
+              range: ">=0.2.0 <0.4.0",
+              tagPrefix: "widgets/",
+              subdir: "./plugins/widgets",
+            },
+          },
+        }),
+      ]);
+      const installed = {
+        sourceKind: "git" as const,
+        sourceNpmPackage: null,
+        sourceGitUrl: "https://github.com/acme/plugins.git",
+        sourceGitSubdirectory: "plugins/widgets",
+        sourceGitTagPrefix: "widgets/",
+      };
+
+      expect(catalogRangeForInstalledSource(ranged, installed)).toBe(
+        ">=0.2.0 <0.4.0",
+      );
+      for (const moved of [
+        { sourceGitUrl: "https://github.com/someone-else/plugins.git" },
+        { sourceGitSubdirectory: "plugins/other" },
+        { sourceGitTagPrefix: "" },
+      ]) {
+        expect(
+          catalogRangeForInstalledSource(ranged, { ...installed, ...moved }),
+        ).toBeNull();
       }
     });
 

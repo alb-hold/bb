@@ -29,6 +29,15 @@ interface DeviceHandoffQueueState {
   nextOrder: number;
 }
 
+function withoutScopeProgress(
+  progressByScope: Record<string, QueueProgress>,
+  scope: string | null,
+): Record<string, QueueProgress> {
+  const remaining = { ...progressByScope };
+  delete remaining[scope ?? ""];
+  return remaining;
+}
+
 const emptyQueue: DeviceHandoffQueueState = {
   partitions: {},
   progressByScope: {},
@@ -379,8 +388,11 @@ export function useDeviceHandoffQueue(
           ? 0
           : entriesForScope({ ...live, partitions }, scope).length;
       if (scope === null || remainingCount === 0) {
-        const { [scope ?? ""]: _, ...progressByScope } = live.progressByScope;
-        return { ...live, partitions, progressByScope };
+        return {
+          ...live,
+          partitions,
+          progressByScope: withoutScopeProgress(live.progressByScope, scope),
+        };
       }
       const progress = live.progressByScope[scope];
       return {

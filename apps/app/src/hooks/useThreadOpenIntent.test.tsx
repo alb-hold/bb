@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { render, renderHook, fireEvent, cleanup } from "@testing-library/react";
+import {
+  render,
+  renderHook,
+  fireEvent,
+  cleanup,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { ThreadModeGlyph } from "@bb/shared-ui/thread-mode-glyph";
@@ -36,7 +42,7 @@ it("warms only on row hover or focus, including plugin rows, and removes listene
   row.append(child);
   document.body.append(row);
   fireEvent.pointerOver(child);
-  await vi.waitFor(() =>
+  await waitFor(() =>
     expect(prefetchThreadOpen).toHaveBeenCalledWith("native"),
   );
   child.dispatchEvent(
@@ -59,7 +65,7 @@ it.each(["touchStart", "focusIn"])(
     document.body.append(row);
     if (event === "touchStart") fireEvent.touchStart(row);
     else fireEvent.focusIn(row);
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(prefetchThreadOpen).toHaveBeenCalledWith("other"),
     );
   },
@@ -102,7 +108,7 @@ it("warms terminal modules immediately for explicit native-terminal composer int
     '<div data-app-composer="" data-native-terminal="true"><textarea></textarea></div>';
   fireEvent.input(document.querySelector("textarea")!);
   expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
-  await vi.waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
+  await waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
   expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
   expect(warmSplitWhenQuiet).not.toHaveBeenCalled();
 });
@@ -127,9 +133,7 @@ it.each(["sidebar", "recent"])(
     );
     fireEvent.pointerOver(row.firstElementChild!);
     expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
-    await vi.waitFor(() =>
-      expect(preloadTerminalModules).toHaveBeenCalledOnce(),
-    );
+    await waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
     expect(prefetchThreadOpen).toHaveBeenCalledWith("native");
   },
 );
@@ -151,9 +155,7 @@ it.each(["pointerDown", "touchStart", "focusIn"])(
     if (event === "pointerDown") fireEvent.pointerDown(row);
     else if (event === "touchStart") fireEvent.touchStart(row);
     else fireEvent.focusIn(row);
-    await vi.waitFor(() =>
-      expect(preloadTerminalModules).toHaveBeenCalledOnce(),
-    );
+    await waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
   },
 );
 
@@ -164,7 +166,7 @@ it("warms notification and deep-link destinations without sidebar rows", async (
   document.body.append(link);
   link.addEventListener("click", (event) => event.preventDefault());
   fireEvent.click(link);
-  await vi.waitFor(() =>
+  await waitFor(() =>
     expect(prefetchThreadOpen).toHaveBeenCalledWith("notified"),
   );
 });

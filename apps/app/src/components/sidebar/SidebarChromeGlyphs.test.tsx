@@ -15,6 +15,8 @@ import {
 
 afterEach(cleanup);
 
+const CHROME_COLOR = "rgb(1, 2, 3)";
+
 it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
   "keeps inactive chrome legible and puzzle paths outlined: %s",
   (className) => {
@@ -27,7 +29,7 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
         <style>
           {css.slice(css.indexOf(":where(.bb-sidebar-chrome-icon)"))}
         </style>
-        <button className={className}>
+        <button className={className} style={{ color: CHROME_COLOR }}>
           <svg data-icon-root="" data-icon="Puzzle">
             <path fill="currentColor" />
           </svg>
@@ -35,8 +37,8 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
       </>,
     );
     const path = container.querySelector("path")!;
-    expect(getComputedStyle(path).fill).toBe("none");
-    expect(getComputedStyle(path).stroke).toBe("currentcolor");
+    expect(getComputedStyle(path).fill).toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(path).stroke).toBe(CHROME_COLOR);
     expect(className.split(" ")).toContain("text-sidebar-icon-foreground");
     expect(className.split(" ")).toContain("hover:text-sidebar-foreground");
   },
@@ -152,7 +154,11 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
         <style>
           {css.slice(css.indexOf(":where(.bb-sidebar-chrome-icon)"))}
         </style>
-        <button className={className} aria-label="Provider usage">
+        <button
+          className={className}
+          aria-label="Provider usage"
+          style={{ color: CHROME_COLOR }}
+        >
           <span data-icon-root="">
             <svg>
               <path fill="#8247ff" stroke="#8247ff" />
@@ -163,9 +169,9 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
       </>,
     );
     const paths = container.querySelectorAll("path");
-    expect(getComputedStyle(paths[0]).fill).toBe("currentcolor");
-    expect(getComputedStyle(paths[0]).stroke).toBe("currentcolor");
-    expect(getComputedStyle(paths[1]).fill).not.toBe("currentcolor");
+    expect(getComputedStyle(paths[0]).fill).toBe(CHROME_COLOR);
+    expect(getComputedStyle(paths[0]).stroke).toBe(CHROME_COLOR);
+    expect(getComputedStyle(paths[1]).fill).not.toBe(CHROME_COLOR);
     expect(getComputedStyle(container.querySelector("svg")!).strokeWidth).toBe(
       "1.5",
     );

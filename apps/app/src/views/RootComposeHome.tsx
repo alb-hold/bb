@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { ComposerMaxHeightContext } from "@/components/promptbox/composer-max-height";
@@ -43,34 +44,35 @@ function useCompactHomeMetrics(isCompact: boolean) {
           scrollViewport.scrollHeight - 1,
       );
     };
-    const measure = () => {
+    const readMetrics = () => {
       const composerRoot = composerRootWithin(composer);
-      if (composerRoot) {
-        const surroundingHeight =
-          composer.offsetHeight - composerRoot.offsetHeight;
-        setComposerMaxHeight(
-          region.offsetHeight -
-            COMPACT_HOME_CHROME_OFFSET_PX -
-            surroundingHeight,
-        );
-      }
       const composerHeight = composer.offsetHeight;
-      scrollViewport.style.bottom = `${composerHeight}px`;
+      return {
+        composerHeight,
+        maxHeight: composerRoot
+          ? region.offsetHeight -
+            COMPACT_HOME_CHROME_OFFSET_PX -
+            (composerHeight - composerRoot.offsetHeight)
+          : undefined,
+      };
+    };
+    const writeMetrics = (metrics: ReturnType<typeof readMetrics>) => {
+      if (metrics.maxHeight !== undefined) {
+        setComposerMaxHeight(metrics.maxHeight);
+      }
+      scrollViewport.style.bottom = `${metrics.composerHeight}px`;
       updateScrollCue();
     };
-    measure();
+    writeMetrics(readMetrics());
     scrollViewport.addEventListener("scroll", updateScrollCue, {
       passive: true,
     });
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(measure);
-    observer?.observe(region);
-    observer?.observe(composer);
-    observer?.observe(scrollContent);
+    const stopObserving = observeSharedResize(
+      [region, composer, scrollContent],
+      { read: readMetrics, write: writeMetrics },
+    );
     return () => {
-      observer?.disconnect();
+      stopObserving();
       scrollViewport.removeEventListener("scroll", updateScrollCue);
     };
   }, [isCompact]);
@@ -103,84 +105,94 @@ export function RootComposeHome({
     <div
       className={
         isCompact
-          ? "@container/page flex min-h-0 flex-1 flex-col"
-          : "@container/page grid min-h-0 flex-1 grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)] overflow-y-auto"
+          ? "flex min-h-0 flex-1 flex-col"
+          : "@container/page min-h-0 flex-1"
       }
       style={isCompact ? PAGE_SHELL_CONTENT_STYLE : undefined}
     >
       <div
-        ref={regionRef}
-        data-testid="root-compose-compact-home"
         className={
           isCompact
-            ? "relative min-h-0 flex-1"
-            : cn(
-                "row-start-2 mx-auto flex w-full shrink-0 flex-col px-4 py-8",
-                ROOT_COMPOSE_MAX_WIDTH_CLASS,
-                wideContentClassName,
-              )
+            ? "@container/page flex min-h-0 flex-1 flex-col"
+            : "grid h-full overflow-y-auto grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)]"
         }
-        style={isCompact ? undefined : PAGE_SHELL_CONTENT_STYLE}
       >
-        {isCompact ? (
-          <div
-            ref={scrollViewportRef}
-            data-testid="root-compose-compact-scroll-viewport"
-            data-page-scroll-viewport=""
-            className="absolute inset-x-0 bottom-0 overflow-y-auto overscroll-contain"
-            style={{ top: COMPACT_HOME_CHROME_OFFSET_PX }}
-          >
-            <div
-              ref={scrollContentRef}
-              data-testid="root-compose-compact-scroll-content"
-              className="flex min-h-full flex-col pb-[calc(1rem+env(safe-area-inset-bottom))]"
-            >
-              <div className={COMPACT_HOME_COLUMN_CLASS}>
-                {compactScrollContent}
-                {homepageSections}
-              </div>
-            </div>
-          </div>
-        ) : null}
         <div
-          ref={composerRef}
-          data-testid="root-compose-compact-composer"
+          ref={regionRef}
+          data-testid="root-compose-compact-home"
           className={
             isCompact
-              ? "absolute inset-x-0 bottom-0 z-10 flex max-h-[calc(100%-3.5rem)] flex-col"
-              : undefined
+              ? "relative min-h-0 flex-1"
+              : cn(
+                  "row-start-2 mx-auto flex w-full shrink-0 flex-col px-4 py-8",
+                  ROOT_COMPOSE_MAX_WIDTH_CLASS,
+                  wideContentClassName,
+                )
           }
+          style={isCompact ? undefined : PAGE_SHELL_CONTENT_STYLE}
         >
-          {!isCompact ? (
-            <p className="mb-6 text-center text-xl font-medium text-foreground">
-              Start a new thread
-            </p>
+          {isCompact ? (
+            <div
+              ref={scrollViewportRef}
+              data-testid="root-compose-compact-scroll-viewport"
+              data-page-scroll-viewport=""
+              className="absolute inset-x-0 bottom-0 overflow-y-auto overscroll-contain"
+              style={{ top: COMPACT_HOME_CHROME_OFFSET_PX }}
+            >
+              <div
+                ref={scrollContentRef}
+                data-testid="root-compose-compact-scroll-content"
+                className="flex min-h-full flex-col pb-[calc(1rem+env(safe-area-inset-bottom))]"
+              >
+                <div className={COMPACT_HOME_COLUMN_CLASS}>
+                  {compactScrollContent}
+                  {homepageSections}
+                </div>
+              </div>
+            </div>
           ) : null}
           <div
+            ref={composerRef}
+            data-testid="root-compose-compact-composer"
             className={
               isCompact
-                ? "min-h-0 overflow-y-auto bg-background pb-4"
+                ? "absolute inset-x-0 bottom-0 z-10 flex max-h-[calc(100%-3.5rem)] flex-col"
                 : undefined
             }
           >
-            <div className={isCompact ? COMPACT_HOME_COLUMN_CLASS : undefined}>
-              <ComposerMaxHeightContext.Provider
-                value={isCompact ? composerMaxHeight : undefined}
+            {!isCompact ? (
+              <p className="mb-6 text-center text-xl font-medium text-foreground">
+                Start a new thread
+              </p>
+            ) : null}
+            <div
+              className={
+                isCompact
+                  ? "min-h-0 overflow-y-auto bg-background pb-4"
+                  : undefined
+              }
+            >
+              <div
+                className={isCompact ? COMPACT_HOME_COLUMN_CLASS : undefined}
               >
-                {composer}
-              </ComposerMaxHeightContext.Provider>
+                <ComposerMaxHeightContext.Provider
+                  value={isCompact ? composerMaxHeight : undefined}
+                >
+                  {composer}
+                </ComposerMaxHeightContext.Provider>
+              </div>
             </div>
           </div>
+          {!isCompact ? (
+            <div
+              className="mt-6 empty:hidden"
+              data-testid="root-compose-desktop-recents"
+            >
+              {compactScrollContent}
+            </div>
+          ) : null}
+          {isCompact ? null : homepageSections}
         </div>
-        {!isCompact ? (
-          <div
-            className="mt-6 empty:hidden"
-            data-testid="root-compose-desktop-recents"
-          >
-            {compactScrollContent}
-          </div>
-        ) : null}
-        {isCompact ? null : homepageSections}
       </div>
     </div>
   );

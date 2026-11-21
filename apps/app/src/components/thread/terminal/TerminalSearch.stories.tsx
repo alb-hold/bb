@@ -16,14 +16,14 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     let mountedTerminal: Terminal | null = null;
     Promise.all([
       import("@xterm/xterm"),
       import("@xterm/addon-fit"),
       import("@xterm/addon-search"),
     ]).then(([xterm, fitModule, searchModule]) => {
-      if (!active || !hostRef.current) return;
+      if (controller.signal.aborted || !hostRef.current) return;
       mountedTerminal = new xterm.Terminal({
         cursorBlink: true,
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -43,7 +43,7 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
       setAddon(search);
     });
     return () => {
-      active = false;
+      controller.abort();
       mountedTerminal?.dispose();
     };
   }, []);

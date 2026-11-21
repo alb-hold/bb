@@ -12,13 +12,16 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { useLayoutEffect, type ReactNode, type RefObject } from "react";
 import {
-  useLayoutEffect,
-  useSyncExternalStore,
-  type ReactNode,
-  type RefObject,
-} from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type {
   PluginComposerApi,
   PluginComposerScope,
@@ -28,7 +31,10 @@ import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { PluginContext } from "@/components/plugin/plugin-context";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
-import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import {
+  type ComposerDraftStore,
+  type PluginComposerHost,
+} from "@/components/plugin/plugin-composer-host";
 import { FollowUpPromptBox } from "@/components/promptbox/FollowUpPromptBox";
 import { NewThreadPromptBoxUI } from "@/components/promptbox/NewThreadPromptBox";
 import type { PromptBoxHandle } from "@/components/promptbox/ComposerBox";
@@ -40,10 +46,18 @@ import {
 } from "@/lib/plugin-slots";
 import { resolveThreadMentionDropTarget } from "@/lib/thread-mention-drop";
 import { registerComposerPlugin } from "@/test/fixtures/composer-plugin";
-import { registerMinimalComposer } from "@/test/fixtures/minimal-composer";
+import {
+  minimalComposerLastRender,
+  registerMinimalComposer,
+} from "@/test/fixtures/minimal-composer";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
+
+const renderRecorder = await vi.hoisted(async () => {
+  const { installRenderRecorder } = await import("@/test/render-recorder");
+  return installRenderRecorder();
+});
 
 const voice = vi.hoisted(() => ({
   promptBoxRef: null as RefObject<PromptBoxHandle | null> | null,
@@ -103,7 +117,7 @@ type EnterAction = "submit" | "modifier";
 
 interface SurfaceHarness {
   host: PluginComposerHost;
-  draft: () => PromptDraftState;
+  store: ComposerDraftStore;
   onSubmit: () => void;
   onModifierSubmit: () => void;
 }
@@ -153,6 +167,7 @@ function createDraftStore(
   };
   return {
     host,
+    store: host,
     draft: () => draft,
     subscribe: host.subscribeDraft,
     setText: (text: string, mentions: PromptDraftState["mentions"]) =>
@@ -172,7 +187,12 @@ const execution = {
     loadFailed: false,
     onChange: () => {},
   },
-  reasoning: { value: "medium", options: [], onChange: () => {} },
+  reasoning: {
+    value: "medium",
+    options: [],
+    isLoading: false,
+    onChange: () => {},
+  },
 } as const;
 
 const permission = {
@@ -207,21 +227,17 @@ function followUpSurface({
     customizable,
     enter,
     pluginSubmit,
-    render: ({ host, draft, onSubmit, onModifierSubmit }) => (
+    render: ({ host, store, onSubmit, onModifierSubmit }) => (
       <FollowUpPromptBox
-        attachments={{ items: [], projectId: "proj_contract" }}
+        attachments={{ projectId: "proj_contract" }}
         stack={null}
         composer={{
           history: {
-            currentDraft: draft(),
             entries: [],
             onSelectEntry: () => {},
           },
           isFollowUpSubmitting: false,
-          message: draft().text,
-          mentionRanges: draft().mentions,
-          onChangeMessage: (text, mentions) =>
-            host.setDraft({ ...draft(), text, mentions }),
+          draft: store,
           onSubmit,
           onModifierSubmit,
           compactPromptPlaceholder: "Ask a follow-up",
@@ -310,24 +326,19 @@ const SURFACES: readonly Surface[] = [
     customizable: true,
     enter: "submit",
     pluginSubmit: "submit",
-    render: ({ host, draft, onSubmit }) => (
+    render: ({ host, store, onSubmit }) => (
       <NewThreadPromptBoxUI
-        value={draft().text}
-        mentionRanges={draft().mentions}
-        onChange={(text, mentions) =>
-          host.setDraft({ ...draft(), text, mentions })
-        }
+        draft={store}
         onSubmit={onSubmit}
         isSubmitting={false}
         disabled={false}
         pluginComposerHost={host}
         history={{
-          currentDraft: draft(),
           entries: [],
           onSelectEntry: () => {},
         }}
         typeahead={typeahead}
-        attachments={{ items: [] }}
+        attachments={{}}
         mentionMenuPlacement="bottom"
         modeConfig={{
           environment: {
@@ -450,12 +461,11 @@ function renderSurface(surface: Surface) {
   const onSubmit = vi.fn();
   const onModifierSubmit = vi.fn();
   function Harness() {
-    useSyncExternalStore(store.subscribe, store.draft, store.draft);
     return (
       <>
         {surface.render({
           host: store.host,
-          draft: store.draft,
+          store: store.store,
           onSubmit,
           onModifierSubmit,
         })}
@@ -505,9 +515,55 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  renderRecorder.reset();
   resetPluginSlotStoreForTest();
   resetAllCrashedPluginSlotsForTest();
   vi.restoreAllMocks();
+});
+
+afterAll(() => {
+  renderRecorder.uninstall();
+});
+
+describe.each(SURFACES)("typing in the $name", (surface) => {
+  it("renders nothing outside the composer box and gives plugins the typed draft", async () => {
+    registerMinimalComposer();
+    renderSurface(surface);
+    const box = await composerBox();
+    const textarea = box.querySelector("textarea");
+    if (textarea === null) throw new Error("The composer has no textarea");
+    const historyBefore = minimalComposerLastRender.renderer?.input.history;
+    renderRecorder.reset();
+
+    for (const text of ["Draft text!", "Draft text!!", "Draft text!!!"]) {
+      fireEvent.change(textarea, { target: { value: text } });
+    }
+
+    expect(textarea.value).toBe("Draft text!!!");
+    const historyAfter = minimalComposerLastRender.renderer?.input.history;
+    expect(historyAfter).not.toBe(historyBefore);
+    expect(historyAfter?.currentDraft.text).toBe("Draft text!!!");
+    expect(renderRecorder.propsOf("MinimalComposer")).toHaveLength(3);
+    expect(
+      renderRecorder
+        .renderedOutside("ComposerRendererHostProvider")
+        .filter((name) => name !== "ComposersProbe"),
+    ).toEqual([]);
+  });
+});
+
+describe.each(SURFACES)("retired renderer members in the $name", (surface) => {
+  it("still match useComposer() for composers built before their removal", async () => {
+    registerMinimalComposer();
+    renderSurface(surface);
+    await composerBox();
+    const { renderer, composer } = minimalComposerLastRender;
+    expect(composer).not.toBeNull();
+    expect(Reflect.get(renderer ?? {}, "key")).toBe(composer?.key);
+    expect(Reflect.get(renderer ?? {}, "view")).toMatchObject({
+      scope: composer?.scope,
+    });
+  });
 });
 
 describe.each(COMPOSERS)("$name", (composer) => {
@@ -624,6 +680,9 @@ describe.each(COMPOSERS)("$name", (composer) => {
       );
       expect(rejected).toBe(surface.pluginSubmit === "rejects");
       if (surface.pluginSubmit === "rejects") {
+        await expect(handle.submit()).rejects.toThrow(
+          "This composer cannot submit programmatically.",
+        );
         expect(onSubmit).not.toHaveBeenCalled();
         expect(onModifierSubmit).not.toHaveBeenCalled();
         return;

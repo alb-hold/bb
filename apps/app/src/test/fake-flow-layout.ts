@@ -66,14 +66,12 @@ export function installFakeFlowLayout({
     top: number,
     snapshot?: Map<Element, number>,
   ): { height: number; bottom: number } => {
-    let height = ownHeight(element);
+    const declaredHeight = ownHeight(element);
     const style = inlineStyle(element);
+    let used = 0;
     let bottom = top;
-    if (height === null && style !== null && style.height !== "") {
-      height = pixels(style.height);
-    } else if (height === null || snapshot !== undefined) {
-      const gap = height === null && style !== null ? pixels(style.gap) : 0;
-      let used = 0;
+    if (declaredHeight === null || snapshot !== undefined) {
+      const gap = declaredHeight === null && style !== null ? pixels(style.gap) : 0;
       let first = true;
       for (
         let child = element.firstElementChild;
@@ -86,8 +84,8 @@ export function installFakeFlowLayout({
         used += measured.height + marginBottom(child);
         first = false;
       }
-      height ??= used;
     }
+    const height = declaredHeight ?? (style?.height ? pixels(style.height) : used);
     snapshot?.set(element, height);
     return { height, bottom: Math.max(bottom, top + height) };
   };
@@ -112,7 +110,6 @@ export function installFakeFlowLayout({
         ownHeight(parent) === null &&
         parent instanceof HTMLElement
       ) {
-        if (parent.style.height !== "") return null;
         gap = pixels(parent.style.gap);
       }
       for (
@@ -261,6 +258,23 @@ export function installFakeFlowLayout({
   globalThis.ResizeObserver =
     FakeResizeObserver as unknown as typeof ResizeObserver;
 
+  const frameCallbacks = new Map<number, FrameRequestCallback>();
+  let lastFrameId = 0;
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const requestFrame = (callback: FrameRequestCallback): number => {
+    lastFrameId += 1;
+    frameCallbacks.set(lastFrameId, callback);
+    return lastFrameId;
+  };
+  const framesAlreadyFaked = "clock" in originalRequestAnimationFrame;
+  if (!framesAlreadyFaked) {
+    window.requestAnimationFrame = requestFrame;
+    window.cancelAnimationFrame = (id: number) => {
+      frameCallbacks.delete(id);
+    };
+  }
+
   return {
     get scrollTop() {
       return scrollTop;
@@ -315,6 +329,20 @@ export function installFakeFlowLayout({
         observerSnapshot = previousSnapshot;
       }
     },
+    runFrameCallbacks() {
+      if (window.requestAnimationFrame !== requestFrame) {
+        vi.advanceTimersToNextFrame();
+        return;
+      }
+      const callbacks = [...frameCallbacks.values()];
+      frameCallbacks.clear();
+      const now = performance.now();
+      for (const callback of callbacks) callback(now);
+    },
+    frame() {
+      this.runFrameCallbacks();
+      this.flushResizeObservers();
+    },
     setViewportHeight(height: number) {
       viewportHeight = height;
     },
@@ -339,6 +367,10 @@ export function installFakeFlowLayout({
         }
       }
       globalThis.ResizeObserver = OriginalResizeObserver;
+      if (!framesAlreadyFaked) {
+        window.requestAnimationFrame = originalRequestAnimationFrame;
+        window.cancelAnimationFrame = originalCancelAnimationFrame;
+      }
     },
   };
 }

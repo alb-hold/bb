@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
 import { cleanup, renderHook } from "@testing-library/react";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import { useThreadUnreadDividerState } from "./useThreadUnreadDividerState";
 
 interface DividerThread {
@@ -11,6 +13,7 @@ interface DividerThread {
 }
 
 interface DividerQuery {
+  bootstrapRefreshed?: boolean;
   isFetchedAfterMount: boolean;
   isPlaceholderData: boolean;
 }
@@ -28,8 +31,11 @@ function renderDividerState(
   const view = renderHook(
     ({ query, thread }: { query: DividerQuery; thread: DividerThread }) => {
       const state = useThreadUnreadDividerState({
-        anchor: "first-unread-row",
-        bootstrapQuery: { dataUpdatedAt: 0, isFetchedAfterMount: false, isSuccess: false },
+        bootstrapQuery: {
+          dataUpdatedAt: 0,
+          isFetchedAfterMount: query.bootstrapRefreshed === true,
+          isSuccess: query.bootstrapRefreshed === true,
+        },
         threadQuery: { ...query, isError: false },
         hasUnseenTimelineEvents: false,
         routeThreadId: thread.id,
@@ -67,7 +73,7 @@ describe("useThreadUnreadDividerState", () => {
       autoScroll: true,
       hasUnseenTimelineEvents: true,
       landOnDivider: false,
-      placement: { anchor: "first-unread-row", cutoffAt: 100 },
+      placement: { cutoffAt: 100 },
     });
   });
 
@@ -102,7 +108,7 @@ describe("useThreadUnreadDividerState", () => {
       autoScroll: true,
       hasUnseenTimelineEvents: true,
       landOnDivider: true,
-      placement: { anchor: "first-unread-row", cutoffAt: 100 },
+      placement: { cutoffAt: 100 },
     });
 
     show({ id: "thr_a", lastReadAt: 400, latestAttentionAt: 300 });
@@ -162,9 +168,26 @@ describe("useThreadUnreadDividerState", () => {
     show({ id: "thr_a", lastReadAt: 300, latestAttentionAt: 400 });
     expect(result.current.ready).toBe(true);
     expect(result.current.placement).toEqual({
-      anchor: "first-unread-row",
       cutoffAt: 300,
     });
+    expect(result.current.landOnDivider).toBe(true);
+  });
+
+  it("lands on fresh unread data when bootstrap refreshed before the thread placeholder was replaced", () => {
+    const read = { id: "thr_a", lastReadAt: 300, latestAttentionAt: 200 };
+    const cached = { isFetchedAfterMount: false, isPlaceholderData: true };
+    const { result, show } = renderDividerState(read, cached);
+
+    show(read, { ...cached, bootstrapRefreshed: true });
+    expect(result.current.ready).toBe(false);
+    expect(result.current.landOnDivider).toBe(false);
+
+    show({ ...read, latestAttentionAt: 400 }, {
+      ...SETTLED_QUERY,
+      bootstrapRefreshed: true,
+    });
+    expect(result.current.ready).toBe(true);
+    expect(result.current.placement).toEqual({ cutoffAt: 300 });
     expect(result.current.landOnDivider).toBe(true);
   });
 
@@ -177,7 +200,6 @@ describe("useThreadUnreadDividerState", () => {
 
     show({ id: "thr_a", lastReadAt: 300, latestAttentionAt: 400 });
     expect(result.current.placement).toEqual({
-      anchor: "first-unread-row",
       cutoffAt: 300,
     });
     expect(result.current.landOnDivider).toBe(false);

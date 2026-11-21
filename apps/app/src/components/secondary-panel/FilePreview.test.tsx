@@ -17,6 +17,7 @@ import {
 import { SOURCE_CODE_MAX_LINES } from "@/components/code/source-code-budget";
 import { BbSourceCodeSplit } from "@/components/code/BbSourceCodeSplit";
 import { SecondaryPanelFilePreview } from "./ThreadStorageFilePreview";
+import { FilePreviewRenderPreviewContext } from "./filePreviewRenderPreviewContext";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { HttpError } from "@/lib/api";
 import { BbHttpError } from "@bb/sdk/browser";
@@ -24,6 +25,7 @@ import {
   PierreWorkerPoolGateContext,
   type PierreWorkerPoolGate,
 } from "@/lib/pierre-worker-pool-gate";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 interface MockPierreFileProps {
   file: {
@@ -267,7 +269,8 @@ describe("FilePreview", () => {
       />,
     );
 
-    await waitFor(() => expect(pierreMock.state.statsCallback).not.toBeNull());
+    await settleLazyModules();
+    expect(pierreMock.state.statsCallback).not.toBeNull();
     const renderCountBeforeStatsChange = Number(
       screen.getByTestId("pierre-file").dataset.renderCount,
     );
@@ -523,6 +526,49 @@ describe("FilePreview", () => {
     await screen.findByTestId("pierre-file");
     expect(pierreMock.state.lastFile?.contents).toBe(contents);
     expect(screen.queryByRole("button", { name: "Load full file" })).toBeNull();
+  });
+
+  it("draws a supplied Preview body under BB's header and keeps Raw as BB's code view", async () => {
+    const renderPreview = vi.fn(({ content, url }) => (
+      <div data-testid="plugin-preview" data-url={url}>
+        {content}
+      </div>
+    ));
+    render(
+      <FilePreviewRenderPreviewContext.Provider value={renderPreview}>
+        <FilePreview
+          path="reports/page.html"
+          download={{
+            url: "/api/v1/threads/thr_1/thread-storage/files/reports/page.html",
+            fileName: "page.html",
+          }}
+          state={{
+            kind: "html",
+            file: { name: "page.html", contents: "<h1>Page</h1>" },
+            iframe: {
+              sandbox: "allow-scripts",
+              title: "reports/page.html",
+              url: "/api/v1/threads/thr_1/thread-storage/files/reports/page.html",
+            },
+            lineRange: null,
+          }}
+        />
+      </FilePreviewRenderPreviewContext.Provider>,
+    );
+
+    const body = screen.getByTestId("plugin-preview");
+    expect(body.textContent).toBe("<h1>Page</h1>");
+    expect(body.getAttribute("data-url")).toBe(
+      `${window.location.origin}/api/v1/threads/thr_1/thread-storage/files/reports/page.html`,
+    );
+    expect(document.querySelector("iframe")).toBeNull();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+    expect(screen.queryByText("Loading preview…")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Raw" }));
+    expect(screen.queryByTestId("plugin-preview")).toBeNull();
+    await screen.findByTestId("pierre-file");
+    expect(pierreMock.state.lastFile?.contents).toBe("<h1>Page</h1>");
   });
 
   it("opens a rendered HTML preview in the external browser", () => {
@@ -886,7 +932,9 @@ describe("FilePreview", () => {
     if (!(scrollBox instanceof HTMLElement)) throw new Error("no scroll box");
     scrollBox.scrollTop = 499 * CSV_TEST_ROW_HEIGHT_PX;
     fireEvent.scroll(scrollBox);
-    act(() => vi.runOnlyPendingTimers());
+    act(() => {
+      vi.runOnlyPendingTimers();
+    });
     expect(screen.getByText("r499c0")).not.toBeNull();
     expect(screen.queryByText("r0c0")).toBeNull();
     expect(table.querySelectorAll("tbody tr[data-index]").length).toBeLessThan(
@@ -1031,7 +1079,7 @@ describe("FilePreview", () => {
     expect(screen.getByRole("alert").textContent).toBe("Failed to load file");
   });
 
-  it("renders .htm files with the existing Preview and Raw controls", () => {
+  it("renders .htm files with the existing Preview and Raw controls", async () => {
     const path = "reports/report.HTM";
     const url = "/preview/reports/report.HTM";
     const view = render(
@@ -1061,6 +1109,7 @@ describe("FilePreview", () => {
     expect(
       screen.getByRole("button", { name: "Raw" }).getAttribute("aria-pressed"),
     ).toBe("true");
+    await settleLazyModules();
     expect(
       view.container.querySelector("diffs-container")?.shadowRoot?.textContent,
     ).toBe("<!doctype html><h1>Report</h1>");
@@ -1294,6 +1343,15 @@ describe("FilePreview", () => {
     });
   });
 
+  it("keeps the file icon still while the body skeleton covers a first load", () => {
+    vi.useFakeTimers();
+    render(<FilePreview path="open-prs.md" state={{ kind: "loading" }} />);
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(screen.queryByText("Loading preview…")).toBeNull();
+  });
+
   it("tracks preview loading across view changes, document revisions, and URLs", () => {
     vi.useFakeTimers();
     const preview = (revision: string, url = "/gallery.html") => (
@@ -1320,7 +1378,9 @@ describe("FilePreview", () => {
       />,
     );
     expect(screen.queryByRole("status")).toBeNull();
-    act(() => vi.advanceTimersByTime(200));
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
     const loadingStatus = screen.getByRole("status");
     expect(loadingStatus.textContent).toBe("Loading preview…");
     view.rerender(preview("first"));
@@ -1330,18 +1390,24 @@ describe("FilePreview", () => {
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.load(frame);
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-    act(() => vi.advanceTimersByTime(200));
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByTitle("Gallery")).toBe(frame);
 
     view.rerender(preview("second"));
-    act(() => vi.advanceTimersByTime(200));
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
     expect(screen.getByRole("status")).toBeTruthy();
     fireEvent.load(screen.getByTitle("Gallery"));
     expect(screen.queryByRole("status")).toBeNull();
 
     view.rerender(preview("second", "/gallery.html?retry=1"));
-    act(() => vi.advanceTimersByTime(200));
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
     expect(screen.getByRole("status")).toBeTruthy();
     fireEvent.load(screen.getByTitle("Gallery"));
     expect(screen.queryByRole("status")).toBeNull();

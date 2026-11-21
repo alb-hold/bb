@@ -3,6 +3,7 @@ import {
   useCallback,
   useMemo,
   useRef,
+  useState,
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -37,7 +38,7 @@ import type {} from "./types.js";
 import { turnRequestLabel } from "@bb/client-core";
 import { TurnRequestLabel } from "./TurnRequestLabel.js";
 import { formatShortMessageTime, MessageTime } from "./message-time.js";
-import { useOverflowMeasurement } from "./conversation-message-overflow.js";
+import { useIsOverflowing } from "./conversation-message-overflow.js";
 import { PromptMentionPill } from "./ConversationMessageMentions.js";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions.js";
 import {
@@ -235,7 +236,7 @@ function threadSubjectTitleSegments(
   ];
 }
 
-function systemMessageTitleSegments(
+export function systemMessageTitleSegments(
   systemMessageKind: SystemMessageKind,
   subject: SystemMessageSubject | null,
 ): TimelineTitleSegment[] {
@@ -244,6 +245,10 @@ function systemMessageTitleSegments(
       return threadSubjectTitleSegments(subject, "assigned to you");
     case "ownership-removed":
       return threadSubjectTitleSegments(subject, "unassigned");
+    case "ownership-batch":
+      return subject !== null && subject.kind === "thread-batch"
+        ? [verbSegment(`Ownership changed for ${subject.count} threads`)]
+        : SYSTEM_MESSAGE_FALLBACK_SEGMENTS;
     case "child-needs-attention":
       return threadSubjectTitleSegments(subject, "needs attention");
     case "child-completed":
@@ -338,12 +343,16 @@ function generatedConversationEmptyText(
   }
 }
 
-function systemMessageIconName(systemMessageKind: SystemMessageKind): IconName {
+export function systemMessageIconName(
+  systemMessageKind: SystemMessageKind,
+): IconName {
   switch (systemMessageKind) {
     case "ownership-assigned":
       return "ChildThread";
     case "ownership-removed":
       return "UserRound";
+    case "ownership-batch":
+      return "ChildThread";
     case "child-needs-attention":
       return "AlertTriangle";
     case "child-completed":
@@ -451,13 +460,17 @@ function GeneratedAutomationTitle({
   requestLabel,
   timestamp,
 }: GeneratedAutomationTitleProps) {
+  const [now] = useState(() => new Date());
   return (
     <span className="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap text-sm leading-5">
       {automationLink === null ? (
         <span className="shrink-0">Automation</span>
       ) : (
         <RouteAnchor
-          href={generatePath(AUTOMATION_DETAIL_ROUTE_PATH, automationLink)}
+          href={generatePath(AUTOMATION_DETAIL_ROUTE_PATH, {
+            automationId: automationLink.automationId,
+            projectId: automationLink.projectId,
+          })}
           className="shrink-0 underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
           onClick={stopRowToggle}
           onKeyDown={stopRowToggleKey}
@@ -470,7 +483,7 @@ function GeneratedAutomationTitle({
       </span>
       <MessageTime
         timestamp={timestamp}
-        label={formatShortMessageTime(timestamp, new Date())}
+        label={formatShortMessageTime(timestamp, now)}
         className="shrink-0 text-subtle-foreground"
       />
       {requestLabel === null ? null : (
@@ -596,7 +609,7 @@ export const GeneratedConversationMessage = memo(
       },
       [],
     );
-    const collapsedPreviewOverflowMeasurement = useOverflowMeasurement({
+    const collapsedPreviewOverflows = useIsOverflowing({
       axis: "horizontal",
       elementRef: collapsedPreviewTextRef,
       enabled: !titleOnly && messageText.length > 0,
@@ -607,9 +620,8 @@ export const GeneratedConversationMessage = memo(
       (hasExpandedOnlyContent ||
         collapsedPreviewSource.hasAdditionalBodyLines ||
         collapsedPreviewSource.wasCapped ||
-        collapsedPreviewOverflowMeasurement === "overflowing");
-    const hideManualContinuation =
-      collapsedPreviewOverflowMeasurement === "overflowing";
+        collapsedPreviewOverflows);
+    const hideManualContinuation = collapsedPreviewOverflows;
     const collapsedPreviewBody = clipMentionTextToVisibleRange({
       mentions: messageMentions,
       rangeStart: 0,

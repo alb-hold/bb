@@ -32,7 +32,7 @@ import {
 } from "@bb/server-contract";
 import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS, NATIVE_TERMINAL_SETUP_DELAY_MS } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as interactiveRequests from "../../src/internal/interactive-requests.js";
+import * as parentNotice from "../../src/services/interactions/pending-interaction-parent-notice.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
 import { NATIVE_QUESTION_ANSWERED_REASON } from "../../src/services/threads/native-terminal-questions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
@@ -1152,8 +1152,8 @@ describe("native terminal activity", () => {
       });
     };
     const notification = vi.spyOn(
-      interactiveRequests,
-      "requestChildThreadNeedsAttentionNotification",
+      parentNotice,
+      "requestPendingInteractionParentNotice",
     );
     const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
     expect((await report(questionReport)).status).toBe(200);
@@ -1265,8 +1265,8 @@ describe("native terminal activity", () => {
         questions: [question],
       });
     const notification = vi.spyOn(
-      interactiveRequests,
-      "requestChildThreadNeedsAttentionNotification",
+      parentNotice,
+      "requestPendingInteractionParentNotice",
     );
     expect((await report()).status).toBe(200);
     notification.mockClear();
@@ -1329,8 +1329,8 @@ describe("native terminal activity", () => {
         questions: [question],
       });
     const notification = vi.spyOn(
-      interactiveRequests,
-      "requestChildThreadNeedsAttentionNotification",
+      parentNotice,
+      "requestPendingInteractionParentNotice",
     );
     expect((await report()).status).toBe(200);
     const requestId = `native:${question.id}`;

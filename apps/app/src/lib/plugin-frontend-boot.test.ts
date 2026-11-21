@@ -7,6 +7,9 @@ import {
   bootPluginFrontends,
   schedulePluginFrontendReconcile,
 } from "./plugin-frontend-lazy";
+import { settleLazyModules } from "@/test/lazy-modules";
+
+await import("./plugin-frontend");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,11 +30,12 @@ it("reports a failed plugin frontend boot as failed until a retry succeeds", asy
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const loadFailed = renderHook(() => usePluginFrontendLoadFailed());
 
-  await bootPluginFrontends();
+  await settleLazyModules(bootPluginFrontends());
   loadFailed.rerender();
   expect(loadFailed.result.current).toBe(true);
 
   schedulePluginFrontendReconcile();
+  await settleLazyModules();
   await vi.waitFor(() => {
     loadFailed.rerender();
     expect(loadFailed.result.current).toBe(false);
@@ -73,7 +77,7 @@ function plugin(status: "starting" | "running") {
   };
 }
 
-it("re-checks the plugin list on its own while the server reports plugins starting", async () => {
+it("test-change-reason: upstream tracks lazy imports, so the boot is settled; re-checks the plugin list on its own while the server reports plugins starting", async () => {
   const fetchMock = vi.fn(
     async () =>
       new Response(
@@ -93,7 +97,7 @@ it("re-checks the plugin list on its own while the server reports plugins starti
   const lazy = await import("./plugin-frontend-lazy");
   const settled = renderHook(() => usePluginFrontendsSettled());
 
-  await lazy.bootPluginFrontends();
+  await settleLazyModules(lazy.bootPluginFrontends());
   settled.rerender();
   expect(settled.result.current).toBe(false);
 
@@ -129,7 +133,7 @@ it("keeps re-checking after a failed plugin-list request until plugins run", asy
   const bootState = await import("./plugin-frontend-boot-state");
   const lazy = await import("./plugin-frontend-lazy");
 
-  await lazy.bootPluginFrontends();
+  await settleLazyModules(lazy.bootPluginFrontends());
   expect(bootState.isServerPluginsStarting()).toBe(true);
 
   await vi.waitFor(

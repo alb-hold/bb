@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { TerminalSession } from "@bb/server-contract";
 import { resolveThreadTerminalLayout } from "./terminal-session-visibility";
 import type { CompactTerminalLayoutRequest } from "./useCompactTerminalLayoutRequest";
@@ -23,11 +23,8 @@ interface ThreadTerminalList {
 export function useThreadTerminalLayoutRequest(threadId: string) {
   const [stored, setStored] = useState<ThreadBoundRequest | null>(null);
   const requestIdRef = useRef(0);
+  if (stored !== null && stored.threadId !== threadId) setStored(null);
   const request = stored?.threadId === threadId ? stored.request : null;
-
-  useEffect(() => {
-    setStored((current) => (current?.threadId === threadId ? current : null));
-  }, [threadId]);
 
   const issue = useCallback(
     (action: ThreadTerminalLayoutAction) => {

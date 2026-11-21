@@ -10,11 +10,18 @@ import { initialThreadPreload } from "./vite-initial-thread-preload.js";
 import { fontPreload } from "./vite-font-preload.js";
 import { sharedUiEnvSeam } from "./vite-shared-ui-seam.js";
 import { cachedReactCompiler } from "./vite-react-compiler.js";
+import { journeyChunkGroups } from "./vite-journey-chunks.js";
+import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
+const pluginFrontendEntry = "src/lib/plugin-frontend.ts";
+const threadDetailEntry = "src/views/thread-detail/ThreadDetailView.tsx";
+const rootComposeEntry = "src/views/RootComposeView.tsx";
+
 export const sharedViteConfig = {
   plugins: [
+    pluginZodRuntime(),
     xtermFaintContrast(),
     sharedUiEnvSeam(),
     react(),
@@ -92,6 +99,40 @@ export const sharedViteConfig = {
               priority: 1,
               minSize: 12 * 1024,
             },
+            ...journeyChunkGroups(appDir, [
+              {
+                name: "workspace-route",
+                entries: ["src/views/SplitWorkspaceRoute.tsx"],
+              },
+              {
+                name: "plugin-and-pages",
+                entries: [pluginFrontendEntry, threadDetailEntry, rootComposeEntry],
+              },
+              {
+                name: "plugin-and-thread",
+                entries: [pluginFrontendEntry, threadDetailEntry],
+              },
+              {
+                name: "plugin-and-compose",
+                entries: [pluginFrontendEntry, rootComposeEntry],
+              },
+              {
+                name: "plugin-frontend",
+                entries: [pluginFrontendEntry],
+              },
+              {
+                name: "thread-and-compose",
+                entries: [threadDetailEntry, rootComposeEntry],
+              },
+              {
+                name: "thread-detail",
+                entries: [threadDetailEntry],
+              },
+              {
+                name: "root-compose",
+                entries: [rootComposeEntry],
+              },
+            ]),
           ],
         },
       },

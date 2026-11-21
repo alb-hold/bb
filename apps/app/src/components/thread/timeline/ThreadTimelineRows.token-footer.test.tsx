@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { useState, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 import liveCapture from "@/test/fixtures/thread-token-footer-live-capture.json";
 import {
   commandRow,
@@ -66,7 +67,11 @@ function flatRowsWithCapturedTurns(toolStatus: "completed" | "pending") {
   };
 }
 
-describe("ThreadTimelineRows token footer", () => {
+describe("ThreadTimelineRows token footer (test-change-reason: settle the fork’s lazy row content before React teardown)", () => {
+  afterEach(async () => {
+    await settleLazyModules();
+  });
+
   beforeEach(() => {
     useThreadSpendSummary.mockReset();
     useThreadSpendSummary.mockReturnValue({

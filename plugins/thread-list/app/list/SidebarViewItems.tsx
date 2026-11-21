@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { experimental_useExperiment } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import {
   DropdownMenuGroup,
@@ -25,7 +24,7 @@ import {
   sidebarGroupByReadStatusAtom,
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
-  THREAD_ROW_METADATA_EXPERIMENT,
+  sidebarShowEmptyProjectsAtom,
 } from "../preferences/atoms.js";
 
 const SIDEBAR_ORGANIZE_OPTIONS = [
@@ -152,8 +151,8 @@ function SidebarViewItems({ page }: { page: SidebarViewPage }) {
   const [showRowMetadata, setShowRowMetadata] = useAtom(
     sidebarShowRowMetadataAtom,
   );
-  const rowMetadataEnabled = experimental_useExperiment(
-    THREAD_ROW_METADATA_EXPERIMENT,
+  const [showEmptyProjects, setShowEmptyProjects] = useAtom(
+    sidebarShowEmptyProjectsAtom,
   );
   const selectedSort = sort === "none" ? "updated" : sort;
   if (page === "filter") {
@@ -185,6 +184,21 @@ function SidebarViewItems({ page }: { page: SidebarViewPage }) {
             </DropdownMenuItem>
           );
         })}
+        {organization === "project" && (
+          <DropdownMenuItem
+            role="menuitemcheckbox"
+            aria-checked={showEmptyProjects}
+            onSelect={(event) => {
+              event.preventDefault();
+              setShowEmptyProjects(!showEmptyProjects);
+            }}
+          >
+            Empty projects
+            <span className="ml-auto inline-flex size-4 items-center justify-center">
+              {showEmptyProjects && <Icon name="Check" className="size-4" />}
+            </span>
+          </DropdownMenuItem>
+        )}
       </DropdownMenuGroup>
     );
   }
@@ -259,21 +273,20 @@ function SidebarViewItems({ page }: { page: SidebarViewPage }) {
               {showProviderIcons && <Icon name="Check" className="size-4" />}
             </span>
           </DropdownMenuItem>
-          {rowMetadataEnabled ? (
-            <DropdownMenuItem
-              role="menuitemcheckbox"
-              aria-checked={showRowMetadata}
-              onSelect={(event) => {
-                event.preventDefault();
-                setShowRowMetadata(!showRowMetadata);
-              }}
-            >
-              Metadata
-              <span className="ml-auto inline-flex size-4 shrink-0 items-center justify-center">
-                {showRowMetadata && <Icon name="Check" className="size-4" />}
-              </span>
-            </DropdownMenuItem>
-          ) : null}
+
+          <DropdownMenuItem
+            role="menuitemcheckbox"
+            aria-checked={showRowMetadata}
+            onSelect={(event) => {
+              event.preventDefault();
+              setShowRowMetadata(!showRowMetadata);
+            }}
+          >
+            Metadata
+            <span className="ml-auto inline-flex size-4 shrink-0 items-center justify-center">
+              {showRowMetadata && <Icon name="Check" className="size-4" />}
+            </span>
+          </DropdownMenuItem>
         </DropdownMenuGroup>
       </>
     );

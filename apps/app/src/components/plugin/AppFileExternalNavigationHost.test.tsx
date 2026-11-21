@@ -113,9 +113,7 @@ describe("AppFileExternalNavigationHost", () => {
     await loadDispatcher();
 
     expect(recordAccepted).toHaveBeenCalledWith(true, true);
-    await waitFor(() => expect(openPreferred).toHaveBeenCalledTimes(2), {
-      timeout: 5_000,
-    });
+    await waitFor(() => expect(openPreferred).toHaveBeenCalledTimes(2));
     expect(openPreferred).toHaveBeenNthCalledWith(1, {
       columnNumber: 2,
       lineNumber: 10,

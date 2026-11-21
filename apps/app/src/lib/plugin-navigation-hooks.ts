@@ -1,11 +1,7 @@
 import { useCallback, useContext, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { matchPath, useLocation, useNavigate } from "react-router-dom";
-import type {
-  BbNavigate,
-  ExperimentalLiveFileTarget,
-  PluginBrowserBbSdk,
-} from "@get-bb/plugin-sdk";
+import type { BbNavigate, PluginBrowserBbSdk } from "@get-bb/plugin-sdk";
 import { usePluginId } from "@/components/plugin/plugin-context";
 import { BbHttpError, sdk } from "@/lib/sdk";
 import { getPluginBoundSdk } from "@/lib/plugin-bound-sdk";
@@ -27,13 +23,12 @@ import { openThreadInSplit } from "@/lib/split-layout/openThreadInSplit";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import {
   normalizeExperimentalFileOpenOptions,
-  normalizeExperimentalLiveFileTarget,
+  normalizeExperimentalFilePreviewOptions,
 } from "@/lib/live-file-navigation";
 import {
   createPluginPanelController,
   createRetiredOpenPanel,
 } from "@/lib/plugin-panel-controller";
-import { useLiveFileOpenTargets } from "@/hooks/useLiveFileOpenTargets";
 
 export function isAutomationEditRoutePath(pathname: string): boolean {
   return (
@@ -46,13 +41,6 @@ export function useSdk(): PluginBrowserBbSdk {
   const pluginId = usePluginId();
   const queryClient = useQueryClient();
   return getPluginBoundSdk(sdk, pluginId, queryClient);
-}
-
-export function usePluginCanOpenFileExternally(
-  target: ExperimentalLiveFileTarget,
-): boolean {
-  return useLiveFileOpenTargets(normalizeExperimentalLiveFileTarget(target))
-    .canOpenExternally;
 }
 
 export function useBbNavigate(): BbNavigate {
@@ -73,7 +61,9 @@ export function useBbNavigate(): BbNavigate {
         if (options?.split) {
           openThreadInSplit({
             store,
-            navigate,
+            navigate: (route, navigateOptions) => {
+              void navigate(route, navigateOptions);
+            },
             projectId,
             threadId,
             isCompact,
@@ -167,10 +157,18 @@ export function useBbNavigate(): BbNavigate {
     BbNavigate["experimental_openFilePreview"]
   >(
     (options) => {
-      const normalized = normalizeExperimentalFileOpenOptions(options);
-      return normalized !== null && appNavigation.openFilePreview(normalized);
+      const normalized = normalizeExperimentalFilePreviewOptions(options);
+      if (normalized === null) return false;
+      return appNavigation.openFilePreview(
+        normalized.opener === null
+          ? normalized.options
+          : {
+              ...normalized.options,
+              viewer: { pluginId, openerId: normalized.opener },
+            },
+      );
     },
-    [appNavigation],
+    [appNavigation, pluginId],
   );
   const experimental_openFileExternally = useCallback<
     BbNavigate["experimental_openFileExternally"]

@@ -67,6 +67,13 @@ export default function plugin(bb: BbPluginApi) {
         "Show Claude Code's own approval prompts in Full Access: permissions.ask rules, PreToolUse hooks that answer ask, and Claude Code's built-in safety checks. Off approves every request, so unattended threads never wait. Applies on the next turn.",
       default: false,
     },
+    commandDescriptionsEnabled: {
+      type: "boolean",
+      label: "Command descriptions",
+      description:
+        "Title Bash command rows with Claude's short description of the command instead of the command itself. Approval prompts still show the command. Takes effect from each thread's next message; existing rows keep their titles.",
+      default: false,
+    },
   });
 
   bb.providers.register({
@@ -256,6 +263,7 @@ export default function plugin(bb: BbPluginApi) {
     ],
     composerActions: ["plan"],
     completedTurnDisplay: "flat",
+    internal_DO_NOT_USE_guidedSignIn: true,
     env: {
       passthrough: ["BB_CLAUDE_CODE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN"],
     },
@@ -282,6 +290,8 @@ export default function plugin(bb: BbPluginApi) {
         sandboxEnabled: context.settings.sandboxEnabled !== false,
         fullAccessApprovalsEnabled:
           context.settings.fullAccessApprovalsEnabled === true,
+        commandDescriptionsEnabled:
+          context.settings.commandDescriptionsEnabled === true,
         ...(context.promptMode === "plan"
           ? { claudeCodePermissionMode: "plan" }
           : {}),

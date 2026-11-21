@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { performance as nodePerformance } from "node:perf_hooks";
 import { afterEach, expect, it, vi } from "vitest";
+import { settleLazyModules } from "@/test/lazy-modules";
 
 const importGate = vi.hoisted(() => {
   vi.resetModules();
@@ -39,7 +40,9 @@ it("retries a rejected runtime import on the next open", async () => {
   preloadTerminalModules();
   const firstOpen = importTerminalModules();
   const failure = new Error("runtime download unavailable");
-  const rejected = expect(firstOpen).rejects.toMatchObject({ cause: failure });
+  const rejected = settleLazyModules(
+    expect(firstOpen).rejects.toMatchObject({ cause: failure }),
+  );
   await importGate.entered;
   importGate.reject(failure);
   await rejected;
@@ -49,7 +52,7 @@ it("retries a rejected runtime import on the next open", async () => {
   ).toMatchObject({ detail: { outcome: "rejected" } });
   vi.doUnmock("@xterm/addon-unicode11");
   preloadTerminalModules();
-  const [{ Terminal }] = await importTerminalModules();
+  const [{ Terminal }] = await settleLazyModules(importTerminalModules());
   await vi.dynamicImportSettled();
   const terminal = new Terminal({ cols: 40, rows: 31 });
   try {

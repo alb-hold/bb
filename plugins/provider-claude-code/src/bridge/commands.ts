@@ -14,6 +14,7 @@ import {
   turnSteerParamsSchema as canonicalTurnSteerParamsSchema,
   skillsConfigureParamsSchema,
   commandListParamsSchema,
+  modelListParamsSchema,
   bridgeRequestEnvelopeSchema,
   providerMaintenanceParamsSchema,
   providerInstallationRunParamsSchema,
@@ -59,6 +60,7 @@ export const claudeThreadStartParamsSchema = z.object({
   artifactsEnabled: z.boolean(),
   sandboxEnabled: z.boolean(),
   fullAccessApprovalsEnabled: z.boolean(),
+  commandDescriptionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().optional(),
   providerSubagentsEnabled: z.boolean().optional(),
   instructionMode: bridgeInstructionModeSchema,
@@ -91,6 +93,7 @@ export const claudeTurnStartParamsSchema = z.object({
   artifactsEnabled: z.boolean().optional(),
   sandboxEnabled: z.boolean().optional(),
   fullAccessApprovalsEnabled: z.boolean().optional(),
+  commandDescriptionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().optional(),
   providerSubagentsEnabled: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
@@ -112,7 +115,7 @@ const claudeCodeCommandSchema = z.discriminatedUnion("method", [
   }),
   z.object({
     method: z.literal("model/list"),
-    params: z.object({}),
+    params: modelListParamsSchema,
   }),
   z.object({
     method: z.literal("commands/list"),

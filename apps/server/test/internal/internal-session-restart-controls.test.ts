@@ -88,6 +88,7 @@ describe("a real daemon restart", () => {
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
+          openThreadWork: [],
           adoptedThreads: [
             { threadId: adopted.id, activeTurnId: "turn-adopted" },
           ],

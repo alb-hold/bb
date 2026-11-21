@@ -31,7 +31,10 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   }),
 }));
 vi.mock("@/lib/sidebar-thread-entries", () => ({
-  useSidebarThreadEntries: () => entries,
+  useSidebarThreadEntriesStore: () => ({
+    get: (threadId: string) => entries.get(threadId) ?? null,
+    subscribe: () => () => undefined,
+  }),
 }));
 vi.mock("@/lib/cached-thread", () => ({
   lookupCachedThread: (_client: unknown, threadId: string) => {
@@ -94,7 +97,7 @@ it("does not fetch native mode for the visible sidebar row collection", async ()
   queryClient.clear();
 });
 
-describe("thread menu mode for threads the app has not loaded", () => {
+describe("thread menu mode for threads the app has not loaded (test-change-reason: the hook now reads thread entries through the per-thread sidebar entry store instead of the whole-map hook, so the module stub provides the store)", () => {
   it("clears a saved composer draft after switching a thread to native terminal", async () => {
     const threadId = "thr_convert";
     const projectId = "prj_convert";

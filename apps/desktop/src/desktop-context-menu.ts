@@ -29,6 +29,7 @@ interface DesktopContextMenuSpellcheckContext {
 
 interface BuildDesktopContextMenuTemplateArgs {
   params: ContextMenuParams;
+  allowSameOriginLinks: boolean;
   webContents: Pick<
     DesktopContextMenuWebContents,
     "copyImageAt" | "downloadURL" | "replaceMisspelling" | "session"
@@ -66,18 +67,26 @@ function parseUrl(value: string): URL | null {
   }
 }
 
-function isWebLink({
-  linkURL,
-  pageURL,
-}: Pick<ContextMenuParams, "linkURL" | "pageURL">): boolean {
+function isWebLink(
+  { linkURL, pageURL }: Pick<ContextMenuParams, "linkURL" | "pageURL">,
+  allowSameOriginLinks: boolean,
+): boolean {
   const link = parseUrl(linkURL);
   if (link === null) {
     return false;
   }
   return (
     (link.protocol === "http:" || link.protocol === "https:") &&
-    link.origin !== parseUrl(pageURL)?.origin
+    (allowSameOriginLinks || link.origin !== parseUrl(pageURL)?.origin)
   );
+}
+
+async function copyLink(url: string): Promise<void> {
+  try {
+    await clipboard.writeText(url);
+  } catch (error) {
+    console.error("Could not copy link", error);
+  }
 }
 
 function getSpellcheckContextFromParams(
@@ -95,6 +104,7 @@ function getSpellcheckContextFromParams(
 export function buildDesktopContextMenuTemplate({
   params,
   webContents,
+  allowSameOriginLinks,
 }: BuildDesktopContextMenuTemplateArgs): MenuItemConstructorOptions[] {
   const template: MenuItemConstructorOptions[] = [];
   const spellcheckContext = getSpellcheckContextFromParams(params);
@@ -126,7 +136,7 @@ export function buildDesktopContextMenuTemplate({
     pushSeparatorIfNeeded(template);
   }
 
-  if (isWebLink(params)) {
+  if (isWebLink(params, allowSameOriginLinks)) {
     template.push({
       label: "Open in Browser",
       click: () => {
@@ -138,7 +148,7 @@ export function buildDesktopContextMenuTemplate({
     template.push({
       label: "Copy Link",
       click: () => {
-        clipboard.writeText(params.linkURL);
+        void copyLink(params.linkURL);
       },
     });
     pushSeparatorIfNeeded(template);
@@ -196,6 +206,7 @@ function showDesktopContextMenu({
   params: ContextMenuParams;
 }): void {
   const template = buildDesktopContextMenuTemplate({
+    allowSameOriginLinks: false,
     params,
     webContents,
   });
