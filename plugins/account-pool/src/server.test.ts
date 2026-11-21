@@ -2383,7 +2383,7 @@ describe("Account Pool plugin", () => {
     );
   });
 
-  it("resolves distinct secret machine tokens and honors per-thread bypass", async () => {
+  it("resolves distinct secret machine tokens and honors per-thread bypass (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);
       response.writeHead(200, { "content-type": "application/json" });
@@ -2429,9 +2429,15 @@ describe("Account Pool plugin", () => {
           "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
       },
       {
+        name: "BB_CLAUDE_MODELS_URL",
+        value: { serverPath: "/api/v1/plugins/account-pool/http/claude/v1/models" },
+        reason:
+          "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
+      },
+      {
         name: "BB_CLAUDE_SETTINGS_ENV_PIN",
         value:
-          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
         reason: expect.stringContaining("settings layer"),
       },
       {
@@ -4787,7 +4793,7 @@ describe("Account Pool plugin", () => {
     };
 
     it.each(["claude", "codex"] as const)(
-      "keeps %s sessions and the pool cursor on the third account after two failures",
+      "keeps %s sessions and the pool cursor on the third account after two failures (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
       async (provider) => {
         let outage = false;
         const attempts: string[] = [];
@@ -4836,8 +4842,7 @@ describe("Account Pool plugin", () => {
         expect(attempts).toEqual([
           "sk-first",
           "sk-first",
-          "sk-first",
-          "sk-first",
+          ...(provider === "codex" ? ["sk-first", "sk-first"] : []),
           "sk-second",
           "sk-third",
           "sk-third",
@@ -4849,7 +4854,7 @@ describe("Account Pool plugin", () => {
     );
 
     it.each(["claude", "codex"] as const)(
-      "retries an automatically affined %s session on its account before failover",
+      "handles an automatically affined %s session according to its retry policy (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
       async (provider) => {
         const attempts: string[] = [];
         let retry = false;
@@ -4876,7 +4881,9 @@ describe("Account Pool plugin", () => {
         attempts.length = 0;
         retry = true;
         await send();
-        expect(attempts).toEqual(["sk-first", "sk-first", "sk-first", "sk-second"]);
+        expect(attempts).toEqual(provider === "claude"
+          ? ["sk-first", "sk-second"]
+          : ["sk-first", "sk-first", "sk-first", "sk-second"]);
       },
     );
 
@@ -5718,7 +5725,7 @@ describe("Account Pool plugin", () => {
         "codex-parent-body",
         "codex-spawn",
       ])(
-        "inherits the eligible %s parent once and keeps child failover independent",
+        "inherits the eligible %s parent once and keeps child failover independent (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
         async (wire) => {
           const provider = wire === "claude" ? "claude" : "codex";
           const route =
@@ -5767,7 +5774,7 @@ describe("Account Pool plugin", () => {
             expect(seen[1]?.body).toBe(
               forkRequest(wire, "child-session", "parent-session").body,
             );
-            rejections = 3;
+            rejections = provider === "claude" ? 1 : 3;
             const failover = await send("child-session", "parent-session");
             expect(failover.status).toBe(200);
             await failover.text();
@@ -5779,8 +5786,7 @@ describe("Account Pool plugin", () => {
               "sk-first",
               "sk-first",
               "sk-first",
-              "sk-first",
-              "sk-first",
+              ...(provider === "codex" ? ["sk-first", "sk-first"] : []),
               "sk-second",
               "sk-first",
               "sk-second",
@@ -6086,7 +6092,7 @@ describe("Account Pool plugin", () => {
       "disabled account",
       "network error",
     ])(
-      "preserves the correct binding after %s despite an older response completion",
+      "preserves the correct binding after %s despite an older response completion (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)",
       async (reason) => {
         const attempts: Array<string | null> = [];
         let finishOld = () => {};
@@ -6168,11 +6174,9 @@ describe("Account Pool plugin", () => {
           const afterCompletion = await send("claude-opus-4-1");
           await afterCompletion.text();
           expect(attempts).toEqual(
-            reason === "auth error"
+            reason === "auth error" || reason === "network error"
               ? ["sk-first", "sk-first", "sk-second", "sk-second"]
-              : reason === "network error"
-                ? ["sk-first", "sk-first", "sk-first", "sk-first"]
-                : [
+              : [
                   "sk-first",
                   "sk-second",
                   reason === "family quota" ? "sk-first" : "sk-second",
@@ -10666,7 +10670,7 @@ describe("sequential pool recovery", () => {
     }
   });
 
-  it("keeps the last working binding after every account fails during a provider outage", async () => {
+  it("keeps the last working binding after every account fails during a provider outage (test-change-reason: automatic Claude routing in the fork fails over on the first failed attempt)", async () => {
     const attempts: Array<string | null> = [];
     let outage = false;
     const fixture = await createFixture({
@@ -10695,8 +10699,6 @@ describe("sequential pool recovery", () => {
     outage = false;
     await (await send()).text();
     expect(attempts).toEqual([
-      "sk-first",
-      "sk-first",
       "sk-first",
       "sk-first",
       "sk-second",
@@ -12133,6 +12135,7 @@ describe("Account Pool nested proxy", () => {
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+      "BB_CLAUDE_MODELS_URL",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -12174,7 +12177,7 @@ describe("Account Pool nested proxy", () => {
       availability: undefined,
       stopParent: true,
     },
-  ])("neutralises inherited routing when $label", async (args) => {
+  ])("neutralises inherited routing when $label (test-change-reason: include the pooled model URL in the fork routing environment)", async (args) => {
     const parent = await startParent(
       args.availability === undefined
         ? {}
@@ -12408,7 +12411,7 @@ describe("Account Pool nested proxy", () => {
     },
   );
 
-  it("neutralises inherited routing for a bypassed self-parent thread", async () => {
+  it("neutralises inherited routing for a bypassed self-parent thread (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const host = await createChild({
       parentUrl: "http://127.0.0.1:38886/api/v1/plugins/account-pool/http",
       loopbackBaseUrl: "http://localhost:38886/",
@@ -15240,7 +15243,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, oldToken, "/v1/messages")).toBe(200);
   });
 
-  it("blanks the inherited routing for an archived thread on a nested server", async () => {
+  it("blanks the inherited routing for an archived thread on a nested server (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const parent = await scopedFixture();
     const { host: child } = await startNestedChild(
       parent,
@@ -15264,6 +15267,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -15332,7 +15336,7 @@ describe("Account Pool credential scoping", () => {
         expect(await statusOf(host, other, "/v1/messages")).not.toBe(401);
       });
 
-      it("suspends its tokens after a missed archive event on a nested server and blanks the inherited routing", async () => {
+      it("suspends its tokens after a missed archive event on a nested server and blanks the inherited routing (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
         const parent = await scopedFixture();
         const { host: child, dataDir } = await startNestedChild(
           parent,
@@ -15358,6 +15362,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -15367,7 +15372,7 @@ describe("Account Pool credential scoping", () => {
         expect(await credentialFiles(dataDir, "thread-missed")).toHaveLength(2);
       });
 
-      it("stays unrouted without minting when its thread lookup fails on a nested server", async () => {
+      it("stays unrouted without minting when its thread lookup fails on a nested server (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
         const parent = await scopedFixture();
         const { host: child, dataDir } = await startNestedChild(
           parent,
@@ -15390,6 +15395,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -15480,7 +15486,7 @@ describe("Account Pool credential scoping", () => {
     return { host: child, dataDir };
   }
 
-  it("lets a nested server proxy through its parent with the scoped token until the thread is archived", async () => {
+  it("lets a nested server proxy through its parent with the scoped token until the thread is archived (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const parent = await scopedFixture();
     const scoped = await nestedToken(parent.host);
     const { host: child } = await startNestedChild(parent, scoped);
@@ -15506,6 +15512,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -16759,7 +16766,7 @@ describe("Account Pool Artifact proxy", () => {
     expect((await fs.stat(caDir)).mode & 0o777).toBe(0o700);
   });
 
-  it("pins the new-mode routing variables into Claude's settings layer so a host settings env block cannot replace them", async () => {
+  it("pins the new-mode routing variables into Claude's settings layer so a host settings env block cannot replace them (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const fixture = await artifactFixture(
       async () => Response.json({}),
       () => hostRpcResult,
@@ -16773,6 +16780,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "HTTPS_PROXY",
       "NO_PROXY",
@@ -16790,7 +16798,7 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
-  it("leaves api-key-only pools and the codex environment unchanged", async () => {
+  it("leaves api-key-only pools and the codex environment unchanged (test-change-reason: include the pooled model URL in the fork routing environment)", async () => {
     const calls: ExperimentalFakeHostRpcCall[] = [];
     const fixture = await artifactFixture(
       async () => Response.json({}),
@@ -16807,6 +16815,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
       "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
@@ -16816,7 +16825,7 @@ describe("Account Pool Artifact proxy", () => {
       entries.find((entry) => entry.name === "BB_CLAUDE_SETTINGS_ENV_PIN")
         ?.value,
     ).toBe(
-      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
     );
     expect(calls).toEqual([]);
   });

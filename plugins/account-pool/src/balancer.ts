@@ -77,22 +77,28 @@ function makeWindow(args: {
 }
 
 export function accountBalance(
+  provider: Account["provider"],
   quota: AccountQuota,
   family: ModelFamily | null,
   now: number,
 ): AccountBalance {
   const windows = [
-    ...quota.limitWindows.map((window) =>
-      makeWindow({
-        kind: "limit",
-        key: `${window.slot}:${window.windowMinutes ?? "custom"}`,
+    ...quota.limitWindows.map((window) => {
+      let kind: BalanceWindow["kind"] = "limit";
+      if (provider === "claude") {
+        if (window.windowMinutes === 300) kind = "five-hour";
+        if (window.windowMinutes === 10_080) kind = "weekly";
+      }
+      return makeWindow({
+        kind,
+        key: kind === "limit" ? `${window.slot}:${window.windowMinutes ?? "custom"}` : kind,
         family: null,
         utilization: window.utilization,
         status: window.status,
         resetAt: window.resetAt,
         now,
-      }),
-    ),
+      });
+    }),
     ...(family === null || quota.familyWeekly[family] === null
       ? []
       : [
@@ -185,7 +191,7 @@ export function chooseBalancedCandidate(
   const ranked = candidates
     .map((candidate) => ({
       ...candidate,
-      balance: accountBalance(candidate.quota, family, now),
+      balance: accountBalance(candidate.account.provider, candidate.quota, family, now),
     }))
     .sort(compareCandidates);
   const best = ranked[0];

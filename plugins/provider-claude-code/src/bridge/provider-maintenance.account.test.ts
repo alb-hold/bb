@@ -1,32 +1,24 @@
-import type {
-  AccountInfo,
-  SDKControlGetUsageResponse,
-} from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  account: {} as AccountInfo,
-  usage: {} as Pick<
-    SDKControlGetUsageResponse,
-    "rate_limits_available" | "rate_limits"
-  >,
+  signedIn: true,
   files: [] as string[],
-}));
-
-vi.mock("./initialization-probe.js", () => ({
-  probeClaudeInitialization: () => Promise.resolve({ account: state.account }),
-  probeClaudeUsage: () =>
-    Promise.resolve({ account: state.account, usage: state.usage }),
 }));
 
 vi.mock("node:fs/promises", () => ({
   default: {
     readFile: (file: string) => {
       state.files.push(file);
+      if (path.basename(file) === ".credentials.json") {
+        return Promise.resolve(JSON.stringify(state.signedIn
+          ? { claudeAiOauth: { accessToken: "fixture", rateLimitTier: "max_20x" } }
+          : {}));
+      }
       return Promise.resolve(
         JSON.stringify({
           oauthAccount: {
+            emailAddress: "claude@example.com",
             accountUuid: "4f6c1d2e-8a9b-4c3d-9e1f-2a3b4c5d6e7f",
           },
         }),
@@ -48,34 +40,30 @@ import {
   getClaudeProviderUsage,
 } from "./provider-maintenance.js";
 
-const signedIn: AccountInfo = {
-  email: "claude@example.com",
-  subscriptionType: "Claude Ultra",
-  apiProvider: "firstParty",
-};
-const signedOut: AccountInfo = {
-  tokenSource: "none",
-  apiProvider: "firstParty",
-};
+const originalPlatform = process.platform;
+beforeAll(() => {
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+});
+afterAll(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+});
 
 beforeEach(() => {
-  state.account = signedIn;
-  state.usage = {
-    rate_limits_available: true,
-    rate_limits: {
-      five_hour: { utilization: 40, resets_at: "2026-11-05T20:00:00Z" },
-      seven_day: null,
-    },
-  };
+  state.signedIn = true;
   state.files = [];
+  vi.stubGlobal("fetch", async (input: string) =>
+    Response.json(input.endsWith("/profile")
+      ? { account: { rate_limit_tier: "max_20x" } }
+      : { five_hour: { utilization: 40, resets_at: "2026-11-05T20:00:00Z" }, seven_day: null }));
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
 
 describe("Claude Code account status", () => {
-  it("reports the account Claude Code signs in with, keyed by the profile CLAUDE_CONFIG_DIR selects", async () => {
+  it("reports the account Claude Code signs in with, keyed by the profile CLAUDE_CONFIG_DIR selects (test-change-reason: the fork reads the selected profile and its OAuth credential files)", async () => {
     const profile = path.resolve("/profiles/work");
     vi.stubEnv("CLAUDE_CONFIG_DIR", profile);
 
@@ -97,21 +85,14 @@ describe("Claude Code account status", () => {
         accountKey: "anthropic:account:4f6c1d2e-8a9b-4c3d-9e1f-2a3b4c5d6e7f",
       },
     });
-    expect(state.files).toEqual([path.join(profile, ".claude.json")]);
+    expect(state.files.sort()).toEqual([path.join(profile, ".claude.json"), path.join(profile, ".credentials.json")].sort());
   });
 
-  it.each([
-    ["Claude Code has no usable login", signedOut, true],
-    ["plan limits do not apply to the login", signedIn, false],
-  ])(
-    "reports usage as signed out when %s",
-    async (_case, account, rateLimitsAvailable) => {
-      state.account = account;
-      state.usage = {
-        rate_limits_available: rateLimitsAvailable,
-        rate_limits: null,
-      };
-
+  it.each(["missing credentials", "an API-key-only login"])(
+    "reports usage as signed out for %s (test-change-reason: the fork requires a subscription credential for usage)",
+    async (login) => {
+      state.signedIn = false;
+      if (login === "an API-key-only login") vi.stubEnv("ANTHROPIC_API_KEY", "fixture");
       expect(await getClaudeProviderUsage()).toEqual({
         supported: true,
         usage: { status: "unauthenticated" },
@@ -119,7 +100,7 @@ describe("Claude Code account status", () => {
     },
   );
 
-  it("reports health from the account Claude Code signs in with", async () => {
+  it("reports health from the account Claude Code signs in with (test-change-reason: the fork checks local OAuth credentials for health)", async () => {
     expect(await getClaudeProviderHealth()).toMatchObject({
       health: {
         status: "ready",
@@ -128,7 +109,7 @@ describe("Claude Code account status", () => {
       },
     });
 
-    state.account = signedOut;
+    state.signedIn = false;
     expect(await getClaudeProviderHealth()).toMatchObject({
       health: { status: "unauthenticated", accountEmail: null },
     });

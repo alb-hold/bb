@@ -103,7 +103,7 @@ describe("quotaFromUsage", () => {
     expect(next?.limitWindows).toEqual(previous.limitWindows);
   });
 
-  it("keeps an unrefreshed window during a partial usage refresh", () => {
+  it("keeps an unrefreshed window during a partial usage refresh (test-change-reason: the fork reads provider usage in percentage points)", () => {
     const previous = quota([
       fiveHour(0.4, FUTURE_RESET, "allowed"),
       {
@@ -114,7 +114,7 @@ describe("quotaFromUsage", () => {
     ]);
     const next = quotaFromUsage(
       ACCOUNT_ID,
-      { five_hour: { utilization: 0.6, resets_at: "2026-11-06T04:00:00Z" } },
+      { five_hour: { utilization: 60, resets_at: "2026-11-06T04:00:00Z" } },
       previous,
       NOW,
     );

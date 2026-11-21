@@ -413,11 +413,12 @@ describe("AccountStore", () => {
 });
 
 describe("QuotaStore", () => {
-  it("adds model quota storage to a migrated database copy without changing pre-change rows", async () => {
+  it("adds model quota storage to a migrated database copy without changing pre-change rows (test-change-reason: isolate the fork model quota migration from the subsequent window conversion)", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "pool-model-migration-"));
     const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
     const database = new Database(":memory:");
-    host.bb.storage.migrate(database, QUOTA_MIGRATIONS.slice(0, -1));
+    const modelQuotaMigrations = QUOTA_MIGRATIONS.slice(0, 8);
+    host.bb.storage.migrate(database, modelQuotaMigrations.slice(0, -1));
     const accountId = "11111111-1111-4111-8111-111111111111";
     database
       .prepare(
@@ -427,8 +428,8 @@ describe("QuotaStore", () => {
     const before = new QuotaStore(database).get(accountId);
     const copy = new Database(database.serialize());
     try {
-      host.bb.storage.migrate(copy, QUOTA_MIGRATIONS);
-      host.bb.storage.migrate(copy, QUOTA_MIGRATIONS);
+      host.bb.storage.migrate(copy, modelQuotaMigrations);
+      host.bb.storage.migrate(copy, modelQuotaMigrations);
       const store = new QuotaStore(copy);
       expect(store.get(accountId)).toEqual(before);
       expect(store.modelWeekly(accountId)).toBeUndefined();

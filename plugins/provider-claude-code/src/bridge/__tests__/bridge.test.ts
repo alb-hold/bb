@@ -4374,7 +4374,7 @@ describe("bridge", () => {
     },
   );
 
-  it("keeps prompts on the live session while automatic context reporting is blocked", async () => {
+  it("keeps prompts on the live session while automatic context reporting is blocked (test-change-reason: the fork probes at both session initialization and turn completion)", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const live = createControlledClaudeQuery();
     const reports: ControlledClaudeQuery[] = [];
@@ -4417,11 +4417,12 @@ describe("bridge", () => {
       live.emit(createSystemInitMessage(threadId));
       live.emit(createSuccessfulResultMessage(threadId));
       await bridge.flushWork();
-      expect(reports).toHaveLength(1);
+      expect(reports).toHaveLength(2);
+      expect(reports[0].close).toHaveBeenCalledOnce();
       await vi.waitFor(() =>
-        expect(reports[0].getContextUsage).toHaveBeenCalledOnce(),
+        expect(reports[1].getContextUsage).toHaveBeenCalledOnce(),
       );
-      const reportOptions = contextQueryMock.mock.calls[0][0].options;
+      const reportOptions = contextQueryMock.mock.calls[1][0].options;
       expect(reportOptions).toMatchObject({
         resume: threadId,
         forkSession: true,
@@ -8384,7 +8385,7 @@ describe("bridge", () => {
     }
   });
 
-  it("restarts the Claude process before the next turn when the sandbox setting changes", async () => {
+  it("restarts the Claude process before the next turn when the sandbox setting changes (test-change-reason: resume the fork’s assigned provider session ID)", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const queries: ControlledClaudeQuery[] = [];
     queryMock.mockImplementation(() => {
@@ -8393,6 +8394,7 @@ describe("bridge", () => {
       return query;
     });
     const threadId = "thread-sandbox-setting";
+    let providerThreadId = threadId;
 
     try {
       bridge.sendRequest(1, "thread/start", {
@@ -8408,7 +8410,7 @@ describe("bridge", () => {
           providerOptions: { workflowsEnabled: false, sandboxEnabled: false },
         },
       });
-      await bridge.waitForResponse(1);
+      providerThreadId = getProviderThreadIdFromResult(await bridge.waitForResponse(1));
       expect(getLatestQueryOptions()).not.toHaveProperty("sandbox");
 
       bridge.sendRequest(
@@ -8416,7 +8418,7 @@ describe("bridge", () => {
         "turn/start",
         canonicalTurnParams({
           threadId,
-          providerThreadId: threadId,
+          providerThreadId,
           input: [{ type: "text", text: "same sandbox setting" }],
           providerOptions: { sandboxEnabled: false },
         }),
@@ -8424,7 +8426,7 @@ describe("bridge", () => {
       await readNextPrompt(getLatestQueryCall());
       await bridge.waitForResponse(2);
       expect(queries).toHaveLength(1);
-      queries[0]?.emit(createSuccessfulResultMessage(threadId));
+      queries[0]?.emit(createSuccessfulResultMessage(providerThreadId));
       await bridge.flushWork();
 
       bridge.sendRequest(
@@ -8432,7 +8434,7 @@ describe("bridge", () => {
         "turn/start",
         canonicalTurnParams({
           threadId,
-          providerThreadId: threadId,
+          providerThreadId,
           input: [{ type: "text", text: "sandbox turned on" }],
           providerOptions: { sandboxEnabled: true },
         }),
@@ -8442,7 +8444,7 @@ describe("bridge", () => {
       expect(queries[0]?.close).toHaveBeenCalled();
       expect(getLatestQueryOptions()).toMatchObject({
         permissionMode: "acceptEdits",
-        resume: threadId,
+        resume: providerThreadId,
         sandbox: { enabled: true, autoAllowBashIfSandboxed: true },
       });
       await expect(readNextPromptText(getLatestQueryCall())).resolves.toBe(
@@ -8457,7 +8459,7 @@ describe("bridge", () => {
         expect.objectContaining({
           params: expect.objectContaining({
             contextLost: false,
-            providerThreadId: threadId,
+            providerThreadId,
             threadId,
           }),
         }),
@@ -8465,7 +8467,7 @@ describe("bridge", () => {
     } finally {
       bridge.sendRequest(4, "thread/stop", {
         threadId,
-        providerThreadId: threadId,
+        providerThreadId,
         intent: "interrupt",
         activeTurnId: null,
       });

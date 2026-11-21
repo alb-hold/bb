@@ -1012,7 +1012,7 @@ const MODEL_LIST_MEMO_TTL_MS = 2 * 60_000;
 const MODEL_PROBE_RENEWAL_WINDOW_MS = 5 * 60_000;
 const MODEL_CATALOG_FILE_NAME = "claude-code-model-catalog.json";
 const listModelsMemoized = createClaudeCodeBridgeModelListMemo({
-  probe: () => probeClaudeCodeDiscoveredModels(),
+  probe: (envVars) => probeClaudeCodeDiscoveredModels(buildSessionEnv(envVars)),
   now: Date.now,
   ttlMs: MODEL_LIST_MEMO_TTL_MS,
   shared: () =>

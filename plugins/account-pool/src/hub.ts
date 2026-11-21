@@ -984,7 +984,7 @@ export class AccountPoolHub {
           ...account,
           active:
             this.activeAccounts.get(account.provider)?.accountId === account.id,
-          balance: accountBalance(quota, null, now),
+          balance: accountBalance(account.provider, quota, null, now),
           lastAutomaticChoice:
             automaticChoices.get(`${account.provider}:${account.id}`) ?? null,
           lastUsedHostName: null,
@@ -1133,7 +1133,7 @@ export class AccountPoolHub {
       reason: choice.reason,
       headroom: enabled.map((account) => ({
         accountId: account.id,
-        balance: accountBalance(this.options.quotas.get(account.id), null, now),
+        balance: accountBalance(account.provider, this.options.quotas.get(account.id), null, now),
         eligible: eligibleIds.has(account.id),
       })),
       bindingEligibleAccountIds,
@@ -1826,7 +1826,7 @@ export class AccountPoolHub {
             chosenAt: now,
             reason: choiceReason,
             family,
-            balance: accountBalance(selected.quota, family, now),
+            balance: accountBalance(provider, selected.quota, family, now),
           };
     if (routing.active === null)
       routing.pinnedAccountId = boundAccountId ?? inherited?.account.id ?? null;
