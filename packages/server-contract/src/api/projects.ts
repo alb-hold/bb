@@ -438,6 +438,31 @@ export type SidebarBootstrapResponse = z.infer<
   typeof sidebarBootstrapResponseSchema
 >;
 
+export function mergeSidebarBootstrapPages(
+  previous: SidebarBootstrapResponse | undefined,
+  page: SidebarBootstrapResponse,
+): SidebarBootstrapResponse {
+  if (!previous) return page;
+  const mergeProject = (
+    left: ProjectWithThreadsResponse,
+    right: ProjectWithThreadsResponse,
+  ): ProjectWithThreadsResponse => {
+    const threads = new Map(left.threads.map((thread) => [thread.id, thread]));
+    for (const thread of right.threads) threads.set(thread.id, thread);
+    return { ...right, threads: [...threads.values()] };
+  };
+  const projects = new Map(previous.projects.map((project) => [project.id, project]));
+  for (const project of page.projects) {
+    const existing = projects.get(project.id);
+    projects.set(project.id, existing ? mergeProject(existing, project) : project);
+  }
+  return {
+    sections: page.sections,
+    projects: [...projects.values()],
+    personalProject: mergeProject(previous.personalProject, page.personalProject),
+  };
+}
+
 export const uploadedPromptAttachmentSchema = z.object({
   sourceProjectId: z.string().min(1).optional(),
   type: z.enum(["localImage", "localFile"]),

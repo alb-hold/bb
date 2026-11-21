@@ -18,6 +18,7 @@ import type {
   PromptHistoryQuery,
   ReorderProjectRequest,
   SidebarBootstrapResponse,
+  mergeSidebarBootstrapPages,
   UpdateProjectRequest,
   UpdateProjectSourceRequest,
   UploadedPromptAttachment,
@@ -632,12 +633,27 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
       );
     },
     async sidebarBootstrap(input = {}) {
-      return transport.readJson(
+      const read = (cursor?: string) =>
         transport.api.v1["sidebar-bootstrap"].$get(
-          {},
+          { query: cursor === undefined ? {} : { cursor } },
           ...signalRequestArgs(input.signal),
-        ),
-      );
+        );
+      let snapshot: SidebarBootstrapResponse | undefined;
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
+      for (;;) {
+        const response = await transport.resolve(read(snapshot ? cursor : undefined));
+        const page = await transport.readJson(Promise.resolve(response));
+        const nextCursor = response.headers.get("X-BB-Next-Cursor");
+        if (!response.headers.has("X-BB-Pagination") && snapshot === undefined) {
+          return page;
+        }
+        snapshot = mergeSidebarBootstrapPages(snapshot, page);
+        if (!nextCursor) return snapshot;
+        if (cursors.has(nextCursor)) throw new Error("Sidebar returned a repeated continuation");
+        cursors.add(nextCursor);
+        cursor = nextCursor;
+      }
     },
     sources,
     async update(input) {
