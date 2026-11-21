@@ -1,3 +1,4 @@
+import { createThreadContextSegmentCollector } from "./thread-context-segment-collector.js";
 import { collectPanelAction, createThreadSlotCollector } from "./thread-slot-collector.js";
 import type { ComponentType } from "react";
 import { z } from "zod";
@@ -57,6 +58,7 @@ import {
   requireMessageDirectiveId,
   requireNonEmptyString,
   requireOptionalString,
+  requireOptionalOrder,
   requireProviderId,
   requireSlotId,
   requireTimelineRendererKind,
@@ -356,17 +358,6 @@ export interface CollectedSidebarNavigationRegistration extends ExperimentalSide
   placement: ExperimentalSidebarNavigationPlacement;
 }
 
-function requireOptionalOrder(
-  kind: string,
-  order: number | undefined,
-): { order?: number } {
-  if (order === undefined) return {};
-  if (!Number.isFinite(order)) {
-    throw new Error(`${kind}: "order" must be a finite number`);
-  }
-  return { order };
-}
-
 function collectTitledComponent<C>(
   kind: string,
   seen: Set<string>,
@@ -396,6 +387,7 @@ export function collectPluginAppRegistrations(
   definition: PluginAppDefinition,
   onWarning: (message: string) => void = (message) => console.warn(message),
 ): CollectedPluginAppRegistrations {
+  const segments = createThreadContextSegmentCollector();
   const threadSlots = createThreadSlotCollector();
   const commandShortcutSchema = createCommandShortcutSchema();
   const sidebarFooterItems: CollectedSidebarFooterItem[] = [];
@@ -424,7 +416,7 @@ export function collectPluginAppRegistrations(
     threadLists: [],
     experimentalSidebarNavigations: [],
     threadHeaderActions: [],
-    threadContextSegments: [],
+    threadContextSegments: segments.threadContextSegments,
     threadInfoRows: [],
     threadRowMetadata: [],
     threadInfoSections: [],
@@ -466,7 +458,6 @@ export function collectPluginAppRegistrations(
     sidebarNavigation: new Set<string>(),
     sidebarHeader: new Set<string>(),
     threadHeaderAction: new Set<string>(),
-    threadContextSegment: new Set<string>(),
     threadInfoRow: new Set<string>(),
     threadRowMetadata: new Set<string>(),
     threadInfoSection: new Set<string>(),
@@ -851,44 +842,7 @@ export function collectPluginAppRegistrations(
           ...(headerComponent !== undefined ? { headerComponent } : {}),
         });
       },
-      experimental_threadContextSegment(registration) {
-        const kind = "slots.experimental_threadContextSegment";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.threadContextSegment, id);
-        const optionalComponent = (field: "action" | "details") => {
-          const value = registration[field];
-          if (value === undefined) return {};
-          if (typeof value !== "function") {
-            throw new Error(
-              `${kind}: "${field}" must be a React component function`,
-            );
-          }
-          return { [field]: value };
-        };
-        if (typeof registration.summary !== "function") {
-          throw new Error(
-            `${kind}: "summary" must be a React component function`,
-          );
-        }
-        if (
-          registration.useVisible !== undefined &&
-          typeof registration.useVisible !== "function"
-        ) {
-          throw new Error(`${kind}: "useVisible" must be a function`);
-        }
-        collected.threadContextSegments.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          group: requireNonEmptyString(kind, "group", registration.group),
-          ...requireOptionalOrder(kind, registration.order),
-          summary: registration.summary,
-          ...optionalComponent("action"),
-          ...optionalComponent("details"),
-          ...(registration.useVisible !== undefined
-            ? { useVisible: registration.useVisible }
-            : {}),
-        });
-      },
+      experimental_threadContextSegment: segments.slots.experimental_threadContextSegment,
       experimental_threadRowMetadata(registration) {
         const kind = "slots.experimental_threadRowMetadata";
         const id = requireSlotId(kind, registration?.id);

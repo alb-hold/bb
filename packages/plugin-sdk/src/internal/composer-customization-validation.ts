@@ -430,3 +430,14 @@ export function collectComposerCustomization(
     return null;
   }
 }
+
+export function requireOptionalOrder(
+  kind: string,
+  order: number | undefined,
+): { order?: number } {
+  if (order === undefined) return {};
+  if (!Number.isFinite(order)) {
+    throw new Error(`${kind}: "order" must be a finite number`);
+  }
+  return { order };
+}
