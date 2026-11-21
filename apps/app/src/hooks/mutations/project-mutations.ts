@@ -199,5 +199,3 @@ export function useDeleteLocalProjectSource() {
     },
   });
 }
-
-export { useUploadPromptAttachment } from "./prompt-attachment-mutation";

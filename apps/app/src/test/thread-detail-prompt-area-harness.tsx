@@ -741,7 +741,7 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
   };
 });
 
-vi.mock("@/hooks/mutations/project-mutations", () => ({
+vi.mock("@/hooks/mutations/prompt-attachment-mutation", () => ({
   useUploadPromptAttachment: () => ({
     isPending: false,
     mutateAsync: promptAreaMocks.uploadPromptAttachmentMutateAsync,

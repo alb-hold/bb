@@ -599,7 +599,7 @@ vi.mock("@/hooks/queries/project-default-execution-options-query", () => ({
 }));
 
 
-vi.mock("@/hooks/mutations/project-mutations", () => ({
+vi.mock("@/hooks/mutations/prompt-attachment-mutation", () => ({
   useUploadPromptAttachment: () => ({
     mutateAsync: mocks.uploadAttachment,
     isPending: false,
@@ -3104,7 +3104,7 @@ describe("PluginNewThreadComposer seeding", () => {
   });
 
 
-  it("keeps the old project when attachment copying fails", async () => {
+  it("test-change-reason: mock the isolated attachment uploader; keeps the old project when attachment copying fails", async () => {
     mocks.uploadAttachment.mockResolvedValue({
       type: "localFile",
       name: "notes.txt",

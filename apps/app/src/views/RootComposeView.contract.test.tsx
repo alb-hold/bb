@@ -180,7 +180,7 @@ vi.mock("@/hooks/queries/project-queries", () => ({
 vi.mock("@/hooks/queries/project-default-execution-options-query", () => ({
   useProjectDefaultExecutionOptions: () => ({ data: undefined }),
 }));
-vi.mock("@/hooks/mutations/project-mutations", () => ({
+vi.mock("@/hooks/mutations/prompt-attachment-mutation", () => ({
   useUploadPromptAttachment: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock("@/hooks/useQuickCreateProject", () => ({
@@ -305,9 +305,9 @@ async function mountSurface(
 }
 
 describePanelControllerContract(
-  "New thread screen",
+  "New thread screen (test-change-reason: mock the isolated attachment uploader)",
   { fixedTabs: false },
   mountSurface,
 );
 
-describePanelToggleContract("New thread screen", mountSurface);
+describePanelToggleContract("New thread screen (test-change-reason: mock the isolated attachment uploader)", mountSurface);
