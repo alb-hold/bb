@@ -715,7 +715,7 @@ function ThreadRowComponent({
   const customizeRowActions = useCustomizeThreadRowActions();
   const isCompactViewport = useIsCompactViewport();
   const diag2Values: Record<string, unknown> = {
-    pullRequest, rowActionKeys, quickActions, customizeRowActions, isCompactViewport,
+    rowActionKeys, quickActions, customizeRowActions, isCompactViewport,
   };
   const diag2Previous = useRef<Record<string, unknown> | null>(null);
   if (diag2Previous.current !== null) {

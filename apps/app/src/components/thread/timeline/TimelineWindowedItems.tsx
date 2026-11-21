@@ -359,7 +359,6 @@ export function TimelineWindowedItems({
           ? model.total - viewportHeight
           : 0;
     const visible = visibleRange(model, localTop, viewportHeight);
-    console.log(`DIAG-INIT n=${itemKeys.length} pinnedToEnd=${pinnedToEnd} anchor=${anchorIndex} viewport=${viewportHeight} total=${model.total} localTop=${localTop} visible=${JSON.stringify(visible)}`);
     return {
       ...windowAround(
         itemKeys,
@@ -503,6 +502,7 @@ export function TimelineWindowedItems({
         nodesRef.current.set(key, node);
         record(key, node.getBoundingClientRect().height);
       }
+      let observed = false;
       const unobserve = observeSharedResize(node, {
         read: (entry) => {
           const width = containerRef.current?.clientWidth ?? null;
@@ -519,11 +519,12 @@ export function TimelineWindowedItems({
           observedWidthRef.current = width;
           if (key === null) return;
           const changed = record(key, height);
-          if (!changed) return;
-          if (widthChanged) {
+          const firstObservation = !observed;
+          observed = true;
+          if (changed && widthChanged) {
             snapHeight?.();
             positionKeeper?.remeasure();
-          } else if (positionKeeper !== null) {
+          } else if ((changed || firstObservation) && positionKeeper !== null) {
             settleAfterSharedResizeWrites(positionKeeper.reconcileAfterLayout);
           }
         },
@@ -641,7 +642,6 @@ export function TimelineWindowedItems({
       const first = windowIndexes.length ? Math.min(...windowIndexes) : 0;
       const last = windowIndexes.length ? Math.max(...windowIndexes) : -1;
       const mountToTop = reachesListTop(model, visible, viewportHeight);
-      console.log(`DIAG-FRAME n=${live.itemKeys.length} visible=${JSON.stringify(visible)} localTop=${localTop} viewport=${viewportHeight} offsetAtStart=${model.offsets[visible.start]} total=${model.total} mountToTop=${mountToTop} first=${first} last=${last} uncovered=${uncovered}`);
       const nearEdge =
         (mountToTop && first > 0) ||
         (visible.start - first < EDGE_MARGIN_ITEMS && first > 0) ||

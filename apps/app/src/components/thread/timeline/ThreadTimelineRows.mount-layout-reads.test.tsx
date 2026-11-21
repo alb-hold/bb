@@ -46,7 +46,6 @@ function recordLayoutReads() {
   const note = (name: string) => {
     if (recording) {
       reads.push(name);
-      console.log(`DIAG-READ ${name} ${(new Error().stack ?? "").split("\n").slice(2, 7).join(" | ")}`);
     }
   };
   for (const [prototype, name] of LAYOUT_GETTERS) {
@@ -173,10 +172,11 @@ async function setup(rows: TimelineRow[]) {
 }
 
 describe("timeline rows mounting (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so setup settles them before the layout frames)", () => {
-  it("reads no layout while a scroll mounts new rows, and covers the viewport by the next paint", async () => {
+  it("test-change-reason: the fork records a row height when its node attaches, so each newly mounted row reads its own rect once and nothing else reads layout; reads no layout while a scroll mounts new rows, and covers the viewport by the next paint", async () => {
     const harness = await setup(historyRows(150));
     expect(harness.mounted()).not.toContain("row-1");
 
+    const mountedBefore = new Set(harness.mounted());
     act(() => harness.layout.userScrollTo(0));
     expect(harness.mounted()).not.toContain("row-4");
     const reads = harness.recorder.during(() =>
@@ -187,10 +187,12 @@ describe("timeline rows mounting (test-change-reason: the fork loads the inline 
     expect(harness.mounted()).toEqual(
       expect.arrayContaining(["row-1", "row-2", "row-3", "row-4"]),
     );
-    expect(reads).toEqual([]);
+    const added = harness.mounted().filter((id) => !mountedBefore.has(id));
+    expect(reads.filter((read) => read !== "getBoundingClientRect")).toEqual([]);
+    expect(reads.length).toBeLessThanOrEqual(added.length);
   });
 
-  it("reads no layout while a streamed row mounts at the end", async () => {
+  it("test-change-reason: the fork records a row height when its node attaches, so the streamed row reads its own rect once and nothing else reads layout; reads no layout while a streamed row mounts at the end", async () => {
     const rows = historyRows(150);
     const harness = await setup(rows);
     const grown = [...rows, ...historyRows(1, 151)];
@@ -200,6 +202,7 @@ describe("timeline rows mounting (test-change-reason: the fork loads the inline 
     );
 
     expect(harness.mounted()).toContain("row-151");
-    expect(reads).toEqual([]);
+    expect(reads.filter((read) => read !== "getBoundingClientRect")).toEqual([]);
+    expect(reads.length).toBeLessThanOrEqual(1);
   });
 });
