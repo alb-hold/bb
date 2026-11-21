@@ -67,7 +67,7 @@
     // app components against, so a manifest edit must re-run it.
     "@bb/app#test": {
       "env": ["BB_CI_TEST_SHARD", "VITEST_MAX_WORKERS"],
-      "dependsOn": ["//#ensure-native-modules", "topo"],
+      "dependsOn": ["//#ensure-native-modules", "@bb/server#topo", "topo"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/CHANGELOG.md",
