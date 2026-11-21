@@ -373,7 +373,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex).",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -394,7 +394,7 @@ export function registerPoolCli(
               type: "string",
               placeholder: "dir",
               description:
-                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account",
+                "Gemini only: the GEMINI_HOME directory an antigravity-acp sign-in wrote into (with AGY_ACP_FORCE_FILE_STORAGE=1). One directory per Google account. Without it, --import also reads the Antigravity sign-in saved in the macOS keychain",
             },
             "api-key": {
               type: "string",
