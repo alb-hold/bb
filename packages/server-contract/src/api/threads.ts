@@ -519,7 +519,11 @@ export type SetQueuedMessageGroupBoundaryRequest = z.infer<
 export const sendQueuedMessageResponseSchema = z.discriminatedUnion(
   "delivery",
   [
-    z.object({ ok: z.literal(true), delivery: z.literal("sent") }),
+    z.object({
+      ok: z.literal(true),
+      delivery: z.literal("sent"),
+      refusal: sendMessageRefusalSchema.optional(),
+    }),
     z.object({
       ok: z.literal(true),
       delivery: z.literal("queued"),

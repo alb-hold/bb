@@ -1132,7 +1132,7 @@ describe("server-contract canonical schemas", () => {
     ).toMatchObject({ ownsPath: false });
   });
 
-  it("parses request contracts", () => {
+  it("parses request contracts (test-change-reason: the fork includes active goal counts in thread activity)", () => {
     expect(
       createThreadRequestSchema.parse({
         projectId: "proj_123",
@@ -1236,6 +1236,7 @@ describe("server-contract canonical schemas", () => {
             activeWorkflowCount: 0,
             activeBackgroundAgentCount: 0,
             activeBackgroundCommandCount: 0,
+            activeGoalCount: 0,
             activePlanModeCount: 0,
           },
           hasPendingInteraction: true,
