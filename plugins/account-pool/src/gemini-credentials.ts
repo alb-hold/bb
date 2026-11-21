@@ -8,6 +8,7 @@ export interface ImportedGeminiCredentials {
   refreshToken: string;
   client: { clientId: string; clientSecret: string };
   projectId: string | null;
+  clientSource?: "antigravity-installed-app";
 }
 
 export type KeychainRead =
@@ -26,13 +27,139 @@ export type KeychainReader = (
 export interface GeminiImportDeps {
   platform?: NodeJS.Platform;
   readKeychain?: KeychainReader;
+  readInstalledAppClient?: InstalledAppClientReader;
+}
+
+export interface GeminiSignIn {
+  refreshToken: string;
+  client: { clientId: string; clientSecret: string } | null;
+  installedAppClient: InstalledAppClientKind;
+  projectId: string | null;
 }
 
 export const ANTIGRAVITY_KEYCHAIN_SERVICE = "gemini";
 export const ANTIGRAVITY_KEYCHAIN_ACCOUNTS = [
   "antigravity-acp",
   "antigravity",
+  "antigravity-acp-business",
 ] as const;
+
+export type InstalledAppClientKind = "consumer" | "business";
+
+export type InstalledAppClientReader = (
+  kind: InstalledAppClientKind,
+) => Promise<{ clientId: string; clientSecret: string }>;
+
+const ANTIGRAVITY_RUNTIME_FILE = "agy_acp_server.par";
+
+const INSTALLED_APP_CLIENT_MARKERS: Record<
+  InstalledAppClientKind,
+  { id: string; secret: string }
+> = {
+  consumer: { id: "_DEFAULT_CLIENT_ID", secret: "_DEFAULT_CLIENT_SECRET" },
+  business: { id: "_BUSINESS_CLIENT_ID", secret: "_BUSINESS_CLIENT_SECRET" },
+};
+
+const CLIENT_ID_VALUE = /^\s*=\s*\(?\s*"([0-9]{6,20}-[0-9a-z]{16,64}\.apps\.googleusercontent\.com)"/u;
+const CLIENT_SECRET_VALUE = /^\s*=\s*\(?\s*"([A-Za-z0-9_-]{16,128})"/u;
+
+export function antigravityRuntimeRoot(): string {
+  return path.join(os.homedir(), ".local", "share", "antigravity-acp");
+}
+
+function compareVersions(a: string, b: string): number {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+async function newestAntigravityRuntime(
+  runtimeRoot: string,
+): Promise<{ file: string; version: string } | null> {
+  const entries = await fs.readdir(runtimeRoot).catch(() => [] as string[]);
+  const versions = entries
+    .filter((entry) => /^[0-9]+(\.[0-9]+){0,3}$/u.test(entry))
+    .sort(compareVersions)
+    .reverse();
+  for (const version of versions) {
+    const file = path.join(runtimeRoot, version, ANTIGRAVITY_RUNTIME_FILE);
+    const stat = await fs.stat(file).catch(() => null);
+    if (stat?.isFile()) return { file, version };
+  }
+  return null;
+}
+
+function assignedValues(
+  runtime: Buffer,
+  marker: string,
+  value: RegExp,
+): Set<string> {
+  const found = new Set<string>();
+  const needle = Buffer.from(marker, "latin1");
+  let at = runtime.indexOf(needle);
+  while (at !== -1) {
+    const after = at + needle.length;
+    const window = runtime.toString("latin1", after, after + 256);
+    const match = value.exec(window);
+    if (match?.[1] !== undefined) found.add(match[1]);
+    at = runtime.indexOf(needle, after);
+  }
+  return found;
+}
+
+export async function readAntigravityInstalledAppClient(
+  kind: InstalledAppClientKind,
+  options: { runtimeRoot?: string } = {},
+): Promise<{ clientId: string; clientSecret: string }> {
+  const runtimeRoot = options.runtimeRoot ?? antigravityRuntimeRoot();
+  const runtime = await newestAntigravityRuntime(runtimeRoot);
+  if (runtime === null)
+    throw new Error(
+      `The Antigravity sign-in has no OAuth client of its own, and no Antigravity runtime (${ANTIGRAVITY_RUNTIME_FILE}) was found in ${runtimeRoot} to take Antigravity's installed-app client from. Update or reinstall Antigravity, then retry.`,
+    );
+  const notFound = new Error(
+    `The Antigravity sign-in has no OAuth client of its own, and Antigravity's ${kind} installed-app client was not found in ${runtime.file} (version ${runtime.version}). Update or reinstall Antigravity, then retry.`,
+  );
+  const contents = await fs.readFile(runtime.file).catch(() => null);
+  if (contents === null) throw notFound;
+  const markers = INSTALLED_APP_CLIENT_MARKERS[kind];
+  const ids = assignedValues(contents, markers.id, CLIENT_ID_VALUE);
+  const secrets = assignedValues(contents, markers.secret, CLIENT_SECRET_VALUE);
+  const [clientId] = ids;
+  const [clientSecret] = secrets;
+  if (
+    ids.size !== 1 ||
+    secrets.size !== 1 ||
+    clientId === undefined ||
+    clientSecret === undefined
+  )
+    throw notFound;
+  return { clientId, clientSecret };
+}
+
+export const ANTIGRAVITY_TOKEN_FIELDS = [
+  "refresh_token",
+  "access_token",
+  "expiry",
+  "client_id",
+  "client_secret",
+  "token_uri",
+] as const;
+
+type AntigravityTokenField = (typeof ANTIGRAVITY_TOKEN_FIELDS)[number];
+
+const TOKEN_FIELD_ALIASES: Record<AntigravityTokenField, readonly string[]> = {
+  refresh_token: ["refresh_token", "refreshToken"],
+  access_token: ["access_token", "accessToken"],
+  expiry: ["expiry", "expiry_date", "expires_at", "expiresAt", "expiry_time"],
+  client_id: ["client_id", "clientId"],
+  client_secret: ["client_secret", "clientSecret"],
+  token_uri: ["token_uri", "tokenUri", "token_url"],
+};
 
 const SECURITY_CLI = "/usr/bin/security";
 const KEYCHAIN_TIMEOUT_MS = 90_000;
@@ -57,17 +184,83 @@ const KEYCHAIN_MESSAGES: Record<
   failed:
     "bb could not read the Antigravity sign-in from the macOS keychain. Unlock the login keychain and retry.",
   unusable:
-    "The Antigravity sign-in in the macOS keychain has no refresh token or OAuth client that bb can use. Sign in through bb's Antigravity (antigravity-acp) agent, then retry.",
+    "The Antigravity sign-in in the macOS keychain has no refresh token that bb can read, so bb cannot renew it. Sign in through bb's Antigravity (antigravity-acp) agent, then retry.",
 };
 
-const acpTokenSchema = z
-  .object({
-    client_id: z.string().min(1),
-    client_secret: z.string().min(1),
-    refresh_token: z.string().min(1),
-    project_id: z.string().nullish(),
-  })
-  .passthrough();
+const tokenObjectSchema = z.record(z.string(), z.unknown());
+
+type KeychainAccount = (typeof ANTIGRAVITY_KEYCHAIN_ACCOUNTS)[number];
+
+interface ParsedTokenBlob {
+  credentials: GeminiSignIn | null;
+  fields: Record<AntigravityTokenField, boolean>;
+}
+
+function tokenLayers(blob: Record<string, unknown>): Record<string, unknown>[] {
+  const nested = tokenObjectSchema.safeParse(blob["token"]);
+  return nested.success ? [blob, nested.data] : [blob];
+}
+
+function fieldValue(
+  layers: Record<string, unknown>[],
+  field: AntigravityTokenField,
+): unknown {
+  for (const layer of layers) {
+    for (const alias of TOKEN_FIELD_ALIASES[field]) {
+      const value = layer[alias];
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+  }
+  return undefined;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+
+function parseTokenBlob(raw: string, account: KeychainAccount): ParsedTokenBlob {
+  const blob = tokenObjectSchema.parse(JSON.parse(raw));
+  const layers = tokenLayers(blob);
+  const fields = Object.fromEntries(
+    ANTIGRAVITY_TOKEN_FIELDS.map((field) => {
+      const value = fieldValue(layers, field);
+      return [
+        field,
+        field === "expiry"
+          ? value !== undefined
+          : nonEmptyString(value) !== null,
+      ];
+    }),
+  ) as Record<AntigravityTokenField, boolean>;
+  const refreshToken = nonEmptyString(fieldValue(layers, "refresh_token"));
+  if (refreshToken === null) return { credentials: null, fields };
+  const clientId = nonEmptyString(fieldValue(layers, "client_id"));
+  const clientSecret = nonEmptyString(fieldValue(layers, "client_secret"));
+  const projectId = nonEmptyString(blob["project_id"]);
+  const ownClient =
+    clientId !== null && clientSecret !== null
+      ? { clientId, clientSecret }
+      : null;
+  return {
+    fields,
+    credentials: {
+      refreshToken,
+      client: ownClient,
+      installedAppClient:
+        account === "antigravity-acp-business" ? "business" : "consumer",
+      projectId,
+    },
+  };
+}
+
+export function describeTokenFields(
+  fields: Record<AntigravityTokenField, boolean>,
+): string {
+  const present = ANTIGRAVITY_TOKEN_FIELDS.filter((field) => fields[field]);
+  const missing = ANTIGRAVITY_TOKEN_FIELDS.filter((field) => !fields[field]);
+  return `present: ${present.length === 0 ? "none" : present.join(", ")}; missing: ${missing.length === 0 ? "none" : missing.join(", ")}`;
+}
 
 export function geminiCredentialsPath(home: string): string {
   return path.join(home, "antigravity-acp", "acp_token.json");
@@ -83,17 +276,16 @@ export function resolveGeminiHome(home: string | undefined): string {
   );
 }
 
-export function parseGeminiCredentials(raw: string): ImportedGeminiCredentials {
-  const parsed = acpTokenSchema.parse(JSON.parse(raw));
-  const projectId = parsed.project_id ?? null;
-  return {
-    refreshToken: parsed.refresh_token,
-    client: { clientId: parsed.client_id, clientSecret: parsed.client_secret },
-    projectId: projectId === "" ? null : projectId,
-  };
+export function parseGeminiCredentials(raw: string): GeminiSignIn {
+  const parsed = parseTokenBlob(raw, "antigravity-acp");
+  if (parsed.credentials === null) throw new Error("no refresh token");
+  return parsed.credentials;
 }
 
-function parseKeychainSecret(secret: string): ImportedGeminiCredentials | null {
+function parseKeychainSecret(
+  secret: string,
+  account: KeychainAccount,
+): ParsedTokenBlob | null {
   try {
     const trimmed = secret.trim();
     const raw = trimmed.startsWith(GO_KEYRING_BASE64_PREFIX)
@@ -102,7 +294,7 @@ function parseKeychainSecret(secret: string): ImportedGeminiCredentials | null {
           "base64",
         ).toString("utf8")
       : trimmed;
-    return parseGeminiCredentials(raw);
+    return parseTokenBlob(raw, account);
   } catch {
     return null;
   }
@@ -161,7 +353,7 @@ export const readMacKeychain: KeychainReader = (service, account) =>
 
 export async function importGeminiFileCredentials(
   home?: string,
-): Promise<ImportedGeminiCredentials> {
+): Promise<GeminiSignIn> {
   try {
     return parseGeminiCredentials(
       await fs.readFile(geminiCredentialsPath(resolveGeminiHome(home)), "utf8"),
@@ -175,23 +367,30 @@ export async function importGeminiFileCredentials(
 
 async function importKeychainCredentials(
   readKeychain: KeychainReader,
-): Promise<ImportedGeminiCredentials> {
-  let unusable = false;
+): Promise<GeminiSignIn> {
+  const unusable: string[] = [];
   for (const account of ANTIGRAVITY_KEYCHAIN_ACCOUNTS) {
     const read = await readKeychain(ANTIGRAVITY_KEYCHAIN_SERVICE, account);
     if (read.kind === "missing") continue;
     if (read.kind !== "found") throw new Error(KEYCHAIN_MESSAGES[read.kind]);
-    const credentials = parseKeychainSecret(read.secret);
-    if (credentials !== null) return credentials;
-    unusable = true;
+    const parsed = parseKeychainSecret(read.secret, account);
+    if (parsed?.credentials) return parsed.credentials;
+    unusable.push(
+      parsed === null
+        ? `"${account}": not readable as JSON`
+        : `"${account}": ${describeTokenFields(parsed.fields)}`,
+    );
   }
-  throw new Error(unusable ? KEYCHAIN_MESSAGES.unusable : NOT_FOUND_MESSAGE);
+  if (unusable.length === 0) throw new Error(NOT_FOUND_MESSAGE);
+  throw new Error(
+    `${KEYCHAIN_MESSAGES.unusable} Fields in the keychain items (service "${ANTIGRAVITY_KEYCHAIN_SERVICE}"): ${unusable.join("; ")}.`,
+  );
 }
 
-export async function importGeminiCredentials(
-  home?: string,
-  deps: GeminiImportDeps = {},
-): Promise<ImportedGeminiCredentials> {
+async function findGeminiSignIn(
+  home: string | undefined,
+  deps: GeminiImportDeps,
+): Promise<GeminiSignIn> {
   if (home !== undefined) return importGeminiFileCredentials(home);
   try {
     return await importGeminiFileCredentials();
@@ -199,4 +398,25 @@ export async function importGeminiCredentials(
     if ((deps.platform ?? process.platform) !== "darwin") throw fileError;
   }
   return importKeychainCredentials(deps.readKeychain ?? readMacKeychain);
+}
+
+export async function importGeminiCredentials(
+  home?: string,
+  deps: GeminiImportDeps = {},
+): Promise<ImportedGeminiCredentials> {
+  const signIn = await findGeminiSignIn(home, deps);
+  if (signIn.client !== null)
+    return {
+      refreshToken: signIn.refreshToken,
+      client: signIn.client,
+      projectId: signIn.projectId,
+    };
+  const readClient =
+    deps.readInstalledAppClient ?? readAntigravityInstalledAppClient;
+  return {
+    refreshToken: signIn.refreshToken,
+    client: await readClient(signIn.installedAppClient),
+    projectId: signIn.projectId,
+    clientSource: "antigravity-installed-app",
+  };
 }

@@ -21,6 +21,7 @@ import {
 } from "./gemini-gateway.js";
 import {
   OAuthRefreshError,
+  oauthRefreshErrorDetail,
   TransientOAuthRefreshError,
   oauthSecretDueForRefresh,
   parseOAuthRefreshResponse,
@@ -344,10 +345,12 @@ async function refreshGoogleToken(
     );
   }
   if (!response.ok) {
+    if (response.status === 400 || response.status === 401)
+      throw new OAuthRefreshError(
+        `OAuth refresh failed with HTTP ${response.status}.${await oauthRefreshErrorDetail(response, new Promise<never>(() => undefined))}`,
+      );
     void response.body?.cancel().catch(() => undefined);
     const message = `OAuth refresh failed with HTTP ${response.status}.`;
-    if (response.status === 400 || response.status === 401)
-      throw new OAuthRefreshError(message);
     throw new TransientOAuthRefreshError(
       message,
       retryAfterMilliseconds(response.headers.get("retry-after"), now()),
@@ -603,7 +606,16 @@ export function createGeminiAdapter(options: {
         options.refreshUrl,
         imported.refreshToken,
         imported.client,
-      );
+      ).catch((error: unknown) => {
+        if (
+          imported.clientSource === "antigravity-installed-app" &&
+          error instanceof OAuthRefreshError
+        )
+          throw new Error(
+            `The Antigravity sign-in has no OAuth client of its own, and Google did not renew it with Antigravity's installed-app client (${error.message}) Sign in through bb's Antigravity (antigravity-acp) agent, then retry.`,
+          );
+        throw error;
+      });
       const accessToken = refreshed.access_token;
       const refreshToken = refreshed.refresh_token ?? imported.refreshToken;
       const idToken = refreshed.id_token ?? null;
