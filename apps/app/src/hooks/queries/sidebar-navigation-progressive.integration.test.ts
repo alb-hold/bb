@@ -15,6 +15,10 @@ import {
   useSidebarNavigationPreview,
 } from "./sidebar-navigation-query";
 
+vi.mock("../../../../server/src/install-machine-asset.js", () => ({
+  INSTALL_MACHINE_SCRIPT_PATH: "install-machine.sh",
+  INSTALL_MACHINE_WINDOWS_SCRIPT_PATH: "install-machine-windows.mjs",
+}));
 vi.mock("@/hooks/useRouteState", () => ({ useRouteState: () => ({}) }));
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useEnvironmentListRealtimeSubscription: vi.fn(),
