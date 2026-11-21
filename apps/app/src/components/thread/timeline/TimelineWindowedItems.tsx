@@ -539,6 +539,7 @@ export function TimelineWindowedItems({
     [positionKeeper, record, snapHeight],
   );
 
+  const pinSettledRef = useRef(false);
   const frameUpdatesRef = useRef({ count: 0, frame: null as number | null });
   const frameCommitRef = useRef<{
     frame: number | null;
@@ -599,9 +600,17 @@ export function TimelineWindowedItems({
       const measuredTop =
         scrollElement.getBoundingClientRect().top -
         container.getBoundingClientRect().top;
+      const pinFloor = model.total - viewportHeight;
+      if (!positionKeeper.isAttached() || positionKeeper.hasUserScrolled()) {
+        pinSettledRef.current = false;
+      } else if (measuredTop >= pinFloor - viewportHeight) {
+        pinSettledRef.current = true;
+      }
       const localTop =
-        positionKeeper.isAttached() && !positionKeeper.hasUserScrolled()
-          ? Math.max(measuredTop, model.total - viewportHeight)
+        positionKeeper.isAttached() &&
+        !positionKeeper.hasUserScrolled() &&
+        !pinSettledRef.current
+          ? Math.max(measuredTop, pinFloor)
           : measuredTop;
       const visible = visibleRange(model, localTop, viewportHeight);
       if (visible.end < visible.start) return;
