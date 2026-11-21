@@ -10877,6 +10877,23 @@ describe("sequential pool recovery", () => {
     expect(attempts).toEqual(["sk-first", "sk-second", "sk-first", "sk-first"]);
   });
 
+  it.each([
+    { utilization: 1, windowStatus: "allowed", expected: "ready" },
+    { utilization: 0.5, windowStatus: "rejected", expected: "exhausted" },
+    { utilization: 1, windowStatus: null, expected: "exhausted" },
+  ])("reports $expected for a $windowStatus window at $utilization utilization", async ({
+    utilization, windowStatus, expected,
+  }) => {
+    const fixture = await createFixture({ upstreamUrl: "https://upstream.example" });
+    setQuota(fixture, fixture.account.id, {
+      fiveHourUtilization: utilization,
+      fiveHourStatus: windowStatus,
+      fiveHourResetAt: Date.now() + 3_600_000,
+    });
+    const result = await fixture.host.harness.behavior.runCli(["status", "--json"]);
+    expect(statusReportSchema.parse(JSON.parse(result.stdout)).accounts[0]?.status).toBe(expected);
+  });
+
   it("reports an account past the switch threshold as exhausted only once the provider refuses it", async () => {
     let refused = false;
     const fixture = await createFixture({
