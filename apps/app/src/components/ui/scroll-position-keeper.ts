@@ -229,7 +229,6 @@ export class ScrollPositionKeeper {
     scrollElement.style.overflowAnchor = "none";
     this.ownScrollTop = scrollElement.scrollTop;
     const onScroll = () => {
-      console.log("DIAG-scroll", scrollElement.scrollTop, this.ownScrollTop, this.maxScrollTop, scrollElement.scrollHeight, this.isInputSession());
       if (this.shrinkClampPending && this.isAtEnd(scrollElement.scrollTop)) {
         this.shrinkClampPending = false;
         return;
@@ -375,10 +374,6 @@ export class ScrollPositionKeeper {
       if (this.pointerMoved) this.extendInput(SESSION_EXTENSION_MS);
     };
     const onWheel = (event: WheelEvent) => {
-      const row = scrollElement.querySelector("[data-timeline-items] > [data-timeline-row-id]");
-      for (let node = row; node && node !== scrollElement; node = node.parentElement) {
-        console.log("DIAG-box", node.tagName, node.className, node.getAttribute("style"), node.getBoundingClientRect().height);
-      }
       this.pointerPressReleasedWithoutMove = false;
       this.extendInput(WHEEL_SESSION_MS);
       if (event.deltaY > 0) this.attachIfAtEnd();
@@ -1275,7 +1270,6 @@ export class ScrollPositionKeeper {
 
   private write(scrollElement: HTMLElement, target: number): void {
     if (Math.abs(scrollElement.scrollTop - target) >= MIN_WRITE_PX) {
-      console.log(`DIAG-PIN from=${scrollElement.scrollTop} to=${target} kind=${this.position.kind} stack=${(new Error().stack ?? "").split("\n").slice(2, 10).map((l) => l.trim().replace(/\(.*\//, "(")).join(" < ")}`);
       scrollElement.scrollTop = target;
     }
     this.ownScrollTop = scrollElement.scrollTop;

@@ -71,7 +71,8 @@ export function installFakeFlowLayout({
     let bottom = top;
     if (height === null && style !== null && style.height !== "") {
       height = pixels(style.height);
-    } else if (height === null || snapshot !== undefined) {
+    }
+    if (height === null || snapshot !== undefined) {
       const gap = height === null && style !== null ? pixels(style.gap) : 0;
       let used = 0;
       let first = true;
@@ -112,7 +113,6 @@ export function installFakeFlowLayout({
         ownHeight(parent) === null &&
         parent instanceof HTMLElement
       ) {
-        if (parent.style.height !== "") return null;
         gap = pixels(parent.style.gap);
       }
       for (

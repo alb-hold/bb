@@ -589,7 +589,6 @@ export function TimelineWindowedItems({
           setScrollRootUsable(usable);
         }
       }
-      console.log(`DIAG-SYNC urgent=${urgent} enabled=${live.windowingEnabled} keeper=${positionKeeper !== null} container=${containerRef.current !== null} scrollEl=${positionKeeper?.getScrollElement() != null} vh=${positionKeeper?.getViewportHeight()} ch=${positionKeeper?.getScrollElement()?.clientHeight} attached=${positionKeeper?.isAttached()} user=${positionKeeper?.hasUserScrolled()}`);
       if (!live.windowingEnabled || positionKeeper === null) return;
       const container = containerRef.current;
       const scrollElement = positionKeeper.getScrollElement();
@@ -656,7 +655,6 @@ export function TimelineWindowedItems({
       const first = windowIndexes.length ? Math.min(...windowIndexes) : 0;
       const last = windowIndexes.length ? Math.max(...windowIndexes) : -1;
       const mountToTop = reachesListTop(model, visible, viewportHeight);
-      console.log(`DIAG-FRAME n=${live.itemKeys.length} visible=${JSON.stringify(visible)} localTop=${localTop} viewport=${viewportHeight} offsetAtStart=${model.offsets[visible.start]} total=${model.total} mountToTop=${mountToTop} first=${first} last=${last} uncovered=${uncovered}`);
       const nearEdge =
         (mountToTop && first > 0) ||
         (visible.start - first < EDGE_MARGIN_ITEMS && first > 0) ||

@@ -586,7 +586,7 @@ describe("BottomAnchoredScrollBody", () => {
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
-  it("keeps a restored row gap through a passive windowed-list scroll correction after remount", () => {
+  it("test-change-reason: the merged virtualizer commits uncovered rows on the next frame; keeps a restored row gap through a passive windowed-list scroll correction after remount", () => {
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "performance"],
     });
@@ -594,6 +594,7 @@ describe("BottomAnchoredScrollBody", () => {
     const first = setup("thread-a", keys);
     act(() => first.layout.userScrollTo(first.layout.maxScrollTop() - 2_500));
     act(() => vi.advanceTimersByTime(300));
+    act(() => first.layout.frame());
     const reader = first.firstVisible();
     const before = first.topOf(reader);
     first.view.unmount();

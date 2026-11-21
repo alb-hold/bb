@@ -171,7 +171,7 @@ async function setup(rows: TimelineRow[]) {
   };
 }
 
-describe("timeline rows mounting (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so setup settles them before the layout frames)", () => {
+describe("timeline rows mounting (test-change-reason: the fork loads the inline message time lazily and the upstream test infrastructure holds lazy imports until settled, so setup settles them before the layout frames and measures descendants inside the fork’s fixed-height animation wrapper)", () => {
   it("test-change-reason: the fork records a row height when its node attaches, so each newly mounted row reads its own rect once and nothing else reads layout; reads no layout while a scroll mounts new rows, and covers the viewport by the next paint", async () => {
     const harness = await setup(historyRows(150));
     expect(harness.mounted()).not.toContain("row-1");
