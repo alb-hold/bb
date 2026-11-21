@@ -7,6 +7,7 @@ import {
   render,
   renderHook,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import type {
   AvailableModel,
@@ -497,7 +498,10 @@ describe("ModelReasoningPicker", () => {
 
   it("does not change reasoning when the submenu handles an arrow", async () => {
     const { onReasoningChange } = renderPicker({
-      moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+      moreModelOptions: [
+        { value: "blocked", label: "Blocked", disabled: true },
+        { value: "legacy", label: "Legacy" },
+      ],
     });
     fireEvent.click(
       screen.getByRole("button", {
@@ -507,10 +511,17 @@ describe("ModelReasoningPicker", () => {
     const moreModels = await screen.findByRole("button", {
       name: "More models",
     });
+    expect(moreModels.getAttribute("aria-haspopup")).toBe("dialog");
     act(() => moreModels.focus());
     fireEvent.keyDown(moreModels, {
       key: "ArrowRight",
     });
+    const dialog = await screen.findByRole("dialog", { name: "More models" });
+    const legacy = screen.getByRole("button", { name: "Legacy" });
+    expect(dialog.contains(legacy)).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(legacy));
+    fireEvent.keyDown(legacy, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(moreModels);
     expect(onReasoningChange).not.toHaveBeenCalled();
   });
 

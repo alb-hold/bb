@@ -573,18 +573,16 @@ function MoreModelsSubmenu({
   const { isLastHovered, hoverProps } = useMenuItemHover();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const focusFirstSubItem = useCallback(() => {
-    window.setTimeout(() => {
-      contentRef.current
-        ?.querySelector<HTMLButtonElement>("button:enabled")
-        ?.focus();
-    }, 0);
-  }, []);
+  const focusOnOpen = useRef(false);
+  const wasHovered = useRef(false);
+  const focusFirstSubItem = () => {
+    const content = contentRef.current;
+    (content?.querySelector<HTMLButtonElement>("button:enabled") ?? content)?.focus();
+  };
 
   useEffect(() => {
-    if (open && !isLastHovered) {
-      onOpenChange(false);
-    }
+    if (open && wasHovered.current && !isLastHovered) onOpenChange(false);
+    wasHovered.current = isLastHovered;
   }, [open, isLastHovered, onOpenChange]);
 
   return (
@@ -593,7 +591,7 @@ function MoreModelsSubmenu({
         <button
           ref={triggerRef}
           type="button"
-          aria-haspopup="menu"
+          aria-haspopup="dialog"
           aria-expanded={open}
           onClick={openSub}
           onPointerEnter={(event) => {
@@ -610,8 +608,11 @@ function MoreModelsSubmenu({
               event.key === "ArrowRight"
             ) {
               event.preventDefault();
-              openSub();
-              focusFirstSubItem();
+              if (open) focusFirstSubItem();
+              else {
+                focusOnOpen.current = true;
+                openSub();
+              }
               return;
             }
 
@@ -633,6 +634,14 @@ function MoreModelsSubmenu({
       </PopoverAnchor>
       <PopoverContent
         ref={contentRef}
+        aria-label="More models"
+        onOpenAutoFocus={(event) => {
+          if (focusOnOpen.current) {
+            event.preventDefault();
+            focusOnOpen.current = false;
+            focusFirstSubItem();
+          }
+        }}
         side="right"
         align="start"
         sideOffset={6}
@@ -643,6 +652,7 @@ function MoreModelsSubmenu({
         onKeyDown={(event) => {
           if (event.key === "Escape" || event.key === "ArrowLeft") {
             event.preventDefault();
+            event.stopPropagation();
             onOpenChange(false);
             triggerRef.current?.focus();
           }
