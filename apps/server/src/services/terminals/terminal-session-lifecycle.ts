@@ -225,6 +225,11 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
   terminalId: string;
 }
 
+type LiveFrame = NonNullable<TerminalSession["firstLiveFrame"]>;
+type FrameObserver =
+  | { nextSeq: number; pending?: never }
+  | { nextSeq?: never; pending: LiveFrame[] };
+
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
   requestedAt: number;
   handoffOwnerToken?: string;
@@ -2321,7 +2326,7 @@ export class TerminalSessionLifecycle {
 
   private readonly frameObservers = new Map<
     string,
-    Map<TerminalClientSocket, number>
+    Map<TerminalClientSocket, FrameObserver>
   >();
 
   private frameCallback(session: TerminalSessionRow, seq: number) {
@@ -2341,21 +2346,37 @@ export class TerminalSessionLifecycle {
         });
       const observers = this.frameObservers.get(session.id);
       if (!observers) return;
-      for (const [socket, nextSeq] of observers) {
-        if (seq < nextSeq) continue;
-        observers.delete(socket);
-        const current = getTerminalById(this.options.db, session.id);
-        if (current)
-          this.options.hub.sendTerminalSocketMessage(socket, {
-            type: "session-updated",
-            session: {
-              ...this.toTerminalSession(current),
-              attachLiveFrame: frame,
-            },
-          });
+      for (const [socket, observer] of observers) {
+        if (observer.pending) {
+          observer.pending.push(frame);
+        } else if (seq >= observer.nextSeq) {
+          observers.delete(socket);
+          this.sendAttachFrame(socket, frame);
+        }
       }
       if (!observers.size) this.frameObservers.delete(session.id);
     };
+  }
+
+  private sendAttachFrame(
+    socket: TerminalClientSocket,
+    frame: LiveFrame,
+  ): void {
+    const current = getTerminalById(this.options.db, frame.terminalId);
+    if (current)
+      this.options.hub.sendTerminalSocketMessage(socket, {
+        type: "session-updated",
+        session: { ...this.toTerminalSession(current), attachLiveFrame: frame },
+      });
+  }
+
+  private removeFrameObserver(
+    terminalId: string,
+    socket: TerminalClientSocket,
+  ): void {
+    const observers = this.frameObservers.get(terminalId);
+    observers?.delete(socket);
+    if (!observers?.size) this.frameObservers.delete(terminalId);
   }
 
   private retainTerminalOutput(
@@ -3368,9 +3389,14 @@ export class TerminalSessionLifecycle {
       terminalId: current.id,
       sinceSeq: args.sinceSeq,
     };
-    void this.pendingAttaches
-      .claim(pendingAttach)
-      .promise.catch(() => undefined);
+    const observers =
+      this.frameObservers.get(current.id) ??
+      new Map<TerminalClientSocket, FrameObserver>();
+    observers.set(args.socket, { pending: [] });
+    this.frameObservers.set(current.id, observers);
+    void this.pendingAttaches.claim(pendingAttach).promise.catch(() => {
+      this.removeFrameObserver(current.id, args.socket);
+    });
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
       {
@@ -3383,6 +3409,7 @@ export class TerminalSessionLifecycle {
     );
     if (!sent) {
       this.pendingAttaches.cancel(pendingAttach.rpcKey);
+      this.removeFrameObserver(current.id, args.socket);
       this.attributeFailedAttach(pendingAttach, "send-failed");
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
@@ -3436,9 +3463,7 @@ export class TerminalSessionLifecycle {
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
-    const observers = this.frameObservers.get(args.terminalId);
-    observers?.delete(args.socket);
-    if (!observers?.size) this.frameObservers.delete(args.terminalId);
+    this.removeFrameObserver(args.terminalId, args.socket);
     this.outputFlow.removeClient(args.terminalId, args.socket);
     if (!this.options.hub.hasTerminalClients(args.terminalId)) {
       this.forwardedNextSeqByTerminalId.delete(args.terminalId);
@@ -5022,11 +5047,6 @@ export class TerminalSessionLifecycle {
       current.id,
       pending.socket,
     );
-    const observers =
-      this.frameObservers.get(current.id) ??
-      new Map<TerminalClientSocket, number>();
-    observers.set(pending.socket, message.nextSeq);
-    this.frameObservers.set(current.id, observers);
     this.addOutputFlowClient(current.id, pending.socket, message.nextSeq);
     this.setForwardedNextSeq(
       current.id,
@@ -5045,6 +5065,16 @@ export class TerminalSessionLifecycle {
       pending.socket,
       message.chunks.map(toTerminalOutputChunk),
     );
+    const observers = this.frameObservers.get(current.id);
+    const early = observers
+      ?.get(pending.socket)
+      ?.pending?.find((frame) => frame.seq >= message.nextSeq);
+    if (early) {
+      this.removeFrameObserver(current.id, pending.socket);
+      this.sendAttachFrame(pending.socket, early);
+    } else {
+      observers?.set(pending.socket, { nextSeq: message.nextSeq });
+    }
     this.repaintReopenedNativeTerminal(current);
   }
 

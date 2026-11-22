@@ -176,6 +176,7 @@ describe("db rebuild schema", () => {
         "updated_at",
         "last_user_input_at",
         "default_colors",
+        "first_live_frame",
       ]);
     } finally {
       closeConnection(db);
