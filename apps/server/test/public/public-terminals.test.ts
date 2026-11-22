@@ -1428,6 +1428,44 @@ describe("public terminal routes", () => {
         );
       }
 
+      const detachedSocket = createFakeBrowserSocket();
+      const send = detachedSocket.send;
+      detachedSocket.send = (data) => {
+        send(data);
+        if (
+          terminalServerMessageSchema.parse(JSON.parse(data)).type ===
+          "attached"
+        ) {
+          service.detachBrowserTerminal({
+            socket: detachedSocket,
+            terminalId: stored.id,
+          });
+        }
+      };
+      service.attachBrowserTerminal({
+        rawReplay: true,
+        outputAcks: false,
+        resizeAcks: false,
+        socket: detachedSocket,
+        sinceSeq: 0,
+        terminalId: stored.id,
+      });
+      const second = await waitForDaemonMessage(fixture.socket, 1);
+      if (second.type !== "terminal.attach")
+        throw new Error("Missing second attach request");
+      await service.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: second.requestId,
+          terminalId: stored.id,
+          chunks: [],
+          replayStartSeq: 2,
+          nextSeq: 2,
+        },
+      });
+
       const observed = () =>
         readBrowserMessages(browserSocket).flatMap((message) =>
           message.type === "session-updated" && message.session.attachLiveFrame
@@ -1471,6 +1509,13 @@ describe("public terminal routes", () => {
       );
 
       if (!early) await renderBurst();
+      expect(
+        readBrowserMessages(detachedSocket).some(
+          (message) =>
+            message.type === "session-updated" &&
+            message.session.attachLiveFrame,
+        ),
+      ).toBe(false);
       await vi.waitFor(() =>
         expect(observed()).toEqual([
           {

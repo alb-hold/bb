@@ -231,6 +231,7 @@ type FrameObserver =
   | { nextSeq?: never; pending: LiveFrame[] };
 
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
+  frameObserver: FrameObserver;
   requestedAt: number;
   handoffOwnerToken?: string;
   socket: TerminalClientSocket;
@@ -3377,6 +3378,7 @@ export class TerminalSessionLifecycle {
 
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
+      frameObserver: { pending: [] },
       requestedAt: this.markReplayStage("daemon-requested", {
         terminalId: current.id,
         requestId,
@@ -3392,9 +3394,10 @@ export class TerminalSessionLifecycle {
     const observers =
       this.frameObservers.get(current.id) ??
       new Map<TerminalClientSocket, FrameObserver>();
-    observers.set(args.socket, { pending: [] });
+    observers.set(args.socket, pendingAttach.frameObserver);
     this.frameObservers.set(current.id, observers);
     void this.pendingAttaches.claim(pendingAttach).promise.catch(() => {
+      if (observers.get(args.socket) !== pendingAttach.frameObserver) return;
       this.removeFrameObserver(current.id, args.socket);
     });
     const sent = this.options.hub.sendDaemonSessionMessage(
@@ -5066,14 +5069,16 @@ export class TerminalSessionLifecycle {
       message.chunks.map(toTerminalOutputChunk),
     );
     const observers = this.frameObservers.get(current.id);
-    const early = observers
-      ?.get(pending.socket)
-      ?.pending?.find((frame) => frame.seq >= message.nextSeq);
-    if (early) {
-      this.removeFrameObserver(current.id, pending.socket);
-      this.sendAttachFrame(pending.socket, early);
-    } else {
-      observers?.set(pending.socket, { nextSeq: message.nextSeq });
+    if (observers?.get(pending.socket) === pending.frameObserver) {
+      const early = pending.frameObserver.pending?.find(
+        (frame) => frame.seq >= message.nextSeq,
+      );
+      if (early) {
+        this.removeFrameObserver(current.id, pending.socket);
+        this.sendAttachFrame(pending.socket, early);
+      } else {
+        observers.set(pending.socket, { nextSeq: message.nextSeq });
+      }
     }
     this.repaintReopenedNativeTerminal(current);
   }
