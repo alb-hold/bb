@@ -20,14 +20,10 @@ import {
   threadTurnRequestKindValues,
   threadTurnRequestPhaseValues,
 } from "@bb/domain/thread-run-state";
-import {
-  startedOnBehalfOfInitiatorValues,
-} from "@bb/domain/started-on-behalf-of";
+import { startedOnBehalfOfInitiatorValues } from "@bb/domain/started-on-behalf-of";
 import { threadCreateOriginValues } from "@bb/domain/thread-create-origin";
 import { threadOriginKindValues } from "@bb/domain/thread-origin-kind";
-import {
-  storedThreadParentNotificationsValues,
-} from "@bb/domain/thread-parent-notifications-storage";
+import { storedThreadParentNotificationsValues } from "@bb/domain/thread-parent-notifications-storage";
 import { threadVisibilityValues } from "@bb/domain/thread-visibility";
 import type {
   EnvironmentProviderSelection,
@@ -1287,6 +1283,10 @@ export const terminalSessions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     lastUserInputAt: integer("last_user_input_at"),
+    storedFirstLiveFrame: text("first_live_frame", { mode: "json" }).$type<{
+      seq: number;
+      at: number;
+    }>(),
     defaultColors: text("default_colors", {
       mode: "json",
     }).$type<TerminalDefaultColors>(),

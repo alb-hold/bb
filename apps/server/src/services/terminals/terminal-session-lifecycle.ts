@@ -28,6 +28,7 @@ import {
   takePendingTerminalDaemonClose,
   getSessionById,
   getTerminalSession,
+  recordFirstTerminalFrame,
   HOST_RETAINED_OUTPUT_BYTES,
   getRetainedTerminalOutput,
   countTerminalSessions,
@@ -224,7 +225,13 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
   terminalId: string;
 }
 
+type LiveFrame = NonNullable<TerminalSession["firstLiveFrame"]>;
+type FrameObserver =
+  | { nextSeq: number; pending?: never }
+  | { nextSeq?: never; pending: LiveFrame[] };
+
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
+  frameObserver: FrameObserver;
   requestedAt: number;
   handoffOwnerToken?: string;
   socket: TerminalClientSocket;
@@ -1115,7 +1122,11 @@ export class TerminalSessionLifecycle {
         rebuild.bufferedBytes = 0;
         for (const chunk of buffered) {
           if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
-          state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
+          state.pushBase64(
+            chunk.seq,
+            chunk.dataBase64,
+            this.frameCallback(session, chunk.seq),
+          );
           rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
           await yieldToEventLoop();
         }
@@ -1299,6 +1310,13 @@ export class TerminalSessionLifecycle {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastUserInputAt: row.lastUserInputAt,
+      ...(row.storedFirstLiveFrame && {
+        firstLiveFrame: {
+          ...row.storedFirstLiveFrame,
+          terminalId: row.id,
+          provenance: "live" as const,
+        },
+      }),
       attention:
         attention === null || attention.clearedAt !== null
           ? null
@@ -2307,6 +2325,61 @@ export class TerminalSessionLifecycle {
     };
   }
 
+  private readonly frameObservers = new Map<
+    string,
+    Map<TerminalClientSocket, FrameObserver>
+  >();
+
+  private frameCallback(session: TerminalSessionRow, seq: number) {
+    if (session.storedFirstLiveFrame && !this.frameObservers.has(session.id))
+      return undefined;
+    return () => {
+      const frame = {
+        terminalId: session.id,
+        seq,
+        at: Date.now(),
+        provenance: "live" as const,
+      };
+      if (!session.storedFirstLiveFrame)
+        recordFirstTerminalFrame(this.options.db, session.id, {
+          seq,
+          at: frame.at,
+        });
+      const observers = this.frameObservers.get(session.id);
+      if (!observers) return;
+      for (const [socket, observer] of observers) {
+        if (observer.pending) {
+          observer.pending.push(frame);
+        } else if (seq >= observer.nextSeq) {
+          observers.delete(socket);
+          this.sendAttachFrame(socket, frame);
+        }
+      }
+      if (!observers.size) this.frameObservers.delete(session.id);
+    };
+  }
+
+  private sendAttachFrame(
+    socket: TerminalClientSocket,
+    frame: LiveFrame,
+  ): void {
+    const current = getTerminalById(this.options.db, frame.terminalId);
+    if (current)
+      this.options.hub.sendTerminalSocketMessage(socket, {
+        type: "session-updated",
+        session: { ...this.toTerminalSession(current), attachLiveFrame: frame },
+      });
+  }
+
+  private removeFrameObserver(
+    terminalId: string,
+    socket: TerminalClientSocket,
+  ): void {
+    const observers = this.frameObservers.get(terminalId);
+    observers?.delete(socket);
+    if (!observers?.size) this.frameObservers.delete(terminalId);
+  }
+
   private retainTerminalOutput(
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
@@ -2319,6 +2392,7 @@ export class TerminalSessionLifecycle {
         session.rows,
         chunk.seq,
         chunk.dataBase64,
+        this.frameCallback(session, chunk.seq),
       );
     } else if (!rebuild.cancelled) {
       const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
@@ -3304,6 +3378,7 @@ export class TerminalSessionLifecycle {
 
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
+      frameObserver: { pending: [] },
       requestedAt: this.markReplayStage("daemon-requested", {
         terminalId: current.id,
         requestId,
@@ -3316,9 +3391,15 @@ export class TerminalSessionLifecycle {
       terminalId: current.id,
       sinceSeq: args.sinceSeq,
     };
-    void this.pendingAttaches
-      .claim(pendingAttach)
-      .promise.catch(() => undefined);
+    const observers =
+      this.frameObservers.get(current.id) ??
+      new Map<TerminalClientSocket, FrameObserver>();
+    observers.set(args.socket, pendingAttach.frameObserver);
+    this.frameObservers.set(current.id, observers);
+    void this.pendingAttaches.claim(pendingAttach).promise.catch(() => {
+      if (observers.get(args.socket) !== pendingAttach.frameObserver) return;
+      this.removeFrameObserver(current.id, args.socket);
+    });
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
       {
@@ -3331,6 +3412,7 @@ export class TerminalSessionLifecycle {
     );
     if (!sent) {
       this.pendingAttaches.cancel(pendingAttach.rpcKey);
+      this.removeFrameObserver(current.id, args.socket);
       this.attributeFailedAttach(pendingAttach, "send-failed");
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
@@ -3384,6 +3466,7 @@ export class TerminalSessionLifecycle {
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
+    this.removeFrameObserver(args.terminalId, args.socket);
     this.outputFlow.removeClient(args.terminalId, args.socket);
     if (!this.options.hub.hasTerminalClients(args.terminalId)) {
       this.forwardedNextSeqByTerminalId.delete(args.terminalId);
@@ -4985,6 +5068,18 @@ export class TerminalSessionLifecycle {
       pending.socket,
       message.chunks.map(toTerminalOutputChunk),
     );
+    const observers = this.frameObservers.get(current.id);
+    if (observers?.get(pending.socket) === pending.frameObserver) {
+      const early = pending.frameObserver.pending?.find(
+        (frame) => frame.seq >= message.nextSeq,
+      );
+      if (early) {
+        this.removeFrameObserver(current.id, pending.socket);
+        this.sendAttachFrame(pending.socket, early);
+      } else {
+        observers.set(pending.socket, { nextSeq: message.nextSeq });
+      }
+    }
     this.repaintReopenedNativeTerminal(current);
   }
 

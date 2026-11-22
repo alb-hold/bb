@@ -584,6 +584,7 @@ export {
   countTerminalSessions,
   createTerminalSession,
   getTerminalSession,
+  recordFirstTerminalFrame,
   listTerminalSessions,
   TERMINAL_USER_INPUT_REFRESH_MS,
   updateTerminalSession,

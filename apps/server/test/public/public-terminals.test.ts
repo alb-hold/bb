@@ -1367,6 +1367,184 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it.each([
+    { early: true, paintSpace: false },
+    { early: false, paintSpace: false },
+    { early: false, paintSpace: true },
+  ])(
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace)",
+    async ({ early, paintSpace }) => {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const stored = createTerminalSession(fixture.harness.db, {
+        cols: 120,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 32,
+        status: "running",
+        threadId: null,
+        title: "Terminal 1",
+      });
+      const service = fixture.harness.deps.terminalSessions;
+      const output = (seq: number, data: string) =>
+        service.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.output",
+            terminalId: stored.id,
+            chunk: { seq, dataBase64: Buffer.from(data).toString("base64") },
+          },
+        });
+      await output(0, "   ");
+      await service.readTerminalPromptScreen(stored.id);
+      expect(
+        service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
+      ).toBeUndefined();
+      await output(1, "first");
+      await vi.waitFor(() =>
+        expect(
+          service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
+        ).toBe(1),
+      );
+      const browserSocket = createFakeBrowserSocket();
+
+      fixture.harness.deps.terminalSessions.attachBrowserTerminal({
+        rawReplay: true,
+        outputAcks: false,
+        resizeAcks: false,
+        socket: browserSocket,
+        sinceSeq: 0,
+        terminalId: stored.id,
+      });
+      const attachMessage = await waitForDaemonMessage(fixture.socket);
+      expect(attachMessage).toMatchObject({
+        type: "terminal.attach",
+        terminalId: stored.id,
+        sinceSeq: 0,
+        tailBytes: 4 * 1024 * 1024,
+      });
+      if (attachMessage.type !== "terminal.attach") {
+        throw new Error(
+          `Expected terminal.attach, received ${attachMessage.type}`,
+        );
+      }
+
+      const detachedSocket = createFakeBrowserSocket();
+      const send = detachedSocket.send;
+      detachedSocket.send = (data) => {
+        send(data);
+        if (
+          terminalServerMessageSchema.parse(JSON.parse(data)).type ===
+          "attached"
+        ) {
+          service.detachBrowserTerminal({
+            socket: detachedSocket,
+            terminalId: stored.id,
+          });
+        }
+      };
+      service.attachBrowserTerminal({
+        rawReplay: true,
+        outputAcks: false,
+        resizeAcks: false,
+        socket: detachedSocket,
+        sinceSeq: 0,
+        terminalId: stored.id,
+      });
+      const second = await waitForDaemonMessage(fixture.socket, 1);
+      if (second.type !== "terminal.attach")
+        throw new Error("Missing second attach request");
+      await service.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: second.requestId,
+          terminalId: stored.id,
+          chunks: [],
+          replayStartSeq: 2,
+          nextSeq: 2,
+        },
+      });
+
+      const observed = () =>
+        readBrowserMessages(browserSocket).flatMap((message) =>
+          message.type === "session-updated" && message.session.attachLiveFrame
+            ? [message.session.attachLiveFrame]
+            : [],
+        );
+      const renderBurst = async () => {
+        expect(observed()).toEqual([]);
+        await output(
+          2,
+          early ? "\x1b[31m" : "\x1b]10;#ff0000\x07\x1b]11;#0000ff\x07",
+        );
+        await service.readTerminalPromptScreen(stored.id);
+        expect(observed()).toEqual([]);
+        const repaint = paintSpace ? "\x1b[44m " : "\r   \x1b[7mfirst";
+        await output(3, `\x1b[?2026h${repaint}`);
+        await service.readTerminalPromptScreen(stored.id);
+        expect(observed()).toEqual([]);
+        await output(4, "\x1b[?2026l");
+        await service.readTerminalPromptScreen(stored.id);
+      };
+      if (early) {
+        await renderBurst();
+        expect(observed()).toEqual([]);
+      }
+      await fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: attachMessage.requestId,
+          terminalId: stored.id,
+          chunks: [
+            { seq: 1, dataBase64: Buffer.from("first").toString("base64") },
+          ],
+          replayStartSeq: 1,
+          nextSeq: 2,
+        },
+      });
+      expect(readBrowserMessages(browserSocket)).toContainEqual(
+        expect.objectContaining({
+          type: "attached",
+          session: expect.objectContaining({
+            id: stored.id,
+            threadId: null,
+          }),
+        }),
+      );
+
+      if (!early) await renderBurst();
+      await output(5, "next");
+      await service.readTerminalPromptScreen(stored.id);
+      expect(
+        readBrowserMessages(detachedSocket).some(
+          (message) =>
+            message.type === "session-updated" &&
+            message.session.attachLiveFrame,
+        ),
+      ).toBe(false);
+      await vi.waitFor(() =>
+        expect(observed()).toEqual([
+          {
+            terminalId: stored.id,
+            seq: 4,
+            at: expect.any(Number),
+            provenance: "live",
+          },
+        ]),
+      );
+      expect(
+        service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
+      ).toBe(1);
+    },
+  );
+
   it("attaches browser sockets to threadless terminal sessions", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -1410,11 +1588,18 @@ describe("public terminal routes", () => {
         type: "terminal.replay",
         requestId: attachMessage.requestId,
         terminalId: stored.id,
-        chunks: [],
+        chunks: [
+          { seq: 0, dataBase64: Buffer.from("retained").toString("base64") },
+        ],
         replayStartSeq: 0,
-        nextSeq: 0,
+        nextSeq: 1,
       },
     });
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }).firstLiveFrame,
+    ).toBeUndefined();
     expect(readBrowserMessages(browserSocket)).toContainEqual(
       expect.objectContaining({
         type: "attached",

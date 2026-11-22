@@ -269,6 +269,43 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
+function visibleBlankRendition(cell: HeadlessCell): string | undefined {
+  if (
+    !cell.isInvisible() &&
+    (cell.isUnderline() || cell.isStrikethrough() || cell.isOverline())
+  )
+    return cellSgr(cell);
+  if (cell.isInverse())
+    return `inverse:${cell.getFgColorMode()}:${cell.getFgColor()}`;
+  if (!cell.isBgDefault())
+    return `background:${cell.getBgColorMode()}:${cell.getBgColor()}`;
+  return undefined;
+}
+
+function visibleFrameContent(terminal: HeadlessTerminal): string {
+  const buffer = terminal.buffer.active;
+  const cell = buffer.getNullCell();
+  const parts: string[] = [];
+  let hasVisibleText = false;
+  for (let row = 0; row < terminal.rows; row++) {
+    const line = buffer.getLine(buffer.baseY + row);
+    if (!line) continue;
+    for (let col = 0; col < terminal.cols; col++) {
+      line.getCell(col, cell);
+      if (!cell.getWidth()) continue;
+      const chars = cell.isInvisible() ? "" : cell.getChars();
+      if (chars.trim()) {
+        hasVisibleText = true;
+        parts.push(`${row},${col}${cellSgr(cell)}${chars}`);
+      } else {
+        const rendition = visibleBlankRendition(cell);
+        if (rendition) parts.push(`${row},${col}:${rendition} `);
+      }
+    }
+  }
+  return hasVisibleText ? parts.join("") : "";
+}
+
 function* serializeScreenRows(
   terminal: HeadlessTerminal,
   history = false,
@@ -400,7 +437,7 @@ async function serializeHistory(terminal: HeadlessTerminal, maxBytes: number) {
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
-    | { kind: "base64"; data: string }
+    | { kind: "base64"; data: string; rendered?: () => void }
     | { kind: "bytes"; data: Uint8Array }
     | { kind: "resize"; cols: number; rows: number }
     | { kind: "read"; read: () => void }
@@ -423,6 +460,7 @@ export class TerminalScreenState {
   private readonly replayMetadata = new Map<number, string>();
   private replayCursorStyle = "";
   private replayBatchBytes = 8 * 1024;
+  private frameBaseline?: string;
 
   constructor(
     cols: number,
@@ -465,14 +503,14 @@ export class TerminalScreenState {
     this.enqueue({ kind: "bytes", data });
   }
 
-  pushBase64(seq: number, data: string): void {
+  pushBase64(seq: number, data: string, rendered?: () => void): void {
     if (this.disposed || !this.valid || seq < this.nextSeq) return;
     if (seq !== this.nextSeq) {
       this.invalidate();
       return;
     }
     this.nextSeq += 1;
-    this.enqueue({ kind: "base64", data });
+    this.enqueue({ kind: "base64", data, rendered });
   }
 
   private trackPartialSequence(data: Uint8Array): void {
@@ -603,7 +641,7 @@ export class TerminalScreenState {
 
   private enqueue(
     work:
-      | { kind: "base64"; data: string }
+      | { kind: "base64"; data: string; rendered?: () => void }
       | { kind: "bytes"; data: Uint8Array }
       | { kind: "resize"; cols: number; rows: number }
       | { kind: "read"; read: () => void },
@@ -661,10 +699,14 @@ export class TerminalScreenState {
                     : next.data;
                 const batch = [data];
                 let bytes = data.byteLength;
-                while (this.pendingWork.length > 0) {
+                while (
+                  this.pendingWork.length > 0 &&
+                  !(next.kind === "base64" && next.rendered)
+                ) {
                   const queued = this.pendingWork[0];
                   if (
                     !queued ||
+                    (queued.kind === "base64" && queued.rendered) ||
                     queued.kind === "resize" ||
                     queued.kind === "read"
                   )
@@ -693,7 +735,21 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
+                const rendered = next.kind === "base64" && next.rendered;
+                if (rendered)
+                  this.frameBaseline ??= visibleFrameContent(this.terminal);
+                else this.frameBaseline = undefined;
                 this.terminal.write(data, () => {
+                  if (
+                    rendered &&
+                    !this.disposed &&
+                    !this.terminal.modes.synchronizedOutputMode &&
+                    isTerminalReplaySafeBoundary(this.parserState)
+                  ) {
+                    const current = visibleFrameContent(this.terminal);
+                    if (current && current !== this.frameBaseline) rendered();
+                    this.frameBaseline = undefined;
+                  }
                   const elapsed = performance.now() - started;
                   if (elapsed > 8)
                     this.replayBatchBytes = Math.max(
@@ -866,6 +922,7 @@ export class TerminalScreenStateCache {
     rows: number,
     seq: number,
     data: string,
+    rendered?: () => void,
   ): void {
     let state = this.states.get(terminalId);
     if (state === undefined) {
@@ -874,7 +931,7 @@ export class TerminalScreenStateCache {
       this.states.set(terminalId, state);
     }
     state.resize(cols, rows);
-    state.pushBase64(seq, data);
+    state.pushBase64(seq, data, rendered);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {

@@ -1149,6 +1149,13 @@
       "when": 1794850000010,
       "tag": "0163_resume_threads_general_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "6",
+      "when": 1795309305528,
+      "tag": "0164_terminal_first_live_frame",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,7 @@ import {
   dropQueuedMessageEditHeldUntilColumn,
   dropQueuedMessageDeliveryColumns,
   dropThreadStatusChangedAtColumn,
+  dropTerminalFirstLiveFrameColumn,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
@@ -102,6 +103,7 @@ describe.each(["project", "thread", "preference"] as const)(
           dropTerminalDefaultColorsColumn(db);
           dropQueuedMessageDeliveryColumns(db);
           dropThreadStatusChangedAtColumn(db);
+          dropTerminalFirstLiveFrameColumn(db);
           dropThreadRunStateTables(db);
           dropPluginFailureLabelColumns(db);
           db.$client

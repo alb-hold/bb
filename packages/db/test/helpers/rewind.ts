@@ -173,6 +173,16 @@ export function dropThreadStatusChangedAtColumn(db: DbConnection): void {
   }
 }
 
+export function dropTerminalFirstLiveFrameColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .all();
+  if (columns.some((column) => column.name === "first_live_frame"))
+    db.$client.exec(
+      "ALTER TABLE terminal_sessions DROP COLUMN first_live_frame",
+    );
+}
+
 export function dropThreadRunStateTables(db: DbConnection): void {
   db.$client.exec(
     "DROP TABLE IF EXISTS thread_turn_requests; DROP TABLE IF EXISTS thread_run_states;",
@@ -233,6 +243,7 @@ export function dropQueuedMessageCoalesceColumns(db: DbConnection): void {
 export function rewindMergedUpstreamMigrations(db: DbConnection): void {
   dropQueuedMessageCoalesceColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropTerminalFirstLiveFrameColumn(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   restoreDiffViewedFilesTable(db);

@@ -12,6 +12,7 @@ import {
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropThreadStatusChangedAtColumn,
+  dropTerminalFirstLiveFrameColumn,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
   restoreDiffViewedFilesTable,
@@ -765,6 +766,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropTerminalFirstLiveFrameColumn(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_insert");
@@ -818,6 +820,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropTerminalFirstLiveFrameColumn(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   const columns = db.$client
@@ -903,6 +906,7 @@ function rewindMachineProvidersMigration(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropTerminalFirstLiveFrameColumn(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TABLE IF EXISTS ui_preference_defaults");
@@ -2706,6 +2710,7 @@ describe("migrate", () => {
         providerId: "codex",
       });
       dropThreadStatusChangedAtColumn(db);
+      dropTerminalFirstLiveFrameColumn(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
       restoreDiffViewedFilesTable(db);
@@ -3545,6 +3550,7 @@ describe("migrate", () => {
       dropTerminalDefaultColorsColumn(db);
       dropQueuedMessageDeliveryColumns(db);
       dropThreadStatusChangedAtColumn(db);
+      dropTerminalFirstLiveFrameColumn(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
       db.$client.prepare("DROP INDEX projects_deleted_idx").run();
@@ -3963,6 +3969,7 @@ describe("migrate", () => {
           `,
         )
         .run(projectSourcesDefaultIndexMigrationWhen);
+      dropTerminalFirstLiveFrameColumn(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
 

@@ -17,6 +17,7 @@ import {
   dropQueuedMessageEditHeldUntilColumn,
   dropQueuedMessageDeliveryColumns,
   dropThreadStatusChangedAtColumn,
+  dropTerminalFirstLiveFrameColumn,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
@@ -64,6 +65,7 @@ function upgradeDatabase(overrides: AppKeybindingOverrides | undefined) {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropTerminalFirstLiveFrameColumn(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client

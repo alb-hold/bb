@@ -17,6 +17,7 @@ import {
 } from "@bb/host-daemon-contract";
 import { turnScope, type ThreadEvent } from "@bb/domain";
 import { runPeriodicSweeps } from "../../src/services/system/periodic-sweeps.js";
+import { clearWorkspaceAwarenessCache } from "../../src/services/threads/workspace-awareness.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { seedSession } from "../helpers/seed.js";
 import {
@@ -119,6 +120,7 @@ function createStatementCounter(): StatementCounter {
       watched = database;
     },
     async record(work) {
+      clearWorkspaceAwarenessCache();
       const recorded: string[] = [];
       statements = recorded;
       try {
