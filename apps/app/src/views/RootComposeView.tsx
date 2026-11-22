@@ -544,6 +544,7 @@ function RootComposeSurface({
     renderPromptBox,
   } = composer;
   const navigationPreview = useSidebarNavigationPreview();
+  const isCompactViewport = useIsCompactViewport();
   const navigationPaging = useSidebarNavigationPaging({
     enabled: isCompactViewport,
   });
@@ -763,7 +764,6 @@ function RootComposeSurface({
     fixedPanelTabsState,
   });
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
-  const isCompactViewport = useIsCompactViewport();
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport,

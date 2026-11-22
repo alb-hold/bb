@@ -55,7 +55,7 @@ export function useMoveDestinations():
   usePreferencesSync();
   const mode = useAtomValue(sidebarOrganizationModeAtom);
   const storedOrder = useAtomValue(sidebarManualSectionOrderAtom);
-  const { sections } = experimental_useSidebarThreads();
+  const { sections } = experimental_useSidebarThreads({ experimental_previewRows: true, experimental_lifecycles: ["active"] });
   const destinations =
     mode === "chronological"
       ? normalizeSidebarSectionOrder({

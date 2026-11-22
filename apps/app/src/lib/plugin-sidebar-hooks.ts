@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useStore } from "jotai";
 import {
   PERSONAL_PROJECT_ID,
@@ -200,9 +200,14 @@ export function useSidebarThreads(
   const query = useSidebarNavigation();
   const preview = useSidebarNavigationPreview();
   const previewRows = active && options?.experimental_previewRows === true;
-  const paging = useSidebarNavigationPaging({ enabled: previewRows });
+  const paging = useSidebarNavigationPaging({ enabled: active });
+  useEffect(() => {
+    if (active && !previewRows && paging.hasNextPage && !paging.isFetchingNextPage && !paging.isFetchNextPageError) {
+      void paging.fetchNextPage();
+    }
+  }, [active, paging, previewRows]);
   const complete = query.isPlaceholderData ? undefined : query.data;
-  const data = previewRows ? (complete ?? preview ?? query.data) : complete;
+  const data = previewRows || !active ? (complete ?? preview ?? query.data) : complete;
   const activePages = useMemo<
     PluginSidebarThreadsState["experimental_activePages"]
   >(
@@ -218,15 +223,7 @@ export function useSidebarThreads(
               : {}),
           }
         : undefined,
-    [
-      previewRows,
-      paging.hasNextPage,
-      paging.isFetchingNextPage,
-      paging.isFetchNextPageError,
-      paging.fetchNextPage,
-      complete,
-      preview?.overview,
-    ],
+    [previewRows, paging, complete, preview],
   );
   const activityNow = useSecondTick(
     data?.projects.some((project) =>

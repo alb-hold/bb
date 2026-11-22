@@ -25,7 +25,7 @@ export function usePluginBranches({
   projectId,
   query = "",
 }: UseBranchesArgs): BranchesState {
-  const navigation = useSidebarNavigation({
+  const navigation = useSidebarNavigation({ includePreview: true,
     enabled: hostId === null && projectId !== null,
   });
   const branchHostId = resolvePluginBranchHostId(
@@ -70,7 +70,7 @@ export function usePluginCheckoutState({
   hostId,
   projectId,
 }: UseCheckoutStateArgs): CheckoutState {
-  const navigation = useSidebarNavigation({
+  const navigation = useSidebarNavigation({ includePreview: true,
     enabled: hostId === null && projectId !== null,
   });
   const checkoutHostId = resolvePluginBranchHostId(

@@ -140,7 +140,7 @@ interface ProjectMoveData {
 }
 
 function useProjectMoveData(): ProjectMoveData {
-  const { data: navigation } = useSidebarNavigation();
+  const { data: navigation } = useSidebarNavigation({ includePreview: true });
   const projects =
     navigation === undefined
       ? []

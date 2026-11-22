@@ -1156,7 +1156,7 @@ export function MachineModeSections({
   const groupThreadsByEnvironment = useAtomValue(
     sidebarGroupThreadsByEnvironmentAtom,
   );
-  const { hostsById } = useSidebarData();
+  const { hostsById } = useSidebarData(true);
   const hosts = useSidebarMachineHosts(hostsById);
   const [collapsedMachineKeyList, setCollapsedMachineKeyList] = useAtom(
     sidebarCollapsedMachinesAtom,

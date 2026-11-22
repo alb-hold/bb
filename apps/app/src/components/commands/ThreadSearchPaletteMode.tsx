@@ -153,7 +153,7 @@ export function ThreadSearchPaletteMode({
     setHighlightedKey(null);
   }
   const [now] = useState(() => Date.now());
-  const navigation = useSidebarNavigation();
+  const navigation = useSidebarNavigation({ includePreview: true });
   const threadSearch = useThreadSearch({ active: true, query });
   const trimmedQuery = query.trim();
   const archived = usePaletteRecentArchivedThreads({

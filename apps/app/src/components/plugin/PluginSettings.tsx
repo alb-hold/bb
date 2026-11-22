@@ -140,7 +140,7 @@ function PluginSettingField({
   onChange,
   storedValue,
 }: PluginSettingFieldProps) {
-  const projects = useSidebarNavigation({
+  const projects = useSidebarNavigation({ includePreview: true,
     enabled: descriptor.type === "project",
   });
 

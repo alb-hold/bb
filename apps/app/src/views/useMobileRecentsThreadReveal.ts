@@ -136,12 +136,7 @@ export function useMobileRecentsThreadReveal(): void {
       return;
     }
     void paging.fetchNextPage();
-  }, [
-    needsMorePagesForSelected,
-    paging.fetchNextPage,
-    paging.isFetchNextPageError,
-    paging.isFetchingNextPage,
-  ]);
+  }, [needsMorePagesForSelected, paging]);
 
   const threads = useMemo(
     () =>

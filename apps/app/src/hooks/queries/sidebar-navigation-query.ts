@@ -231,7 +231,7 @@ export async function fetchSidebarNavigation({
   }
 }
 
-export function useSidebarNavigation(options?: QueryOptions) {
+export function useSidebarNavigation(options?: QueryOptions & { includePreview?: boolean }) {
   const enabled = options?.enabled ?? true;
   const queryClient = useQueryClient();
   syncSidebarNavigationPagesCache(queryClient);
@@ -249,6 +249,10 @@ export function useSidebarNavigation(options?: QueryOptions) {
   });
   const pagesQuery = useInfiniteQuery(sidebarNavigationPagesQueryOptions(queryClient, enabled));
 
+  const preview = useSidebarNavigationPreview();
+  if (options?.includePreview && preview && (completeQuery.isPlaceholderData || completeQuery.data === undefined)) {
+    return { ...completeQuery, data: preview, isPlaceholderData: true };
+  }
   if (completeQuery.data !== undefined) {
     return completeQuery;
   }
