@@ -337,7 +337,7 @@ export function ThreadDetailHeader({
           {hasNativeTerminal ? (
             <div
               ref={nativeActivityTargetRef}
-              className="h-4 shrink-0 max-[375px]:[&_[role=status]>span:last-child]:sr-only"
+              className="h-4 shrink-0 empty:hidden max-[375px]:[&_[role=status]>span:last-child]:sr-only"
             />
           ) : (
             <ThreadActivityLabel
