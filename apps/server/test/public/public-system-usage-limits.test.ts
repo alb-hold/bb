@@ -752,4 +752,138 @@ describe("GET /api/v1/system/usage-limits", () => {
       }
     });
   });
+
+  it("counts mixed-stream threads without dropping context-only turns or double-counting turns with both", async () => {
+    await withTestHarness(async (harness) => {
+      const now = Date.now();
+      const recentAt = now - 20 * 60 * 1_000;
+      const { host, session, thread } = seedThreadFixture(harness, {
+        session: { id: "host-antigravity-mixed" },
+        thread: { providerId: "acp-antigravity-acp" },
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: handleUsageRequest,
+      });
+
+      // Turn 1 emits both contextWindowUsage (10,000) and tokenUsage (1,200) -> counts 1,200 (no double count).
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 1,
+        createdAt: recentAt,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          contextWindowUsage: {
+            usedTokens: 10_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 2,
+        createdAt: recentAt + 500,
+        type: "thread/tokenUsage/updated",
+        scope: turnScope("turn-1"),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          tokenUsage: {
+            last: {
+              inputTokens: 900,
+              cachedInputTokens: 0,
+              outputTokens: 300,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_200,
+            },
+            total: {
+              inputTokens: 900,
+              cachedInputTokens: 0,
+              outputTokens: 300,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_200,
+            },
+            modelContextWindow: 1_048_576,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 3,
+        createdAt: recentAt + 1_000,
+        type: "turn/completed",
+        scope: turnScope("turn-1"),
+        data: { providerThreadId: "agy-mixed-1", status: "completed" },
+      });
+
+      // Turn 2 emits only contextWindowUsage (10,000 -> 14,500) -> counts +4,500 delta.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 4,
+        createdAt: recentAt + 2_000,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          contextWindowUsage: {
+            usedTokens: 14_500,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 5,
+        createdAt: recentAt + 3_000,
+        type: "turn/completed",
+        scope: turnScope("turn-2"),
+        data: { providerThreadId: "agy-mixed-1", status: "completed" },
+      });
+
+      try {
+        const response = await harness.app.request(
+          `/api/v1/system/usage-limits?hostId=${host.id}&providerId=acp-antigravity-acp`,
+        );
+        expect(response.status).toBe(200);
+        const body = (await readJson(response)) as ProviderUsageResponse;
+        expect(body["acp-antigravity-acp"]).toEqual({
+          status: "ok",
+          accountEmail: null,
+          planLabel: null,
+          windows: [],
+          localUsage: {
+            source: "local-events",
+            estimated: true,
+            lastActivityAt: recentAt + 3_000,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 5_700,
+                turns: 2,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 5_700,
+                turns: 2,
+              },
+            ],
+          },
+        });
+      } finally {
+        responder.unregister();
+      }
+    });
+  });
 });

@@ -143,10 +143,6 @@ export function summarizeLocalProviderUsage(
     }
     events.sort((a, b) => a.sequence - b.sequence);
 
-    const hasTokenUsageEvents = events.some(
-      (event) => event.type === "thread/tokenUsage/updated",
-    );
-
     const prevTokenTotals = new Map<string, number>();
     const prevContextUsed = new Map<string, number>();
     let threadTokens5h = 0;
@@ -154,66 +150,88 @@ export function summarizeLocalProviderUsage(
     let threadTurns5h = 0;
     let threadTurns7d = 0;
 
+    // Split events into turn segments (bounded by turn/completed) so a turn
+    // with tokenUsage/updated uses exact token deltas without double-counting
+    // its contextWindowUsage/updated, while any other turn that only emits
+    // contextWindowUsage/updated is still counted.
+    const segments: StoredUsageEventRow[][] = [];
+    let currentSegment: StoredUsageEventRow[] = [];
     for (const event of events) {
+      currentSegment.push(event);
       if (event.type === "turn/completed") {
-        if (event.createdAt >= cutoff7d) {
-          threadTurns7d += 1;
-          noteActivity(event.createdAt);
-        }
-        if (event.createdAt >= cutoff5h) {
-          threadTurns5h += 1;
-        }
-        continue;
+        segments.push(currentSegment);
+        currentSegment = [];
       }
+    }
+    if (currentSegment.length > 0) {
+      segments.push(currentSegment);
+    }
 
-      const data = parseJsonObject(event.data);
-      if (data === null) continue;
-      const sessionKey =
-        event.providerThreadId ??
-        (typeof data["providerThreadId"] === "string"
-          ? data["providerThreadId"]
-          : "");
+    for (const segment of segments) {
+      const segmentHasTokenUsage = segment.some(
+        (event) => event.type === "thread/tokenUsage/updated",
+      );
 
-      if (hasTokenUsageEvents) {
-        if (event.type !== "thread/tokenUsage/updated") continue;
-        const parsed = readTokenUsageEvent(data);
-        if (parsed === null) continue;
-        const prevTotal = prevTokenTotals.get(sessionKey) ?? 0;
-        const isRepeat =
-          parsed.cumulativeTotalTokens > 0 &&
-          parsed.cumulativeTotalTokens === prevTotal;
-        if (parsed.cumulativeTotalTokens > 0) {
-          prevTokenTotals.set(sessionKey, parsed.cumulativeTotalTokens);
+      for (const event of segment) {
+        if (event.type === "turn/completed") {
+          if (event.createdAt >= cutoff7d) {
+            threadTurns7d += 1;
+            noteActivity(event.createdAt);
+          }
+          if (event.createdAt >= cutoff5h) {
+            threadTurns5h += 1;
+          }
+          continue;
         }
-        if (isRepeat || parsed.lastTotalTokens <= 0) continue;
-        if (event.createdAt >= cutoff7d) {
-          threadTokens7d += parsed.lastTotalTokens;
-          noteActivity(event.createdAt);
-        }
-        if (event.createdAt >= cutoff5h) {
-          threadTokens5h += parsed.lastTotalTokens;
-        }
-      } else if (event.type === "thread/contextWindowUsage/updated") {
-        const usedTokens = readContextWindowUsedTokens(data);
-        if (usedTokens === null) continue;
-        const prevUsed = prevContextUsed.get(sessionKey);
-        const delta =
-          prevUsed === undefined
-            ? usedTokens
-            : usedTokens > prevUsed
-              ? usedTokens - prevUsed
-              : usedTokens < prevUsed
-                ? usedTokens
-                : 0;
-        prevContextUsed.set(sessionKey, usedTokens);
-        if (delta <= 0) continue;
-        if (event.createdAt >= cutoff7d) {
-          usedContextWindowFallback = true;
-          threadTokens7d += delta;
-          noteActivity(event.createdAt);
-        }
-        if (event.createdAt >= cutoff5h) {
-          threadTokens5h += delta;
+
+        const data = parseJsonObject(event.data);
+        if (data === null) continue;
+        const sessionKey =
+          event.providerThreadId ??
+          (typeof data["providerThreadId"] === "string"
+            ? data["providerThreadId"]
+            : "");
+
+        if (event.type === "thread/tokenUsage/updated") {
+          const parsed = readTokenUsageEvent(data);
+          if (parsed === null) continue;
+          const prevTotal = prevTokenTotals.get(sessionKey) ?? 0;
+          const isRepeat =
+            parsed.cumulativeTotalTokens > 0 &&
+            parsed.cumulativeTotalTokens === prevTotal;
+          if (parsed.cumulativeTotalTokens > 0) {
+            prevTokenTotals.set(sessionKey, parsed.cumulativeTotalTokens);
+          }
+          if (isRepeat || parsed.lastTotalTokens <= 0) continue;
+          if (event.createdAt >= cutoff7d) {
+            threadTokens7d += parsed.lastTotalTokens;
+            noteActivity(event.createdAt);
+          }
+          if (event.createdAt >= cutoff5h) {
+            threadTokens5h += parsed.lastTotalTokens;
+          }
+        } else if (event.type === "thread/contextWindowUsage/updated") {
+          const usedTokens = readContextWindowUsedTokens(data);
+          if (usedTokens === null) continue;
+          const prevUsed = prevContextUsed.get(sessionKey);
+          const delta =
+            prevUsed === undefined
+              ? usedTokens
+              : usedTokens > prevUsed
+                ? usedTokens - prevUsed
+                : usedTokens < prevUsed
+                  ? usedTokens
+                  : 0;
+          prevContextUsed.set(sessionKey, usedTokens);
+          if (segmentHasTokenUsage || delta <= 0) continue;
+          if (event.createdAt >= cutoff7d) {
+            usedContextWindowFallback = true;
+            threadTokens7d += delta;
+            noteActivity(event.createdAt);
+          }
+          if (event.createdAt >= cutoff5h) {
+            threadTokens5h += delta;
+          }
         }
       }
     }
