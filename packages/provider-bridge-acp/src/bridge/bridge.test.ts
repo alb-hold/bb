@@ -1609,6 +1609,25 @@ exec "${process.execPath}" "${FAKE_AGENT_PATH}"
         expect(
           await completeTurnWith(providerThreadId, "reply OK", options),
         ).toBe("echo:reply OK");
+        expect(
+          await completeTurnWith(
+            providerThreadId,
+            "continue",
+            executionOptions({ providerOptions }),
+          ),
+        ).toBe("echo:continue");
+        const switched = await waitForResponse(
+          sendTurnRequest("turn/start", providerThreadId, {
+            input: [{ type: "text", text: "continue", mentions: [] }],
+            options: executionOptions({
+              providerOptions,
+              envVars: pooled ? {} : { AGY_GATEWAY_API_KEY: "test-pool" },
+            }),
+          }),
+        );
+        expect(switched.error?.message).toContain(
+          "Start a new Antigravity thread",
+        );
         if (pooled) expect(existsSync(launchLog)).toBe(false);
         else
           expect(

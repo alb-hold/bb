@@ -3536,11 +3536,10 @@ function reconcileExecutionSettings(
   }
   const launchSpec = executionLaunchSpec(
     options.providerOptions,
-    options.envVars,
+    options.envVars ?? session.construction.envVars,
   );
   if (
     options.providerOptions?.acpAgentId === "acp-antigravity-acp" &&
-    options.envVars !== undefined &&
     launchSpec !== null &&
     !isDeepStrictEqual(session.construction.agent, {
       command: launchSpec.command,
