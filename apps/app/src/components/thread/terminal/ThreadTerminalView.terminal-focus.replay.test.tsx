@@ -4667,6 +4667,7 @@ describe("terminal first paint", () => {
     );
     let finishOutput!: (value: {
       chunks: { seq: number; dataBase64: string }[];
+      truncated: boolean;
       nextSeq: number;
     }) => void;
     testState.output.mockImplementation(
@@ -4695,6 +4696,7 @@ describe("terminal first paint", () => {
             ),
           },
         ],
+        truncated: true,
         nextSeq: 1,
       });
     });
@@ -4702,6 +4704,7 @@ describe("terminal first paint", () => {
       expect(surface.dataset.renderGridCols).toBe("135");
       expect(surface.style.opacity).toBe("");
     }, "fitted retained output was not revealed");
+    expect(document.body.textContent).toContain("Earlier output was truncated.");
     expect(paintOpacities.length).toBeGreaterThan(0);
     expect(paintOpacities.every((opacity) => opacity === "0")).toBe(true);
   });

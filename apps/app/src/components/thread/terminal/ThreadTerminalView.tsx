@@ -1402,6 +1402,7 @@ export function ThreadTerminalView({
   const clearAttentionOnInputRef = useRef(clearAttentionOnInput);
   const claimSizeRef = useRef<(() => void) | null>(null);
   const [showFitControl, setShowFitControl] = useState(false);
+  const [truncatedSessionId, setTruncatedSessionId] = useState<string | null>(null);
   const [terminalReady, setTerminalReady] = useState(false);
   const [scrolledAboveBottom, setScrolledAboveBottom] = useState(false);
   const [promptTrackerState, setPromptTrackerState] = useState(
@@ -3881,6 +3882,7 @@ export function ThreadTerminalView({
           }, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
           const output = await outputPromise;
           if (!lifecycle.disposed) {
+            setTruncatedSessionId(retainNativeOutput && output.truncated ? sessionRef.current.id : null);
             if (lifecycle.retainedReplayFailed) {
               resetTerminalOutput();
               lastStatusNoticeRef.current = null;
@@ -4474,6 +4476,11 @@ export function ThreadTerminalView({
       data-app-terminal=""
       onKeyDownCapture={handleTerminalCommandKeyDown}
     >
+      {session.status === "exited" && truncatedSessionId === session.id ? (
+        <div role="status" className="shrink-0 px-3 py-1 text-xs text-muted-foreground">
+          Showing retained output (up to 64 KiB). Earlier output was truncated.
+        </div>
+      ) : null}
       {connectionNoticeText !== null ? (
         <div
           role="status"
