@@ -14,7 +14,7 @@ export function useSetupComplete(): boolean {
   const complete = navigationQuery.isPlaceholderData
     ? undefined
     : navigationQuery.data;
-  const navigation = complete ?? preview ?? navigationQuery.data;
+  const navigation = complete ?? preview;
   return (
     onboarded &&
     navigation !== undefined &&

@@ -5,6 +5,7 @@ import { useSetupComplete } from "./useSetupComplete";
 
 const mocks = vi.hoisted(() => ({
   useSidebarNavigation: vi.fn(),
+  useSidebarNavigationPreview: vi.fn(),
   useSystemConfig: vi.fn(),
 }));
 
@@ -12,7 +13,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: mocks.useSystemConfig,
 }));
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
-  useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPreview: mocks.useSidebarNavigationPreview,
   useSidebarNavigationPaging: () => ({
     hasNextPage: false,
     isFetchingNextPage: false,
@@ -42,6 +43,7 @@ function arrange({
       },
     },
   });
+  mocks.useSidebarNavigationPreview.mockReturnValue(undefined);
 }
 
 afterEach(() => {
@@ -72,5 +74,17 @@ describe("useSetupComplete", () => {
     });
 
     expect(renderHook(() => useSetupComplete()).result.current).toBe(true);
+  });
+
+  it("does not treat populated placeholder navigation as complete before fresh data", () => {
+    arrange({ onboardingCompletedAt: "2026-10-09T00:00:00.000Z", threadCount: 1 });
+    const placeholder = mocks.useSidebarNavigation.mock.results.at(-1)?.value;
+    mocks.useSidebarNavigation.mockReturnValue({ ...placeholder, isPlaceholderData: true });
+    const hook = renderHook(() => useSetupComplete());
+    expect(hook.result.current).toBe(false);
+    hook.rerender();
+    mocks.useSidebarNavigation.mockReturnValue({ ...placeholder, isPlaceholderData: false });
+    hook.rerender();
+    expect(hook.result.current).toBe(true);
   });
 });
