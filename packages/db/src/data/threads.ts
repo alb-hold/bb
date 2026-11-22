@@ -1667,13 +1667,14 @@ export function sidebarOverview(db: DbConnection, projectIds: readonly string[])
     ), ancestry(id) AS (
       SELECT id FROM visible WHERE coalesce(last_read_at, 0) < latest_attention_at
       UNION
-      SELECT v.parent_thread_id FROM visible v JOIN ancestry a ON a.id = v.id
-      WHERE v.parent_thread_id IS NOT NULL
+      SELECT t.parent_thread_id FROM ancestry a CROSS JOIN ${threads} t ON t.id = a.id
+      WHERE t.parent_thread_id IS NOT NULL AND t.project_id IN (${sql.join(projectIds.map((id) => sql`${id}`), sql`, `)})
+        AND t.visibility = 'visible' AND t.archived_at IS NULL AND t.deleted_at IS NULL
     )
     SELECT v.id, v.parent_thread_id AS parentThreadId, v.project_id AS projectId,
            v.section_id AS sectionId, v.status, v.last_read_at AS lastReadAt,
            v.latest_attention_at AS latestAttentionAt
-    FROM visible v JOIN ancestry a ON a.id = v.id
+    FROM visible v WHERE v.id IN (SELECT id FROM ancestry)
   `);
   return {
     counts: Object.fromEntries(counts.map((row) => [row.projectId, row.total])),
