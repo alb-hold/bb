@@ -82,6 +82,27 @@ function mergeArchivedEntries(
   return merged;
 }
 
+const targetEntryMaps = new WeakMap<ThreadListResponse, WeakMap<ThreadEntries, ThreadEntries>>();
+
+function mergeSelectedEntries(active: ThreadEntries, rows: ThreadListResponse): ThreadEntries {
+  let maps = targetEntryMaps.get(rows);
+  if (!maps) {
+    maps = new WeakMap();
+    targetEntryMaps.set(rows, maps);
+  }
+  const previous = maps.get(active);
+  if (previous) return previous;
+  let merged: Map<string, ThreadListEntry> | undefined;
+  for (const row of rows) {
+    if (row.archivedAt !== null || row.deletedAt !== null || row.visibility === "hidden" || active.has(row.id)) continue;
+    merged ??= new Map(active);
+    merged.set(row.id, row);
+  }
+  const result = merged ?? active;
+  maps.set(active, result);
+  return result;
+}
+
 function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
   const navigation =
     queryClient.getQueryData<SidebarBootstrapResponse>(
@@ -92,28 +113,16 @@ function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
     ) ??
     readCachedSidebarBootstrap() ??
     undefined;
-  const active = threadEntryMapFor(navigation);
+  let active = threadEntryMapFor(navigation);
   const selectedTargets = queryClient.getQueriesData<ThreadListResponse>({
     queryKey: [THREADS_QUERY_KEY, SIDEBAR_SELECTED_THREAD_TARGET_KIND],
+    type: "active",
   });
-  let mutableTargets: Map<string, ThreadListEntry> | null = null;
   for (const [, rows] of selectedTargets) {
-    if (!rows || rows.length === 0) continue;
-    for (const row of rows) {
-      if (
-        row.archivedAt !== null ||
-        row.deletedAt !== null ||
-        row.visibility === "hidden" ||
-        (mutableTargets ?? active).has(row.id)
-      ) {
-        continue;
-      }
-      mutableTargets ??= new Map(active);
-      mutableTargets.set(row.id, row);
-    }
+    if (rows?.length) active = mergeSelectedEntries(active, rows);
   }
   return mergeArchivedEntries(
-    mutableTargets ?? active,
+    active,
     queryClient.getQueryData<ArchivedThreadsData>(
       archivedThreadsListQueryKey({}),
     ),

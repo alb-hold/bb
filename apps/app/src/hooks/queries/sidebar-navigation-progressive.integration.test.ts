@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
 
+import { PluginThreadList } from "@/components/sidebar/PluginThreadList";
+import { RootComposeMobileRecents } from "@/views/RootComposeMobileRecents";
+import {
+  loadPluginThreadListReplacement,
+  SidebarThreadListHarness,
+  stubPluginRpcFetch,
+} from "@/test/fixtures/sidebar-thread-list";
 import { observeSidebarPageScroll } from "@/lib/sidebar-page-scroll";
 import { createElement, useEffect, useRef } from "react";
 import {
@@ -807,17 +814,31 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         JSON.stringify([grandparentId, offpageParentId]),
       );
 
+      const replacement = await loadPluginThreadListReplacement({
+        withNotifications: false,
+      });
+      stubPluginRpcFetch((method, body) => ({
+        result: method === "listPreferences"
+          ? { preferences: {} }
+          : method === "pullRequests"
+            ? Object.fromEntries((JSON.parse(body).keys as string[]).map(
+                (key) => [key, { outcome: "absent" }],
+              ))
+            : null,
+      }));
+      const pluginFetch = globalThis.fetch;
       const fetchUrls: string[] = [];
       vi.stubGlobal(
         "fetch",
         async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes("/rpc/")) return pluginFetch(input, init);
           const req = new Request(input, init);
           fetchUrls.push(req.url);
           return app.fetch(req);
         },
       );
 
-      const { wrapper, queryClient } = createQueryClientTestHarness();
+      const { queryClient } = createQueryClientTestHarness();
 
       function SidebarAndMobileSurface({
         selectedThreadId,
@@ -842,45 +863,22 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         });
         const mobilePreview =
           useSidebarNavigationPreviewWithSelected(selectedThreadId);
-        const collapsed = useAtomValue(mobileRecentsCollapsedThreadIdsAtom);
-        const mobileRows = mobilePreview
-          ? getMobileRecentThreads({
-              collapsedThreadIds: new Set(collapsed),
-              draftThreadIds: new Set(),
-              threads: mobilePreview.personalProject.threads,
-              overview: mobilePreview.overview,
-            })
-          : [];
         return createElement(
           "div",
           null,
+          createElement(PluginThreadList, { replacement, onNavigate: () => {} }),
           createElement(
-            "div",
-            { "data-testid": "desktop-sidebar-rows" },
-            desktopSidebar.threads.map((thread) =>
-              createElement(
-                "div",
-                {
-                  key: thread.id,
-                  "data-desktop-row-id": thread.id,
-                },
-                thread.displayTitle,
-              ),
-            ),
-          ),
-          createElement(
-            "div",
+            "section",
             { "data-testid": "mobile-recents-rows" },
-            mobileRows.map((row) =>
-              createElement(
-                "div",
-                {
-                  key: row.thread.id,
-                  "data-mobile-row-id": row.thread.id,
-                },
-                row.thread.title ?? row.thread.id,
-              ),
-            ),
+            mobilePreview && createElement(RootComposeMobileRecents, {
+              threads: mobilePreview.personalProject.threads,
+              overview: mobilePreview.overview,
+              completeSnapshot: false,
+              highlightedThreadId: selectedThreadId ?? null,
+              projectNamesById: new Map(),
+              providersById: new Map(),
+              showCreatingRow: false,
+            }),
           ),
           createElement(
             "div",
@@ -895,20 +893,20 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         createElement(SidebarAndMobileSurface, {
           selectedThreadId: offpageRootId,
         }),
-        { wrapper },
+        { wrapper: ({ children }) => createElement(SidebarThreadListHarness, { queryClient, children }) },
       );
 
       await waitFor(() => {
         expect(
           view.container.querySelector(
-            `[data-desktop-row-id="${offpageRootId}"]`,
+            `a[data-sidebar-thread-id="${offpageRootId}"]`,
           )?.textContent,
-        ).toBe("Off-page Root");
+        ).toContain("Off-page Root");
         expect(
           view.container.querySelector(
-            `[data-mobile-row-id="${offpageRootId}"]`,
+            `[data-testid="mobile-recents-rows"] a[href$="/${offpageRootId}"]`,
           )?.textContent,
-        ).toBe("Off-page Root");
+        ).toContain("Off-page Root");
       });
       expect(view.getByTestId("paging-meta").textContent).toBe("true:28");
 
@@ -920,14 +918,14 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
       await waitFor(() => {
         expect(
           view.container.querySelector(
-            `[data-desktop-row-id="${offpageRootId}"]`,
+            `a[data-sidebar-thread-id="${offpageRootId}"]`,
           )?.textContent,
-        ).toBe("Off-page Root Updated");
+        ).toContain("Off-page Root Updated");
         expect(
           view.container.querySelector(
-            `[data-mobile-row-id="${offpageRootId}"]`,
+            `[data-testid="mobile-recents-rows"] a[href$="/${offpageRootId}"]`,
           )?.textContent,
-        ).toBe("Off-page Root Updated");
+        ).toContain("Off-page Root Updated");
       });
 
       routeState.threadId = offpageChildId;
@@ -940,32 +938,32 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
       await waitFor(() => {
         expect(
           view.container.querySelector(
-            `[data-desktop-row-id="${offpageParentId}"]`,
+            `a[data-sidebar-thread-id="${offpageParentId}"]`,
           )?.textContent,
-        ).toBe("Off-page Parent");
+        ).toContain("Off-page Parent");
         expect(
           view.container.querySelector(
-            `[data-desktop-row-id="${offpageChildId}"]`,
+            `a[data-sidebar-thread-id="${offpageChildId}"]`,
           )?.textContent,
-        ).toBe("Off-page Nested Child");
+        ).toContain("Off-page Nested Child");
         expect(
           view.container.querySelector(
-            `[data-mobile-row-id="${offpageParentId}"]`,
+            `[data-testid="mobile-recents-rows"] a[href$="/${offpageParentId}"]`,
           )?.textContent,
-        ).toBe("Off-page Parent");
+        ).toContain("Off-page Parent");
         expect(
           view.container.querySelector(
-            `[data-mobile-row-id="${offpageChildId}"]`,
+            `[data-testid="mobile-recents-rows"] a[href$="/${offpageChildId}"]`,
           )?.textContent,
-        ).toBe("Off-page Nested Child");
+        ).toContain("Off-page Nested Child");
       });
       expect(
         view.container.querySelector(
-          `[data-desktop-row-id="${offpageRootId}"]`,
+          `a[data-sidebar-thread-id="${offpageRootId}"]`,
         ),
       ).toBeNull();
       expect(
-        view.container.querySelector(`[data-mobile-row-id="${offpageRootId}"]`),
+        view.container.querySelector(`[data-testid="mobile-recents-rows"] a[href$="/${offpageRootId}"]`),
       ).toBeNull();
 
       const sidebarBootstrapCalls = fetchUrls.filter((url) =>
