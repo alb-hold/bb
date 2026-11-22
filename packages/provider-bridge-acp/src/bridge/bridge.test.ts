@@ -1552,6 +1552,74 @@ describe("acp bridge", () => {
     );
   });
 
+  it.each([false, true])(
+    "lists Antigravity models with pool routing %s",
+    async (pooled) => {
+      const launchLog = join(workspaceDir, "local-launch");
+      writeFileSync(
+        join(workspaceDir, "agy"),
+        `#!/bin/sh
+[ "$1" = acp ] || exit 2
+[ -z "$GEMINI_HOME" ] || exit 3
+[ -z "$AGY_ACP_FORCE_FILE_STORAGE" ] || exit 4
+export FAKE_ACP_MODEL_CONFIG=1
+export FAKE_ACP_LAUNCH_LOG="${launchLog}"
+exec "${process.execPath}" "${FAKE_AGENT_PATH}"
+`,
+        { mode: 0o755 },
+      );
+      vi.stubEnv("PATH", `${workspaceDir}:${process.env.PATH}`);
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      const envVars: Record<string, string> = pooled
+        ? { AGY_GATEWAY_API_KEY: "test-pool" }
+        : {};
+      const providerOptions = {
+        acpAgentId: "acp-antigravity-acp",
+        acpLaunchSpec: acpLaunchSpec({
+          envVars: {
+            GEMINI_HOME: workspaceDir,
+            AGY_ACP_FORCE_FILE_STORAGE: "1",
+            FAKE_ACP_MODEL_CONFIG: "1",
+          },
+        }),
+      };
+      const response = await waitForResponse(
+        sendRequest("model/list", { envVars, providerOptions }),
+      );
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+      expect(existsSync(launchLog)).toBe(!pooled);
+      const options = executionOptions({ envVars, providerOptions });
+      const started = await waitForResponse(
+        sendRequest("thread/start", {
+          threadId: "thread-antigravity",
+          cwd: workspaceDir,
+          instructionMode: "append",
+          options,
+        }),
+      );
+      const { providerThreadId } = z
+        .object({ providerThreadId: z.string() })
+        .parse(started.result);
+      bbThreadIdByProviderThreadId.set(providerThreadId, "thread-antigravity");
+      try {
+        expect(
+          await completeTurnWith(providerThreadId, "reply OK", options),
+        ).toBe("echo:reply OK");
+        if (pooled) expect(existsSync(launchLog)).toBe(false);
+        else
+          expect(
+            readFileSync(launchLog, "utf8").trim().split("\n"),
+          ).toHaveLength(2);
+      } finally {
+        await stopThread(providerThreadId);
+      }
+    },
+  );
+
   it("fails model/list with a clear error when the agent itself is missing", async () => {
     const response = await waitForResponse(
       sendModelList({

@@ -3534,7 +3534,23 @@ function reconcileExecutionSettings(
   if (options.permissionMode === "auto") {
     throw new Error('ACP does not support permission mode "auto".');
   }
-  const launchSpec = decodeLaunchSpec(options.providerOptions);
+  const launchSpec = executionLaunchSpec(
+    options.providerOptions,
+    options.envVars,
+  );
+  if (
+    options.providerOptions?.acpAgentId === "acp-antigravity-acp" &&
+    options.envVars !== undefined &&
+    launchSpec !== null &&
+    !isDeepStrictEqual(session.construction.agent, {
+      command: launchSpec.command,
+      args: launchSpec.args,
+    })
+  ) {
+    throw new Error(
+      "Start a new Antigravity thread to switch between local and pooled sign-in.",
+    );
+  }
   const envVars =
     Object.keys(options.envVars ?? {}).length > 0
       ? {
@@ -4047,6 +4063,25 @@ function decodeLaunchSpec(
   return launchSpec.success ? launchSpec.data : null;
 }
 
+function executionLaunchSpec(
+  providerOptions: Record<string, unknown> | undefined,
+  env: Record<string, string> | undefined,
+): AcpLaunchSpec | null {
+  const spec = decodeLaunchSpec(providerOptions);
+  if (spec === null || providerOptions?.acpAgentId !== "acp-antigravity-acp") {
+    return spec;
+  }
+  if (env?.AGY_GATEWAY_API_KEY) {
+    return spec;
+  }
+  return {
+    displayName: spec.displayName,
+    command: "agy",
+    args: ["acp"],
+    env: {},
+  };
+}
+
 const acpProviderOptionsSchema = z
   .object({
     additionalWorkspaceWriteRoots: z.array(z.string()).optional(),
@@ -4141,7 +4176,10 @@ async function handleRequest(
         request.id,
         inModelListWorkspace(
           buildAcpModelListParams(
-            decodeLaunchSpec(request.params.providerOptions),
+            executionLaunchSpec(
+              request.params.providerOptions,
+              request.params.envVars,
+            ),
             modelPicker,
           ),
           await resolveModelListWorkspace(request.params.cwd),
@@ -4204,7 +4242,10 @@ async function handleRequest(
         return;
       }
       const params = request.params;
-      const launchSpec = decodeLaunchSpec(params.options.providerOptions);
+      const launchSpec = executionLaunchSpec(
+        params.options.providerOptions,
+        params.options.envVars,
+      );
       if (launchSpec === null) {
         sendError(
           request.id,
