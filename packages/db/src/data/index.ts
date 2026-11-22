@@ -530,6 +530,8 @@ export {
   getLatestStoredThreadEventOfTypes,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestThreadStateEventRowsByScope,
+  listPendingGoalBackfills,
+  backfillThreadGoal,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listTodoSnapshotEventRowsForThread,

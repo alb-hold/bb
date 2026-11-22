@@ -941,9 +941,6 @@ export const events = sqliteTable(
     index("events_completed_item_truncation_idx")
       .on(table.itemKind, table.createdAt, table.id)
       .where(sql`${table.type} = 'item/completed'`),
-    index("events_goal_thread_sequence_idx")
-      .on(table.threadId, table.sequence)
-      .where(sql`${table.type} IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated') AND (${table.type} <> 'thread/extensionState/updated' OR json_extract(${table.data}, '$.kind') = 'provider-codex/goal')`),
     index("events_thread_state_thread_sequence_idx")
       .on(table.threadId, table.sequence)
       .where(
@@ -959,6 +956,11 @@ export const events = sqliteTable(
     ),
   ],
 );
+
+export const latestThreadGoals = sqliteTable("latest_thread_goals", {
+  threadId: text("thread_id").primaryKey(),
+  sequence: integer("sequence"),
+});
 
 export const retainedEventOutputs = sqliteTable(
   "retained_event_outputs",

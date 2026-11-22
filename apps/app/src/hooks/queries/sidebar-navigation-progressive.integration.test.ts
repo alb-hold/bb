@@ -1,13 +1,26 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { createElement } from "react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  waitFor,
+} from "@testing-library/react";
 import { useAtomValue } from "jotai";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
 import { afterEach, expect, it, vi } from "vitest";
 import { withTestHarness } from "../../../../server/test/helpers/test-app.js";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { resetSidebarBootstrapCacheForTest } from "@/lib/sidebar-bootstrap-cache";
+import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+import { invalidateRealtimeQueriesFetchedBeforeInitialConnect } from "@/hooks/cache-owners/system-cache-effects";
+import { sidebarNavigationQueryKey } from "./query-keys";
+import {
+  resetSidebarBootstrapCacheForTest,
+  writeCachedSidebarBootstrap,
+} from "@/lib/sidebar-bootstrap-cache";
 import { mobileRecentsCollapsedThreadIdsAtom } from "@/views/mobile-recents-collapse";
 import { useMobileRecentsThreadReveal } from "@/views/useMobileRecentsThreadReveal";
 import {
@@ -105,8 +118,13 @@ it.each(["unread", "collapse", "counts"] as const)(
           );
           const overview = result.current.preview?.overview;
           expect(overview?.counts[PERSONAL_PROJECT_ID]).toBe(26);
-          expect(overview?.unreadTree.map((row) => row.id).sort()).toEqual([childId, parentId].sort());
-          expect(overview?.unreadTree.find((row) => row.id === childId)?.parentThreadId).toBe(parentId);
+          expect(overview?.unreadTree.map((row) => row.id).sort()).toEqual(
+            [childId, parentId].sort(),
+          );
+          expect(
+            overview?.unreadTree.find((row) => row.id === childId)
+              ?.parentThreadId,
+          ).toBe(parentId);
           expect(result.current.collapsed).toContain(parentId);
           if (goal === "unread") expect(result.current.rows).toBeUndefined();
         } finally {
@@ -132,3 +150,54 @@ it.each(["unread", "collapse", "counts"] as const)(
     );
   },
 );
+
+it("requests the idle Home sidebar once when realtime connects during warm replay", async () => {
+  await withTestHarness({ seedFirstPartyProviders: false }, async ({ app }) => {
+    const snapshot = sidebarBootstrapResponseSchema.parse(
+      await (await app.request("/api/v1/sidebar-bootstrap")).json(),
+    );
+    writeCachedSidebarBootstrap(snapshot);
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const reads = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        await pending;
+        return app.fetch(new Request(input, init));
+      },
+    );
+    vi.stubGlobal("fetch", reads);
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    function HomeNavigation() {
+      const navigation = useSidebarNavigation();
+      return createElement(SidebarThreadEntriesProvider, {
+        navigation: navigation.data,
+        children: null,
+      });
+    }
+    render(createElement(HomeNavigation), { wrapper });
+    try {
+      await waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      act(() =>
+        invalidateRealtimeQueriesFetchedBeforeInitialConnect({
+          queryClient,
+          connectedAt: Date.now() + 1,
+        }),
+      );
+      expect(
+        queryClient.getQueryData(sidebarNavigationQueryKey()),
+      ).toBeUndefined();
+    } finally {
+      await act(async () => {
+        finish();
+      });
+    }
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData(sidebarNavigationQueryKey()),
+      ).toBeDefined(),
+    );
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+});

@@ -15,7 +15,8 @@ export function observeFirstScreenPaint() {
   if (
     typeof PerformanceObserver === "undefined" ||
     !PerformanceObserver.supportedEntryTypes.includes("element")
-  ) return;
+  )
+    return;
   const observer = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
       if (!("identifier" in entry) || typeof entry.identifier !== "string")
@@ -23,18 +24,24 @@ export function observeFirstScreenPaint() {
       if (entry.identifier === "bb-sidebar-row") {
         if (performance.getEntriesByName(sidebarUsable).length > 0) continue;
         if (performance.getEntriesByName(sidebarPaint).length === 0)
-        performance.mark(sidebarPaint, { startTime: entry.startTime });
+          performance.mark(sidebarPaint, { startTime: entry.startTime });
         const title = "element" in entry ? entry.element : null;
-        const row = title instanceof Element ? title.closest("[data-sidebar-rename-row]") : null;
+        const row =
+          title instanceof Element
+            ? title.closest("[data-sidebar-rename-row]")
+            : null;
         const link = row?.querySelector("a[data-sidebar-thread-id][href]");
-        if (link && !link.closest('[inert], [aria-hidden="true"]')) performance.mark(sidebarUsable);
+        if (link && !link.closest('[inert], [aria-hidden="true"]'))
+          performance.mark(sidebarUsable);
       } else if (entry.identifier.startsWith("bb-thread-content:")) {
         const open = performance.getEntriesByName(threadOpen).at(-1);
         if (
-          !open || !("detail" in open) ||
+          !open ||
+          !("detail" in open) ||
           entry.identifier !== `bb-thread-content:${open.detail}` ||
           entry.startTime < open.startTime
-        ) continue;
+        )
+          continue;
         performance.clearMarks(threadPaint);
         performance.clearMeasures(threadDuration);
         performance.mark(threadPaint, { startTime: entry.startTime });

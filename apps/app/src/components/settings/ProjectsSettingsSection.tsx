@@ -238,8 +238,9 @@ export function ProjectsSettingsSection() {
   const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
 
   const preview = useSidebarNavigationPreview();
-  const previewWithCounts = !sidebarNavigationQuery.data && preview?.overview ? preview : undefined;
-  const serverProjects = sidebarNavigationQuery.data?.projects ?? previewWithCounts?.projects;
+  const complete = sidebarNavigationQuery.isPlaceholderData ? undefined : sidebarNavigationQuery.data;
+  const previewWithCounts = !complete && preview?.overview ? preview : undefined;
+  const serverProjects = complete?.projects ?? previewWithCounts?.projects;
   const [orderedProjects, setOrderedProjects] = useState(serverProjects);
   if (orderedProjects !== serverProjects) {
     setOrderedProjects(serverProjects);

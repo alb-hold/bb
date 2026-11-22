@@ -197,7 +197,11 @@ export function SidebarThreadEntriesProvider({
 }) {
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (navigation !== undefined) {
+    if (
+      navigation !== undefined &&
+      navigation !== readCachedSidebarBootstrap() &&
+      navigation !== queryClient.getQueryData(sidebarNavigationQueryKey())
+    ) {
       writeSidebarNavigation(queryClient, navigation);
     }
   }, [navigation, queryClient]);

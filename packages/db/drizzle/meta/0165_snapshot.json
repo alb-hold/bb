@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6f0f7595-6a9b-4afe-854b-61b43f6ac56f",
+  "id": "45366224-dfc9-44b3-98dc-10cc5c61d6d9",
   "prevId": "7b4b407d-da8a-4ead-8ae3-82bb5f868058",
   "tables": {
     "app_settings": {
@@ -1131,15 +1131,6 @@
           ],
           "isUnique": false,
           "where": "\"events\".\"type\" = 'item/completed'"
-        },
-        "events_goal_thread_sequence_idx": {
-          "name": "events_goal_thread_sequence_idx",
-          "columns": [
-            "thread_id",
-            "sequence"
-          ],
-          "isUnique": false,
-          "where": "\"events\".\"type\" IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated') AND (\"events\".\"type\" <> 'thread/extensionState/updated' OR json_extract(\"events\".\"data\", '$.kind') = 'provider-codex/goal')"
         },
         "events_thread_state_thread_sequence_idx": {
           "name": "events_thread_state_thread_sequence_idx",
@@ -2281,6 +2272,30 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "latest_thread_goals": {
+      "name": "latest_thread_goals",
+      "columns": {
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

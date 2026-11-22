@@ -25,7 +25,7 @@ import {
   placeholder,
   sql,
 } from "drizzle-orm";
-import type { Placeholder, SQL } from "drizzle-orm";
+import type { Placeholder, SQL, SQLWrapper } from "drizzle-orm";
 import type {
   ClientTurnRequestId,
   PromptInput,
@@ -68,6 +68,7 @@ import type { DbNotifier } from "../notifier.js";
 import {
   environments,
   events,
+  latestThreadGoals,
   promptHistoryEntries,
   threadDynamicContextFileStates,
   threadSearchSegments,
@@ -1947,13 +1948,55 @@ function listThreadStateRowsAtSequences(
   });
 }
 
+function latestGoalSequence(threadId: SQLWrapper) {
+  return sql<number | null>`(
+    SELECT candidate.sequence FROM events AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+    WHERE candidate.thread_id = ${threadId}
+      AND ${threadStateKindPredicate(sql`candidate`, LEGACY_CODEX_GOAL_EXTENSION_KIND)}
+    ORDER BY candidate.sequence DESC LIMIT 1
+  )`;
+}
+
+export function listPendingGoalBackfills(db: DbConnection) {
+  return db.select({ threadId: latestThreadGoals.threadId }).from(latestThreadGoals)
+    .where(isNull(latestThreadGoals.sequence)).limit(64).all();
+}
+
+export function backfillThreadGoal(db: DbConnection, threadId: string): void {
+  db.transaction((tx) => {
+    const pending = and(eq(latestThreadGoals.threadId, threadId), isNull(latestThreadGoals.sequence));
+    tx.update(latestThreadGoals).set({ sequence: latestGoalSequence(latestThreadGoals.threadId) })
+      .where(pending).run();
+    tx.delete(latestThreadGoals).where(pending).run();
+  });
+}
+
 export function listLatestThreadStateEventRowsByScope(
   db: DbQueryConnection,
   args: { scope: ThreadListEnrichmentScope; kind: string },
 ): StoredEventRow[] {
-  const isGoal = args.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND;
-  const index = isGoal ? sql`events_goal_thread_sequence_idx` : sql`events_thread_state_thread_sequence_idx`;
-  const kind = isGoal ? sql`'provider-codex/goal'` : sql`${args.kind}`;
+  if (args.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND) {
+    return db.select(storedEventRowFields)
+      .from(latestThreadGoals)
+      .innerJoin(events, and(
+        eq(events.threadId, latestThreadGoals.threadId),
+        eq(events.sequence, sql`coalesce(${latestThreadGoals.sequence}, ${latestGoalSequence(latestThreadGoals.threadId)})`),
+      ))
+      .where(threadListEnrichmentScopePredicate(latestThreadGoals.threadId, args.scope))
+      .all();
+  }
+  const stateTypes = [
+    "thread/goal/updated",
+    "thread/goal/cleared",
+    "thread/extensionState/updated",
+  ] as const satisfies readonly ThreadEventType[];
+  const stateTypesPredicate = sql.raw(
+    `IN (${stateTypes.map((type) => `'${type}'`).join(", ")})`,
+  );
+  const kindPredicate = sql`(
+    candidate.type <> 'thread/extensionState/updated'
+    OR json_extract(candidate.data, '$.kind') = ${args.kind}
+  )`;
   const requestedThreads = threadListEnrichmentRequestedThreads(args.scope);
   return db.all<StoredEventRow>(sql`
     SELECT ${sql.join(
@@ -1966,10 +2009,10 @@ export function listLatestThreadStateEventRowsByScope(
     WHERE events.rowid IN (
       SELECT (
         SELECT candidate.rowid
-        FROM events AS candidate INDEXED BY ${index}
+        FROM events AS candidate INDEXED BY events_thread_state_thread_sequence_idx
         WHERE candidate.thread_id = requested.column1
-          AND candidate.type ${THREAD_STATE_TYPES_PREDICATE}
-          AND (candidate.type <> 'thread/extensionState/updated' OR json_extract(candidate.data, '$.kind') = ${kind})
+          AND candidate.type ${stateTypesPredicate}
+          AND ${kindPredicate}
         ORDER BY candidate.sequence DESC
         LIMIT 1
       )
