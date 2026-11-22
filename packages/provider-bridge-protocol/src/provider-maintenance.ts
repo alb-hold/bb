@@ -71,6 +71,30 @@ export const providerUsageWindowSchema = z
 
 export type ProviderUsageWindow = z.infer<typeof providerUsageWindowSchema>;
 
+export const localProviderUsageWindowSchema = z
+  .object({
+    label: z.string().min(1),
+    windowMinutes: z.number().int().positive(),
+    tokens: z.number().int().nonnegative(),
+    turns: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type LocalProviderUsageWindow = z.infer<
+  typeof localProviderUsageWindowSchema
+>;
+
+export const localProviderUsageSchema = z
+  .object({
+    source: z.literal("local-events"),
+    estimated: z.boolean(),
+    lastActivityAt: z.number().int().nonnegative().nullable(),
+    windows: z.array(localProviderUsageWindowSchema),
+  })
+  .strict();
+
+export type LocalProviderUsage = z.infer<typeof localProviderUsageSchema>;
+
 export const providerUsageSchema = z.discriminatedUnion("status", [
   z
     .object({
@@ -78,6 +102,7 @@ export const providerUsageSchema = z.discriminatedUnion("status", [
       accountEmail: z.string().email().nullable(),
       planLabel: z.string().min(1).nullable(),
       windows: z.array(providerUsageWindowSchema),
+      localUsage: localProviderUsageSchema.optional(),
     })
     .passthrough(),
   z.object({ status: z.literal("not_installed") }).passthrough(),

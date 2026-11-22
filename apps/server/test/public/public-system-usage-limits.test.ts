@@ -2,12 +2,19 @@ import type {
   ProviderUsage,
   ProviderUsageResponse,
 } from "@bb/host-daemon-contract";
+import { threadScope, turnScope } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import { minimalProviderRegistration } from "../helpers/provider-registry.js";
-import { seedHost, seedHostSession, seedPrimaryHost } from "../helpers/seed.js";
+import {
+  seedEvent,
+  seedHost,
+  seedHostSession,
+  seedPrimaryHost,
+  seedThreadFixture,
+} from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
 const USAGE_RESPONSE: ProviderUsageResponse = {
@@ -455,6 +462,428 @@ describe("GET /api/v1/system/usage-limits", () => {
             : [],
         ),
       ).toEqual(ALWAYS_VISIBLE_PROVIDER_IDS);
+    });
+  });
+
+  it("aggregates local acp-antigravity-acp thread usage events into 5-hour and 7-day windows", async () => {
+    await withTestHarness(async (harness) => {
+      const now = Date.now();
+      const hourMs = 60 * 60 * 1_000;
+      const dayMs = 24 * hourMs;
+      const { host, session, thread } = seedThreadFixture(harness, {
+        session: { id: "host-antigravity" },
+        thread: { providerId: "acp-antigravity-acp" },
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: handleUsageRequest,
+      });
+
+      // Event older than 7 days: should be excluded from both windows.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 1,
+        createdAt: now - 8 * dayMs,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 10_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 2,
+        createdAt: now - 8 * dayMs + 1_000,
+        type: "turn/completed",
+        scope: turnScope("turn-old"),
+        data: { providerThreadId: "agy-sess-1", status: "completed" },
+      });
+
+      // Event 2 days ago (inside 7d, outside 5h): +15,000 tokens, 1 turn.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 3,
+        createdAt: now - 2 * dayMs,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 25_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 4,
+        createdAt: now - 2 * dayMs + 1_000,
+        type: "turn/completed",
+        scope: turnScope("turn-2d"),
+        data: { providerThreadId: "agy-sess-1", status: "completed" },
+      });
+
+      // Event 1 hour ago (inside 5h and 7d): +12,500 tokens, 1 turn.
+      const recentAt = now - hourMs;
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 5,
+        createdAt: recentAt,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 37_500,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      // Repeated identical reading should not double-count.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 6,
+        createdAt: recentAt + 500,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 37_500,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 7,
+        createdAt: recentAt + 1_000,
+        type: "turn/completed",
+        scope: turnScope("turn-1h"),
+        data: { providerThreadId: "agy-sess-1", status: "completed" },
+      });
+      // Compaction drop (37,500 -> 10,000) adds the post-compaction occupancy (10,000).
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 8,
+        createdAt: recentAt + 2_000,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 10_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 9,
+        createdAt: recentAt + 3_000,
+        type: "turn/completed",
+        scope: turnScope("turn-compacted"),
+        data: { providerThreadId: "agy-sess-1", status: "completed" },
+      });
+
+      try {
+        const response = await harness.app.request(
+          `/api/v1/system/usage-limits?hostId=${host.id}&providerId=acp-antigravity-acp`,
+        );
+        expect(response.status).toBe(200);
+        const body = (await readJson(response)) as ProviderUsageResponse;
+        expect(body["acp-antigravity-acp"]).toEqual({
+          status: "ok",
+          accountEmail: null,
+          planLabel: null,
+          windows: [],
+          localUsage: {
+            source: "local-events",
+            estimated: true,
+            lastActivityAt: recentAt + 3_000,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 22_500,
+                turns: 2,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 37_500,
+                turns: 3,
+              },
+            ],
+          },
+        });
+      } finally {
+        responder.unregister();
+      }
+    });
+  });
+
+  it("sums thread/tokenUsage/updated events for acp-antigravity-acp without double-counting repeats", async () => {
+    await withTestHarness(async (harness) => {
+      const now = Date.now();
+      const { host, session, thread } = seedThreadFixture(harness, {
+        session: { id: "host-antigravity-token-usage" },
+        thread: { providerId: "acp-antigravity-acp" },
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: handleUsageRequest,
+      });
+
+      const recentAt = now - 10 * 60 * 1_000;
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-tok-1",
+        sequence: 1,
+        createdAt: recentAt,
+        type: "thread/tokenUsage/updated",
+        scope: turnScope("turn-1"),
+        data: {
+          providerThreadId: "agy-tok-1",
+          tokenUsage: {
+            last: {
+              inputTokens: 1_000,
+              cachedInputTokens: 0,
+              outputTokens: 500,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_500,
+            },
+            total: {
+              inputTokens: 1_000,
+              cachedInputTokens: 0,
+              outputTokens: 500,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_500,
+            },
+            modelContextWindow: 1_048_576,
+          },
+        },
+      });
+      // Duplicate emission with the same cumulative total should be ignored.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-tok-1",
+        sequence: 2,
+        createdAt: recentAt + 1_000,
+        type: "thread/tokenUsage/updated",
+        scope: turnScope("turn-1"),
+        data: {
+          providerThreadId: "agy-tok-1",
+          tokenUsage: {
+            last: {
+              inputTokens: 1_000,
+              cachedInputTokens: 0,
+              outputTokens: 500,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_500,
+            },
+            total: {
+              inputTokens: 1_000,
+              cachedInputTokens: 0,
+              outputTokens: 500,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_500,
+            },
+            modelContextWindow: 1_048_576,
+          },
+        },
+      });
+
+      try {
+        const response = await harness.app.request(
+          `/api/v1/system/usage-limits?hostId=${host.id}`,
+        );
+        expect(response.status).toBe(200);
+        const body = (await readJson(response)) as ProviderUsageResponse;
+        expect(body["acp-antigravity-acp"]).toEqual({
+          status: "ok",
+          accountEmail: null,
+          planLabel: null,
+          windows: [],
+          localUsage: {
+            source: "local-events",
+            estimated: false,
+            lastActivityAt: recentAt,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 1_500,
+                turns: 1,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 1_500,
+                turns: 1,
+              },
+            ],
+          },
+        });
+      } finally {
+        responder.unregister();
+      }
+    });
+  });
+
+  it("counts mixed-stream threads without dropping context-only turns or double-counting turns with both", async () => {
+    await withTestHarness(async (harness) => {
+      const now = Date.now();
+      const recentAt = now - 20 * 60 * 1_000;
+      const { host, session, thread } = seedThreadFixture(harness, {
+        session: { id: "host-antigravity-mixed" },
+        thread: { providerId: "acp-antigravity-acp" },
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: handleUsageRequest,
+      });
+
+      // Turn 1 emits both contextWindowUsage (10,000) and tokenUsage (1,200) -> counts 1,200 (no double count).
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 1,
+        createdAt: recentAt,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          contextWindowUsage: {
+            usedTokens: 10_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 2,
+        createdAt: recentAt + 500,
+        type: "thread/tokenUsage/updated",
+        scope: turnScope("turn-1"),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          tokenUsage: {
+            last: {
+              inputTokens: 900,
+              cachedInputTokens: 0,
+              outputTokens: 300,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_200,
+            },
+            total: {
+              inputTokens: 900,
+              cachedInputTokens: 0,
+              outputTokens: 300,
+              reasoningOutputTokens: 0,
+              totalTokens: 1_200,
+            },
+            modelContextWindow: 1_048_576,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 3,
+        createdAt: recentAt + 1_000,
+        type: "turn/completed",
+        scope: turnScope("turn-1"),
+        data: { providerThreadId: "agy-mixed-1", status: "completed" },
+      });
+
+      // Turn 2 emits only contextWindowUsage (10,000 -> 14,500) -> counts +4,500 delta.
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 4,
+        createdAt: recentAt + 2_000,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-mixed-1",
+          contextWindowUsage: {
+            usedTokens: 14_500,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-mixed-1",
+        sequence: 5,
+        createdAt: recentAt + 3_000,
+        type: "turn/completed",
+        scope: turnScope("turn-2"),
+        data: { providerThreadId: "agy-mixed-1", status: "completed" },
+      });
+
+      try {
+        const response = await harness.app.request(
+          `/api/v1/system/usage-limits?hostId=${host.id}&providerId=acp-antigravity-acp`,
+        );
+        expect(response.status).toBe(200);
+        const body = (await readJson(response)) as ProviderUsageResponse;
+        expect(body["acp-antigravity-acp"]).toEqual({
+          status: "ok",
+          accountEmail: null,
+          planLabel: null,
+          windows: [],
+          localUsage: {
+            source: "local-events",
+            estimated: true,
+            lastActivityAt: recentAt + 3_000,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 5_700,
+                turns: 2,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 5_700,
+                turns: 2,
+              },
+            ],
+          },
+        });
+      } finally {
+        responder.unregister();
+      }
     });
   });
 });

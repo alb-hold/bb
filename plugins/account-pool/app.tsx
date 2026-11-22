@@ -688,6 +688,49 @@ function SubscriptionRow({
   );
 }
 
+function formatCompactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${millions >= 10 ? millions.toFixed(1) : millions.toFixed(2)}M`;
+  }
+  if (tokens >= 1_000) {
+    const thousands = tokens / 1_000;
+    return `${thousands >= 100 ? Math.round(thousands) : thousands.toFixed(1)}k`;
+  }
+  return String(tokens);
+}
+
+function shortLocalWindowLabel(window: {
+  label: string;
+  windowMinutes: number;
+}): string {
+  if (window.windowMinutes === 300) return "5h";
+  if (window.windowMinutes === 7 * 24 * 60) return "7d";
+  if (window.windowMinutes % 1_440 === 0)
+    return `${window.windowMinutes / 1_440}d`;
+  if (window.windowMinutes % 60 === 0) return `${window.windowMinutes / 60}h`;
+  return window.label;
+}
+
+function formatLocalUsageSummary(
+  usage: NonNullable<LocalLogin["usage"]>,
+): string {
+  const hasAny = usage.windows.some(
+    (window) => window.tokens > 0 || window.turns > 0,
+  );
+  if (!hasAny) return "No recent usage (5h / 7d)";
+  const tokenPrefix = usage.estimated ? "~" : "";
+  const tokenUnit = usage.estimated ? "ctx tokens" : "tokens";
+  const parts = usage.windows.map(
+    (window) =>
+      `${shortLocalWindowLabel(window)}: ${tokenPrefix}${formatCompactTokens(window.tokens)} ${tokenUnit} (${window.turns} ${window.turns === 1 ? "turn" : "turns"})`,
+  );
+  if (usage.lastActivityAt !== null) {
+    parts.push(`used ${relative(usage.lastActivityAt)}`);
+  }
+  return parts.join(" · ");
+}
+
 function LocalLoginRow({
   login,
   pending,
@@ -697,12 +740,17 @@ function LocalLoginRow({
   pending: boolean;
   onAdd: (provider: PoolProvider) => void;
 }) {
-  const note = [
-    login.email ?? `This Mac's ${login.displayName} login`,
-    login.poolProvider === null ? "can't be pooled" : null,
-  ]
-    .filter((part) => part !== null)
-    .join(" · ");
+  const usageNote =
+    login.usage === undefined ? null : formatLocalUsageSummary(login.usage);
+  const note =
+    usageNote !== null
+      ? [login.email, usageNote].filter((part) => part !== null).join(" · ")
+      : [
+          login.email ?? `This Mac's ${login.displayName} login`,
+          login.poolProvider === null ? "can't be pooled" : null,
+        ]
+          .filter((part) => part !== null)
+          .join(" · ");
   const state: SubscriptionState =
     login.status === "expired"
       ? {

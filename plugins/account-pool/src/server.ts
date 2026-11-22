@@ -677,6 +677,20 @@ export function createAccountPoolPlugin(
           queued: queue.length > 0,
         };
       },
+      async (providerId) => {
+        const limits = await bb.sdk.system
+          .usageLimits({ providerId })
+          .catch(() => null);
+        const entry = limits?.[providerId];
+        if (entry?.status !== "ok" || entry.localUsage === undefined) {
+          return null;
+        }
+        return {
+          estimated: entry.localUsage.estimated,
+          windows: entry.localUsage.windows,
+          lastActivityAt: entry.localUsage.lastActivityAt,
+        };
+      },
     );
     bb.experimental_hooks.on(
       "experimental_thread.configure",

@@ -4,6 +4,7 @@ import type {
   TerminalCreateTarget,
 } from "@bb/server-contract";
 import { ThreadTerminalContent } from "./ThreadTerminalContent";
+import { ThreadTerminalView } from "./ThreadTerminalView";
 import { useThreadTerminalController } from "./useThreadTerminalController";
 
 interface ThreadTerminalPanelProps {
@@ -22,7 +23,26 @@ interface ThreadTerminalPanelProps {
   target: TerminalCreateTarget;
 }
 
-export function ThreadTerminalPanel({
+export function ThreadTerminalPanel(props: ThreadTerminalPanelProps) {
+  const session = props.initialSession;
+  if (props.retainNativeOutput && session?.status === "exited" && session.id === props.terminalId) {
+    return (
+      <section aria-label="Terminal" data-app-terminal="" className="flex h-full min-h-0 flex-col bg-sidebar">
+        <ThreadTerminalView
+          key={session.id}
+          session={session}
+          retainNativeOutput
+          autoFocus={false}
+          isPanelOpen={props.isPanelOpen}
+          onOpenLink={props.onOpenLink}
+        />
+      </section>
+    );
+  }
+  return <InteractiveTerminalPanel {...props} />;
+}
+
+function InteractiveTerminalPanel({
   autoFocus = false,
   initialSession,
   retainNativeOutput = false,

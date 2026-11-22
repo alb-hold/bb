@@ -2379,6 +2379,65 @@ describe("public terminal routes", () => {
     });
   });
 
+  it("bounds retained output to the requested newest bytes", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal output tail",
+    });
+    for (let seq = 0; seq < 8; seq += 1) {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: session.id,
+          chunk: {
+            seq,
+            dataBase64: Buffer.from(String(seq).repeat(16 * 1024)).toString(
+              "base64",
+            ),
+          },
+        },
+      });
+    }
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const response = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/output?tailBytes=${64 * 1024}`,
+    );
+
+    expect(response.status).toBe(200);
+    const output = terminalOutputResponseSchema.parse(await readJson(response));
+    const bytes = Buffer.concat(
+      output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+    );
+    expect(bytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(bytes.byteLength).toBe(64 * 1024);
+    expect(bytes.toString("utf8")).toBe(
+      ["4", "5", "6", "7"].map((digit) => digit.repeat(16 * 1024)).join(""),
+    );
+    expect(output.truncated).toBe(true);
+    expect(output.status).toBe("exited");
+  });
+
   it("returns 404 without rows for an unknown terminal screen ID", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);

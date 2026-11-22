@@ -13,6 +13,7 @@ import type { NativeTerminalThread } from "@bb/server-contract";
 import type { ThreadRuntimeState } from "@bb/domain";
 import { createPortal } from "react-dom";
 import { NativeTerminalPanel } from "./NativeTerminalPanel";
+import { CopyButton } from "@/components/ui/copy-button";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
   useNativeTerminalThread,
@@ -45,6 +46,15 @@ interface NativeThreadTerminalMainProps {
   threadId: string;
   threadIsProvisioning: boolean;
   view: NativeTerminalThread;
+}
+
+function SessionIdentity({ id }: { id: string }) {
+  return (
+    <div className="flex min-w-0 max-w-full items-center gap-1 text-muted-foreground">
+      <span className="truncate font-mono" title={id}>Session {id}</span>
+      <CopyButton text={id} label="Copy session ID" />
+    </div>
+  );
 }
 
 export function NativeThreadTerminalMain({
@@ -276,17 +286,18 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
       >
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2">
             <span className="font-medium">
               {endedLabel}
-              {state.exitCode !== null && state.exitCode !== 0
+              {state.exitCode !== null
                 ? ` (exit ${state.exitCode})`
                 : ""}
             </span>
+            {session.closeReason ? (
+              <span className="text-muted-foreground">{session.closeReason.replaceAll("-", " ")}</span>
+            ) : null}
             {view.nativeSessionId === null ? null : (
-              <span className="ml-2 text-muted-foreground">
-                Session {view.nativeSessionId}
-              </span>
+              <SessionIdentity id={view.nativeSessionId} />
             )}
           </div>
           <Button
@@ -322,7 +333,7 @@ export function NativeThreadTerminalMain({
     >
       <p className="font-medium text-foreground">
         {endedLabel}
-        {state.exitCode !== null && state.exitCode !== 0
+        {state.exitCode !== null
           ? ` (exit ${state.exitCode})`
           : ""}
       </p>
@@ -332,7 +343,7 @@ export function NativeThreadTerminalMain({
         </p>
       ) : null}
       {view.nativeSessionId === null ? null : (
-        <p className="text-muted-foreground">Session {view.nativeSessionId}</p>
+        <SessionIdentity id={view.nativeSessionId} />
       )}
       <Button
         disabled={openNative.isPending}

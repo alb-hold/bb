@@ -13481,6 +13481,88 @@ describe("Account Pool subscription sign-in repair", () => {
       },
     ]);
   });
+
+  it("includes Antigravity (local login) with local usage windows even without email or plan", async () => {
+    const pool = await claudeLoginHost({ current: SHARED_LOGIN });
+    pool.host.harness.sdk.stub("system.providerStates", async () => ({
+      providers: [
+        {
+          providerId: "acp-antigravity-acp",
+          displayName: "Google Antigravity",
+          status: "ready",
+          accountEmail: null,
+          planLabel: null,
+        },
+      ],
+    }));
+    pool.host.harness.sdk.stub("system.usageLimits", async (input) => {
+      expect(input).toEqual({ providerId: "acp-antigravity-acp" });
+      return {
+        "acp-antigravity-acp": {
+          status: "ok",
+          accountEmail: null,
+          planLabel: null,
+          windows: [],
+          localUsage: {
+            source: "local-events",
+            estimated: true,
+            lastActivityAt: 1_795_325_403_691,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 37_367,
+                turns: 2,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 196_691,
+                turns: 11,
+              },
+            ],
+          },
+        },
+      };
+    });
+    const logins = z
+      .array(localLoginSchema)
+      .parse(await pool.host.harness.behavior.callRpc("local.logins", null));
+    expect(logins).toEqual([
+      {
+        providerId: "acp-antigravity-acp",
+        displayName: "Antigravity (local login)",
+        email: null,
+        planLabel: null,
+        status: "ready",
+        poolProvider: null,
+        usage: {
+          estimated: true,
+          lastActivityAt: 1_795_325_403_691,
+          windows: [
+            {
+              label: "5 hour",
+              windowMinutes: 300,
+              tokens: 37_367,
+              turns: 2,
+            },
+            {
+              label: "7 day",
+              windowMinutes: 10_080,
+              tokens: 196_691,
+              turns: 11,
+            },
+          ],
+        },
+      },
+    ]);
+    const cli = await pool.host.harness.behavior.runCli(["account", "local"]);
+    expect(cli.exitCode).toBe(0);
+    expect(cli.stdout).toContain("Antigravity (local login)");
+    expect(cli.stdout).toContain(
+      "local usage (5h: ~37367 ctx tokens / 2 turns, 7d: ~196691 ctx tokens / 11 turns)",
+    );
+  });
 });
 
 describe("Account Pool credential scoping", () => {

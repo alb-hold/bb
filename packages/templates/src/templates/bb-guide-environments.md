@@ -163,7 +163,12 @@ Making your repo work with bb:
   `bb environment cleanup <id> [--json]` overrides retention and retry backoff
   to remove an unused provider-managed environment early. It is not a routine
   end-of-task step. It rejects live threads and unmanaged environments,
-  succeeds if already removed, and completes asynchronously. It cannot bypass
+  waits up to five seconds for teardown, and succeeds if already removed. Both cleanup modes exit 0
+  with `{"ok":true}` after removal. Failed or refused teardown exits non-zero;
+  JSON includes `error.code` (`teardown_failed` or `teardown_refused`) and
+  the reason in `error.message`. Pending removal, including an attempt still running
+  at the deadline, exits non-zero with `teardown_running`. Use `bb environment show <id> --json`
+  to follow the attempt. A failed attempt reports its reason even when a retry is scheduled. It cannot bypass
   "Needs recovery"; `bb environment list` includes the failure message.
 
   `bb environment cleanup <id> --recover [--json]` is an explicit acknowledgement

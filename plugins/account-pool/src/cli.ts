@@ -194,6 +194,19 @@ function formatAccounts(
   ].join("\n");
 }
 
+function formatLocalLoginUsage(
+  usage: NonNullable<LocalLogin["usage"]>,
+): string {
+  const prefix = usage.estimated ? "~" : "";
+  const unit = usage.estimated ? "ctx tokens" : "tokens";
+  return usage.windows
+    .map(
+      (window) =>
+        `${window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10_080 ? "7d" : window.label}: ${prefix}${window.tokens} ${unit} / ${window.turns} ${window.turns === 1 ? "turn" : "turns"}`,
+    )
+    .join(", ");
+}
+
 function formatLocalLogins(logins: readonly LocalLogin[]): string {
   if (logins.length === 0)
     return "Every provider login on this bb server host is already in the pool.";
@@ -205,9 +218,11 @@ function formatLocalLogins(logins: readonly LocalLogin[]): string {
         login.planLabel ?? "-",
         login.status,
         login.email ?? "-",
-        login.poolProvider === null
-          ? "can't be pooled"
-          : `{{BB_CLI}} pool account add --provider ${login.poolProvider} --import`,
+        login.usage !== undefined
+          ? `local usage (${formatLocalLoginUsage(login.usage)})`
+          : login.poolProvider === null
+            ? "can't be pooled"
+            : `{{BB_CLI}} pool account add --provider ${login.poolProvider} --import`,
       ].join("\t"),
     ),
   ].join("\n");

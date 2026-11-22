@@ -4400,8 +4400,10 @@ the machine's latest daemon session, without waking the machine (CLI:
 `bb machine show`). `bb.sdk.environments.experimental_cleanup({ environmentId })`
 requests removal of an unused provider-managed environment, overriding
 retention and bypassing cleanup backoff. It rejects live threads and unmanaged
-environments and succeeds for already-removed ones. Acceptance is not
-completion: read the environment lifecycle fields for progress (CLI:
+environments and succeeds for already-removed ones. Only completed removal returns `{ok:true}`. Both cleanup modes return HTTP 409
+with `teardown_failed` for a failed attempt, `teardown_refused` for a refusal,
+or `teardown_running` for pending removal after a five-second wait. The SDK
+exposes the code and reason on its HTTP error. Read lifecycle fields for progress (CLI:
 `bb environment cleanup`). After five failed attempts, automatic removal stops
 with a "Needs recovery" message in the existing lifecycle fields.
 The additive `recover: true` option acknowledges interrupted hooks and retries

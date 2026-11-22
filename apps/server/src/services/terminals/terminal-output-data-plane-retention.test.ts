@@ -3928,9 +3928,15 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
-  it("lists an exited terminal with all of its queued output without a separate flush", async () => {
+  it.each([false, true])("lists a failed terminal with its retained tail (overflow: %s)", async (overflow) => {
     const fixture = await setup();
-    for (const chunk of outputChunks()) {
+    const prefix = outputChunks();
+    const tail = {
+      seq: prefix.length,
+      dataBase64: Buffer.alloc(TERMINAL_RETAINED_OUTPUT_BYTES, 65).toString("base64"),
+    };
+    const chunks = overflow ? [...prefix, tail] : prefix;
+    for (const chunk of chunks) {
       fixture.daemonSocket.receive({
         type: "terminal.output",
         terminalId: fixture.terminal.id,
@@ -3944,7 +3950,7 @@ describe("terminal output retained from the data plane", () => {
       message: {
         type: "terminal.exited",
         terminalId: fixture.terminal.id,
-        exitCode: 0,
+        exitCode: 1,
         closeReason: "process-exit",
       },
     });
@@ -3952,15 +3958,15 @@ describe("terminal output retained from the data plane", () => {
       listTerminalSessions(fixture.db, {
         scope: { kind: "all" },
         visible: true,
-      }).map((session) => session.id),
-    ).toContain(fixture.terminal.id);
+      }).find((session) => session.id === fixture.terminal.id),
+    ).toMatchObject({ status: "exited", exitCode: 1, closeReason: "process-exit" });
     expect(
       getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
       }),
-    ).toEqual(outputChunks());
+    ).toEqual(overflow ? [tail] : prefix);
     fixture.child.shutdown();
   });
 
