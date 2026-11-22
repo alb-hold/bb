@@ -19,7 +19,7 @@ import {
   mergeSidebarBootstrapPages,
   type SidebarBootstrapResponse,
 } from "@bb/server-contract";
-import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
+import { listSidebarNavigationThreads, writeSidebarNavigation } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
 import { request, requestOptions } from "@/lib/api";
 import {
@@ -106,10 +106,7 @@ function syncSidebarNavigationPagesCache(client: QueryClient): void {
     if (!merged) return;
     if (merged.complete) {
       writeCachedSidebarBootstrap(merged.snapshot);
-      client.setQueryData<SidebarBootstrapResponse>(
-        sidebarNavigationQueryKey(),
-        merged.snapshot,
-      );
+      writeSidebarNavigation(client, merged.snapshot);
       clearSidebarPreview(client);
     } else {
       publishSidebarPreview(client, merged.snapshot);
@@ -250,12 +247,6 @@ export function useSidebarNavigation(options?: QueryOptions & { includePreview?:
   const pagesQuery = useInfiniteQuery(sidebarNavigationPagesQueryOptions(queryClient, enabled));
 
   const preview = useSidebarNavigationPreview();
-  if (options?.includePreview && preview && (completeQuery.isPlaceholderData || completeQuery.data === undefined)) {
-    return { ...completeQuery, data: preview, isPlaceholderData: true };
-  }
-  if (completeQuery.data !== undefined) {
-    return completeQuery;
-  }
   if (pagesQuery.isError) {
     return {
       ...completeQuery,
@@ -265,6 +256,9 @@ export function useSidebarNavigation(options?: QueryOptions & { includePreview?:
       isLoading: false,
       status: "error" as const,
     };
+  }
+  if (options?.includePreview && preview && (completeQuery.isPlaceholderData || completeQuery.data === undefined)) {
+    return { ...completeQuery, data: preview, isPlaceholderData: true };
   }
   return completeQuery;
 }
