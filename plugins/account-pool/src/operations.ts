@@ -5,6 +5,7 @@ import type {
   AccountSummary,
   HubTokenSummary,
   LocalLogin,
+  LocalLoginUsage,
   PoolProvider,
   PoolStatus,
   RoutedThreadStatus,
@@ -116,6 +117,9 @@ export class PoolOperations {
     }> = async () => {
       throw new Error("Thread routing state is unavailable.");
     },
+    private readonly localProviderUsage: (
+      providerId: string,
+    ) => Promise<LocalLoginUsage | null> = async () => null,
   ) {}
 
   async add(input: AccountAddInput): Promise<Account> {
@@ -410,9 +414,34 @@ export class PoolOperations {
     )
       ? await this.hub.localLogin("codex").catch(() => null)
       : null;
+    const antigravityState = states.find(
+      (state) =>
+        state.providerId === "acp-antigravity-acp" &&
+        (state.status === "ready" || state.status === "expired") &&
+        state.planLabel !== "Proxied",
+    );
+    const antigravityUsage =
+      antigravityState === undefined
+        ? null
+        : await this.localProviderUsage("acp-antigravity-acp").catch(
+            () => null,
+          );
     return states.flatMap((state): LocalLogin[] => {
       if (state.status !== "ready" && state.status !== "expired") return [];
       if (state.planLabel === "Proxied") return [];
+      if (state.providerId === "acp-antigravity-acp") {
+        return [
+          {
+            providerId: state.providerId,
+            displayName: "Antigravity (local login)",
+            email: state.accountEmail,
+            planLabel: state.planLabel,
+            status: state.status,
+            poolProvider: null,
+            ...(antigravityUsage === null ? {} : { usage: antigravityUsage }),
+          },
+        ];
+      }
       if (state.accountEmail === null && state.planLabel === null) return [];
       const poolProvider = poolProviderFor(state.providerId);
       if (

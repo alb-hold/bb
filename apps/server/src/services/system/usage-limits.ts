@@ -1,4 +1,8 @@
 import { createAsyncTtlMemo, type AsyncTtlMemo } from "@bb/async-cache";
+import {
+  listRecentLocalUsageProviderIds,
+  summarizeLocalProviderUsage,
+} from "@bb/db";
 import type {
   ProviderUsage,
   ProviderUsageResponse,
@@ -121,7 +125,37 @@ export async function getProviderUsageLimits(
       }
     },
   );
-  return Object.fromEntries(
+  const result: ProviderUsageResponse = Object.fromEntries(
     entries.filter((entry): entry is [string, ProviderUsage] => entry !== null),
   );
+  const disabledProviderIds = deps.providerRegistry.disabledProviderIds();
+  const localCandidateIds =
+    query.providerId !== undefined
+      ? [query.providerId]
+      : listRecentLocalUsageProviderIds(deps.db);
+  for (const providerId of localCandidateIds) {
+    if (result[providerId] !== undefined) continue;
+    const registration = deps.providerRegistry.get(providerId);
+    if (registration !== null && registration.info.maintenance.usage) continue;
+    const summary = summarizeLocalProviderUsage(deps.db, { providerId });
+    const registeredWithoutUsageProbe =
+      query.providerId !== undefined &&
+      registration !== null &&
+      !disabledProviderIds.has(providerId);
+    if (summary.hasThreads || registeredWithoutUsageProbe) {
+      result[providerId] = {
+        status: "ok",
+        accountEmail: null,
+        planLabel: null,
+        windows: [],
+        localUsage: {
+          source: "local-events",
+          estimated: summary.estimated,
+          lastActivityAt: summary.lastActivityAt,
+          windows: summary.windows,
+        },
+      };
+    }
+  }
+  return result;
 }
