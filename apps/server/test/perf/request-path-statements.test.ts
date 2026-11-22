@@ -670,8 +670,8 @@ describe.each(GROWTH_AXES)("request path costs as $name grows", (axis) => {
   it.each(REQUEST_PATHS)(
     "$name runs a statement count and returns a response that do not grow",
     async (path) => {
-      small.workspaceClock.now += 60_000;
-      large.workspaceClock.now += 60_000;
+      small.workspaceClock.now += 1_000;
+      large.workspaceClock.now += 1_000;
       small.received.bytes = 0;
       const smallStatements = await small.counter.record(() => path.run(small));
       large.received.bytes = 0;
