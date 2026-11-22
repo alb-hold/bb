@@ -1013,6 +1013,8 @@ function ThreadRowComponent({
               event.stopPropagation();
               return;
             }
+            performance.clearMarks?.("bb:sidebar-thread-open");
+            performance.mark?.("bb:sidebar-thread-open", { detail: thread.id });
             onProjectSelect?.();
           }}
           onDoubleClick={isEditing ? undefined : startTitleEditing}
@@ -1066,6 +1068,7 @@ function ThreadRowComponent({
                 onDoubleClick={startTitleEditing}
               >
                 <span
+                  {...{ elementtiming: "bb-sidebar-row" }}
                   data-emphasized={
                     showActive ||
                     thread.isUnread ||
@@ -1076,7 +1079,7 @@ function ThreadRowComponent({
                   className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
                 >
                   <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
-                    <ThreadTitle threadId={thread.id} />
+                    <ThreadTitle threadId={thread.id} experimental_fallbackTitle={thread.displayTitle} />
                   </span>
                 </span>
                 <span

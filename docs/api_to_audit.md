@@ -1,5 +1,9 @@
 # APIs To Audit
 
+## `PluginThreadTitleProps.experimental_fallbackTitle`
+
+The thread list passes the display title from a preview row until the live sidebar entry becomes available. Audit preview, archived, and live title rendering before stabilization.
+
 ## `ExperimentalComposerSubmission.experimental_onBlockedSubmit`
 
 A renderer reports a primary submission attempt that its readiness checks block.

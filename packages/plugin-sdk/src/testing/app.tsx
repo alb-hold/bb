@@ -560,10 +560,10 @@ function createSdkFake(
   return createSdkFakeNode(fakes, "", calls) as PluginBrowserBbSdk;
 }
 
-function TestThreadTitle({ threadId }: { threadId: string }) {
+function TestThreadTitle({ threadId, experimental_fallbackTitle }: { threadId: string; experimental_fallbackTitle?: string }) {
   const env = useSlotEnv("ThreadTitle");
   const thread = env.sidebarThreads.threads.find((row) => row.id === threadId);
-  if (thread === undefined) return null;
+  if (thread === undefined) return experimental_fallbackTitle ?? null;
   return <span data-thread-title={threadId}>{thread.displayTitle}</span>;
 }
 

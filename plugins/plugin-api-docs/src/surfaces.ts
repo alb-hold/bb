@@ -198,6 +198,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginSidebarThreadShortcut",
           "ThreadTitle",
           "PluginThreadTitleProps",
+          "PluginThreadTitleProps.experimental_fallbackTitle",
           "experimental_ThreadStatusGlyph",
           "PluginThreadStatusGlyphProps",
           "experimental_resolveThreadStatus",

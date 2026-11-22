@@ -533,6 +533,13 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     contentShell,
     restoreIOSViewportOnKeyboardDismissal,
   );
+  useEffect(() => {
+    if (performance.getEntriesByName?.("bb:shell-painted").length) return;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => performance.mark?.("bb:shell-painted"));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const location = useLocation();
   useRedirectRetiredPluginPaths();
   const {
