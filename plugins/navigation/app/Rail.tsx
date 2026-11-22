@@ -11,6 +11,7 @@ import { ShortcutPill } from "@/components/ui/shortcut-pill";
 import {
   PROJECT_LIST_ACTION_BUTTON_CLASS,
   SIDEBAR_RAIL_BUTTON_CLASS,
+  SIDEBAR_NAVIGATION_PLACEMENT,
 } from "@/components/ui/sidebar-row-classes";
 import {
   Tooltip,
@@ -129,7 +130,7 @@ function RailItem({ item }: { item: ExperimentalSidebarNavigationItem }) {
 export function Rail() {
   const { items, isHomeActive, actions } = experimental_useSidebarNavigation();
   const isPrefixItem = (item: ExperimentalSidebarNavigationItem) =>
-    item.pluginId === null;
+    SIDEBAR_NAVIGATION_PLACEMENT[item.pluginId === null ? "builtin" : "plugin"] === "before-more";
 
   const destinations = items.filter(
     (item) => item.action.kind !== "new-thread",
