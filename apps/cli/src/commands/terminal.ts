@@ -770,8 +770,12 @@ export function registerTerminalCommands(
   terminal
     .command("attach <terminalId>")
     .description("Attach to a running terminal session")
+    .addHelpText(
+      "after",
+      "\nType or paste to send input. Press Ctrl-B, then lowercase d, to detach and leave the session running. If both keys arrive in one input chunk, bb forwards them. The session uses your terminal size on attach and when your window resizes.",
+    )
+    .option("--json", "Print session metadata without attaching")
     .option("--report-timing", "Print the first live frame as JSON on stderr")
-    .option("--json", "Print machine-readable JSON output")
     .action(
       action(
         async (

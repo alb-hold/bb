@@ -67,6 +67,7 @@ export function acpProviderDeclaration(
       ? { internal_DO_NOT_USE_guidedSignIn: true }
       : {}),
     experimental_bridgeOptions: {
+      ...(agent.id === "acp-antigravity-acp" ? { acpAgentId: agent.id } : {}),
       ...(agent.dialect === undefined ? {} : { acpDialect: agent.dialect }),
       ...(agent.parameterizedModelPicker === true
         ? { parameterizedModelPicker: true }
