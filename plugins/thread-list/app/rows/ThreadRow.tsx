@@ -599,6 +599,22 @@ function useThreadSplitMiniMap(
   }, [layout, threadId]);
 }
 
+function PhoneBranchLabel({ branch }: { branch: string }) {
+  const suffix = branch.match(/(?:thr_[^-/:]+|[^-/:]+)$/u)?.[0] ?? branch;
+  const tail = Array.from(suffix).slice(-14).join("");
+  const head = branch.slice(0, branch.length - tail.length);
+  return (
+    <span
+      data-sidebar-thread-phone-context=""
+      title={branch}
+      className="flex min-w-0 max-w-full whitespace-nowrap md:hidden"
+    >
+      <span className="min-w-0 truncate">{head}</span>
+      <span className="shrink-0">{tail}</span>
+    </span>
+  );
+}
+
 function ThreadRowComponent({
   thread,
   crossProjectId,
@@ -1092,14 +1108,7 @@ function ThreadRowComponent({
                     age={<InfoRowTime timestamp={thread.updatedAt} />}
                   />
                   {phoneBranch !== null ? (
-                    <span
-                      data-sidebar-thread-phone-context=""
-                      title={phoneBranch}
-                      dir="rtl"
-                      className="min-w-0 max-w-full truncate text-left md:hidden"
-                    >
-                      <bdi dir="auto">{phoneBranch}</bdi>
-                    </span>
+                    <PhoneBranchLabel branch={phoneBranch} />
                   ) : null}
                 </span>
               </span>
