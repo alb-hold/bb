@@ -44,6 +44,7 @@ export interface ServerRuntimeConfig {
 }
 
 export interface AppDeps {
+  workspaceAwarenessClock?: () => number;
   config: ServerRuntimeConfig;
   db: DbConnection;
   hub: NotificationHub;
@@ -84,6 +85,7 @@ export type WorkSessionDeps = Pick<
   | "aiServices"
   | "skillTreeRegistry"
   | "telemetry"
+  | "workspaceAwarenessClock"
 >;
 
 export type LoggedWorkSessionDeps = WorkSessionDeps & Pick<AppDeps, "logger">;

@@ -71,6 +71,7 @@ interface SizedServer {
   counter: StatementCounter;
   sessionId: string;
   received: { bytes: number };
+  workspaceClock: { now: number };
 }
 
 interface RequestPath {
@@ -133,7 +134,10 @@ function createStatementCounter(): StatementCounter {
 
 async function startSizedServer(size: WorldSize): Promise<SizedServer> {
   const counter = createStatementCounter();
-  const harness = await createTestAppHarness();
+  const workspaceClock = { now: Date.now() };
+  const harness = await createTestAppHarness({
+    workspaceAwarenessClock: () => workspaceClock.now,
+  });
   counter.watch(harness.db.$client);
   const fixture = buildHistoryFixture(harness.db, {
     historyTurns: size.historyTurns,
@@ -149,6 +153,7 @@ async function startSizedServer(size: WorldSize): Promise<SizedServer> {
     counter,
     sessionId: session.id,
     received: { bytes: 0 },
+    workspaceClock,
   };
 }
 
@@ -665,6 +670,8 @@ describe.each(GROWTH_AXES)("request path costs as $name grows", (axis) => {
   it.each(REQUEST_PATHS)(
     "$name runs a statement count and returns a response that do not grow",
     async (path) => {
+      small.workspaceClock.now += 60_000;
+      large.workspaceClock.now += 60_000;
       small.received.bytes = 0;
       const smallStatements = await small.counter.record(() => path.run(small));
       large.received.bytes = 0;
