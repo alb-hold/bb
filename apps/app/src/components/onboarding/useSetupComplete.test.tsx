@@ -78,7 +78,10 @@ describe("useSetupComplete", () => {
 
   it("does not treat populated placeholder navigation as complete before fresh data", () => {
     arrange({ onboardingCompletedAt: "2026-10-09T00:00:00.000Z", threadCount: 1 });
-    const navigation = mocks.useSidebarNavigation.mock.results.at(-1)?.value.data;
+    const navigation = {
+      projects: [{ id: "proj_1", threads: [] }],
+      personalProject: { threads: [{ id: "thr_placeholder" }] },
+    };
     mocks.useSidebarNavigation.mockReturnValue({ data: navigation, isPlaceholderData: true });
     const hook = renderHook(() => useSetupComplete());
     expect(hook.result.current).toBe(false);
