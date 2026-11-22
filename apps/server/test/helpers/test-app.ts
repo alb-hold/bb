@@ -105,6 +105,7 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
   terminalAttachTimeoutMs?: number;
   terminalCloseTimeoutMs?: number;
   terminalOpenTimeoutMs?: number;
+  workspaceAwarenessClock?: () => number;
   nativeRootsClock?: () => number;
   activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
   liveCommandsClock?: () => number;
@@ -173,6 +174,7 @@ export async function createTestAppHarness(
     terminalAttachTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     terminalCloseTimeoutMs,
     terminalOpenTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
+    workspaceAwarenessClock,
     nativeRootsClock,
     activeThreadPruneRuntime,
     liveCommandsClock,
@@ -351,6 +353,7 @@ export async function createTestAppHarness(
   });
   const walCheckpointer = startWalCheckpointer({ logger });
   const deps: ServerAppDeps = {
+    ...(workspaceAwarenessClock && { workspaceAwarenessClock }),
     appUpdate,
     appVersion,
     bbAppManagedConfig,

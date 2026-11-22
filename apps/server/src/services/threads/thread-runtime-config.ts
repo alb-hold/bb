@@ -307,6 +307,7 @@ export async function resolveThreadRuntimeCommandConfig(
     );
   }
   const workspaceAwareness = workspaceAwarenessInstructions(deps.db, {
+    now: (deps.workspaceAwarenessClock ?? Date.now)(),
     environment: args.environment,
     thread: args.thread,
   });

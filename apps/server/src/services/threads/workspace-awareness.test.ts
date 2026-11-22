@@ -85,11 +85,13 @@ describe("workspace awareness", () => {
         candidateThreadIds: [currentThread.id, neighbourThread.id],
         now: 1_000,
       });
-      const [input] = workspaceAwarenessInput(db, {
-        environment: unmanagedEnvironment,
-        thread: currentThread,
-        now: 1_001,
-      });
+      const awarenessAt = (now: number) =>
+        workspaceAwarenessInput(db, {
+          environment: unmanagedEnvironment,
+          thread: currentThread,
+          now,
+        });
+      const [input] = awarenessAt(1_001);
       expect(input).toMatchObject({ type: "text", visibility: "agent-only" });
       expect(input).toMatchObject({
         text: expect.stringContaining("1 other bb thread is currently active"),
@@ -113,6 +115,11 @@ describe("workspace awareness", () => {
           "worktree outside this path, call update_environment_directory with its absolute path, and " +
           "end this turn before editing.",
       );
+      db.$client
+        .prepare("UPDATE threads SET status = ? WHERE id = ?")
+        .run("completed", neighbourThread.id);
+      expect(awarenessAt(1_500)).toEqual([input]);
+      expect(awarenessAt(1_501)).toEqual([]);
     } finally {
       db.$client.close();
       clearWorkspaceAwarenessCache();
