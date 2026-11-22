@@ -3944,7 +3944,7 @@ describe("terminal output retained from the data plane", () => {
       message: {
         type: "terminal.exited",
         terminalId: fixture.terminal.id,
-        exitCode: 0,
+        exitCode: 1,
         closeReason: "process-exit",
       },
     });
@@ -3952,8 +3952,8 @@ describe("terminal output retained from the data plane", () => {
       listTerminalSessions(fixture.db, {
         scope: { kind: "all" },
         visible: true,
-      }).map((session) => session.id),
-    ).toContain(fixture.terminal.id);
+      }).find((session) => session.id === fixture.terminal.id),
+    ).toMatchObject({ status: "exited", exitCode: 1, closeReason: "process-exit" });
     expect(
       getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,

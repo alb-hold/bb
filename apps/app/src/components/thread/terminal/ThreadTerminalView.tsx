@@ -2386,6 +2386,7 @@ export function ThreadTerminalView({
         ...TERMINAL_THEME_OPTIONS,
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
+        disableStdin: sessionRef.current.status === "exited",
         ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
@@ -3872,7 +3873,7 @@ export function ThreadTerminalView({
         await withAsyncCatchAndFinally(async () => {
           const outputPromise = sdk.terminals.output({
             terminalId: sessionRef.current.id,
-            tailBytes: 64 * 1024,
+            ...(retainNativeOutput ? {} : { tailBytes: 64 * 1024 }),
           });
           lifecycle.retainedReplayTimeout = setTimeout(() => {
             lifecycle.retainedReplayTimeout = null;
