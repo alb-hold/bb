@@ -1,4 +1,5 @@
 import { createAsyncTtlMemo, type AsyncTtlMemo } from "@bb/async-cache";
+import { summarizeLocalProviderUsage } from "@bb/db";
 import type {
   ProviderUsage,
   ProviderUsageResponse,
@@ -46,6 +47,7 @@ function providerUsageCache(deps: AppDeps) {
 }
 
 const ACCOUNT_POOL_PLUGIN_ID = "account-pool";
+const LOCAL_EVENT_USAGE_PROVIDER_ID = "acp-antigravity-acp";
 
 async function withPoolCredentials(
   usage: ProviderUsage,
@@ -121,7 +123,35 @@ export async function getProviderUsageLimits(
       }
     },
   );
-  return Object.fromEntries(
+  const result: ProviderUsageResponse = Object.fromEntries(
     entries.filter((entry): entry is [string, ProviderUsage] => entry !== null),
   );
+  if (
+    (query.providerId === undefined ||
+      query.providerId === LOCAL_EVENT_USAGE_PROVIDER_ID) &&
+    result[LOCAL_EVENT_USAGE_PROVIDER_ID] === undefined
+  ) {
+    const summary = summarizeLocalProviderUsage(deps.db, {
+      providerId: LOCAL_EVENT_USAGE_PROVIDER_ID,
+    });
+    const registered =
+      deps.providerRegistry.get(LOCAL_EVENT_USAGE_PROVIDER_ID) !== null &&
+      !deps.providerRegistry
+        .disabledProviderIds()
+        .has(LOCAL_EVENT_USAGE_PROVIDER_ID);
+    if (summary.hasThreads || registered) {
+      result[LOCAL_EVENT_USAGE_PROVIDER_ID] = {
+        status: "ok",
+        accountEmail: null,
+        planLabel: null,
+        windows: [],
+        localUsage: {
+          source: "local-events",
+          lastActivityAt: summary.lastActivityAt,
+          windows: summary.windows,
+        },
+      };
+    }
+  }
+  return result;
 }

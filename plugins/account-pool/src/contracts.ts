@@ -433,6 +433,26 @@ export const loginStartSchema = z
   })
   .strict();
 
+export const localUsageWindowSchema = z
+  .object({
+    label: z.string().min(1),
+    windowMinutes: z.number().int().positive(),
+    tokens: z.number().int().nonnegative(),
+    turns: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type LocalUsageWindow = z.infer<typeof localUsageWindowSchema>;
+
+export const localLoginUsageSchema = z
+  .object({
+    windows: z.array(localUsageWindowSchema),
+    lastActivityAt: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+export type LocalLoginUsage = z.infer<typeof localLoginUsageSchema>;
+
 export const localLoginSchema = z
   .object({
     providerId: z.string().min(1),
@@ -441,6 +461,7 @@ export const localLoginSchema = z
     planLabel: z.string().min(1).nullable(),
     status: z.enum(["ready", "expired"]),
     poolProvider: providerSchema.nullable(),
+    usage: localLoginUsageSchema.optional(),
   })
   .strict();
 

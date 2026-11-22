@@ -1953,6 +1953,50 @@ describe("Account Pool settings", () => {
     );
   });
 
+  it("shows Antigravity (local login) under On this Mac with 5h and 7d token and turn usage without making it poolable", async () => {
+    const slot = render([account()], {
+      "local.logins": () => [
+        {
+          providerId: "acp-antigravity-acp",
+          displayName: "Antigravity (local login)",
+          email: null,
+          planLabel: null,
+          status: "ready",
+          poolProvider: null,
+          usage: {
+            lastActivityAt: Date.now() - 5 * 60_000,
+            windows: [
+              {
+                label: "5 hour",
+                windowMinutes: 300,
+                tokens: 37_367,
+                turns: 2,
+              },
+              {
+                label: "7 day",
+                windowMinutes: 10_080,
+                tokens: 196_691,
+                turns: 11,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const group = await slot.findByRole("group", { name: "On this Mac" });
+    expect(within(group).getByText("Antigravity (local login)")).toBeTruthy();
+    expect(
+      within(group).getByText(
+        /5h: 37\.4k tokens \(2 turns\) · 7d: 197k tokens \(11 turns\)/,
+      ),
+    ).toBeTruthy();
+    expect(within(group).getByText("Ready")).toBeTruthy();
+    expect(
+      within(group).queryByRole("button", { name: /to the pool$/ }),
+    ).toBeNull();
+    expect(within(group).queryByRole("switch")).toBeNull();
+  });
+
   it("opens each provider's sign-in flow from the Add subscription menu", async () => {
     const slot = render([], {
       "login.start": () => ({

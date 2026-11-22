@@ -738,6 +738,11 @@ export {
   type SwapServerHostRolesResult,
 } from "./server-move.js";
 
+export {
+  summarizeLocalProviderUsage,
+  type LocalProviderUsageSummary,
+  type LocalProviderUsageWindowSummary,
+} from "./local-provider-usage.js";
 export * from "./project-attachments.js";
 
 export * from "./project-attachment-backfill.js";
