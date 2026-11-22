@@ -1595,6 +1595,34 @@ export function listThreadsWithPendingInteractionState(
   return query.all();
 }
 
+export function sidebarOverview(db: DbConnection, projectIds: readonly string[]) {
+  const scope = liveThreads(
+    inArray(threads.projectId, [...projectIds]),
+    eq(threads.visibility, "visible"),
+  );
+  const counts = db.select({ projectId: threads.projectId, total: count() })
+    .from(threads).where(scope).groupBy(threads.projectId).all();
+  const unreadTree = db.all<{
+    id: string;
+    parentThreadId: string | null;
+    lastReadAt: number | null;
+    latestAttentionAt: number;
+  }>(sql`
+    WITH RECURSIVE visible AS (
+      SELECT id, parent_thread_id, last_read_at, latest_attention_at FROM ${threads} WHERE ${scope}
+    ), ancestry(id) AS (
+      SELECT id FROM visible WHERE coalesce(last_read_at, 0) < latest_attention_at
+      UNION
+      SELECT v.parent_thread_id FROM visible v JOIN ancestry a ON a.id = v.id
+      WHERE v.parent_thread_id IS NOT NULL
+    )
+    SELECT v.id, v.parent_thread_id AS parentThreadId, v.last_read_at AS lastReadAt,
+           v.latest_attention_at AS latestAttentionAt
+    FROM visible v JOIN ancestry a ON a.id = v.id
+  `);
+  return { counts: Object.fromEntries(counts.map(row => [row.projectId, row.total])), unreadTree };
+}
+
 export function hasActiveThreadAttention(db: DbConnection): boolean {
   const unreadThread = or(
     isNull(threads.lastReadAt),

@@ -56,7 +56,7 @@ export async function fetchSidebarNavigation({
       let next: string | undefined;
       const page = await request<SidebarBootstrapResponse>(
         apiClient["sidebar-bootstrap"].$get(
-          { query: { limit: String(SIDEBAR_PAGE_SIZE), cursor } },
+          { query: { limit: String(SIDEBAR_PAGE_SIZE), cursor, overview: cursor === undefined ? "true" : undefined } },
           requestOptions(signal),
         ),
         (response) => {
@@ -72,7 +72,7 @@ export async function fetchSidebarNavigation({
       if (seenCursors.has(next))
         throw new Error("Sidebar returned a repeated continuation");
       seenCursors.add(next);
-      preview = publishSidebarPreview(client, snapshot);
+      preview = publishSidebarPreview(client, { ...snapshot, overview: preview?.overview ?? page.overview });
       cursor = next;
     }
   } finally {

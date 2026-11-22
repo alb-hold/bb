@@ -103,6 +103,10 @@ it.each(["unread", "collapse", "counts"] as const)(
               result.current.preview?.personalProject.threads,
             ).toHaveLength(25),
           );
+          const overview = result.current.preview?.overview;
+          expect(overview?.counts[PERSONAL_PROJECT_ID]).toBe(26);
+          expect(overview?.unreadTree.map((row) => row.id).sort()).toEqual([childId, parentId].sort());
+          expect(overview?.unreadTree.find((row) => row.id === childId)?.parentThreadId).toBe(parentId);
           expect(result.current.collapsed).toContain(parentId);
           if (goal === "unread") expect(result.current.rows).toBeUndefined();
         } finally {

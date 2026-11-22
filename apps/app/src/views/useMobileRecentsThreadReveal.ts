@@ -3,7 +3,7 @@ import { useSetAtom } from "jotai";
 import type { ThreadListEntry } from "@bb/domain";
 import { isThreadRead } from "@bb/client-core";
 import { useRouteState } from "@/hooks/useRouteState";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { useSidebarNavigation, useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
@@ -28,7 +28,7 @@ export function stepMobileRecentsReveal(
   }: {
     isPlaceholderData: boolean;
     selectedThreadId: string | undefined;
-    threads: readonly ThreadListEntry[] | null;
+    threads: readonly (Pick<ThreadListEntry, "id" | "parentThreadId" | "lastReadAt" | "latestAttentionAt"> & { visibility?: ThreadListEntry["visibility"] })[] | null;
   },
 ): { ancestorIds: ReadonlySet<string>; state: MobileRecentsRevealState } {
   const navigated = state.previousThreadId !== selectedThreadId;
@@ -89,10 +89,11 @@ export function stepMobileRecentsReveal(
 export function useMobileRecentsThreadReveal(): void {
   const { threadId: selectedThreadId } = useRouteState();
   const { data: navigation, isPlaceholderData } = useSidebarNavigation();
+  const preview = useSidebarNavigationPreview();
   const setCollapsedThreadIds = useSetAtom(mobileRecentsCollapsedThreadIdsAtom);
   const threads = useMemo(
-    () => (navigation ? listSidebarNavigationThreads(navigation) : []),
-    [navigation],
+    () => navigation && !isPlaceholderData ? listSidebarNavigationThreads(navigation) : preview?.overview?.unreadTree ?? null,
+    [navigation, isPlaceholderData, preview?.overview],
   );
   const revealState = useRef(INITIAL_MOBILE_RECENTS_REVEAL_STATE);
 
@@ -100,9 +101,9 @@ export function useMobileRecentsThreadReveal(): void {
     const { ancestorIds, state } = stepMobileRecentsReveal(
       revealState.current,
       {
-        isPlaceholderData,
+        isPlaceholderData: threads === null,
         selectedThreadId,
-        threads: navigation ? threads : null,
+        threads,
       },
     );
     revealState.current = state;

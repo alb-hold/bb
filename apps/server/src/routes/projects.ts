@@ -22,6 +22,7 @@ import {
   listThreadSections,
   listThreadsWithPendingInteractionStateForProjects,
   buildProjectThreadListEnrichmentScope,
+  sidebarOverview,
   reorderProject,
   updateProject,
   updateProjectSource,
@@ -229,6 +230,7 @@ interface SidebarPage {
   context: Pick<Context, "header">;
   limit: number;
   after?: ReturnType<typeof parseThreadCursor>;
+  overview?: boolean;
 }
 
 function buildProjectsWithThreadsResponseFromRows(
@@ -301,6 +303,7 @@ function buildSidebarBootstrapResponse(deps: AppDeps, page?: SidebarPage) {
     );
   }
   return {
+    ...(page?.overview ? { overview: sidebarOverview(deps.db, [personalProject.id, ...projects.map(project => project.id)]) } : {}),
     sections: listThreadSections(deps.db),
     projects,
     personalProject: personalProjectResponse,
@@ -468,7 +471,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
         ? undefined
         : parseThreadCursor(query.cursor, false);
     return context.json(
-      buildSidebarBootstrapResponse(deps, { context, limit, after }),
+      buildSidebarBootstrapResponse(deps, { context, limit, after, overview: query.overview === "true" && after === undefined }),
     );
   });
 

@@ -439,7 +439,7 @@ export function registerThreadBaseRoutes(
       void Promise.all(
         threads
           .slice(0, NATIVE_STATUS_LIST_LIMIT)
-          .map((thread) => reconcileNativeThreadStatus(deps, thread)),
+          .map((thread) => reconcileNativeThreadStatus(deps, thread.id)),
       ).catch((error) => {
         deps.logger.debug(
           { error },

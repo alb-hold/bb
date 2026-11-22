@@ -205,6 +205,7 @@ export {
   listRunningThreads,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
+  sidebarOverview,
   buildThreadListEnrichmentScope,
   buildProjectThreadListEnrichmentScope,
   buildPinnedRootThreadListEnrichmentScope,

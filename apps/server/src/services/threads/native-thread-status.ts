@@ -103,15 +103,14 @@ function nativeStatusReadStates(deps: NativeThreadStatusDeps) {
 
 export async function reconcileNativeThreadStatus(
   deps: NativeThreadStatusDeps,
-  target: string | NonNullable<ReturnType<typeof getThread>>,
+  threadId: string,
 ): Promise<void> {
-  const thread = typeof target === "string" ? getThread(deps.db, target) : target;
+  const thread = getThread(deps.db, threadId);
   if (
     thread === null ||
     (thread.status !== "active" && thread.status !== "idle")
   )
     return;
-  const threadId = thread.id;
   const native = getNativeTerminalThread(deps.db, threadId);
   if (native === null || native.providerId !== thread.providerId) return;
   const liveness = classifyNativeTerminalLiveness(deps, native);
