@@ -18,6 +18,7 @@ export function useSetupComplete(): boolean {
   return (
     onboarded &&
     navigation !== undefined &&
+    navigation !== null &&
     listSidebarNavigationThreads(navigation).length > 0
   );
 }
