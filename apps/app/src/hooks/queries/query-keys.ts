@@ -187,6 +187,10 @@ type ProjectSourceBranchesQueryKey = readonly [
 export type SidebarNavigationQueryKey = readonly [
   typeof SIDEBAR_NAVIGATION_QUERY_KEY,
 ];
+export type SidebarNavigationPagesQueryKey = readonly [
+  typeof SIDEBAR_NAVIGATION_QUERY_KEY,
+  "pages",
+];
 type ThreadsQueryKey = readonly [typeof THREADS_QUERY_KEY];
 type ThreadListQueryKey = readonly [
   typeof THREADS_QUERY_KEY,
@@ -667,6 +671,10 @@ export function projectSourceBranchesQueryKeyPrefix(
 
 export function sidebarNavigationQueryKey(): SidebarNavigationQueryKey {
   return [SIDEBAR_NAVIGATION_QUERY_KEY];
+}
+
+export function sidebarNavigationPagesQueryKey(): SidebarNavigationPagesQueryKey {
+  return [SIDEBAR_NAVIGATION_QUERY_KEY, "pages"];
 }
 
 export function threadsQueryKey(): ThreadsQueryKey {

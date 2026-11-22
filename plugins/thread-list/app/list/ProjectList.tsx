@@ -26,6 +26,7 @@ import {
   experimental_useProviders,
   useBbNavigate,
   useSdk,
+  type PluginSidebarThreadsState,
 } from "@get-bb/plugin-sdk/app";
 import {
   SidebarRenameProvider,
@@ -60,6 +61,7 @@ import {
   SidebarContentElementProvider,
   SidebarGroupContent,
   SidebarStickyStack,
+  useSidebarContentElementRef,
 } from "../ui/sidebar.js";
 import {
   ChronologicalSectionThreadSections,
@@ -376,6 +378,70 @@ function ProjectListNavigationLoadingRow({
   );
 }
 
+const ACTIVE_PAGE_SCROLL_THRESHOLD_PX = 240;
+
+function ActiveThreadPagesControl({
+  activePages,
+}: {
+  activePages: PluginSidebarThreadsState["experimental_activePages"];
+}) {
+  const scrollElementRef = useSidebarContentElementRef();
+  const hasNextPage = activePages?.hasNextPage === true;
+  const isFetchingNextPage = activePages?.isFetchingNextPage === true;
+  const isFetchNextPageError = activePages?.isFetchNextPageError === true;
+  const fetchNextPage = activePages?.fetchNextPage;
+
+  useEffect(() => {
+    if (
+      !hasNextPage ||
+      isFetchingNextPage ||
+      isFetchNextPageError ||
+      !fetchNextPage
+    ) {
+      return;
+    }
+    const scrollElement = scrollElementRef?.current ?? null;
+    if (!scrollElement) return;
+    const handleScroll = () => {
+      if (scrollElement.scrollTop <= 0) return;
+      if (
+        scrollElement.scrollTop + scrollElement.clientHeight >=
+        scrollElement.scrollHeight - ACTIVE_PAGE_SCROLL_THRESHOLD_PX
+      ) {
+        void fetchNextPage();
+      }
+    };
+    scrollElement.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      scrollElement.removeEventListener("scroll", handleScroll);
+    };
+  }, [
+    fetchNextPage,
+    hasNextPage,
+    isFetchNextPageError,
+    isFetchingNextPage,
+    scrollElementRef,
+  ]);
+
+  if (!hasNextPage || !fetchNextPage) return null;
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={isFetchingNextPage}
+      onClick={() => void fetchNextPage()}
+      aria-label="Load more threads"
+    >
+      {isFetchingNextPage
+        ? "Loading…"
+        : isFetchNextPageError
+          ? "Retry loading"
+          : "Show more"}
+    </Button>
+  );
+}
+
 export function ProjectListShell({ children }: ProjectListShellProps) {
   return (
     <ThreadRowNavigationProvider>
@@ -519,6 +585,8 @@ interface ProjectModeSectionsProps
   status: ThreadListStatus;
   threads: SidebarThread[];
   threadsSection: Omit<BuiltInSidebarSectionOptions, "content">;
+  activePages?: PluginSidebarThreadsState["experimental_activePages"];
+  onRequestMoreThreads?: () => void;
 }
 
 function ProjectModeSections({
@@ -546,6 +614,8 @@ function ProjectModeSections({
   status,
   threads,
   threadsSection,
+  activePages,
+  onRequestMoreThreads,
 }: ProjectModeSectionsProps) {
   const groupThreadsByEnvironment = useAtomValue(
     sidebarGroupThreadsByEnvironmentAtom,
@@ -559,11 +629,14 @@ function ProjectModeSections({
   );
   const toggleProjectCollapsed = useCallback<ToggleCollapsedId>(
     (projectId) => {
+      if (collapsedProjectIds.has(projectId)) {
+        onRequestMoreThreads?.();
+      }
       setCollapsedProjectIdList((current) =>
         toggleCollapsedIdList({ current, id: projectId }),
       );
     },
-    [setCollapsedProjectIdList],
+    [collapsedProjectIds, onRequestMoreThreads, setCollapsedProjectIdList],
   );
   const threadsByProject = useMemo(() => {
     const grouped = new Map<string, SidebarThread[]>();
@@ -583,6 +656,9 @@ function ProjectModeSections({
     return grouped;
   }, [effectivePinnedThreadIds, threads]);
   const showEmptyProjects = useAtomValue(sidebarShowEmptyProjectsAtom);
+  const projectCounts = activePages?.projectCounts;
+  const hasMoreActivePages = activePages?.hasNextPage === true;
+  const isFetchingMoreActivePages = activePages?.isFetchingNextPage === true;
   const projectRows = useMemo<ProjectListRowModel[]>(
     () =>
       projects
@@ -591,17 +667,37 @@ function ProjectModeSections({
             !project.isPersonal &&
             (showEmptyProjects ||
               status !== "ready" ||
+              (projectCounts?.[project.id] ?? 0) > 0 ||
               threadsByProject.get(project.id)?.some(isSidebarProjectThread)),
         )
-        .map((project) => ({
-          project,
-          threadListState: getProjectThreadListState({
-            status,
-            threads: threadsByProject.get(project.id),
-          }),
-          isActive: false,
-        })),
-    [projects, showEmptyProjects, status, threadsByProject],
+        .map((project) => {
+          const projectThreads = threadsByProject.get(project.id);
+          const hasUnloadedThreads =
+            hasMoreActivePages &&
+            (projectCounts?.[project.id] ?? 0) > (projectThreads?.length ?? 0);
+          return {
+            project,
+            threadListState:
+              hasUnloadedThreads &&
+              (projectThreads?.length ?? 0) === 0 &&
+              isFetchingMoreActivePages
+                ? EMPTY_PROJECT_THREAD_LIST_STATE
+                : getProjectThreadListState({
+                    status,
+                    threads: projectThreads,
+                  }),
+            isActive: false,
+          };
+        }),
+    [
+      hasMoreActivePages,
+      isFetchingMoreActivePages,
+      projectCounts,
+      projects,
+      showEmptyProjects,
+      status,
+      threadsByProject,
+    ],
   );
   const projectSectionIds = useMemo(
     () =>
@@ -832,6 +928,12 @@ function ProjectModeSections({
                 onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
                 reorderDisabled={reorderDisabled}
                 consumeProjectClickSuppression={consumeClickSuppression}
+                hasUnloadedThreads={
+                  hasMoreActivePages &&
+                  (projectCounts?.[row.project.id] ?? 0) >
+                    (threadsByProject.get(row.project.id)?.length ?? 0)
+                }
+                onRequestMoreThreads={onRequestMoreThreads}
               />
             </ThreadListVisibilityGroupScope>
           );
@@ -981,6 +1083,7 @@ interface MachineModeSectionsProps
   status: ThreadListStatus;
   threads: SidebarThread[];
   threadsSection: Omit<BuiltInSidebarSectionOptions, "content">;
+  onRequestMoreThreads?: () => void;
 }
 
 function MachineSidebarSection({
@@ -1048,6 +1151,7 @@ export function MachineModeSections({
   status,
   threads,
   threadsSection,
+  onRequestMoreThreads,
 }: MachineModeSectionsProps) {
   const groupThreadsByEnvironment = useAtomValue(
     sidebarGroupThreadsByEnvironmentAtom,
@@ -1063,11 +1167,14 @@ export function MachineModeSections({
   );
   const toggleMachineCollapsed = useCallback<ToggleCollapsedId>(
     (machineKey) => {
+      if (collapsedMachineKeys.has(machineKey)) {
+        onRequestMoreThreads?.();
+      }
       setCollapsedMachineKeyList((current) =>
         toggleCollapsedIdList({ current, id: machineKey }),
       );
     },
-    [setCollapsedMachineKeyList],
+    [collapsedMachineKeys, onRequestMoreThreads, setCollapsedMachineKeyList],
   );
   const nonPinnedThreads = useMemo(
     () =>
@@ -1353,8 +1460,18 @@ function ProjectListComponent({
     projects,
     personalProject,
     archived,
+    activePages,
     projectNamesById,
   } = useSidebarData(true);
+  const requestNextActivePage = useCallback(() => {
+    if (
+      activePages?.hasNextPage &&
+      !activePages.isFetchingNextPage &&
+      !activePages.isFetchNextPageError
+    ) {
+      void activePages.fetchNextPage();
+    }
+  }, [activePages]);
   const [createdSections, setCreatedSections] = useState<
     SidebarSectionDefinition[]
   >([]);
@@ -1647,12 +1764,21 @@ function ProjectListComponent({
   const {
     comparator: sidebarThreadComparator,
     collapsedThreadIds,
-    toggleThreadCollapsed,
+    toggleThreadCollapsed: toggleThreadCollapsedBase,
   } = useReadStatusGrouping({
     threads,
     selectedThreadId,
     comparator: baseThreadComparator,
   });
+  const toggleThreadCollapsed = useCallback<ToggleCollapsedId>(
+    (threadId) => {
+      if (collapsedThreadIds.has(threadId)) {
+        requestNextActivePage();
+      }
+      toggleThreadCollapsedBase(threadId);
+    },
+    [collapsedThreadIds, requestNextActivePage, toggleThreadCollapsedBase],
+  );
   const collapsedEnvironmentIds = useMemo(
     () => new Set(collapsedEnvironmentIdList),
     [collapsedEnvironmentIdList],
@@ -1700,23 +1826,37 @@ function ProjectListComponent({
   const hasPinnedSection = pinnedSidebarState.rootNodes.length > 0;
   const toggleEnvironmentCollapsed = useCallback<ToggleCollapsedId>(
     (environmentId) => {
+      if (collapsedEnvironmentIds.has(environmentId)) {
+        requestNextActivePage();
+      }
       setCollapsedEnvironmentIdList((current) => {
         return toggleCollapsedIdList({ current, id: environmentId });
       });
     },
-    [setCollapsedEnvironmentIdList],
+    [
+      collapsedEnvironmentIds,
+      requestNextActivePage,
+      setCollapsedEnvironmentIdList,
+    ],
   );
 
   const toggleSidebarSectionCollapsed =
     useCallback<ToggleCollapsedSidebarSectionId>(
       (sectionId) => {
+        if (collapsedSidebarSectionIds.has(sectionId)) {
+          requestNextActivePage();
+        }
         setCollapsedSidebarSectionIdList((current) => {
           return toggleCollapsedIdList({ current, id: sectionId }).filter(
             isCollapsibleSidebarSectionId,
           );
         });
       },
-      [setCollapsedSidebarSectionIdList],
+      [
+        collapsedSidebarSectionIds,
+        requestNextActivePage,
+        setCollapsedSidebarSectionIdList,
+      ],
     );
 
   const pinnedSectionContent = (
@@ -1883,6 +2023,7 @@ function ProjectListComponent({
               onToggleCollapsed={toggleSidebarSectionCollapsed}
               onToggleThreadCollapsed={toggleThreadCollapsed}
               onToggleEnvironmentCollapsed={toggleEnvironmentCollapsed}
+              onRequestMoreThreads={requestNextActivePage}
             />
           )}
           renderChronological={() => renderSections(false)}
@@ -1918,9 +2059,12 @@ function ProjectListComponent({
               onToggleCollapsed={toggleSidebarSectionCollapsed}
               onToggleThreadCollapsed={toggleThreadCollapsed}
               onToggleEnvironmentCollapsed={toggleEnvironmentCollapsed}
+              activePages={activePages}
+              onRequestMoreThreads={requestNextActivePage}
             />
           )}
         />
+        <ActiveThreadPagesControl activePages={activePages} />
         {archived !== null && (
           <>
             {status === "ready" && archived.status !== "ready" && (

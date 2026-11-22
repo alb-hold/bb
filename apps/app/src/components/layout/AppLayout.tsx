@@ -62,7 +62,10 @@ import {
 } from "./page-title";
 import { AppPageHeader, HEADER_ICON_BUTTON_CLASS } from "./AppPageHeader";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import {
   didThreadDetailBootstrapRefreshAfterMount,
   useThread,
@@ -669,22 +672,25 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     ? new URLSearchParams(location.search).get("sectionId")
     : null;
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
+  const effectiveSidebarNavigation = sidebarNavigationQuery.isPlaceholderData
+    ? (sidebarNavigationPreview ?? sidebarNavigationQuery.data)
+    : (sidebarNavigationQuery.data ?? sidebarNavigationPreview);
   const projects = useMemo(
-    () => sidebarNavigationQuery.data?.projects.map(stripProjectThreads),
-    [sidebarNavigationQuery.data],
+    () => effectiveSidebarNavigation?.projects.map(stripProjectThreads),
+    [effectiveSidebarNavigation],
   );
   const sidebarThreads = useMemo(() => {
-    const sidebarNavigation = sidebarNavigationQuery.data;
-    if (!sidebarNavigation) {
+    if (!effectiveSidebarNavigation) {
       return [];
     }
     return [
-      ...sidebarNavigation.projects.flatMap((project) => project.threads),
-      ...sidebarNavigation.personalProject.threads,
+      ...effectiveSidebarNavigation.projects.flatMap((project) => project.threads),
+      ...effectiveSidebarNavigation.personalProject.threads,
     ];
-  }, [sidebarNavigationQuery.data]);
+  }, [effectiveSidebarNavigation]);
   const titleMentionResources = useSidebarThreadTitleMentionResources(
-    sidebarNavigationQuery.data,
+    effectiveSidebarNavigation ?? undefined,
   );
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId ?? "", {
     enabled: isThreadView && Boolean(threadId),

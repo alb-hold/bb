@@ -31,6 +31,7 @@ import {
   threadSearchQueryKeyPrefix,
   threadsQueryKey,
 } from "../queries/query-keys";
+import { sidebarNavigationPreviewQueryKey } from "./sidebar-preview-cache";
 
 type Fields = Record<string, unknown>;
 type ListFacetKey = Exclude<keyof ThreadListEntry, keyof ThreadWithRuntime>;
@@ -228,7 +229,10 @@ const DETAIL: ViewFamily = {
 
 function familyOf(queryKey: QueryKey): ViewFamily | undefined {
   const [head] = queryKey;
-  if (head === sidebarNavigationQueryKey()[0])
+  if (
+    head === sidebarNavigationQueryKey()[0] ||
+    head === sidebarNavigationPreviewQueryKey()[0]
+  )
     return queryKey.length === 1 ? SIDEBAR : undefined;
   if (head === threadsQueryKey()[0])
     return queryKey.length > 1 ? THREAD_LISTS : undefined;

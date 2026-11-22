@@ -46,6 +46,7 @@ import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
 import { useArchivedThreads } from "@/hooks/queries/thread-queries";
 import {
   useSidebarNavigation,
+  useSidebarNavigationPaging,
   useSidebarNavigationPreview,
 } from "@/hooks/queries/sidebar-navigation-query";
 import {
@@ -198,11 +199,35 @@ export function useSidebarThreads(
   );
   const query = useSidebarNavigation();
   const preview = useSidebarNavigationPreview();
+  const previewRows = active && options?.experimental_previewRows === true;
+  const paging = useSidebarNavigationPaging({ enabled: previewRows });
   const complete = query.isPlaceholderData ? undefined : query.data;
-  const data =
-    active && options?.experimental_previewRows
-      ? (complete ?? preview ?? query.data)
-      : complete;
+  const data = previewRows ? (complete ?? preview ?? query.data) : complete;
+  const activePages = useMemo<
+    PluginSidebarThreadsState["experimental_activePages"]
+  >(
+    () =>
+      previewRows
+        ? {
+            hasNextPage: paging.hasNextPage,
+            isFetchingNextPage: paging.isFetchingNextPage,
+            isFetchNextPageError: paging.isFetchNextPageError,
+            fetchNextPage: paging.fetchNextPage,
+            ...(complete === undefined && preview?.overview
+              ? { projectCounts: preview.overview.counts }
+              : {}),
+          }
+        : undefined,
+    [
+      previewRows,
+      paging.hasNextPage,
+      paging.isFetchingNextPage,
+      paging.isFetchNextPageError,
+      paging.fetchNextPage,
+      complete,
+      preview?.overview,
+    ],
+  );
   const activityNow = useSecondTick(
     data?.projects.some((project) =>
       project.threads.some(
@@ -224,6 +249,9 @@ export function useSidebarThreads(
     if (data === undefined) {
       return {
         experimental_archived: archiveState,
+        ...(activePages !== undefined
+          ? { experimental_activePages: activePages }
+          : {}),
         status: query.isError ? "error" : "loading",
         threads: EMPTY_THREADS,
         experimental_hosts: hosts ?? [],
@@ -247,6 +275,9 @@ export function useSidebarThreads(
     }
     return {
       experimental_archived: archiveState,
+      ...(activePages !== undefined
+        ? { experimental_activePages: activePages }
+        : {}),
       status: !active && archiveState !== null ? archiveState.status : "ready",
       threads: [...selected.values()].map((thread) =>
         toPluginSidebarThreadCached(
@@ -277,6 +308,7 @@ export function useSidebarThreads(
     includeArchived,
     archived.data,
     archiveState,
+    activePages,
   ]);
 }
 

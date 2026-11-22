@@ -114,6 +114,12 @@ vi.mock("@/lib/sdk", () => ({
 }));
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: () => ({
     data: {
       sections: [],

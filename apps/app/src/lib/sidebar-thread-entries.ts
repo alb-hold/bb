@@ -20,6 +20,7 @@ import {
   archivedThreadsListQueryKey,
   sidebarNavigationQueryKey,
 } from "@/hooks/queries/query-keys";
+import { sidebarNavigationPreviewQueryKey } from "@/hooks/cache-owners/sidebar-preview-cache";
 import { writeSidebarNavigation } from "@/hooks/cache-owners/query-cache";
 import { readCachedSidebarBootstrap } from "./sidebar-bootstrap-cache";
 
@@ -84,6 +85,9 @@ function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
     queryClient.getQueryData<SidebarBootstrapResponse>(
       sidebarNavigationQueryKey(),
     ) ??
+    queryClient.getQueryData<SidebarBootstrapResponse | null>(
+      sidebarNavigationPreviewQueryKey(),
+    ) ??
     readCachedSidebarBootstrap() ??
     undefined;
   return mergeArchivedEntries(
@@ -96,6 +100,7 @@ function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
 
 const SOURCE_QUERY_HASHES: ReadonlySet<string> = new Set([
   hashKey(sidebarNavigationQueryKey()),
+  hashKey(sidebarNavigationPreviewQueryKey()),
   hashKey(archivedThreadsListQueryKey({})),
 ]);
 

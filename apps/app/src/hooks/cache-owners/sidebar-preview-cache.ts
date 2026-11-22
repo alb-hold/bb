@@ -16,8 +16,10 @@ export function publishSidebarPreview(
 
 export function clearSidebarPreview(
   client: QueryClient,
-  preview: SidebarBootstrapResponse,
+  preview?: SidebarBootstrapResponse,
 ) {
   const key = sidebarNavigationPreviewQueryKey();
-  if (client.getQueryData(key) === preview) client.setQueryData(key, null);
+  if (preview === undefined || client.getQueryData(key) === preview) {
+    client.setQueryData(key, null);
+  }
 }

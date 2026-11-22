@@ -3,7 +3,11 @@ import { useSetAtom } from "jotai";
 import type { ThreadListEntry } from "@bb/domain";
 import { isThreadRead } from "@bb/client-core";
 import { useRouteState } from "@/hooks/useRouteState";
-import { useSidebarNavigation, useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPaging,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
@@ -86,14 +90,65 @@ export function stepMobileRecentsReveal(
   };
 }
 
+function hasSelectedThreadAncestry(
+  selectedThreadId: string,
+  threads: readonly Pick<ThreadListEntry, "id" | "parentThreadId">[],
+): boolean {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  let current = byId.get(selectedThreadId);
+  if (!current) return false;
+  let remaining = byId.size;
+  while (current.parentThreadId !== null && remaining > 0) {
+    const parent = byId.get(current.parentThreadId);
+    if (!parent) return false;
+    current = parent;
+    remaining -= 1;
+  }
+  return true;
+}
+
 export function useMobileRecentsThreadReveal(): void {
   const { threadId: selectedThreadId } = useRouteState();
   const { data: navigation, isPlaceholderData } = useSidebarNavigation();
   const preview = useSidebarNavigationPreview();
+  const paging = useSidebarNavigationPaging({
+    enabled: Boolean(selectedThreadId),
+  });
   const setCollapsedThreadIds = useSetAtom(mobileRecentsCollapsedThreadIdsAtom);
+  const complete = navigation && !isPlaceholderData ? navigation : undefined;
+  const previewThreads = useMemo(
+    () => (preview ? listSidebarNavigationThreads(preview) : null),
+    [preview],
+  );
+  const needsMorePagesForSelected =
+    selectedThreadId !== undefined &&
+    complete === undefined &&
+    previewThreads !== null &&
+    paging.hasNextPage &&
+    !hasSelectedThreadAncestry(selectedThreadId, previewThreads);
+
+  useEffect(() => {
+    if (
+      !needsMorePagesForSelected ||
+      paging.isFetchingNextPage ||
+      paging.isFetchNextPageError
+    ) {
+      return;
+    }
+    void paging.fetchNextPage();
+  }, [
+    needsMorePagesForSelected,
+    paging.fetchNextPage,
+    paging.isFetchNextPageError,
+    paging.isFetchingNextPage,
+  ]);
+
   const threads = useMemo(
-    () => navigation && !isPlaceholderData ? listSidebarNavigationThreads(navigation) : preview?.overview?.unreadTree ?? null,
-    [navigation, isPlaceholderData, preview?.overview],
+    () =>
+      complete
+        ? listSidebarNavigationThreads(complete)
+        : (preview?.overview?.unreadTree ?? null),
+    [complete, preview?.overview],
   );
   const revealState = useRef(INITIAL_MOBILE_RECENTS_REVEAL_STATE);
 

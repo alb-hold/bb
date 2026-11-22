@@ -1597,6 +1597,14 @@ export interface PluginSidebarThreadsState {
     isFetchNextPageError: boolean;
     fetchNextPage(): Promise<void>;
   } | null;
+  /** Present when active threads are paged on demand (`experimental_previewRows: true`). */
+  experimental_activePages?: {
+    hasNextPage: boolean;
+    isFetchingNextPage: boolean;
+    isFetchNextPageError: boolean;
+    fetchNextPage(): Promise<void>;
+    projectCounts?: Readonly<Record<string, number>>;
+  };
   status: "loading" | "ready" | "error";
   threads: readonly PluginSidebarThread[];
   experimental_hosts?: readonly { id: string; name: string }[];

@@ -50,7 +50,10 @@ import {
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useServerMoveStatus } from "@/hooks/queries/server-move-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import {
   useSystemConfig,
   useSystemProviders,
@@ -268,6 +271,7 @@ export function MachineSettingsView() {
   const systemConfig = useSystemConfig();
   const { localDaemonHostId, platform: localDaemonPlatform } = useHostDaemon();
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
   const updateInventory = useUpdateInventory();
   const renameHost = useRenameHost();
   const retryHostUpdate = useRetryHostUpdate();
@@ -304,13 +308,26 @@ export function MachineSettingsView() {
         ) ?? null);
 
   const projects: MachineProject[] = useMemo(() => {
-    const navigation = sidebarNavigationQuery.data?.projects ?? [];
+    const completeNavigation = sidebarNavigationQuery.isPlaceholderData
+      ? undefined
+      : sidebarNavigationQuery.data;
+    const navigation =
+      (
+        completeNavigation ??
+        sidebarNavigationPreview ??
+        sidebarNavigationQuery.data
+      )?.projects ?? [];
     return navigation
       .filter((project) =>
         project.sources.some((source) => source.hostId === hostId),
       )
       .map((project) => ({ id: project.id, name: project.name }));
-  }, [hostId, sidebarNavigationQuery.data]);
+  }, [
+    hostId,
+    sidebarNavigationPreview,
+    sidebarNavigationQuery.data,
+    sidebarNavigationQuery.isPlaceholderData,
+  ]);
 
   const machine = updateInventory.machines.find(
     (candidate) => candidate.host.id === hostId,

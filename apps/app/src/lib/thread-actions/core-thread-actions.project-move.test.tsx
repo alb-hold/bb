@@ -33,6 +33,12 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: () => ({ data: state.data, isError: false }),
 }));
 

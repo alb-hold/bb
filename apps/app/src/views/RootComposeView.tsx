@@ -134,7 +134,10 @@ import {
 } from "./RootComposeSecondaryContent";
 import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
-import { useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigationPaging,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -541,6 +544,9 @@ function RootComposeSurface({
     renderPromptBox,
   } = composer;
   const navigationPreview = useSidebarNavigationPreview();
+  const navigationPaging = useSidebarNavigationPaging({
+    enabled: isCompactViewport,
+  });
   const rootPanelEnvironmentId =
     parsedEnvironment?.type === "reuse"
       ? parsedEnvironment.environmentId
@@ -1577,6 +1583,16 @@ function RootComposeSurface({
                     showCreatingRow={isSubmitting}
                     threads={mobileRecentThreads}
                     completeSnapshot={sidebarNavigationComplete}
+                    hasMoreThreads={
+                      isCompactViewport && navigationPaging.hasNextPage
+                    }
+                    isLoadingMoreThreads={navigationPaging.isFetchingNextPage}
+                    isLoadMoreThreadsError={
+                      navigationPaging.isFetchNextPageError
+                    }
+                    onLoadMoreThreads={() => {
+                      void navigationPaging.fetchNextPage();
+                    }}
                   />
                 }
                 isSecondaryPanelOpen={isSecondaryPanelOpen}

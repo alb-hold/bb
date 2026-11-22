@@ -70,18 +70,66 @@ export function getThreadSidebarExpansion({
   return { projectId: sidebarProjectId };
 }
 
+function hasCompleteSelectedThreadAncestry(
+  selectedThreadId: string,
+  threadById: ReadonlyMap<string, SidebarThread>,
+): boolean {
+  let current = threadById.get(selectedThreadId);
+  if (!current) return false;
+  let remaining = threadById.size;
+  while (current.parentThreadId !== null && remaining > 0) {
+    const parent = threadById.get(current.parentThreadId);
+    if (!parent) return false;
+    current = parent;
+    remaining -= 1;
+  }
+  return true;
+}
+
 export function useSidebarThreadReveal(): void {
   const { threadId: routedThreadId } = useBbContext();
-  const { status, projects, personalProject } = useSidebarData();
+  const { status, projects, personalProject, activePages } =
+    useSidebarData(true);
   const preferencesReady = usePreferencesReady();
   const threads = useMemo<SidebarThread[]>(
     () => projects.flatMap((project) => project.threads),
     [projects],
   );
+  const threadById = useMemo(
+    () => new Map(threads.map((thread) => [thread.id, thread])),
+    [threads],
+  );
+  const needsMorePagesForSelected =
+    routedThreadId !== null &&
+    routedThreadId !== undefined &&
+    status === "ready" &&
+    activePages?.hasNextPage === true &&
+    !hasCompleteSelectedThreadAncestry(routedThreadId, threadById);
+  const fetchNextPage = activePages?.fetchNextPage;
+  const isFetchingNextPage = activePages?.isFetchingNextPage === true;
+  const isFetchNextPageError = activePages?.isFetchNextPageError === true;
+
+  useEffect(() => {
+    if (
+      !needsMorePagesForSelected ||
+      isFetchingNextPage ||
+      isFetchNextPageError ||
+      !fetchNextPage
+    ) {
+      return;
+    }
+    void fetchNextPage();
+  }, [
+    fetchNextPage,
+    isFetchNextPageError,
+    isFetchingNextPage,
+    needsMorePagesForSelected,
+  ]);
+
   useSidebarThreadRevealCore({
     selectedThreadId: routedThreadId ?? undefined,
     threads,
-    threadsReady: status === "ready",
+    threadsReady: status === "ready" && !needsMorePagesForSelected,
     preferencesReady,
     personalProjectId: personalProject?.id ?? null,
   });

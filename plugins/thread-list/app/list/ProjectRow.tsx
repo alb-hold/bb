@@ -235,6 +235,8 @@ export interface ProjectRowProps {
   projectDragBindings?: SidebarSortableDragBindings;
   projectRowRef?: (element: HTMLDivElement | null) => void;
   projectRowStyle?: CSSProperties;
+  hasUnloadedThreads?: boolean;
+  onRequestMoreThreads?: () => void;
 }
 
 interface ProjectThreadTreeProps {
@@ -249,6 +251,8 @@ interface ProjectThreadTreeProps {
   onProjectSelect?: () => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
+  hasUnloadedThreads?: boolean;
+  onRequestMoreThreads?: () => void;
 }
 
 interface SectionThreadTreeProps {
@@ -1856,6 +1860,8 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
   onProjectSelect,
   onToggleThreadCollapsed,
   onToggleEnvironmentCollapsed,
+  hasUnloadedThreads = false,
+  onRequestMoreThreads,
 }: ProjectThreadTreeProps) {
   const projectThreads =
     threadListState.status === "ready"
@@ -1886,6 +1892,20 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
   }
 
   if (rootItems.length === 0) {
+    if (hasUnloadedThreads && onRequestMoreThreads) {
+      return (
+        <div className={PROJECT_THREAD_TREE_EMPTY_STATE_CLASS}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRequestMoreThreads}
+            aria-label="Load more threads"
+          >
+            Show more
+          </Button>
+        </div>
+      );
+    }
     return (
       <ThreadListEmptyState
         message={
@@ -2189,6 +2209,8 @@ function ProjectRowComponent({
   projectDragBindings,
   projectRowRef,
   projectRowStyle,
+  hasUnloadedThreads,
+  onRequestMoreThreads,
 }: ProjectRowProps) {
   const sdk = useSdk();
   const rename = useSidebarRename({
@@ -2300,6 +2322,8 @@ function ProjectRowComponent({
               onProjectSelect={onProjectSelect}
               onToggleThreadCollapsed={onToggleThreadCollapsed}
               onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
+              hasUnloadedThreads={hasUnloadedThreads}
+              onRequestMoreThreads={onRequestMoreThreads}
             />
           </TopLevelSidebarSection>
         </div>
@@ -2413,7 +2437,9 @@ function areProjectRowPropsEqual(
       next.consumeProjectClickSuppression ||
     prev.projectDragBindings !== next.projectDragBindings ||
     prev.projectRowRef !== next.projectRowRef ||
-    prev.projectRowStyle !== next.projectRowStyle
+    prev.projectRowStyle !== next.projectRowStyle ||
+    prev.hasUnloadedThreads !== next.hasUnloadedThreads ||
+    prev.onRequestMoreThreads !== next.onRequestMoreThreads
   ) {
     return false;
   }
