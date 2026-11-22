@@ -387,13 +387,14 @@ function advanceThreadPruningTransaction(
   db: DbConnection,
   policy: ThreadPruningPolicy,
   threadScope: string | undefined,
+  clock: () => number,
 ) {
   const scope = threadScope ?? "";
   const batchSize = threadScope === undefined ? BATCH_SIZE : LIVE_BATCH_SIZE;
   const result = db.transaction(
     (tx) => {
-      const deadline = performance.now() + THREAD_PRUNING_ADVANCE_WORK_BUDGET_MS;
-      const withinDeadline = () => performance.now() < deadline;
+      const deadline = clock() + THREAD_PRUNING_ADVANCE_WORK_BUDGET_MS;
+      const withinDeadline = () => clock() < deadline;
       const { cursor, now } = prepareThreadPruningCursor(tx, policy, threadScope);
       let action:
         | "advanced"
@@ -456,6 +457,7 @@ function advanceThreadPruningTransaction(
             kind: cursor.step === 0 ? "deltas" : "background",
             limit: batchSize,
             deadline,
+            now: clock,
           });
           scanned = batch.scanned;
           removed = batch.removed;
@@ -667,6 +669,7 @@ function advanceThreadPruningWithCollapsedEmptySteps(
   db: DbConnection,
   target: ThreadPruningPolicy | { threadId: string },
   maxCollapsedEmptySteps: number,
+  clock: () => number,
 ) {
   return advanceWithoutBusyWait(db, () => {
     const threadScope =
@@ -676,7 +679,12 @@ function advanceThreadPruningWithCollapsedEmptySteps(
         ? target
         : getNextThreadPruningPolicy(db, new Set(), target.threadId);
     if (policy === null) throw new Error("Missing live pruning policy");
-    let result = advanceThreadPruningTransaction(db, policy, threadScope);
+    let result = advanceThreadPruningTransaction(
+      db,
+      policy,
+      threadScope,
+      clock,
+    );
     for (
       let collapsed = 0;
       collapsed < maxCollapsedEmptySteps &&
@@ -684,7 +692,7 @@ function advanceThreadPruningWithCollapsedEmptySteps(
       result.scanned === 0;
       collapsed += 1
     )
-      result = advanceThreadPruningTransaction(db, policy, threadScope);
+      result = advanceThreadPruningTransaction(db, policy, threadScope, clock);
     return result;
   });
 }
@@ -713,17 +721,25 @@ export function deleteThreadScopedPruningCursors(
 export function advanceThreadPruning(
   db: DbConnection,
   target: ThreadPruningPolicy | { threadId: string },
+  options?: { now?: () => number },
 ) {
   return advanceThreadPruningWithCollapsedEmptySteps(
     db,
     target,
     MAX_COLLAPSED_EMPTY_STEPS,
+    options?.now ?? (() => performance.now()),
   );
 }
 
 export function advanceThreadPruningStep(
   db: DbConnection,
   target: ThreadPruningPolicy | { threadId: string },
+  options?: { now?: () => number },
 ) {
-  return advanceThreadPruningWithCollapsedEmptySteps(db, target, 0);
+  return advanceThreadPruningWithCollapsedEmptySteps(
+    db,
+    target,
+    0,
+    options?.now ?? (() => performance.now()),
+  );
 }
