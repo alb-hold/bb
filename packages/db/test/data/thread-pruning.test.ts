@@ -24,6 +24,7 @@ import {
   advanceThreadPruning,
   getNextThreadPruningPolicy,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
+  THREAD_PRUNING_ADVANCE_WORK_BUDGET_MS,
   THREAD_PRUNING_POLICIES,
 } from "../../src/data/thread-pruning.js";
 import type { ThreadPruningPolicy } from "../../src/data/thread-pruning.js";
@@ -103,10 +104,13 @@ function seedWindow(
 function range(first: number, last: number) {
   return Array.from({ length: last - first + 1 }, (_, i) => first + i);
 }
+const neverExpiringClock = () => 0;
+const neverExpiringOptions = { now: neverExpiringClock };
+
 function cycle(f: Fixture, policy: ThreadPruningPolicy) {
   const results = [];
   for (let i = 0; i < 2000; i++) {
-    const result = advanceThreadPruning(f.db, policy);
+    const result = advanceThreadPruning(f.db, policy, neverExpiringOptions);
     expect(result.scanned).toBeLessThanOrEqual(500);
     expect(result.removed).toBeLessThanOrEqual(500);
     results.push(result);
@@ -293,7 +297,8 @@ function driveLivePruning(f: Fixture, passBudget: LegacyPassBudget) {
       threadId: f.thread.id,
       kind: "background",
       limit: passLimit,
-      deadline: performance.now() + 1_000,
+      deadline: Number.POSITIVE_INFINITY,
+      now: neverExpiringClock,
     }).complete;
   expect(complete).toBe(true);
   return new Set(readProgressIds(f));
@@ -506,11 +511,15 @@ describe("thread pruning", () => {
       if (!first || !second) throw new Error("Missing pruning fixtures");
       seed({ ...f, thread: first }, 1);
       seed({ ...f, thread: second }, 1);
-      expect(advanceThreadPruning(f.db, "rate-limits").threadId).toBe(first.id);
+      expect(
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions)
+          .threadId,
+      ).toBe(first.id);
       seed({ ...f, thread: first }, 2);
-      expect(advanceThreadPruning(f.db, "rate-limits").threadId).toBe(
-        second.id,
-      );
+      expect(
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions)
+          .threadId,
+      ).toBe(second.id);
     } finally {
       f.db.$client.close();
     }
@@ -592,7 +601,11 @@ describe("thread pruning", () => {
         const policy = getNextThreadPruningPolicy(f.db, new Set(), f.thread.id);
         if (policy === null) throw new Error("Missing policy");
         policies.push(policy);
-        const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+        const result = advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        );
         expect(result.scanned).toBeLessThanOrEqual(32);
         expect(result.removed).toBeLessThanOrEqual(32);
         removed += result.removed;
@@ -646,7 +659,11 @@ describe("thread pruning", () => {
         removed: number;
       }> = [];
       const advance = () => {
-        const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+        const result = advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        );
         advances.push({
           policy: result.policy,
           action: result.action,
@@ -685,7 +702,11 @@ describe("thread pruning", () => {
       );
       const generation = getThreadEventRewriteGeneration(f.thread.id);
       expect(() =>
-        advanceThreadPruning(f.db, { threadId: f.thread.id }),
+        advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        ),
       ).toThrow("live advance failed");
       expect(f.db.$client.pragma("busy_timeout", { simple: true })).toBe(5000);
       expect(sequences(f)).toEqual([1, 2]);
@@ -693,7 +714,11 @@ describe("thread pruning", () => {
       expect(getThreadEventRewriteGeneration(f.thread.id)).toBe(generation);
       f.db.run(sql`DROP TRIGGER fail_live_advance`);
       expect(
-        advanceThreadPruning(f.db, { threadId: f.thread.id }).removed,
+        advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        ).removed,
       ).toBe(1);
       expect(getThreadEventRewriteGeneration(f.thread.id)).toBe(generation + 1);
     } finally {
@@ -718,9 +743,13 @@ describe("thread pruning", () => {
             seed(fixture, i, { type: "item/agentMessage/delta" });
         });
         for (let i = 0; i < 4; i++)
-          advanceThreadPruning(f.db, { threadId: fixture.thread.id });
+          advanceThreadPruning(
+            f.db,
+            { threadId: fixture.thread.id },
+            neverExpiringOptions,
+          );
       }
-      advanceThreadPruning(f.db, "rate-limits");
+      advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions);
       const before = f.db.select().from(threadPruningCursors).all();
       expect(
         before
@@ -740,7 +769,11 @@ describe("thread pruning", () => {
               row.sequence < row.upperSequence,
           );
       for (let i = 0; i < 1000 && hasUnfinishedLiveDeltaPass(); i++)
-        advanceThreadPruning(f.db, { threadId: f.thread.id });
+        advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        );
       expect(hasUnfinishedLiveDeltaPass()).toBe(false);
       const remaining = f.db.select().from(threadPruningCursors).all();
       expect(remaining.filter((row) => row.scope !== f.thread.id)).toEqual(
@@ -777,9 +810,9 @@ describe("thread pruning", () => {
         ].entries())
           seed(f, 1101 + i, { data });
       });
-      advanceThreadPruning(f.db, "rate-limits");
+      advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions);
       expect(
-        advanceThreadPruning(f.db, "rate-limits").scanned,
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions).scanned,
       ).toBeLessThanOrEqual(64);
       seed(f, 1105);
       const saved = f.db.$client.serialize();
@@ -820,9 +853,9 @@ describe("thread pruning", () => {
       f.db.run(
         sql`CREATE TRIGGER fail_live_insert BEFORE INSERT ON thread_pruning_cursors WHEN NEW.policy = 'deltas' BEGIN SELECT RAISE(ABORT, 'live insert failed'); END`,
       );
-      expect(() => advanceThreadPruning(f.db, "resolved-items")).toThrow(
-        "live insert failed",
-      );
+      expect(() =>
+        advanceThreadPruning(f.db, "resolved-items", neverExpiringOptions),
+      ).toThrow("live insert failed");
       expect(sequences(f)).toContain(126);
       expect(f.db.select().from(threadPruningCursors).all()).toEqual([]);
       f.db.run(sql`DROP TRIGGER fail_live_insert`);
@@ -878,7 +911,10 @@ describe("thread pruning", () => {
           parentToolCallId: "target",
         });
       });
-      expect(advanceThreadPruning(f.db, "resolved-items").removed).toBe(0);
+      expect(
+        advanceThreadPruning(f.db, "resolved-items", neverExpiringOptions)
+          .removed,
+      ).toBe(0);
       const before = f.db.select().from(threadPruningCursors).all();
       expect(
         before.find((row) => row.policy === "deltas")?.probeSequence,
@@ -886,9 +922,9 @@ describe("thread pruning", () => {
       f.db.run(
         sql`CREATE TRIGGER fail_live_cursor BEFORE UPDATE ON thread_pruning_cursors BEGIN SELECT RAISE(ABORT, 'live cursor failed'); END`,
       );
-      expect(() => advanceThreadPruning(f.db, "resolved-items")).toThrow(
-        "live cursor failed",
-      );
+      expect(() =>
+        advanceThreadPruning(f.db, "resolved-items", neverExpiringOptions),
+      ).toThrow("live cursor failed");
       expect(f.db.select().from(threadPruningCursors).all()).toEqual(before);
       f.db.run(sql`DROP TRIGGER fail_live_cursor`);
       const saved = f.db.$client.serialize();
@@ -1175,7 +1211,11 @@ describe("thread pruning", () => {
       });
       seed(f, 1, { data });
       seed(f, 2, { data });
-      const first = advanceThreadPruning(f.db, "rate-limits");
+      const first = advanceThreadPruning(
+        f.db,
+        "rate-limits",
+        neverExpiringOptions,
+      );
       expect(first.scanned).toBe(2);
       expect(first.removed).toBe(1);
       cycle(f, "rate-limits");
@@ -1199,14 +1239,16 @@ describe("thread pruning", () => {
       f.db.run(
         sql`CREATE TRIGGER fail_pruning BEFORE UPDATE ON thread_pruning_cursors BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
       );
-      expect(() => advanceThreadPruning(f.db, "rate-limits")).toThrow(
-        "injected failure",
-      );
+      expect(() =>
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions),
+      ).toThrow("injected failure");
       expect(sequences(f)).toEqual([1, 2]);
       expect(f.db.select().from(threadPruningCursors).all()).toEqual(before);
       expect(getThreadEventRewriteGeneration(f.thread.id)).toBe(generation);
       f.db.run(sql`DROP TRIGGER fail_pruning`);
-      expect(advanceThreadPruning(f.db, "rate-limits").removed).toBe(1);
+      expect(
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions).removed,
+      ).toBe(1);
       expect(getThreadEventRewriteGeneration(f.thread.id)).toBe(generation + 1);
     } finally {
       f.db.$client.close();
@@ -1226,18 +1268,26 @@ describe("thread pruning", () => {
       f.db.$client.close();
       f = { ...f, db: createConnection(path) };
       writer = createConnection(path);
-      advanceThreadPruning(f.db, "rate-limits");
+      advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions);
       writer.$client.exec("BEGIN IMMEDIATE");
       expect(() =>
-        advanceThreadPruning(f.db, { threadId: f.thread.id }),
+        advanceThreadPruning(
+          f.db,
+          { threadId: f.thread.id },
+          neverExpiringOptions,
+        ),
       ).toThrow("database is locked");
       expect(f.db.$client.pragma("busy_timeout", { simple: true })).toBe(5000);
-      expect(() => advanceThreadPruning(f.db, "rate-limits")).toThrow(
-        "database is locked",
-      );
+      expect(() =>
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions),
+      ).toThrow("database is locked");
       expect(f.db.$client.pragma("busy_timeout", { simple: true })).toBe(5000);
       writer.$client.exec("ROLLBACK");
-      const batch = advanceThreadPruning(f.db, "rate-limits");
+      const batch = advanceThreadPruning(
+        f.db,
+        "rate-limits",
+        neverExpiringOptions,
+      );
       const nextSurvivor = 599;
       expect(batch.removed).toBeLessThanOrEqual(64);
       writer.delete(events).where(eq(events.sequence, 600)).run();
@@ -1359,7 +1409,9 @@ describe("thread pruning", () => {
         for (let i = 1; i <= 1200; i++)
           seed(f, i, { type: "turn/diff/updated", data: "{}" });
       });
-      expect(advanceThreadPruning(f.db, "turn-diffs").removed).toBe(500);
+      expect(
+        advanceThreadPruning(f.db, "turn-diffs", neverExpiringOptions).removed,
+      ).toBe(500);
       f.db.transaction((tx) =>
         deleteThreadEventSuffixInTransaction(tx, {
           threadId: f.thread.id,
@@ -1557,7 +1609,9 @@ describe("thread pruning", () => {
       for (let i = 1; i <= 130; i++) seed(f, i);
       seed(f, 131, { type: "turn/completed" });
       archiveThread(f.db, noopNotifier, f.thread.id);
-      expect(advanceThreadPruning(f.db, "rate-limits").removed).toBe(64);
+      expect(
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions).removed,
+      ).toBe(64);
       unarchiveThread(f.db, noopNotifier, f.thread.id);
       cycle(f, "rate-limits");
       expect(sequences(f)).toEqual([130, 131]);
@@ -1778,11 +1832,13 @@ describe("thread pruning", () => {
           data: "{}",
         });
       });
-      advanceThreadPruning(f.db, "usage");
-      advanceThreadPruning(f.db, "usage");
+      advanceThreadPruning(f.db, "usage", neverExpiringOptions);
+      advanceThreadPruning(f.db, "usage", neverExpiringOptions);
       f.db.delete(events).where(eq(events.sequence, 600)).run();
       markThreadPruningWork(f.db, [f.thread.id]);
-      expect(advanceThreadPruning(f.db, "usage").removed).toBe(0);
+      expect(
+        advanceThreadPruning(f.db, "usage", neverExpiringOptions).removed,
+      ).toBe(0);
       cycle(f, "usage");
       cycle(f, "usage");
       expect(sequences(f)).toEqual([1, 599, 1000]);
@@ -1804,7 +1860,11 @@ describe("thread pruning", () => {
           });
       });
       for (let i = 0; i < 10; i++) {
-        const result = advanceThreadPruning(f.db, "resolved-items");
+        const result = advanceThreadPruning(
+          f.db,
+          "resolved-items",
+          neverExpiringOptions,
+        );
         if (result.scanned > 0) break;
       }
       seed(f, 801, {
@@ -1855,7 +1915,7 @@ describe("thread pruning", () => {
       });
       let pending = false;
       for (let i = 0; i < 30; i++) {
-        advanceThreadPruning(f.db, "resolved-items");
+        advanceThreadPruning(f.db, "resolved-items", neverExpiringOptions);
         if (
           f.db
             .select()
@@ -1943,11 +2003,11 @@ describe("thread pruning", () => {
     const f = setup();
     try {
       for (let i = 1; i <= 501; i++) seed(f, i);
-      advanceThreadPruning(f.db, "rate-limits");
+      advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions);
       f.db.delete(threads).where(eq(threads.id, f.thread.id)).run();
-      expect(advanceThreadPruning(f.db, "rate-limits").action).toBe(
-        "missing-thread",
-      );
+      expect(
+        advanceThreadPruning(f.db, "rate-limits", neverExpiringOptions).action,
+      ).toBe("missing-thread");
       cycle(f, "rate-limits");
       f.db
         .update(threadPruningCursors)
@@ -1995,6 +2055,59 @@ describe("thread pruning", () => {
           "cycle-complete",
         ]);
       }
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("stops an advance when the work-budget clock expires and resumes from the saved cursor", () => {
+    const f = setup();
+    try {
+      f.db.transaction(() => {
+        for (let i = 1; i <= 1200; i++)
+          seed(f, i, { type: "turn/diff/updated", data: "{}" });
+      });
+      const ticks = [0, 5, 10, THREAD_PRUNING_ADVANCE_WORK_BUDGET_MS];
+      let readIndex = 0;
+      const expiringClock = () =>
+        ticks[Math.min(readIndex++, ticks.length - 1)] ??
+        THREAD_PRUNING_ADVANCE_WORK_BUDGET_MS;
+
+      const first = advanceThreadPruning(f.db, "turn-diffs", {
+        now: expiringClock,
+      });
+      expect(first.action).toBe("advanced");
+      expect(first.scanned).toBe(48);
+      expect(first.removed).toBe(48);
+      expect(first.cursor.sequence).toBe(48);
+      expect(first.cursor.currentThreadId).toBe(f.thread.id);
+      const savedCursor = f.db
+        .select()
+        .from(threadPruningCursors)
+        .where(
+          and(
+            eq(threadPruningCursors.policy, "turn-diffs"),
+            eq(threadPruningCursors.scope, ""),
+          ),
+        )
+        .get();
+      expect(savedCursor?.sequence).toBe(48);
+      expect(savedCursor?.currentThreadId).toBe(f.thread.id);
+
+      const second = advanceThreadPruning(
+        f.db,
+        "turn-diffs",
+        neverExpiringOptions,
+      );
+      expect(second.action).toBe("advanced");
+      expect(second.scanned).toBe(500);
+      expect(second.removed).toBe(500);
+      expect(second.cursor.sequence).toBe(548);
+
+      cycle(f, "turn-diffs");
+      expect(sequences(f)).toEqual(
+        range(1200 - THREAD_EVENT_KEEP_RECENT_BY_MODE.idle + 1, 1200),
+      );
     } finally {
       f.db.$client.close();
     }

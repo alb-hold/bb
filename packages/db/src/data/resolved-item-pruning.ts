@@ -120,6 +120,7 @@ function pruneResolvedItemCandidates(
     probe: ResolvedItemPruningProbe;
     budget: { remaining: number; started: boolean };
     deadline: number;
+    now?: () => number;
   },
 ) {
   const rows = args.candidates;
@@ -157,8 +158,8 @@ function pruneResolvedItemCandidates(
     discarded = [];
   };
   const budget = args.budget;
-  const withinDeadline = () =>
-    !budget.started || performance.now() < args.deadline;
+  const clock = args.now ?? (() => performance.now());
+  const withinDeadline = () => !budget.started || clock() < args.deadline;
   const hasLegacyProgress =
     args.kind === "background" &&
     db.get(sql`SELECT 1 FROM events INDEXED BY events_thread_type_sequence_idx
@@ -358,8 +359,10 @@ export function advanceLiveEventPruning(
     kind: "deltas" | "background";
     limit: number;
     deadline: number;
+    now?: () => number;
   },
 ) {
+  const clock = args.now ?? (() => performance.now());
   const key = and(
     eq(threadPruningCursors.scope, args.threadId),
     eq(threadPruningCursors.policy, args.kind),
@@ -421,6 +424,7 @@ export function advanceLiveEventPruning(
       probe: cursor,
       budget,
       deadline: args.deadline,
+      now: clock,
     });
     scanned += result.processed;
     removed += result.removed;
@@ -432,7 +436,7 @@ export function advanceLiveEventPruning(
       complete = true;
       break;
     }
-    if (performance.now() >= args.deadline) break;
+    if (clock() >= args.deadline) break;
   }
   if (complete) {
     cursor.sequence = cursor.upperSequence;
