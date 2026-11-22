@@ -352,9 +352,9 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
       </PendingComposerSubmission>
       <div
         data-new-thread-footer=""
-        className="mt-1 flex select-none items-center justify-between gap-2 px-3.5 max-md:mt-0 max-md:gap-1 max-md:px-1"
+        className="mt-1 flex select-none items-center justify-between gap-2 px-3.5 max-md:mt-0 max-md:flex-wrap max-md:gap-1 max-md:px-1"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1 max-md:basis-full max-md:flex-wrap">
           {project ? (
             <ProjectSelector
               projects={project.projects}

@@ -141,12 +141,12 @@ describe("Rail", () => {
   it("preserves cached desktop slots and appends unseen destinations after More", () => {
     const items = [NEW_THREAD, SEARCH, PLUGINS, { ...DOCS, isLoading: true }];
     const view = renderRail(items);
-    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More"]);
+    expect(railLabels()).toEqual(["Home", "Plugins", "More", "Docs"]);
     items[3] = DOCS;
     items.push(ALERTS);
     const RailComponent = rail!.component;
     view.rerender(<RailComponent {...props("rail")} />);
-    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More", "Alerts"]);
+    expect(railLabels()).toEqual(["Home", "Plugins", "More", "Docs", "Alerts"]);
     expect(screen.getByRole("button", { name: "Docs" }).getAttribute("aria-busy")).toBeNull();
   });
 
@@ -172,7 +172,7 @@ describe("Rail", () => {
   it("draws Home and the visible destinations, leaving New thread to the header and hidden ones to More", () => {
     renderRail([NEW_THREAD, SEARCH, PLUGINS, DOCS]);
 
-    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More"]);
+    expect(railLabels()).toEqual(["Home", "Plugins", "More", "Docs"]);
     expect(
       screen.getByRole("button", { name: "Home" }).getAttribute("aria-current"),
     ).toBe("page");

@@ -324,7 +324,7 @@ export function EnvironmentPickerUI({
         modeLabel: showsHost
           ? `${selectedMachineName} · ${selectedProvider.displayName}`
           : selectedProvider.displayName,
-        compactModeLabel: selectedProvider.displayName,
+        compactModeLabel: selectedProvider.id === "project-checkout" ? "Checkout" : selectedProvider.displayName,
         icon: pluginIconName(selectedProvider.icon),
       };
     }

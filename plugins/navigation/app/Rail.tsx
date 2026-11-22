@@ -1,10 +1,9 @@
-import { forwardRef, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { forwardRef, useRef, type ComponentProps, type ReactNode } from "react";
 import {
   experimental_SidebarNavigationIcon as SidebarNavigationIcon,
   experimental_useSidebarNavigation,
   experimental_useSidebarNavigationSplit,
   type ExperimentalSidebarNavigationItem,
-  type ExperimentalSidebarNavigationProps,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -127,14 +126,10 @@ function RailItem({ item }: { item: ExperimentalSidebarNavigationItem }) {
   );
 }
 
-export function Rail({
-  isCompactViewport,
-}: ExperimentalSidebarNavigationProps) {
+export function Rail() {
   const { items, isHomeActive, actions } = experimental_useSidebarNavigation();
-  const [initialItemIds] = useState(() => new Set(items.map((item) => item.id)));
   const isPrefixItem = (item: ExperimentalSidebarNavigationItem) =>
-    item.pluginId === null ||
-    (!isCompactViewport && initialItemIds.has(item.id));
+    item.pluginId === null;
 
   const destinations = items.filter(
     (item) => item.action.kind !== "new-thread",

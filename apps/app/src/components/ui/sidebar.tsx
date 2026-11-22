@@ -1076,7 +1076,7 @@ const SidebarMobilePanel = React.forwardRef<
           data-testid="sidebar-mobile-backdrop"
           data-state={open ? "open" : "closed"}
           className={cn(
-            "fixed inset-0 z-40 bg-transparent will-change-[opacity,translate]",
+            "fixed inset-0 z-40 bg-black/40 will-change-[opacity,translate]",
             "data-[state=open]:translate-x-(--sidebar-width-mobile)",
             SIDEBAR_MOBILE_BACKDROP_TRANSITION_CLASS,
             "data-[state=closed]:pointer-events-none data-[state=closed]:opacity-0",

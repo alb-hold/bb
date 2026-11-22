@@ -35,6 +35,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-settings-help: color-mix(in oklch, var(--ink) 85%, var(--canvas));
   --color-subtle-foreground: var(--subtle-foreground);
   --color-sidebar-metadata-foreground: var(--sidebar-metadata-foreground);
   /* Cadence (thread design refresh): a recede tier between muted and subtle for

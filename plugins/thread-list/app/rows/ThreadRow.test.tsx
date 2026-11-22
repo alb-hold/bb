@@ -762,6 +762,9 @@ describe("ThreadRow", () => {
         const link = screen.getByRole("link", {
           name: `Open Investigate timeout · Atlas · fix/phone-identical-prefix-timeout-${branch}`,
         });
+        const context = screen.getByTitle(`fix/phone-identical-prefix-timeout-${branch}`);
+        expect(context.classList.contains("truncate")).toBe(true);
+        expect(context.classList.contains("break-all")).toBe(false);
         expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
       }
     },

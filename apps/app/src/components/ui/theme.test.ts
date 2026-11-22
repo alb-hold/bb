@@ -657,6 +657,16 @@ describe("home and assistant hierarchy", () => {
 });
 
 for (const scheme of MODES) {
+  it(`keeps ${scheme} Settings help above the body text contrast floor`, () => {
+    const block = modeBlock(scheme);
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const ink = parseOklch(variableValue(block, "ink"));
+    const share = rampSteps(css).get("color-settings-help");
+    expect(share).toBeDefined();
+    const lightness = canvas.lightness + (ink.lightness - canvas.lightness) * (share ?? 0) / 100;
+    expect(contrastRatio({ ...canvas, lightness }, canvas)).toBeGreaterThanOrEqual(4.5);
+  });
+
   it(`keeps ${scheme} sidebar metadata legible below the subtle text tier`, () => {
     const block = modeBlock(scheme);
     const ink = parseOklch(variableValue(block, "ink"));

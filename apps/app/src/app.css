@@ -363,25 +363,9 @@
   }
 
   @media (width < 48rem) {
-    [data-new-thread-footer]
-      [data-promptbox-shrinkable-control]:has(~ :not(:empty)) {
-      flex-shrink: 0 !important;
-    }
-
-    [data-new-thread-footer]
-      [data-promptbox-shrinkable-control]:has(~ :not(:empty))
-      [data-promptbox-compact-label] {
-      display: none !important;
-    }
-
-    [data-new-thread-footer]
-      [data-promptbox-icon-only-control]
-      [data-promptbox-full-label] {
-      display: block !important;
-    }
-
-    [data-new-thread-footer] [data-promptbox-icon-only-control] {
-      flex-shrink: 1;
+    [data-new-thread-footer] [data-promptbox-compact-label],
+    [data-new-thread-footer] [data-promptbox-hide-branch-compact] {
+      display: inline-flex !important;
     }
   }
 }
