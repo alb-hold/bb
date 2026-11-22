@@ -1965,7 +1965,7 @@ export function listPendingGoalBackfills(db: DbConnection) {
 export function backfillThreadGoal(db: DbConnection, threadId: string): void {
   db.transaction((tx) => {
     const pending = and(eq(latestThreadGoals.threadId, threadId), isNull(latestThreadGoals.sequence));
-    tx.update(latestThreadGoals).set({ sequence: latestGoalSequence(latestThreadGoals.threadId) })
+    tx.update(latestThreadGoals).set({ sequence: latestGoalSequence(sql`${threadId}`) })
       .where(pending).run();
     tx.delete(latestThreadGoals).where(pending).run();
   });

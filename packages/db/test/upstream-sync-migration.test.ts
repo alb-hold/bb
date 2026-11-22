@@ -90,7 +90,7 @@ const addedMigrations = [
   },
   {
     createdAt: 1795324860765,
-    hash: "896f709449f2c4baea5b9e459a4028b3fb28756293f38630e7aead973192be86",
+    hash: "86253943b1d151266f09ccf8ee7f478860ad8571f4d638762fdbee734204d8bc",
   },
 ];
 const ignoredIndexName = "fork_events_item_completion_lookup_idx";

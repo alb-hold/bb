@@ -73,3 +73,66 @@ it("keeps the scoped goal lookup current through out-of-order writes, edits and 
     db.$client.close();
   }
 });
+
+it("matches historical goal selection for pending and resolved threads throughout backfill", () => {
+  const db = createMigratedConnection();
+  try {
+    const ids = ["resolved", "pending", "without-goal"];
+    const events = db.$client.prepare(
+      "INSERT INTO events (id, thread_id, sequence, type, data, scope_kind, created_at) VALUES (?, ?, ?, 'thread/extensionState/updated', ?, 'thread', 1)",
+    );
+    for (const id of ids) {
+      db.$client
+        .prepare(
+          "INSERT INTO threads (id, project_id, provider_id, status, created_at, updated_at, latest_attention_at) VALUES (?, 'proj_personal', 'codex', 'idle', 1, 1, 1)",
+        )
+        .run(id);
+      if (id !== "without-goal")
+        events.run(id + "-goal", id, 3, '{"kind":"provider-codex/goal"}');
+      events.run(id + "-other", id, 4, '{"kind":"other"}');
+    }
+    db.$client.exec(
+      "INSERT OR REPLACE INTO latest_thread_goals(thread_id) VALUES ('pending'), ('without-goal')",
+    );
+    const compare = () => {
+      const lookup = db.$client.prepare(`
+        SELECT id FROM events INDEXED BY events_thread_state_thread_sequence_idx
+        WHERE thread_id = ? AND type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
+          AND (type <> 'thread/extensionState/updated' OR json_extract(data,'$.kind') = 'provider-codex/goal')
+        ORDER BY sequence DESC LIMIT 1
+      `).pluck();
+      const expected = ids.flatMap(id => lookup.all(id)).sort();
+      expect(
+        listLatestThreadStateEventRowsByScope(db, {
+          scope: { kind: "ids", ids },
+          kind: "provider-codex/goal",
+        })
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(expected);
+    };
+    compare();
+    expect(() =>
+      db.transaction(() => {
+        events.run(
+          "rolled-back",
+          "pending",
+          6,
+          '{"kind":"provider-codex/goal"}',
+        );
+        compare();
+        throw new Error("rollback");
+      }),
+    ).toThrow("rollback");
+    compare();
+    events.run("older-import", "pending", 1, '{"kind":"provider-codex/goal"}');
+    expect(listPendingGoalBackfills(db)).toEqual([
+      { threadId: "without-goal" },
+    ]);
+    compare();
+    backfillThreadGoal(db, "without-goal");
+    compare();
+  } finally {
+    db.$client.close();
+  }
+});

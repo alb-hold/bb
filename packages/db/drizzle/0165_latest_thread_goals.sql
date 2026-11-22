@@ -14,15 +14,21 @@ BEGIN
   INSERT INTO latest_thread_goals(thread_id, sequence)
   SELECT NEW.thread_id, NEW.sequence WHERE (NEW.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
     AND (NEW.type <> 'thread/extensionState/updated' OR json_extract(NEW.data, '$.kind') = 'provider-codex/goal'))
-  ON CONFLICT(thread_id) DO UPDATE SET sequence = excluded.sequence
-  WHERE excluded.sequence > latest_thread_goals.sequence;
+  ON CONFLICT(thread_id) DO UPDATE SET sequence = CASE WHEN latest_thread_goals.sequence IS NULL THEN (
+    SELECT sequence FROM events INDEXED BY events_thread_state_thread_sequence_idx
+    WHERE thread_id = NEW.thread_id
+      AND type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
+      AND (type <> 'thread/extensionState/updated' OR json_extract(data, '$.kind') = 'provider-codex/goal')
+    ORDER BY sequence DESC LIMIT 1
+  ) ELSE excluded.sequence END
+  WHERE latest_thread_goals.sequence IS NULL OR excluded.sequence > latest_thread_goals.sequence;
 END;
 --> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS latest_thread_goals_delete AFTER DELETE ON events
 WHEN OLD.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
-  AND EXISTS (SELECT 1 FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND sequence = OLD.sequence)
+  AND EXISTS (SELECT 1 FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND (sequence IS NULL OR sequence = OLD.sequence))
 BEGIN
-  DELETE FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND sequence = OLD.sequence;
+  DELETE FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND (sequence IS NULL OR sequence = OLD.sequence);
   INSERT OR IGNORE INTO latest_thread_goals(thread_id, sequence)
   SELECT thread_id, sequence FROM events INDEXED BY events_thread_state_thread_sequence_idx
   WHERE thread_id = OLD.thread_id AND (type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
@@ -35,7 +41,7 @@ WHEN (OLD.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensi
     AND (OLD.type <> 'thread/extensionState/updated' OR json_extract(OLD.data, '$.kind') = 'provider-codex/goal')) OR (NEW.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
     AND (NEW.type <> 'thread/extensionState/updated' OR json_extract(NEW.data, '$.kind') = 'provider-codex/goal'))
 BEGIN
-  DELETE FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND sequence = OLD.sequence;
+  DELETE FROM latest_thread_goals WHERE thread_id = OLD.thread_id AND (sequence IS NULL OR sequence = OLD.sequence);
   INSERT OR IGNORE INTO latest_thread_goals(thread_id, sequence)
   SELECT thread_id, sequence FROM events INDEXED BY events_thread_state_thread_sequence_idx
   WHERE thread_id = OLD.thread_id AND (type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
@@ -44,6 +50,12 @@ BEGIN
   INSERT INTO latest_thread_goals(thread_id, sequence)
   SELECT NEW.thread_id, NEW.sequence WHERE (NEW.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
     AND (NEW.type <> 'thread/extensionState/updated' OR json_extract(NEW.data, '$.kind') = 'provider-codex/goal'))
-  ON CONFLICT(thread_id) DO UPDATE SET sequence = excluded.sequence
-  WHERE excluded.sequence > latest_thread_goals.sequence;
+  ON CONFLICT(thread_id) DO UPDATE SET sequence = CASE WHEN latest_thread_goals.sequence IS NULL THEN (
+    SELECT sequence FROM events INDEXED BY events_thread_state_thread_sequence_idx
+    WHERE thread_id = NEW.thread_id
+      AND type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
+      AND (type <> 'thread/extensionState/updated' OR json_extract(data, '$.kind') = 'provider-codex/goal')
+    ORDER BY sequence DESC LIMIT 1
+  ) ELSE excluded.sequence END
+  WHERE latest_thread_goals.sequence IS NULL OR excluded.sequence > latest_thread_goals.sequence;
 END;
