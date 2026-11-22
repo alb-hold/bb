@@ -1304,9 +1304,9 @@ export class TerminalSessionLifecycle {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastUserInputAt: row.lastUserInputAt,
-      ...(row.firstLiveFrame && {
+      ...(row.storedFirstLiveFrame && {
         firstLiveFrame: {
-          ...row.firstLiveFrame,
+          ...row.storedFirstLiveFrame,
           terminalId: row.id,
           provenance: "live" as const,
         },
@@ -2325,7 +2325,7 @@ export class TerminalSessionLifecycle {
   >();
 
   private frameCallback(session: TerminalSessionRow, seq: number) {
-    if (session.firstLiveFrame && !this.frameObservers.has(session.id))
+    if (session.storedFirstLiveFrame && !this.frameObservers.has(session.id))
       return undefined;
     return () => {
       const frame = {
@@ -2334,7 +2334,7 @@ export class TerminalSessionLifecycle {
         at: Date.now(),
         provenance: "live" as const,
       };
-      if (!session.firstLiveFrame)
+      if (!session.storedFirstLiveFrame)
         recordFirstTerminalFrame(this.options.db, session.id, {
           seq,
           at: frame.at,

@@ -416,11 +416,11 @@ export function recordFirstTerminalFrame(
   frame: { seq: number; at: number },
 ): void {
   db.update(terminalSessions)
-    .set({ firstLiveFrame: frame })
+    .set({ storedFirstLiveFrame: frame })
     .where(
       and(
         eq(terminalSessions.id, terminalId),
-        isNull(terminalSessions.firstLiveFrame),
+        isNull(terminalSessions.storedFirstLiveFrame),
       ),
     )
     .run();

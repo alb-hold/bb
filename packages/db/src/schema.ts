@@ -1283,7 +1283,7 @@ export const terminalSessions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     lastUserInputAt: integer("last_user_input_at"),
-    firstLiveFrame: text("first_live_frame", { mode: "json" }).$type<{
+    storedFirstLiveFrame: text("first_live_frame", { mode: "json" }).$type<{
       seq: number;
       at: number;
     }>(),
