@@ -1095,9 +1095,10 @@ function ThreadRowComponent({
                     <span
                       data-sidebar-thread-phone-context=""
                       title={phoneBranch}
-                      className="min-w-0 max-w-full truncate md:hidden"
+                      dir="rtl"
+                      className="min-w-0 max-w-full truncate text-left md:hidden"
                     >
-                      {phoneBranch}
+                      <bdi dir="auto">{phoneBranch}</bdi>
                     </span>
                   ) : null}
                 </span>

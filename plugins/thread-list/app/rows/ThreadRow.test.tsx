@@ -763,6 +763,8 @@ describe("ThreadRow", () => {
           name: `Open Investigate timeout · Atlas · fix/phone-identical-prefix-timeout-${branch}`,
         });
         const context = screen.getByTitle(`fix/phone-identical-prefix-timeout-${branch}`);
+        expect(context.dir).toBe("rtl");
+        expect(context.querySelector("bdi")?.textContent).toBe(context.title);
         expect(context.classList.contains("truncate")).toBe(true);
         expect(context.classList.contains("break-all")).toBe(false);
         expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
