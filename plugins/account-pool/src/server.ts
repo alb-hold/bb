@@ -686,6 +686,7 @@ export function createAccountPoolPlugin(
           return null;
         }
         return {
+          estimated: entry.localUsage.estimated,
           windows: entry.localUsage.windows,
           lastActivityAt: entry.localUsage.lastActivityAt,
         };

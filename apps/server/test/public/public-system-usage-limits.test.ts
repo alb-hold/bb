@@ -579,6 +579,32 @@ describe("GET /api/v1/system/usage-limits", () => {
         scope: turnScope("turn-1h"),
         data: { providerThreadId: "agy-sess-1", status: "completed" },
       });
+      // Compaction drop (37,500 -> 10,000) adds the post-compaction occupancy (10,000).
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 8,
+        createdAt: recentAt + 2_000,
+        type: "thread/contextWindowUsage/updated",
+        scope: threadScope(),
+        data: {
+          providerThreadId: "agy-sess-1",
+          contextWindowUsage: {
+            usedTokens: 10_000,
+            modelContextWindow: 1_048_576,
+            estimated: false,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "agy-sess-1",
+        sequence: 9,
+        createdAt: recentAt + 3_000,
+        type: "turn/completed",
+        scope: turnScope("turn-compacted"),
+        data: { providerThreadId: "agy-sess-1", status: "completed" },
+      });
 
       try {
         const response = await harness.app.request(
@@ -593,19 +619,20 @@ describe("GET /api/v1/system/usage-limits", () => {
           windows: [],
           localUsage: {
             source: "local-events",
-            lastActivityAt: recentAt + 1_000,
+            estimated: true,
+            lastActivityAt: recentAt + 3_000,
             windows: [
               {
                 label: "5 hour",
                 windowMinutes: 300,
-                tokens: 12_500,
-                turns: 1,
+                tokens: 22_500,
+                turns: 2,
               },
               {
                 label: "7 day",
                 windowMinutes: 10_080,
-                tokens: 27_500,
-                turns: 2,
+                tokens: 37_500,
+                turns: 3,
               },
             ],
           },
@@ -702,6 +729,7 @@ describe("GET /api/v1/system/usage-limits", () => {
           windows: [],
           localUsage: {
             source: "local-events",
+            estimated: false,
             lastActivityAt: recentAt,
             windows: [
               {

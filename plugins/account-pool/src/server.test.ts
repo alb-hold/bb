@@ -13505,6 +13505,7 @@ describe("Account Pool subscription sign-in repair", () => {
           windows: [],
           localUsage: {
             source: "local-events",
+            estimated: true,
             lastActivityAt: 1_795_325_403_691,
             windows: [
               {
@@ -13536,6 +13537,7 @@ describe("Account Pool subscription sign-in repair", () => {
         status: "ready",
         poolProvider: null,
         usage: {
+          estimated: true,
           lastActivityAt: 1_795_325_403_691,
           windows: [
             {
@@ -13558,7 +13560,7 @@ describe("Account Pool subscription sign-in repair", () => {
     expect(cli.exitCode).toBe(0);
     expect(cli.stdout).toContain("Antigravity (local login)");
     expect(cli.stdout).toContain(
-      "local usage (5h: 37367 tokens / 2 turns, 7d: 196691 tokens / 11 turns)",
+      "local usage (5h: ~37367 ctx tokens / 2 turns, 7d: ~196691 ctx tokens / 11 turns)",
     );
   });
 });

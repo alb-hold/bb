@@ -87,6 +87,7 @@ export type LocalProviderUsageWindow = z.infer<
 export const localProviderUsageSchema = z
   .object({
     source: z.literal("local-events"),
+    estimated: z.boolean(),
     lastActivityAt: z.number().int().nonnegative().nullable(),
     windows: z.array(localProviderUsageWindowSchema),
   })

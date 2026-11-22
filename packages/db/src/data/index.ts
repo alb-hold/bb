@@ -739,6 +739,7 @@ export {
 } from "./server-move.js";
 
 export {
+  listRecentLocalUsageProviderIds,
   summarizeLocalProviderUsage,
   type LocalProviderUsageSummary,
   type LocalProviderUsageWindowSummary,

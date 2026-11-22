@@ -446,6 +446,7 @@ export type LocalUsageWindow = z.infer<typeof localUsageWindowSchema>;
 
 export const localLoginUsageSchema = z
   .object({
+    estimated: z.boolean().default(false),
     windows: z.array(localUsageWindowSchema),
     lastActivityAt: z.number().int().nonnegative().nullable(),
   })

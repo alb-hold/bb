@@ -197,10 +197,12 @@ function formatAccounts(
 function formatLocalLoginUsage(
   usage: NonNullable<LocalLogin["usage"]>,
 ): string {
+  const prefix = usage.estimated ? "~" : "";
+  const unit = usage.estimated ? "ctx tokens" : "tokens";
   return usage.windows
     .map(
       (window) =>
-        `${window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10_080 ? "7d" : window.label}: ${window.tokens} tokens / ${window.turns} ${window.turns === 1 ? "turn" : "turns"}`,
+        `${window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10_080 ? "7d" : window.label}: ${prefix}${window.tokens} ${unit} / ${window.turns} ${window.turns === 1 ? "turn" : "turns"}`,
     )
     .join(", ");
 }

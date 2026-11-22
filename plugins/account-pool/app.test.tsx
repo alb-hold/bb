@@ -1964,6 +1964,7 @@ describe("Account Pool settings", () => {
           status: "ready",
           poolProvider: null,
           usage: {
+            estimated: true,
             lastActivityAt: Date.now() - 5 * 60_000,
             windows: [
               {
@@ -1987,7 +1988,7 @@ describe("Account Pool settings", () => {
     expect(within(group).getByText("Antigravity (local login)")).toBeTruthy();
     expect(
       within(group).getByText(
-        /5h: 37\.4k tokens \(2 turns\) · 7d: 197k tokens \(11 turns\)/,
+        /5h: ~37\.4k ctx tokens \(2 turns\) · 7d: ~197k ctx tokens \(11 turns\)/,
       ),
     ).toBeTruthy();
     expect(within(group).getByText("Ready")).toBeTruthy();

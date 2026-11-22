@@ -15,8 +15,23 @@ export interface LocalProviderUsageWindowSummary {
 
 export interface LocalProviderUsageSummary {
   hasThreads: boolean;
+  estimated: boolean;
   lastActivityAt: number | null;
   windows: LocalProviderUsageWindowSummary[];
+}
+
+export function listRecentLocalUsageProviderIds(
+  db: DbQueryConnection,
+  args: { now?: number } = {},
+): string[] {
+  const cutoff7d = (args.now ?? Date.now()) - SEVEN_DAY_MS;
+  return db
+    .all<{ providerId: string }>(
+      sql`SELECT DISTINCT provider_id AS providerId
+          FROM threads
+          WHERE updated_at >= ${cutoff7d}`,
+    )
+    .map((row) => row.providerId);
 }
 
 interface StoredUsageEventRow {
@@ -95,6 +110,7 @@ export function summarizeLocalProviderUsage(
   let turns5h = 0;
   let turns7d = 0;
   let lastActivityAt: number | null = null;
+  let usedContextWindowFallback = false;
 
   const noteActivity = (timestamp: number) => {
     if (timestamp >= cutoff7d) {
@@ -192,6 +208,7 @@ export function summarizeLocalProviderUsage(
         prevContextUsed.set(sessionKey, usedTokens);
         if (delta <= 0) continue;
         if (event.createdAt >= cutoff7d) {
+          usedContextWindowFallback = true;
           threadTokens7d += delta;
           noteActivity(event.createdAt);
         }
@@ -209,6 +226,7 @@ export function summarizeLocalProviderUsage(
 
   return {
     hasThreads: threadRows.length > 0,
+    estimated: usedContextWindowFallback,
     lastActivityAt,
     windows: [
       {

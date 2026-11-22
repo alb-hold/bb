@@ -719,9 +719,11 @@ function formatLocalUsageSummary(
     (window) => window.tokens > 0 || window.turns > 0,
   );
   if (!hasAny) return "No recent usage (5h / 7d)";
+  const tokenPrefix = usage.estimated ? "~" : "";
+  const tokenUnit = usage.estimated ? "ctx tokens" : "tokens";
   const parts = usage.windows.map(
     (window) =>
-      `${shortLocalWindowLabel(window)}: ${formatCompactTokens(window.tokens)} tokens (${window.turns} ${window.turns === 1 ? "turn" : "turns"})`,
+      `${shortLocalWindowLabel(window)}: ${tokenPrefix}${formatCompactTokens(window.tokens)} ${tokenUnit} (${window.turns} ${window.turns === 1 ? "turn" : "turns"})`,
   );
   if (usage.lastActivityAt !== null) {
     parts.push(`used ${relative(usage.lastActivityAt)}`);
