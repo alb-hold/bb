@@ -53,6 +53,11 @@ export function threadEntryMapFor(
   for (const project of [...data.projects, data.personalProject]) {
     for (const thread of project.threads) entries.set(thread.id, thread);
   }
+  if (data.overview?.descendants) {
+    for (const thread of data.overview.descendants) {
+      if (!entries.has(thread.id)) entries.set(thread.id, thread);
+    }
+  }
   threadEntryMapByPayload.set(data, entries);
   return entries;
 }

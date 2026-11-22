@@ -307,9 +307,10 @@ export function findSidebarNavigationThreadPlaceholder(
     sidebarNavigationPreviewQueryKey(),
   );
   if (preview) {
-    const previewMatch = listSidebarNavigationThreads(preview).find(
-      (thread) => thread.id === threadId,
-    );
+    const previewMatch =
+      listSidebarNavigationThreads(preview).find(
+        (thread) => thread.id === threadId,
+      ) ?? preview.overview?.descendants?.find((thread) => thread.id === threadId);
     if (previewMatch !== undefined) {
       return previewMatch;
     }

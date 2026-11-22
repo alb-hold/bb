@@ -442,6 +442,7 @@ export const sidebarBootstrapResponseSchema = z.object({
       lastReadAt: z.number().nullable(),
       latestAttentionAt: z.number(),
     })),
+    descendants: z.array(threadListEntrySchema).optional(),
   }).optional(),
   sections: z.array(threadSectionSchema),
   projects: z.array(projectWithThreadsResponseSchema),

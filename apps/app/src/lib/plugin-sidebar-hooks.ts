@@ -278,6 +278,13 @@ export function useSidebarThreads(
           if (thread.archivedAt === null) selected.set(thread.id, thread);
         }
       }
+      if (previewRows && complete === undefined && overview?.descendants) {
+        for (const thread of overview.descendants) {
+          if (thread.archivedAt === null && !selected.has(thread.id)) {
+            selected.set(thread.id, thread);
+          }
+        }
+      }
     }
     return {
       experimental_archived: archiveState,
@@ -315,6 +322,9 @@ export function useSidebarThreads(
     archived.data,
     archiveState,
     activePages,
+    previewRows,
+    complete,
+    overview,
   ]);
 }
 

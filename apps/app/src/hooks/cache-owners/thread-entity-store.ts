@@ -111,30 +111,50 @@ const SIDEBAR: ViewFamily = {
   slots(data) {
     if (!isRecord(data) || !isRecord(data.personalProject)) return undefined;
     const projects = Array.isArray(data.projects) ? data.projects : [];
+    const overviewDescendants =
+      isRecord(data.overview) && Array.isArray(data.overview.descendants)
+        ? [{ key: "overview-descendants", items: data.overview.descendants }]
+        : [];
     return [
       { key: "personal", items: projectThreads(data.personalProject) },
       ...projects.map((project, index) => ({
         key: projectSlot(project, index),
         items: projectThreads(project),
       })),
+      ...overviewDescendants,
     ];
   },
   rebuild(data, items) {
     if (!isRecord(data) || !isRecord(data.personalProject)) return data;
     const personal = items.get("personal");
     const projects = Array.isArray(data.projects) ? data.projects : [];
+    const overviewDescendants = items.get("overview-descendants");
+    const overview =
+      isRecord(data.overview) &&
+      overviewDescendants !== undefined &&
+      overviewDescendants !== data.overview.descendants
+        ? { ...data.overview, descendants: overviewDescendants }
+        : data.overview;
+    const nextPersonalProject =
+      personal === undefined || personal === data.personalProject.threads
+        ? data.personalProject
+        : { ...data.personalProject, threads: personal };
+    const nextProjects = projects.map((project: unknown, index) => {
+      const threads = items.get(projectSlot(project, index));
+      return isRecord(project) && threads !== undefined && threads !== project.threads
+        ? { ...project, threads }
+        : project;
+    });
+    if (
+      overview === data.overview &&
+      nextPersonalProject === data.personalProject &&
+      nextProjects.every((project, index) => project === projects[index])
+    ) return data;
     return {
       ...data,
-      personalProject:
-        personal === undefined
-          ? data.personalProject
-          : { ...data.personalProject, threads: personal },
-      projects: projects.map((project: unknown, index) => {
-        const threads = items.get(projectSlot(project, index));
-        return isRecord(project) && threads !== undefined
-          ? { ...project, threads }
-          : project;
-      }),
+      ...(overview === undefined ? {} : { overview }),
+      personalProject: nextPersonalProject,
+      projects: nextProjects,
     };
   },
   ...ROW_ITEMS,

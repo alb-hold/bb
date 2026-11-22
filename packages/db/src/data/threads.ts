@@ -533,6 +533,33 @@ export interface ListThreadsForProjectsOptions extends Pick<ListThreadsOptions, 
   archived?: boolean;
 }
 
+export interface SidebarThreadCursorRow {
+  id: string;
+  pinnedAt: number | null;
+  pinSortKey: string | null;
+  isChild: boolean;
+  isActive: boolean;
+  latestAttentionAt: number;
+  createdAt: number;
+}
+
+export interface ListSidebarThreadsOptions {
+  projectIds: readonly string[];
+  limit?: number;
+  after?: SidebarThreadCursorRow;
+}
+
+export interface ListLiveVisibleDescendantThreadsOptions {
+  projectIds: readonly string[];
+  rootThreadIds: readonly string[];
+  limit: number;
+}
+
+export interface SidebarThreadWithPendingInteractionState
+  extends ThreadWithPendingInteractionState {
+  sidebarIsChild: boolean;
+}
+
 export interface PinThreadArgs {
   pinnedAt?: number;
   threadId: string;
@@ -647,18 +674,22 @@ export function listActiveVisiblePinnedThreadRoots(
   return filterVisiblePinnedThreadRoots({ pinnedThreads });
 }
 
+function threadWithPendingInteractionSelectColumns() {
+  return {
+    ...getTableColumns(threads),
+    environmentBranchName: environments.branchName,
+    environmentHostId: environments.hostId,
+    environmentIsWorktree: environments.isWorktree,
+    environmentName: environments.name,
+    environmentPath: environments.path,
+    environmentProviderId: environments.environmentProviderId,
+    hasPendingInteraction: sql<number>`EXISTS (SELECT 1 FROM ${pendingInteractions} WHERE ${pendingInteractions.threadId} = ${threads.id} AND ${pendingInteractions.status} = 'pending')`.mapWith(Boolean),
+  };
+}
+
 function threadWithPendingInteractionBaseQuery(db: DbConnection) {
   return db
-    .select({
-      ...getTableColumns(threads),
-      environmentBranchName: environments.branchName,
-      environmentHostId: environments.hostId,
-      environmentIsWorktree: environments.isWorktree,
-      environmentName: environments.name,
-      environmentPath: environments.path,
-      environmentProviderId: environments.environmentProviderId,
-      hasPendingInteraction: sql<number>`EXISTS (SELECT 1 FROM ${pendingInteractions} WHERE ${pendingInteractions.threadId} = ${threads.id} AND ${pendingInteractions.status} = 'pending')`.mapWith(Boolean),
-    })
+    .select(threadWithPendingInteractionSelectColumns())
     .from(threads)
     .leftJoin(environments, eq(threads.environmentId, environments.id));
 }
@@ -1679,6 +1710,164 @@ export function hasActiveThreadAttention(db: DbConnection): boolean {
     .get();
 
   return row !== undefined;
+}
+
+function sidebarIsChildSql(projectIds: readonly string[]): SQL<number> {
+  const projectList = JSON.stringify(projectIds);
+  return sql<number>`CASE WHEN ${threads.parentThreadId} IS NOT NULL AND EXISTS (
+    SELECT 1 FROM ${threads} AS parent_thread
+    WHERE parent_thread.id = ${threads.parentThreadId}
+      AND parent_thread.archived_at IS NULL
+      AND parent_thread.deleted_at IS NULL
+      AND parent_thread.visibility = 'visible'
+      AND parent_thread.project_id IN (SELECT value FROM json_each(${projectList}))
+  ) THEN 1 ELSE 0 END`;
+}
+
+function afterSidebarThreadCursor(
+  row: SidebarThreadCursorRow | undefined,
+  isChildSql: SQL<number>,
+) {
+  if (!row) return undefined;
+  if (row.pinnedAt !== null) {
+    return or(
+      isNull(threads.pinnedAt),
+      row.pinSortKey === null
+        ? isNotNull(threads.pinSortKey)
+        : gt(threads.pinSortKey, row.pinSortKey),
+      and(
+        sql`${threads.pinSortKey} IS ${row.pinSortKey}`,
+        gt(threads.id, row.id),
+      ),
+    );
+  }
+  const laterInUnpinnedTree = row.isActive
+    ? or(
+        ne(threads.status, "active"),
+        and(
+          eq(threads.status, "active"),
+          or(
+            lt(threads.createdAt, row.createdAt),
+            and(eq(threads.createdAt, row.createdAt), gt(threads.id, row.id)),
+          ),
+        ),
+      )
+    : and(
+        ne(threads.status, "active"),
+        or(
+          lt(threads.latestAttentionAt, row.latestAttentionAt),
+          and(
+            eq(threads.latestAttentionAt, row.latestAttentionAt),
+            lt(threads.createdAt, row.createdAt),
+          ),
+          and(
+            eq(threads.latestAttentionAt, row.latestAttentionAt),
+            eq(threads.createdAt, row.createdAt),
+            gt(threads.id, row.id),
+          ),
+        ),
+      );
+  const laterTree = row.isChild
+    ? and(sql`(${isChildSql}) = 1`, laterInUnpinnedTree)
+    : or(
+        sql`(${isChildSql}) = 1`,
+        and(sql`(${isChildSql}) = 0`, laterInUnpinnedTree),
+      );
+  return and(isNull(threads.pinnedAt), laterTree);
+}
+
+export function listSidebarThreadsWithPendingInteractionState(
+  db: DbConnection,
+  options: ListSidebarThreadsOptions,
+): SidebarThreadWithPendingInteractionState[] {
+  if (options.projectIds.length === 0) {
+    return [];
+  }
+  const projectList = JSON.stringify(options.projectIds);
+  const isChildSql = sidebarIsChildSql(options.projectIds);
+  const cursorFilter = afterSidebarThreadCursor(options.after, isChildSql);
+  let query = db
+    .select({
+      ...threadWithPendingInteractionSelectColumns(),
+      sidebarIsChild: isChildSql.mapWith(Boolean),
+    })
+    .from(threads)
+    .leftJoin(environments, eq(threads.environmentId, environments.id))
+    .where(
+      and(
+        sql`${threads.projectId} IN (SELECT value FROM json_each(${projectList}))`,
+        liveThreads(eq(threads.visibility, "visible")),
+        cursorFilter,
+      ),
+    )
+    .orderBy(
+      ...buildPinnedThreadOrderBy(),
+      asc(isChildSql),
+      asc(sql`CASE WHEN ${threads.status} = 'active' THEN 0 ELSE 1 END`),
+      desc(
+        sql`CASE WHEN ${threads.status} = 'active' THEN 0 ELSE ${threads.latestAttentionAt} END`,
+      ),
+      desc(threads.createdAt),
+      asc(threads.id),
+    )
+    .$dynamic();
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  return query.all();
+}
+
+export function listLiveVisibleDescendantThreads(
+  db: DbConnection,
+  options: ListLiveVisibleDescendantThreadsOptions,
+): ThreadWithPendingInteractionState[] {
+  if (
+    options.projectIds.length === 0 ||
+    options.rootThreadIds.length === 0 ||
+    options.limit <= 0
+  ) {
+    return [];
+  }
+  const projectList = JSON.stringify(options.projectIds);
+  const rootList = JSON.stringify(options.rootThreadIds);
+  const descendantIds = db.all<{ id: string }>(sql`
+    WITH RECURSIVE descendants(id, depth, created_at) AS (
+      SELECT id, 1, created_at FROM ${threads}
+      WHERE parent_thread_id IN (SELECT value FROM json_each(${rootList}))
+        AND id NOT IN (SELECT value FROM json_each(${rootList}))
+        AND archived_at IS NULL
+        AND deleted_at IS NULL
+        AND visibility = 'visible'
+        AND project_id IN (SELECT value FROM json_each(${projectList}))
+      UNION
+      SELECT t.id, d.depth + 1, t.created_at FROM ${threads} t
+      JOIN descendants d ON t.parent_thread_id = d.id
+      WHERE d.depth < 64
+        AND t.id NOT IN (SELECT value FROM json_each(${rootList}))
+        AND t.archived_at IS NULL
+        AND t.deleted_at IS NULL
+        AND t.visibility = 'visible'
+        AND t.project_id IN (SELECT value FROM json_each(${projectList}))
+    )
+    SELECT id FROM descendants
+    GROUP BY id
+    ORDER BY MIN(depth) ASC, MAX(created_at) DESC, id ASC
+    LIMIT ${options.limit}
+  `);
+  if (descendantIds.length === 0) {
+    return [];
+  }
+  const idList = JSON.stringify(descendantIds.map((row) => row.id));
+  const rows = threadWithPendingInteractionBaseQuery(db)
+    .where(sql`${threads.id} IN (SELECT value FROM json_each(${idList}))`)
+    .all();
+  const orderById = new Map(
+    descendantIds.map((row, index) => [row.id, index]),
+  );
+  rows.sort(
+    (left, right) =>
+      (orderById.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+      (orderById.get(right.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+  return rows;
 }
 
 export function listThreadsWithPendingInteractionStateForProjects(

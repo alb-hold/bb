@@ -975,3 +975,181 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
     },
   );
 });
+
+it("renders newest threads across all projects with their descendants on the first chronological screen without draining pages", async () => {
+  await withTestHarness(
+    { seedFirstPartyProviders: false },
+    async ({ app, db }) => {
+      const insertProject = db.$client.prepare(
+        "INSERT INTO projects (id, kind, name, created_at, updated_at) VALUES (?, 'standard', ?, 1, 1)",
+      );
+      const extraProjects = [
+        "proj_real_1",
+        "proj_real_2",
+        "proj_real_3",
+        "proj_real_4",
+      ];
+      for (const projectId of extraProjects) {
+        insertProject.run(projectId, projectId);
+      }
+      const allProjects = [PERSONAL_PROJECT_ID, ...extraProjects];
+      const insertThread = db.$client.prepare(
+        "INSERT INTO threads (id, project_id, provider_id, title, status, parent_thread_id, visibility, created_at, updated_at, last_read_at, latest_attention_at, archived_at) VALUES (?, ?, 'codex', ?, 'idle', ?, 'visible', ?, ?, ?, ?, NULL)",
+      );
+      for (let i = 0; i < 26; i++) {
+        const ts = 200 - i;
+        insertThread.run(
+          `thr_personal_old_${i}`,
+          PERSONAL_PROJECT_ID,
+          `Personal Old ${i}`,
+          null,
+          ts,
+          ts,
+          ts,
+          ts,
+        );
+      }
+      for (let i = 0; i < 10; i++) {
+        const ts = 10_000 - i * 10;
+        const projectId = allProjects[i % allProjects.length]!;
+        insertThread.run(
+          `thr_newest_${i}`,
+          projectId,
+          `Newest ${i}`,
+          null,
+          ts,
+          ts,
+          ts,
+          ts,
+        );
+      }
+      insertThread.run(
+        "thr_delta_bumped",
+        "proj_real_4",
+        "Delta Bumped",
+        null,
+        50,
+        10_500,
+        10_500,
+        10_500,
+      );
+      insertThread.run(
+        "thr_alpha_child",
+        "proj_real_1",
+        "Alpha Child",
+        "thr_newest_1",
+        10,
+        10,
+        10,
+        10,
+      );
+      insertThread.run(
+        "thr_alpha_grandchild",
+        "proj_real_1",
+        "Alpha Grandchild",
+        "thr_alpha_child",
+        9,
+        9,
+        9,
+        9,
+      );
+      insertThread.run(
+        "thr_beta_child",
+        "proj_real_2",
+        "Beta Child",
+        "thr_newest_2",
+        8,
+        8,
+        8,
+        8,
+      );
+
+      const replacement = await loadPluginThreadListReplacement({
+        withNotifications: false,
+      });
+      stubPluginRpcFetch((method, body) => ({
+        result:
+          method === "listPreferences"
+            ? { preferences: {} }
+            : method === "pullRequests"
+              ? Object.fromEntries(
+                  (JSON.parse(body).keys as string[]).map((key) => [
+                    key,
+                    { outcome: "absent" },
+                  ]),
+                )
+              : null,
+      }));
+      const pluginFetch = globalThis.fetch;
+      const fetchUrls: string[] = [];
+      vi.stubGlobal("IntersectionObserver", undefined);
+      vi.stubGlobal(
+        "fetch",
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes("/rpc/")) return pluginFetch(input, init);
+          const req = new Request(input, init);
+          fetchUrls.push(req.url);
+          return app.fetch(req);
+        },
+      );
+
+      const { queryClient } = createQueryClientTestHarness();
+      const view = render(
+        createElement(
+          SidebarThreadEntriesProvider,
+          null,
+          createElement(PluginThreadList, {
+            replacement,
+            onNavigate: () => {},
+          }),
+        ),
+        {
+          wrapper: ({ children }) =>
+            createElement(SidebarThreadListHarness, { queryClient, children }),
+        },
+      );
+
+      const expectedPrefix = [
+        "thr_delta_bumped",
+        "thr_newest_0",
+        "thr_newest_1",
+        "thr_alpha_child",
+        "thr_alpha_grandchild",
+        "thr_newest_2",
+        "thr_beta_child",
+        "thr_newest_3",
+        "thr_newest_4",
+        "thr_newest_5",
+        "thr_newest_6",
+        "thr_newest_7",
+        "thr_newest_8",
+        "thr_newest_9",
+      ];
+
+      await waitFor(() => {
+        const renderedIds = Array.from(
+          view.container.querySelectorAll("a[data-sidebar-thread-id]"),
+        ).map((el) => el.getAttribute("data-sidebar-thread-id"));
+        expect(renderedIds.length).toBeGreaterThanOrEqual(expectedPrefix.length);
+      });
+
+      const renderedIds = Array.from(
+        view.container.querySelectorAll("a[data-sidebar-thread-id]"),
+      ).map((el) => el.getAttribute("data-sidebar-thread-id"));
+      expect(renderedIds.slice(0, expectedPrefix.length)).toEqual(
+        expectedPrefix,
+      );
+
+      const sidebarBootstrapCalls = fetchUrls.filter((url) =>
+        url.includes("/api/v1/sidebar-bootstrap"),
+      );
+      expect(sidebarBootstrapCalls).toHaveLength(1);
+      expect(
+        new URL(sidebarBootstrapCalls[0]!).searchParams.get("cursor"),
+      ).toBeNull();
+      expect(
+        queryClient.getQueryData(sidebarNavigationQueryKey()),
+      ).toBeUndefined();
+    },
+  );
+});

@@ -1,4 +1,4 @@
-import { threads } from "@bb/db";
+import { projects, threads } from "@bb/db";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { createBbSdk } from "@bb/sdk/core";
 import { createHttpTransport } from "@bb/sdk/node";
@@ -97,6 +97,146 @@ describe("thread list continuation", () => {
         (await harness.app.request("/api/v1/threads?limit=1&cursor=invalid"))
           .status,
       ).toBe(400);
+    });
+  });
+
+  it("paginates sidebar-bootstrap globally across projects in chronological order and includes page-1 descendants in overview", async () => {
+    await withTestHarness(async (harness) => {
+      for (const projectId of ["proj_real_1", "proj_real_2", "proj_real_3"]) {
+        harness.db
+          .insert(projects)
+          .values({
+            id: projectId,
+            kind: "standard",
+            name: projectId,
+            createdAt: 1,
+            updatedAt: 1,
+          })
+          .run();
+      }
+      const projectIds = [
+        PERSONAL_PROJECT_ID,
+        "proj_real_1",
+        "proj_real_2",
+        "proj_real_3",
+      ];
+      for (let i = 0; i < 20; i++) {
+        harness.db
+          .insert(threads)
+          .values({
+            id: `thr_personal_old_${String(i).padStart(2, "0")}`,
+            projectId: PERSONAL_PROJECT_ID,
+            providerId: "codex",
+            status: "idle",
+            latestAttentionAt: 100 - i,
+            createdAt: 100 - i,
+            updatedAt: 100 - i,
+          })
+          .run();
+      }
+      for (let i = 0; i < 8; i++) {
+        const ts = 5000 - i * 10;
+        harness.db
+          .insert(threads)
+          .values({
+            id: `thr_global_${i}`,
+            projectId: projectIds[i % projectIds.length]!,
+            providerId: "codex",
+            status: i === 2 ? "active" : "idle",
+            latestAttentionAt: ts,
+            createdAt: ts,
+            updatedAt: ts,
+            pinnedAt: i === 7 ? 1 : null,
+            pinSortKey: i === 7 ? "a" : null,
+          })
+          .run();
+      }
+      harness.db
+        .insert(threads)
+        .values({
+          id: "thr_real_3_bumped",
+          projectId: "proj_real_3",
+          providerId: "codex",
+          status: "idle",
+          latestAttentionAt: 9000,
+          createdAt: 50,
+          updatedAt: 9000,
+        })
+        .run();
+      harness.db
+        .insert(threads)
+        .values({
+          id: "thr_child_of_global_1",
+          projectId: "proj_real_1",
+          parentThreadId: "thr_global_1",
+          providerId: "codex",
+          status: "idle",
+          latestAttentionAt: 10,
+          createdAt: 10,
+          updatedAt: 10,
+        })
+        .run();
+
+      const firstPageRes = await harness.app.request(
+        "/api/v1/sidebar-bootstrap?limit=6&overview=true",
+      );
+      expect(firstPageRes.status).toBe(200);
+      const firstPage = sidebarBootstrapResponseSchema.parse(
+        await firstPageRes.json(),
+      );
+      const firstPageIds = [
+        ...firstPage.personalProject.threads,
+        ...firstPage.projects.flatMap((project) => project.threads),
+      ].map((row) => row.id);
+      expect(new Set(firstPageIds)).toEqual(
+        new Set([
+          "thr_global_7",
+          "thr_global_2",
+          "thr_real_3_bumped",
+          "thr_global_0",
+          "thr_global_1",
+          "thr_global_3",
+        ]),
+      );
+      expect(firstPage.overview?.descendants?.map((row) => row.id)).toEqual([
+        "thr_child_of_global_1",
+      ]);
+
+      const complete = sidebarBootstrapResponseSchema.parse(
+        await (await harness.app.request("/api/v1/sidebar-bootstrap")).json(),
+      );
+      const expectedByProject = new Map<string, string[]>([
+        [
+          PERSONAL_PROJECT_ID,
+          complete.personalProject.threads.map((row) => row.id),
+        ],
+        ...complete.projects.map(
+          (project) => [project.id, project.threads.map((row) => row.id)] as const,
+        ),
+      ]);
+
+      const pagedByProject = new Map<string, string[]>();
+      let cursor: string | null = null;
+      let pageCount = 0;
+      do {
+        const params = new URLSearchParams({ limit: "6" });
+        if (cursor !== null) params.set("cursor", cursor);
+        const res = await harness.app.request(
+          "/api/v1/sidebar-bootstrap?" + params,
+        );
+        expect(res.status).toBe(200);
+        const body = sidebarBootstrapResponseSchema.parse(await res.json());
+        for (const project of [body.personalProject, ...body.projects]) {
+          const bucket = pagedByProject.get(project.id) ?? [];
+          bucket.push(...project.threads.map((row) => row.id));
+          pagedByProject.set(project.id, bucket);
+        }
+        cursor = res.headers.get("X-BB-Next-Cursor");
+        pageCount += 1;
+      } while (cursor !== null);
+
+      expect(pageCount).toBeGreaterThan(1);
+      expect(pagedByProject).toEqual(expectedByProject);
     });
   });
 });
