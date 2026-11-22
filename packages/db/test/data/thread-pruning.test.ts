@@ -2,7 +2,7 @@ import { markThreadPruningWork } from "../../src/data/thread-pruning-work.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { createConnection } from "../../src/connection.js";
 import { migrate } from "../../src/migrate.js";
@@ -1359,7 +1359,12 @@ describe("thread pruning", () => {
         for (let i = 1; i <= 1200; i++)
           seed(f, i, { type: "turn/diff/updated", data: "{}" });
       });
-      expect(advanceThreadPruning(f.db, "turn-diffs").removed).toBe(500);
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      try {
+        expect(advanceThreadPruning(f.db, "turn-diffs").removed).toBe(500);
+      } finally {
+        clock.mockRestore();
+      }
       f.db.transaction((tx) =>
         deleteThreadEventSuffixInTransaction(tx, {
           threadId: f.thread.id,

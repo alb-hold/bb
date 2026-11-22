@@ -226,6 +226,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   ],
   "hooks/cache-owners/thread-entity-store.ts": [
     "ARCHIVED_THREADS_LIST_KIND",
+    "SIDEBAR_SELECTED_THREAD_TARGET_KIND",
     "allThreadDetailBootstrapQueryKeyPrefix",
     "allThreadQueryKeyPrefix",
     "sidebarNavigationQueryKey",

@@ -69,12 +69,7 @@ vi.mock("@/hooks/useRouteState", () => ({
   useRouteState: () =>
     routeState.threadId === undefined ? {} : { threadId: routeState.threadId },
 }));
-vi.mock("@/hooks/useRealtimeSubscription", () => ({
-  useEnvironmentListRealtimeSubscription: vi.fn(),
-  useHostListRealtimeSubscription: vi.fn(),
-  useProjectListRealtimeSubscription: vi.fn(),
-  useThreadListRealtimeSubscription: vi.fn(),
-}));
+vi.mock("@/hooks/useRealtimeSubscription");
 
 afterEach(() => {
   cleanup();
@@ -900,12 +895,12 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         expect(
           view.container.querySelector(
             `a[data-sidebar-thread-id="${offpageRootId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Root");
         expect(
           view.container.querySelector(
             `[data-testid="mobile-recents-rows"] a[href$="/${offpageRootId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Root");
       });
       expect(view.getByTestId("paging-meta").textContent).toBe("true:28");
@@ -919,12 +914,12 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         expect(
           view.container.querySelector(
             `a[data-sidebar-thread-id="${offpageRootId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Root Updated");
         expect(
           view.container.querySelector(
             `[data-testid="mobile-recents-rows"] a[href$="/${offpageRootId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Root Updated");
       });
 
@@ -939,22 +934,22 @@ it("renders off-page selected root and nested child rows on both desktop sidebar
         expect(
           view.container.querySelector(
             `a[data-sidebar-thread-id="${offpageParentId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Parent");
         expect(
           view.container.querySelector(
             `a[data-sidebar-thread-id="${offpageChildId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Nested Child");
         expect(
           view.container.querySelector(
             `[data-testid="mobile-recents-rows"] a[href$="/${offpageParentId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Parent");
         expect(
           view.container.querySelector(
             `[data-testid="mobile-recents-rows"] a[href$="/${offpageChildId}"]`,
-          )?.textContent,
+          )?.getAttribute("aria-label"),
         ).toContain("Off-page Nested Child");
       });
       expect(
