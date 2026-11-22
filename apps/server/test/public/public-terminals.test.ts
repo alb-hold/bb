@@ -1367,9 +1367,13 @@ describe("public terminal routes", () => {
     ]);
   });
 
-  it.each([true, false])(
-    "observes only complete live frames after the attach replay boundary (rendered before replay response: %s)",
-    async (early) => {
+  it.each([
+    { early: true, paintSpace: false },
+    { early: false, paintSpace: false },
+    { early: false, paintSpace: true },
+  ])(
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace)",
+    async ({ early, paintSpace }) => {
       const fixture = await createTerminalRouteFixture();
       harnesses.push(fixture.harness);
       const stored = createTerminalSession(fixture.harness.db, {
@@ -1480,7 +1484,8 @@ describe("public terminal routes", () => {
         );
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
-        await output(3, "\x1b[?2026h\r   \x1b[7mfirst");
+        const repaint = paintSpace ? "\x1b[44m " : "\r   \x1b[7mfirst";
+        await output(3, `\x1b[?2026h${repaint}`);
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
         await output(4, "\x1b[?2026l");

@@ -269,21 +269,41 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
+function visibleBlankRendition(cell: HeadlessCell): string | undefined {
+  if (
+    !cell.isInvisible() &&
+    (cell.isUnderline() || cell.isStrikethrough() || cell.isOverline())
+  )
+    return cellSgr(cell);
+  if (cell.isInverse())
+    return `inverse:${cell.getFgColorMode()}:${cell.getFgColor()}`;
+  if (!cell.isBgDefault())
+    return `background:${cell.getBgColorMode()}:${cell.getBgColor()}`;
+  return undefined;
+}
+
 function visibleFrameContent(terminal: HeadlessTerminal): string {
   const buffer = terminal.buffer.active;
   const cell = buffer.getNullCell();
   const parts: string[] = [];
+  let hasVisibleText = false;
   for (let row = 0; row < terminal.rows; row++) {
     const line = buffer.getLine(buffer.baseY + row);
-    if (!line?.translateToString(true).trim()) continue;
+    if (!line) continue;
     for (let col = 0; col < terminal.cols; col++) {
       line.getCell(col, cell);
-      const chars = cell.getChars();
-      if (!cell.isInvisible() && chars.trim())
+      if (!cell.getWidth()) continue;
+      const chars = cell.isInvisible() ? "" : cell.getChars();
+      if (chars.trim()) {
+        hasVisibleText = true;
         parts.push(`${row},${col}${cellSgr(cell)}${chars}`);
+      } else {
+        const rendition = visibleBlankRendition(cell);
+        if (rendition) parts.push(`${row},${col}:${rendition} `);
+      }
     }
   }
-  return parts.join("");
+  return hasVisibleText ? parts.join("") : "";
 }
 
 function* serializeScreenRows(
