@@ -18,10 +18,17 @@ import {
 vi.mock("../../../../server/test/helpers/provider-registry.js", () => ({
   registerFirstPartyProviders: vi.fn(),
 }));
-vi.mock("../../../../server/src/install-machine-asset.js", () => ({
-  INSTALL_MACHINE_SCRIPT_PATH: "install-machine.sh",
-  INSTALL_MACHINE_WINDOWS_SCRIPT_PATH: "install-machine-windows.mjs",
-}));
+vi.mock("../../../../server/src/install-machine-asset.js", async () => {
+  const { resolve } = await import("node:path");
+  const assets = resolve(import.meta.dirname, "../../../../server/src/assets");
+  return {
+    INSTALL_MACHINE_SCRIPT_PATH: resolve(assets, "install-machine.sh"),
+    INSTALL_MACHINE_WINDOWS_SCRIPT_PATH: resolve(
+      assets,
+      "install-machine-windows.mjs",
+    ),
+  };
+});
 vi.mock("@/hooks/useRouteState", () => ({ useRouteState: () => ({}) }));
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useEnvironmentListRealtimeSubscription: vi.fn(),
