@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { observeSidebarPageScroll } from "@/lib/sidebar-page-scroll";
 import { createElement, useEffect, useRef } from "react";
 import {
   act,
@@ -221,14 +222,7 @@ it("loads page 1 while idle, advances to page 2 on scroll, and commits complete 
         useEffect(() => {
           const el = scrollerRef.current;
           if (!el || !paging.hasNextPage || paging.isFetchingNextPage) return;
-          const onScroll = () => {
-            if (el.scrollTop <= 0) return;
-            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) {
-              void paging.fetchNextPage();
-            }
-          };
-          el.addEventListener("scroll", onScroll, { passive: true });
-          return () => el.removeEventListener("scroll", onScroll);
+          return observeSidebarPageScroll(el, paging.fetchNextPage);
         }, [paging.fetchNextPage, paging.hasNextPage, paging.isFetchingNextPage]);
         return createElement("div", {
           ref: scrollerRef,

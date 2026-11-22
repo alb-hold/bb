@@ -163,7 +163,7 @@ async function fetchSidebarNavigationPage({
   return { response, nextCursor };
 }
 
-function sidebarNavigationPagesQueryOptions(options?: { enabled?: boolean }) {
+function sidebarNavigationPagesQueryOptions(client: QueryClient, enabled: boolean) {
   return infiniteQueryOptions<
     SidebarNavigationPage,
     Error,
@@ -176,7 +176,12 @@ function sidebarNavigationPagesQueryOptions(options?: { enabled?: boolean }) {
       fetchSidebarNavigationPage({ client, pageParam, signal }),
     initialPageParam: undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
-    enabled: options?.enabled ?? true,
+    initialData: () => {
+      const snapshot = client.getQueryData<SidebarBootstrapResponse>(sidebarNavigationQueryKey());
+      if (!snapshot || client.getQueryState(sidebarNavigationQueryKey())?.isInvalidated) return undefined;
+      return { pages: [{ response: snapshot, nextCursor: undefined }], pageParams: [undefined] };
+    },
+    enabled,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
   });
 }
@@ -242,16 +247,7 @@ export function useSidebarNavigation(options?: QueryOptions) {
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     placeholderData: () => readCachedSidebarBootstrap() ?? undefined,
   });
-  const hasSeededComplete =
-    completeQuery.data !== undefined &&
-    !completeQuery.isPlaceholderData &&
-    !completeQuery.isStale &&
-    queryClient.getQueryData(sidebarNavigationPagesQueryKey()) === undefined;
-  const pagesQuery = useInfiniteQuery(
-    sidebarNavigationPagesQueryOptions({
-      enabled: enabled && !hasSeededComplete,
-    }),
-  );
+  const pagesQuery = useInfiniteQuery(sidebarNavigationPagesQueryOptions(queryClient, enabled));
 
   if (completeQuery.data !== undefined) {
     return completeQuery;
@@ -275,21 +271,7 @@ export function useSidebarNavigationPaging(
   const enabled = options?.enabled ?? true;
   const queryClient = useQueryClient();
   syncSidebarNavigationPagesCache(queryClient);
-  const completeQuery = useQuery<SidebarBootstrapResponse>({
-    queryKey: sidebarNavigationQueryKey(),
-    queryFn: fetchSidebarNavigation,
-    enabled: false,
-    ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
-  });
-  const hasSeededComplete =
-    completeQuery.data !== undefined &&
-    !completeQuery.isStale &&
-    queryClient.getQueryData(sidebarNavigationPagesQueryKey()) === undefined;
-  const pagesQuery = useInfiniteQuery(
-    sidebarNavigationPagesQueryOptions({
-      enabled: enabled && !hasSeededComplete,
-    }),
-  );
+  const pagesQuery = useInfiniteQuery(sidebarNavigationPagesQueryOptions(queryClient, enabled));
   const fetchNext = pagesQuery.fetchNextPage;
   const fetchNextPage = useCallback(async () => {
     await fetchNext({ cancelRefetch: false });

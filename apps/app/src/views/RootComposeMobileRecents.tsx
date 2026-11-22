@@ -1,3 +1,4 @@
+import { observeSidebarPageScroll } from "@/lib/sidebar-page-scroll";
 import {
   getMobileRecentThreads,
   getMobileRecentAncestorIds,
@@ -63,7 +64,7 @@ interface MobileRecentThreadRowProps {
   now: number;
 }
 
-const MOBILE_RECENTS_SCROLL_THRESHOLD_PX = 240;
+
 
 function findScrollParent(element: HTMLElement | null): HTMLElement | null {
   let current = element?.parentElement ?? null;
@@ -253,19 +254,7 @@ export function RootComposeMobileRecents({
     }
     const scrollParent = findScrollParent(containerRef.current);
     if (!scrollParent) return;
-    const handleScroll = () => {
-      if (scrollParent.scrollTop <= 0) return;
-      if (
-        scrollParent.scrollTop + scrollParent.clientHeight >=
-        scrollParent.scrollHeight - MOBILE_RECENTS_SCROLL_THRESHOLD_PX
-      ) {
-        onLoadMoreThreads();
-      }
-    };
-    scrollParent.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      scrollParent.removeEventListener("scroll", handleScroll);
-    };
+    return observeSidebarPageScroll(scrollParent, onLoadMoreThreads);
   }, [
     canLoadMore,
     isLoadMoreThreadsError,
