@@ -290,7 +290,7 @@ const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
       classLists: [
         ["rounded-lg", "border", "border-border", "bg-card", "px-4", "py-3.5"],
         ["flex-col", "gap-2.5"],
-        ["text-xs", "leading-snug", "text-subtle-foreground/75"],
+        ["text-xs", "leading-snug", "text-settings-help"],
       ],
       because:
         "The Appearance projection keeps BB's section card, responsive rows, and supporting-copy hierarchy.",
