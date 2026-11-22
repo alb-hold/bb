@@ -46,10 +46,12 @@ export function useReadStatusGrouping({
   threads,
   selectedThreadId,
   comparator,
+  overviewChildCounts,
 }: {
   threads: readonly SidebarThread[];
   selectedThreadId: string | undefined;
   comparator: ThreadComparator;
+  overviewChildCounts?: Readonly<Record<string, number>>;
 }) {
   const groupByReadStatus = useAtomValue(sidebarGroupByReadStatusAtom);
   const heldReadStatus = useHeldReadStatus(threads, selectedThreadId);
@@ -76,9 +78,13 @@ export function useReadStatusGrouping({
   const groupedCollapsedThreadIds = useMemo(
     () =>
       groupByReadStatus
-        ? collapseParentThreads(threads, expandedWhileGrouped)
+        ? collapseParentThreads(
+            threads,
+            expandedWhileGrouped,
+            overviewChildCounts,
+          )
         : null,
-    [expandedWhileGrouped, groupByReadStatus, threads],
+    [expandedWhileGrouped, groupByReadStatus, overviewChildCounts, threads],
   );
   const collapsedThreadIds =
     groupedCollapsedThreadIds ?? preferredCollapsedThreadIds;

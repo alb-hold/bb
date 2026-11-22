@@ -28,6 +28,7 @@ import {
 } from "react";
 import { useAtom } from "jotai";
 import type { ProviderInfo, ThreadListEntry } from "@bb/domain";
+import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import {
   getThreadListIndicatorLabel,
   resolveThreadListIndicator,
@@ -86,6 +87,7 @@ interface RootComposeMobileRecentsProps {
   showCreatingRow: boolean;
   threads: readonly ThreadListEntry[];
   completeSnapshot?: boolean;
+  overview?: SidebarBootstrapResponse["overview"];
   hasMoreThreads?: boolean;
   isLoadingMoreThreads?: boolean;
   isLoadMoreThreadsError?: boolean;
@@ -199,6 +201,7 @@ export function RootComposeMobileRecents({
   showCreatingRow,
   threads,
   completeSnapshot = true,
+  overview,
   hasMoreThreads = false,
   isLoadingMoreThreads = false,
   isLoadMoreThreadsError = false,
@@ -285,8 +288,9 @@ export function RootComposeMobileRecents({
         draftThreadIds,
         now: activityNow,
         threads,
+        overview: completeSnapshot ? undefined : overview,
       }),
-    [activityNow, collapsedThreadIds, draftThreadIds, threads],
+    [activityNow, collapsedThreadIds, completeSnapshot, draftThreadIds, overview, threads],
   );
   const hasMountedAllRows = useDeferredValue(true, false);
   const renderedThreads = hasMountedAllRows

@@ -219,7 +219,11 @@ export function useSidebarThreads(
             isFetchNextPageError: paging.isFetchNextPageError,
             fetchNextPage: paging.fetchNextPage,
             ...(complete === undefined && preview?.overview
-              ? { projectCounts: preview.overview.counts }
+              ? {
+                  projectCounts: preview.overview.counts,
+                  childCounts: preview.overview.childCounts,
+                  unreadTree: preview.overview.unreadTree,
+                }
               : {}),
           }
         : undefined,

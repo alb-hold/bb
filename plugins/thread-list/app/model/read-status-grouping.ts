@@ -77,6 +77,7 @@ export function groupComparatorByReadStatus(
 export function collapseParentThreads(
   threads: readonly SidebarThread[],
   expandedThreadIds: readonly string[],
+  overviewChildCounts?: Readonly<Record<string, number>>,
 ): Set<string> {
   const expanded = new Set(expandedThreadIds);
   const collapsed = new Set<string>();
@@ -86,6 +87,13 @@ export function collapseParentThreads(
       !expanded.has(thread.parentThreadId)
     ) {
       collapsed.add(thread.parentThreadId);
+    }
+    if (
+      overviewChildCounts !== undefined &&
+      (overviewChildCounts[thread.id] ?? 0) > 0 &&
+      !expanded.has(thread.id)
+    ) {
+      collapsed.add(thread.id);
     }
   }
   return collapsed;

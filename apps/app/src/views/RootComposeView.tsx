@@ -1583,6 +1583,11 @@ function RootComposeSurface({
                     showCreatingRow={isSubmitting}
                     threads={mobileRecentThreads}
                     completeSnapshot={sidebarNavigationComplete}
+                    overview={
+                      sidebarNavigationComplete
+                        ? undefined
+                        : navigationPreview?.overview
+                    }
                     hasMoreThreads={
                       isCompactViewport && navigationPaging.hasNextPage
                     }

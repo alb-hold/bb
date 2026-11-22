@@ -66,6 +66,8 @@ import {
 import {
   ChronologicalSectionThreadSections,
   ProjectThreadTree,
+  SidebarActivePagesOverviewContext,
+  type SidebarActivePagesOverview,
 } from "./ProjectRow.js";
 import type { ProjectThreadListState } from "./ProjectRow.js";
 import { buildMachineThreadGroups } from "../model/machine-thread-groups.js";
@@ -1769,7 +1771,26 @@ function ProjectListComponent({
     threads,
     selectedThreadId,
     comparator: baseThreadComparator,
+    overviewChildCounts: activePages?.hasNextPage
+      ? activePages.childCounts
+      : undefined,
   });
+  const activePagesOverview = useMemo<SidebarActivePagesOverview | null>(
+    () =>
+      activePages?.hasNextPage
+        ? {
+            childCounts: activePages.childCounts,
+            unreadTree: activePages.unreadTree,
+            isFetchingNextPage: activePages.isFetchingNextPage,
+          }
+        : null,
+    [
+      activePages?.childCounts,
+      activePages?.hasNextPage,
+      activePages?.isFetchingNextPage,
+      activePages?.unreadTree,
+    ],
+  );
   const toggleThreadCollapsed = useCallback<ToggleCollapsedId>(
     (threadId) => {
       if (collapsedThreadIds.has(threadId)) {
@@ -2099,7 +2120,9 @@ function ProjectListComponent({
   return (
     <SidebarProjectNamesContext.Provider value={projectNamesById}>
       <SidebarProvidersContext.Provider value={providers}>
-        {content}
+        <SidebarActivePagesOverviewContext.Provider value={activePagesOverview}>
+          {content}
+        </SidebarActivePagesOverviewContext.Provider>
       </SidebarProvidersContext.Provider>
     </SidebarProjectNamesContext.Provider>
   );

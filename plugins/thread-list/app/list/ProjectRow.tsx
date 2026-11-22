@@ -23,9 +23,11 @@ import {
   SIDEBAR_GROUP_TEXT_CLASS,
 } from "@/components/ui/sidebar-row-classes";
 import {
+  createContext,
   Fragment,
   memo,
   useCallback,
+  useContext,
   useMemo,
   useRef,
   useState,
@@ -49,8 +51,17 @@ import {
   useBbNavigate,
   useEnvironmentProviders,
   useSdk,
+  type PluginSidebarThreadsState,
 } from "@get-bb/plugin-sdk/app";
-import { NO_HIDDEN_THREADS, useHiddenThreadsStatus } from "./groupRollups.js";
+import {
+  NO_HIDDEN_THREADS,
+  useHiddenThreadsStatus,
+  type OffpageHiddenActivity,
+} from "./groupRollups.js";
+import {
+  getCollapsedChildActivity,
+  type CollapsedChildActivity,
+} from "../model/thread-activity.js";
 import {
   findEnvironmentDisplayProvider,
   getEnvironmentLabelIconName,
@@ -182,6 +193,62 @@ import {
 import { useSortableItemIds } from "../dnd/useStableItemIds.js";
 
 const SIDEBAR_STICKY_PARENT_DEPTH_CAP = 4;
+
+type SidebarUnreadTreeRow = NonNullable<
+  NonNullable<
+    PluginSidebarThreadsState["experimental_activePages"]
+  >["unreadTree"]
+>[number];
+
+export interface SidebarActivePagesOverview {
+  childCounts?: Readonly<Record<string, number>>;
+  unreadTree?: readonly SidebarUnreadTreeRow[];
+  isFetchingNextPage?: boolean;
+}
+
+export const SidebarActivePagesOverviewContext =
+  createContext<SidebarActivePagesOverview | null>(null);
+
+function getOffpageDescendantUnread(
+  parentThreadId: string,
+  unreadTree: readonly SidebarUnreadTreeRow[] | undefined,
+): OffpageHiddenActivity | undefined {
+  if (!unreadTree || unreadTree.length === 0) return undefined;
+  const byId = new Map(unreadTree.map((entry) => [entry.id, entry]));
+  let unread = false;
+  let unreadError = false;
+  for (const entry of unreadTree) {
+    if ((entry.lastReadAt ?? 0) >= entry.latestAttentionAt) continue;
+    let currentParent = entry.parentThreadId;
+    const visited = new Set<string>();
+    while (currentParent !== null && !visited.has(currentParent)) {
+      visited.add(currentParent);
+      if (currentParent === parentThreadId) {
+        unread = true;
+        if (entry.status === "error") unreadError = true;
+        break;
+      }
+      currentParent = byId.get(currentParent)?.parentThreadId ?? null;
+    }
+  }
+  return unread || unreadError ? { unread, unreadError } : undefined;
+}
+
+function getOffpageProjectUnread(
+  projectId: string,
+  unreadTree: readonly SidebarUnreadTreeRow[] | undefined,
+): OffpageHiddenActivity | undefined {
+  if (!unreadTree || unreadTree.length === 0) return undefined;
+  let unread = false;
+  let unreadError = false;
+  for (const entry of unreadTree) {
+    if (entry.projectId !== projectId) continue;
+    if ((entry.lastReadAt ?? 0) >= entry.latestAttentionAt) continue;
+    unread = true;
+    if (entry.status === "error") unreadError = true;
+  }
+  return unread || unreadError ? { unread, unreadError } : undefined;
+}
 
 function resolveThreadEnvironmentDisplayName(
   environment: {
@@ -448,6 +515,7 @@ function getThreadRowDepth({
 
 function getThreadRowOptions({
   hiddenThreads,
+  childActivity,
   childCount,
   consumeClickSuppression,
   dragBindings,
@@ -481,6 +549,7 @@ function getThreadRowOptions({
     kind: "parent",
     isCollapsed,
     childCount,
+    ...(childActivity !== undefined ? { childActivity } : {}),
     hiddenThreads,
     ...(stickyLevel !== undefined ? { stickyLevel } : {}),
     onToggleCollapsed: onToggleThreadCollapsed,
@@ -489,6 +558,7 @@ function getThreadRowOptions({
 
 interface GetThreadRowOptionsArgs {
   hiddenThreads: readonly SidebarThread[];
+  childActivity?: CollapsedChildActivity;
   childCount: number;
   consumeClickSuppression?: ConsumeDragClickSuppression;
   dragBindings?: SidebarSortableDragBindings;
@@ -1481,8 +1551,15 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
   sortableRef,
   sortableStyle,
 }: ThreadTreeNodeRowProps) {
+  const activePagesOverview = useContext(SidebarActivePagesOverviewContext);
+  const overviewChildCount =
+    activePagesOverview?.childCounts?.[node.thread.id] ?? 0;
+  const effectiveChildCount = Math.max(
+    node.stats.childCount,
+    overviewChildCount,
+  );
   const isCollapsed = collapsedThreadIds.has(node.thread.id);
-  const hasChildren = node.children.length > 0;
+  const hasChildren = node.children.length > 0 || overviewChildCount > 0;
   const isParent = hasChildren;
   const inheritedStickyOffset = useStickyOffset();
   const [growingRowHeight, setGrowingRowHeightPx] = useState(0);
@@ -1543,11 +1620,31 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
     depthOffset,
     nodeDepth: node.depth,
   });
+  const offpageChildUnread = useMemo(
+    () =>
+      isCollapsed && hasChildren
+        ? getOffpageDescendantUnread(
+            node.thread.id,
+            activePagesOverview?.unreadTree,
+          )
+        : undefined,
+    [activePagesOverview?.unreadTree, hasChildren, isCollapsed, node.thread.id],
+  );
+  const mergedChildActivity = useMemo<CollapsedChildActivity | undefined>(() => {
+    if (!offpageChildUnread) return undefined;
+    const base = getCollapsedChildActivity(node.stats.hiddenThreads);
+    return {
+      ...base,
+      unread: base.unread || offpageChildUnread.unread,
+      unreadError: base.unreadError || offpageChildUnread.unreadError,
+    };
+  }, [node.stats.hiddenThreads, offpageChildUnread]);
   const options = useMemo<ThreadRowOptions>(
     () =>
       getThreadRowOptions({
         hiddenThreads: node.stats.hiddenThreads,
-        childCount: node.stats.childCount,
+        childActivity: mergedChildActivity,
+        childCount: effectiveChildCount,
         consumeClickSuppression,
         dragBindings,
         depthOffset,
@@ -1565,10 +1662,12 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
       consumeClickSuppression,
       depthOffset,
       dragBindings,
+      effectiveChildCount,
       isCollapsed,
       isEnvGrouped,
       isParent,
       hasChildren,
+      mergedChildActivity,
       nestDrop,
       node,
       onToggleThreadCollapsed,
@@ -1614,6 +1713,12 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
         >
           <div className="relative space-y-0">
             <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
+            {showChildren &&
+            node.children.length === 0 &&
+            overviewChildCount > 0 &&
+            activePagesOverview?.isFetchingNextPage ? (
+              <ThreadTreeLoadingSkeleton />
+            ) : null}
             {showChildren ? (
               <SidebarWindowedItems
                 itemKeys={itemKeys}
@@ -2226,6 +2331,14 @@ function ProjectRowComponent({
   const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false);
   const [isRemovePending, setIsRemovePending] = useState(false);
   const isActionsOpen = isDropdownActionsOpen || isContextActionsOpen;
+  const activePagesOverview = useContext(SidebarActivePagesOverviewContext);
+  const offpageProjectUnread = useMemo(
+    () =>
+      isCollapsed
+        ? getOffpageProjectUnread(project.id, activePagesOverview?.unreadTree)
+        : undefined,
+    [activePagesOverview?.unreadTree, isCollapsed, project.id],
+  );
   const projectThreads = useMemo(
     () =>
       isCollapsed && threadListState.status === "ready"
@@ -2305,6 +2418,7 @@ function ProjectRowComponent({
               onToggleCollapsed: handleProjectRowToggle,
             }}
             collapsedThreads={projectThreads}
+            offpageActivity={offpageProjectUnread}
             consumeClickSuppression={consumeProjectClickSuppression}
             dragBindings={rename.isEditing ? undefined : projectDragBindings}
             sectionRef={projectRowRef}
@@ -2458,6 +2572,12 @@ function areProjectRowPropsEqual(
   }
   if (prev.threadListState.status !== "ready") {
     return true;
+  }
+  if (
+    (prev.hasUnloadedThreads || next.hasUnloadedThreads) &&
+    prev.collapsedThreadIds !== next.collapsedThreadIds
+  ) {
+    return false;
   }
   return (
     !hasCollapsedThreadStateChanged({ prev, next }) &&

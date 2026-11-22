@@ -1596,31 +1596,61 @@ export function listThreadsWithPendingInteractionState(
 }
 
 export function sidebarOverview(db: DbConnection, projectIds: readonly string[]) {
+  if (projectIds.length === 0) {
+    return { counts: {}, childCounts: {}, unreadTree: [] };
+  }
   const scope = liveThreads(
     inArray(threads.projectId, [...projectIds]),
     eq(threads.visibility, "visible"),
   );
-  const counts = db.select({ projectId: threads.projectId, total: count() })
-    .from(threads).where(scope).groupBy(threads.projectId).all();
+  const counts = db
+    .select({ projectId: threads.projectId, total: count() })
+    .from(threads)
+    .where(scope)
+    .groupBy(threads.projectId)
+    .all();
+  const childCounts = db.all<{ parentThreadId: string; total: number }>(sql`
+    WITH RECURSIVE visible AS (
+      SELECT id, parent_thread_id FROM ${threads} WHERE ${scope}
+    ), descendants(root_id, id) AS (
+      SELECT parent_thread_id, id FROM visible WHERE parent_thread_id IS NOT NULL
+      UNION
+      SELECT d.root_id, v.id FROM visible v JOIN descendants d ON v.parent_thread_id = d.id
+    )
+    SELECT root_id AS parentThreadId, count(DISTINCT id) AS total
+    FROM descendants
+    GROUP BY root_id
+  `);
   const unreadTree = db.all<{
     id: string;
     parentThreadId: string | null;
+    projectId: string;
+    sectionId: string | null;
+    status: string;
     lastReadAt: number | null;
     latestAttentionAt: number;
   }>(sql`
     WITH RECURSIVE visible AS (
-      SELECT id, parent_thread_id, last_read_at, latest_attention_at FROM ${threads} WHERE ${scope}
+      SELECT id, parent_thread_id, project_id, section_id, status, last_read_at, latest_attention_at
+      FROM ${threads} WHERE ${scope}
     ), ancestry(id) AS (
       SELECT id FROM visible WHERE coalesce(last_read_at, 0) < latest_attention_at
       UNION
       SELECT v.parent_thread_id FROM visible v JOIN ancestry a ON a.id = v.id
       WHERE v.parent_thread_id IS NOT NULL
     )
-    SELECT v.id, v.parent_thread_id AS parentThreadId, v.last_read_at AS lastReadAt,
+    SELECT v.id, v.parent_thread_id AS parentThreadId, v.project_id AS projectId,
+           v.section_id AS sectionId, v.status, v.last_read_at AS lastReadAt,
            v.latest_attention_at AS latestAttentionAt
     FROM visible v JOIN ancestry a ON a.id = v.id
   `);
-  return { counts: Object.fromEntries(counts.map(row => [row.projectId, row.total])), unreadTree };
+  return {
+    counts: Object.fromEntries(counts.map((row) => [row.projectId, row.total])),
+    childCounts: Object.fromEntries(
+      childCounts.map((row) => [row.parentThreadId, row.total]),
+    ),
+    unreadTree,
+  };
 }
 
 export function hasActiveThreadAttention(db: DbConnection): boolean {

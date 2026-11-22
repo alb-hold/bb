@@ -26,12 +26,17 @@ import {
   writeCachedSidebarBootstrap,
 } from "@/lib/sidebar-bootstrap-cache";
 import { mobileRecentsCollapsedThreadIdsAtom } from "@/views/mobile-recents-collapse";
+import { getMobileRecentThreads } from "@/views/root-compose-recent-threads";
 import { useMobileRecentsThreadReveal } from "@/views/useMobileRecentsThreadReveal";
 import {
   useSidebarNavigation,
   useSidebarNavigationPaging,
   useSidebarNavigationPreview,
 } from "./sidebar-navigation-query";
+
+const routeState = vi.hoisted(() => ({
+  threadId: undefined as string | undefined,
+}));
 
 vi.mock("../../../../server/test/helpers/provider-registry.js", () => ({
   registerFirstPartyProviders: vi.fn(),
@@ -47,7 +52,10 @@ vi.mock("../../../../server/src/install-machine-asset.js", async () => {
     ),
   };
 });
-vi.mock("@/hooks/useRouteState", () => ({ useRouteState: () => ({}) }));
+vi.mock("@/hooks/useRouteState", () => ({
+  useRouteState: () =>
+    routeState.threadId === undefined ? {} : { threadId: routeState.threadId },
+}));
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useEnvironmentListRealtimeSubscription: vi.fn(),
   useHostListRealtimeSubscription: vi.fn(),
@@ -59,6 +67,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   window.localStorage.clear();
+  routeState.threadId = undefined;
   resetSidebarBootstrapCacheForTest();
 });
 
@@ -461,3 +470,262 @@ it("requests the idle Home sidebar once when realtime connects during warm repla
     expect(reads).toHaveBeenCalledTimes(1);
   });
 });
+
+it("reports off-page child counts and unread rollups on page 1 while excluding archived and hidden children", async () => {
+  await withTestHarness(
+    { seedFirstPartyProviders: false },
+    async ({ app, db }) => {
+      const parentId = "thr_offpage_parent";
+      const unreadErrorChildId = "thr_offpage_child_error";
+      const readChildId = "thr_offpage_child_read";
+      const insert = db.$client.prepare(
+        "INSERT INTO threads (id, project_id, provider_id, status, parent_thread_id, visibility, created_at, updated_at, last_read_at, latest_attention_at, archived_at) VALUES (?, ?, 'codex', ?, ?, ?, ?, 1, ?, ?, ?)",
+      );
+      insert.run(
+        parentId,
+        PERSONAL_PROJECT_ID,
+        "idle",
+        null,
+        "visible",
+        300,
+        1,
+        1,
+        null,
+      );
+      for (let i = 0; i < 24; i++) {
+        insert.run(
+          `thr_filler_${i}`,
+          PERSONAL_PROJECT_ID,
+          "idle",
+          null,
+          "visible",
+          200 - i,
+          1,
+          1,
+          null,
+        );
+      }
+      insert.run(
+        unreadErrorChildId,
+        PERSONAL_PROJECT_ID,
+        "error",
+        parentId,
+        "visible",
+        2,
+        1,
+        5,
+        null,
+      );
+      insert.run(
+        readChildId,
+        PERSONAL_PROJECT_ID,
+        "idle",
+        parentId,
+        "visible",
+        1,
+        5,
+        5,
+        null,
+      );
+      insert.run(
+        "thr_archived_child",
+        PERSONAL_PROJECT_ID,
+        "error",
+        parentId,
+        "visible",
+        1,
+        1,
+        5,
+        100,
+      );
+      insert.run(
+        "thr_hidden_child",
+        PERSONAL_PROJECT_ID,
+        "error",
+        parentId,
+        "hidden",
+        1,
+        1,
+        5,
+        null,
+      );
+
+      const fetchUrls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const req = new Request(input, init);
+          fetchUrls.push(req.url);
+          return app.fetch(req);
+        },
+      );
+      const { wrapper } = createQueryClientTestHarness();
+      const { result } = renderHook(
+        () => {
+          useSidebarNavigation();
+          return useSidebarNavigationPreview();
+        },
+        { wrapper },
+      );
+
+      await waitFor(() =>
+        expect(result.current?.personalProject.threads).toHaveLength(25),
+      );
+      expect(fetchUrls).toHaveLength(1);
+      const overview = result.current?.overview;
+      expect(overview?.counts[PERSONAL_PROJECT_ID]).toBe(27);
+      expect(overview?.childCounts?.[parentId]).toBe(2);
+      const errorEntry = overview?.unreadTree.find(
+        (entry) => entry.id === unreadErrorChildId,
+      );
+      expect(errorEntry).toMatchObject({
+        id: unreadErrorChildId,
+        parentThreadId: parentId,
+        projectId: PERSONAL_PROJECT_ID,
+        status: "error",
+      });
+
+      const mobileRows = getMobileRecentThreads({
+        collapsedThreadIds: new Set([parentId]),
+        draftThreadIds: new Set(),
+        threads: result.current!.personalProject.threads,
+        overview,
+      });
+      const parentRow = mobileRows.find((row) => row.thread.id === parentId);
+      expect(parentRow?.hasChildren).toBe(true);
+      expect(parentRow?.isCollapsed).toBe(true);
+      expect(parentRow?.childActivity.unread).toBe(true);
+      expect(parentRow?.childActivity.unreadError).toBe(true);
+    },
+  );
+});
+
+it.each(["archived", "hidden", "active-offpage"] as const)(
+  "resolves %s selected thread reveal via targeted reads without draining active sidebar pages",
+  async (kind) => {
+    await withTestHarness(
+      { seedFirstPartyProviders: false },
+      async ({ app, db }) => {
+        const parentId = "thr_targeted_parent";
+        const activeChildId = "thr_targeted_active_child";
+        const archivedChildId = "thr_targeted_archived_child";
+        const hiddenChildId = "thr_targeted_hidden_child";
+        const insert = db.$client.prepare(
+          "INSERT INTO threads (id, project_id, provider_id, status, parent_thread_id, visibility, created_at, updated_at, last_read_at, latest_attention_at, archived_at) VALUES (?, ?, 'codex', 'idle', ?, ?, ?, 1, 1, 1, ?)",
+        );
+        insert.run(
+          parentId,
+          PERSONAL_PROJECT_ID,
+          null,
+          "visible",
+          300,
+          null,
+        );
+        for (let i = 0; i < 24; i++) {
+          insert.run(
+            `thr_targeted_filler_${i}`,
+            PERSONAL_PROJECT_ID,
+            null,
+            "visible",
+            200 - i,
+            null,
+          );
+        }
+        insert.run(
+          activeChildId,
+          PERSONAL_PROJECT_ID,
+          parentId,
+          "visible",
+          1,
+          null,
+        );
+        insert.run(
+          archivedChildId,
+          PERSONAL_PROJECT_ID,
+          parentId,
+          "visible",
+          1,
+          100,
+        );
+        insert.run(
+          hiddenChildId,
+          PERSONAL_PROJECT_ID,
+          parentId,
+          "hidden",
+          1,
+          null,
+        );
+
+        const storageKey = "bb.mobileRecents.collapsedThreads";
+        window.localStorage.setItem(storageKey, JSON.stringify([parentId]));
+        routeState.threadId =
+          kind === "archived"
+            ? archivedChildId
+            : kind === "hidden"
+              ? hiddenChildId
+              : activeChildId;
+
+        const fetchUrls: string[] = [];
+        vi.stubGlobal(
+          "fetch",
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const req = new Request(input, init);
+            fetchUrls.push(req.url);
+            return app.fetch(req);
+          },
+        );
+
+        const { wrapper, queryClient } = createQueryClientTestHarness();
+        const { result } = renderHook(
+          () => {
+            useMobileRecentsThreadReveal();
+            const preview = useSidebarNavigationPreview();
+            const collapsed = useAtomValue(mobileRecentsCollapsedThreadIdsAtom);
+            return { preview, collapsed };
+          },
+          { wrapper },
+        );
+
+        await waitFor(() =>
+          expect(result.current.preview?.personalProject.threads).toHaveLength(
+            25,
+          ),
+        );
+        if (kind === "active-offpage") {
+          await waitFor(() =>
+            expect(result.current.collapsed).not.toContain(parentId),
+          );
+          expect(
+            fetchUrls.some((url) => url.includes("/api/v1/threads/ancestors")),
+          ).toBe(true);
+        } else {
+          await waitFor(() =>
+            expect(
+              fetchUrls.some((url) =>
+                url.includes(`/api/v1/threads/${routeState.threadId}`),
+              ),
+            ).toBe(true),
+          );
+          await act(async () => {
+            await Promise.resolve();
+          });
+          expect(result.current.collapsed).toContain(parentId);
+          expect(
+            fetchUrls.some((url) => url.includes("/api/v1/threads/ancestors")),
+          ).toBe(false);
+        }
+
+        const sidebarBootstrapCalls = fetchUrls.filter((url) =>
+          url.includes("/api/v1/sidebar-bootstrap"),
+        );
+        expect(sidebarBootstrapCalls).toHaveLength(1);
+        expect(
+          new URL(sidebarBootstrapCalls[0]!).searchParams.get("cursor"),
+        ).toBeNull();
+        expect(
+          queryClient.getQueryData(sidebarNavigationQueryKey()),
+        ).toBeUndefined();
+      },
+    );
+  },
+);

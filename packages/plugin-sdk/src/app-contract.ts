@@ -1604,6 +1604,16 @@ export interface PluginSidebarThreadsState {
     isFetchNextPageError: boolean;
     fetchNextPage(): Promise<void>;
     projectCounts?: Readonly<Record<string, number>>;
+    childCounts?: Readonly<Record<string, number>>;
+    unreadTree?: readonly {
+      id: string;
+      parentThreadId: string | null;
+      projectId?: string;
+      sectionId?: string | null;
+      status?: string;
+      lastReadAt: number | null;
+      latestAttentionAt: number;
+    }[];
   };
   status: "loading" | "ready" | "error";
   threads: readonly PluginSidebarThread[];
