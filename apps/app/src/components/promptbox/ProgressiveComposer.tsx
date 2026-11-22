@@ -493,7 +493,7 @@ export function ProgressiveComposer({
                           "Ask anything. @ to mention files, folders, or sections"
                         }
                         rows={1}
-                        className="block w-full resize-none border-0 bg-transparent p-0 leading-[1.7] outline-none placeholder:font-light placeholder:text-subtle-foreground"
+                        className="block w-full max-md:min-h-11 resize-none border-0 bg-transparent p-0 leading-[1.7] outline-none placeholder:font-light placeholder:text-subtle-foreground"
                         disabled={api.inputLocked}
                         onChange={(event) => commit(event.target.value)}
                         onCompositionStart={() => {

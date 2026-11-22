@@ -4,6 +4,7 @@ import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { Slot } from "@radix-ui/react-slot";
 
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { useResponsiveDrawerRealization } from "@bb/shared-ui/responsive-overlay";
 import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Button } from "@bb/shared-ui/button";
@@ -484,11 +485,12 @@ const SidebarProvider = React.forwardRef<
       React.useState(false);
     const [isMobileSidebarClosing, setIsMobileSidebarClosing] =
       React.useState(false);
-    const [hasRealizedMobileSidebar, setHasRealizedMobileSidebar] =
-      React.useState(false);
-    const realizeMobileSidebar = React.useCallback(() => {
-      setHasRealizedMobileSidebar(true);
-    }, []);
+    const [openingMobileSidebar, setOpeningMobileSidebar] = React.useState(false);
+    const { isContentRealized: isMobileSidebarRealized, realizeContent: realizeMobileSidebar } =
+      useResponsiveDrawerRealization({
+        open: openingMobileSidebar || openMobile,
+        enabled: isCompactViewport,
+      });
     const mobileSettleTimeoutRef = React.useRef<number | null>(null);
 
     const clearMobileSettleTimeout = React.useCallback(() => {
@@ -543,9 +545,7 @@ const SidebarProvider = React.forwardRef<
         return;
       }
 
-      React.startTransition(() => {
-        realizeMobileSidebar();
-      });
+      setOpeningMobileSidebar(true);
       applySidebarMobileDragStyles({ progress: 1, settling: true });
       mobileSettleTimeoutRef.current = window.setTimeout(() => {
         mobileSettleTimeoutRef.current = null;
@@ -553,10 +553,11 @@ const SidebarProvider = React.forwardRef<
           setSuppressMobileOpenAnimation(true);
           setSuppressMobileCloseAnimation(false);
           setOpenMobile(true);
+          setOpeningMobileSidebar(false);
         });
         clearSidebarMobileDragAttributes();
       }, SIDEBAR_MOBILE_DRAG_SETTLE_MS);
-    }, [realizeMobileSidebar]);
+    }, []);
 
     React.useEffect(
       () => () => {
@@ -565,17 +566,12 @@ const SidebarProvider = React.forwardRef<
       [clearMobileSettleTimeout],
     );
 
-    if (isCompactViewport && openMobile && !hasRealizedMobileSidebar) {
-      setHasRealizedMobileSidebar(true);
-    }
-    const isMobileSidebarRealized =
-      isCompactViewport && hasRealizedMobileSidebar;
     React.useEffect(() => {
-      if (!isCompactViewport || hasRealizedMobileSidebar) {
+      if (!isCompactViewport || isMobileSidebarRealized || openingMobileSidebar || openMobile) {
         return;
       }
       return scheduleSidebarMobileRealization(realizeMobileSidebar);
-    }, [hasRealizedMobileSidebar, isCompactViewport, realizeMobileSidebar]);
+    }, [isMobileSidebarRealized, isCompactViewport, openingMobileSidebar, openMobile, realizeMobileSidebar]);
 
     const [animationOpenMobile, setAnimationOpenMobile] =
       React.useState(openMobile);
@@ -1076,7 +1072,7 @@ const SidebarMobilePanel = React.forwardRef<
           data-testid="sidebar-mobile-backdrop"
           data-state={open ? "open" : "closed"}
           className={cn(
-            "fixed inset-0 z-40 bg-transparent will-change-[opacity,translate]",
+            "fixed inset-0 z-40 bg-black/40 will-change-[opacity,translate]",
             "data-[state=open]:translate-x-(--sidebar-width-mobile)",
             SIDEBAR_MOBILE_BACKDROP_TRANSITION_CLASS,
             "data-[state=closed]:pointer-events-none data-[state=closed]:opacity-0",

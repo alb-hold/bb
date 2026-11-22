@@ -1,3 +1,9 @@
+@media (width < 48rem) {
+  [data-promptbox] {
+    --compact-editor-target: 44px;
+  }
+}
+
 @layer components {
   .ProseMirror ::selection {
     background-color: var(--surface-selected);
@@ -10,8 +16,8 @@
 
   [data-promptbox-compact-content] .ProseMirror[contenteditable] {
     width: 100%;
-    min-height: 0 !important;
-    max-height: 1.7em;
+    min-height: var(--compact-editor-target, 0px) !important;
+    max-height: max(1.7em, var(--compact-editor-target, 0px));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap !important;
@@ -142,8 +148,8 @@
     [data-promptbox-editor-content]
     .ProseMirror[contenteditable] {
     width: 100%;
-    min-height: 0 !important;
-    max-height: 1.7em;
+    min-height: var(--compact-editor-target, 0px) !important;
+    max-height: max(1.7em, var(--compact-editor-target, 0px));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap !important;

@@ -599,6 +599,22 @@ function useThreadSplitMiniMap(
   }, [layout, threadId]);
 }
 
+function PhoneBranchLabel({ branch }: { branch: string }) {
+  const suffix = branch.match(/(?:thr_[^-/:]+|[^-/:]+)$/u)?.[0] ?? branch;
+  const tail = Array.from(suffix).slice(-14).join("");
+  const head = branch.slice(0, branch.length - tail.length);
+  return (
+    <span
+      data-sidebar-thread-phone-context=""
+      title={branch}
+      className="flex min-w-0 max-w-full whitespace-nowrap md:hidden"
+    >
+      <span className="min-w-0 truncate">{head}</span>
+      <span className="shrink-0">{tail}</span>
+    </span>
+  );
+}
+
 function ThreadRowComponent({
   thread,
   crossProjectId,
@@ -1082,7 +1098,7 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex max-md:flex max-md:flex-col max-md:items-start",
+                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex max-md:flex max-md:flex-col max-md:items-stretch max-md:[&_[data-thread-row-project]]:shrink",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}
@@ -1092,12 +1108,7 @@ function ThreadRowComponent({
                     age={<InfoRowTime timestamp={thread.updatedAt} />}
                   />
                   {phoneBranch !== null ? (
-                    <span
-                      data-sidebar-thread-phone-context=""
-                      className="min-w-0 max-w-full whitespace-normal break-all md:hidden"
-                    >
-                      {phoneBranch}
-                    </span>
+                    <PhoneBranchLabel branch={phoneBranch} />
                   ) : null}
                 </span>
               </span>

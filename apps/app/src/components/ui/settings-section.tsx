@@ -46,7 +46,7 @@ export function SettingsSection({
             </h2>
           </div>
           {description ? (
-            <p className="mt-0.5 text-xs leading-snug text-subtle-foreground/75">
+            <p className="mt-0.5 text-xs leading-snug text-settings-help">
               {description}
             </p>
           ) : null}
@@ -171,7 +171,7 @@ export function SettingsWithControl({
             {labelBadge ? <SettingsBadge>{labelBadge}</SettingsBadge> : null}
           </div>
           {description ? (
-            <p className="mt-0.5 text-xs leading-snug text-subtle-foreground/75">
+            <p className="mt-0.5 text-xs leading-snug text-settings-help">
               {description}
             </p>
           ) : null}

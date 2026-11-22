@@ -747,7 +747,7 @@ describe("ThreadRow", () => {
           experimental_nativeTerminal: nativeTerminal,
           environment: makeSidebarEnvironment({
             name: null,
-            branchName: `fix/phone-identical-prefix-timeout-${branch}`,
+            branchName: `bb/serves-p3-identical-prefix-thr_${branch}`,
             isWorktree: true,
           }),
         }),
@@ -760,8 +760,13 @@ describe("ThreadRow", () => {
       });
       for (const branch of ["alpha", "beta"]) {
         const link = screen.getByRole("link", {
-          name: `Open Investigate timeout · Atlas · fix/phone-identical-prefix-timeout-${branch}`,
+          name: `Open Investigate timeout · Atlas · bb/serves-p3-identical-prefix-thr_${branch}`,
         });
+        const context = screen.getByTitle(`bb/serves-p3-identical-prefix-thr_${branch}`);
+        expect(context.lastElementChild?.textContent).toBe(`thr_${branch}`);
+        expect(context.lastElementChild?.classList.contains("shrink-0")).toBe(true);
+        expect(context.firstElementChild?.classList.contains("truncate")).toBe(true);
+        expect(context.textContent).toBe(context.title);
         expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
       }
     },

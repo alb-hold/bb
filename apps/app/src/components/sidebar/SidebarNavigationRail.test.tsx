@@ -405,8 +405,8 @@ describe("Rail", () => {
       "Home",
       "Plugins",
       "Skills",
-      "Docs",
       "More",
+      "Docs",
       "Settings",
     ]);
     expect(currentRailLabels()).toEqual([]);
@@ -479,8 +479,8 @@ describe("Rail", () => {
     renderRail(THREAD_PATH);
     const remembered = railButton("Demo board");
     const initialLabels = railLabels();
-    expect(initialLabels.indexOf("Demo board")).toBeLessThan(initialLabels.indexOf("More"));
-    expect(initialLabels.indexOf("Demo notes")).toBeLessThan(initialLabels.indexOf("More"));
+    expect(initialLabels.indexOf("Demo board")).toBeGreaterThan(initialLabels.indexOf("More"));
+    expect(initialLabels.indexOf("Demo notes")).toBeGreaterThan(initialLabels.indexOf("More"));
 
     act(() => {
       setPluginSlotRegistrations(
@@ -1038,8 +1038,8 @@ describe("Rail", () => {
     expect(railLabels()).toEqual([
       "Home",
       "Plugins",
-      "Docs",
       "More",
+      "Docs",
       "Settings",
     ]);
     fireEvent.click(
@@ -1049,8 +1049,8 @@ describe("Rail", () => {
       "Home",
       "Search threads",
       "Plugins",
-      "Docs",
       "More",
+      "Docs",
       "Settings",
     ]);
 
