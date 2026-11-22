@@ -1474,10 +1474,13 @@ describe("public terminal routes", () => {
         );
       const renderBurst = async () => {
         expect(observed()).toEqual([]);
-        await output(2, "\x1b[?2026hintermediate");
+        await output(2, "\x1b[31m");
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
-        await output(3, "complete\x1b[?2026l");
+        await output(3, "\x1b[?2026hvisible");
+        await service.readTerminalPromptScreen(stored.id);
+        expect(observed()).toEqual([]);
+        await output(4, "\x1b[?2026l");
         await service.readTerminalPromptScreen(stored.id);
       };
       if (early) {
@@ -1509,6 +1512,8 @@ describe("public terminal routes", () => {
       );
 
       if (!early) await renderBurst();
+      await output(5, "next");
+      await service.readTerminalPromptScreen(stored.id);
       expect(
         readBrowserMessages(detachedSocket).some(
           (message) =>
@@ -1520,7 +1525,7 @@ describe("public terminal routes", () => {
         expect(observed()).toEqual([
           {
             terminalId: stored.id,
-            seq: 3,
+            seq: 4,
             at: expect.any(Number),
             provenance: "live",
           },

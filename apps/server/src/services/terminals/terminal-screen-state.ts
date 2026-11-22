@@ -269,6 +269,23 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
+function visibleFrameContent(terminal: HeadlessTerminal): string {
+  const buffer = terminal.buffer.active;
+  const cell = buffer.getNullCell();
+  const parts: string[] = [];
+  for (let row = 0; row < terminal.rows; row++) {
+    const line = buffer.getLine(buffer.baseY + row);
+    if (!line?.translateToString(true).trim()) continue;
+    for (let col = 0; col < terminal.cols; col++) {
+      line.getCell(col, cell);
+      const chars = cell.getChars();
+      if (!cell.isInvisible() && chars.trim())
+        parts.push(`${row},${col}${cellSgr(cell)}${chars}`);
+    }
+  }
+  return parts.join("");
+}
+
 function* serializeScreenRows(
   terminal: HeadlessTerminal,
   history = false,
@@ -423,6 +440,7 @@ export class TerminalScreenState {
   private readonly replayMetadata = new Map<number, string>();
   private replayCursorStyle = "";
   private replayBatchBytes = 8 * 1024;
+  private frameBaseline?: string;
 
   constructor(
     cols: number,
@@ -697,26 +715,20 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
+                const rendered = next.kind === "base64" && next.rendered;
+                if (rendered)
+                  this.frameBaseline ??= visibleFrameContent(this.terminal);
+                else this.frameBaseline = undefined;
                 this.terminal.write(data, () => {
                   if (
-                    next.kind === "base64" &&
-                    next.rendered &&
+                    rendered &&
                     !this.disposed &&
                     !this.terminal.modes.synchronizedOutputMode &&
                     isTerminalReplaySafeBoundary(this.parserState)
                   ) {
-                    const buffer = this.terminal.buffer.active;
-                    for (let row = 0; row < this.rows; row++) {
-                      if (
-                        buffer
-                          .getLine(buffer.baseY + row)
-                          ?.translateToString(true)
-                          .trim()
-                      ) {
-                        next.rendered();
-                        break;
-                      }
-                    }
+                    const current = visibleFrameContent(this.terminal);
+                    if (current && current !== this.frameBaseline) rendered();
+                    this.frameBaseline = undefined;
                   }
                   const elapsed = performance.now() - started;
                   if (elapsed > 8)
