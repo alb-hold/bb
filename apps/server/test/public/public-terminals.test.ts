@@ -1474,10 +1474,10 @@ describe("public terminal routes", () => {
         );
       const renderBurst = async () => {
         expect(observed()).toEqual([]);
-        await output(2, "\x1b[31m");
+        await output(2, "\x1b[31m\x1b[?5h\x1b]10;#ff0000\x07");
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
-        await output(3, "\x1b[?2026hvisible");
+        await output(3, "\x1b[?2026h\r   \x1b[7mfirst");
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
         await output(4, "\x1b[?2026l");
