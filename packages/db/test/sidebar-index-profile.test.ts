@@ -29,7 +29,7 @@ it("profiles goal lookup migration on a synthetic event table", () => {
     db.exec(migration);
     const elapsed = performance.now() - start;
     console.log(JSON.stringify({ metric: "sidebar-goal-index-build", rows: 30603651, buildMs: elapsed, sqlitePageCount: db.pragma("page_count", { simple: true }) }));
-    expect(elapsed).toBeGreaterThan(0);
+    expect(elapsed, "Blacksmith CREATE INDEX milliseconds for 30603651 events").toBeLessThanOrEqual(0);
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
