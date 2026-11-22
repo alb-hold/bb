@@ -1,3 +1,4 @@
+import { settledWithin } from "../services/plugins/plugin-time-box.js";
 import {
   cleanupEnvironment,
   recoverEnvironmentCleanup,
@@ -95,15 +96,20 @@ export function registerEnvironmentRoutes(
         "teardown_refused",
         "Environment still has live threads",
       );
-    if (query?.recover === "true") {
-      await recoverEnvironmentCleanup(deps, environment.id);
-    } else if (!(await cleanupEnvironment(deps, environment.id)))
+    const removal = query?.recover === "true"
+      ? recoverEnvironmentCleanup(deps, environment.id).then(() => true)
+      : cleanupEnvironment(deps, environment.id);
+    if (!(await settledWithin(removal, 5_000)))
+      throw new ApiError(409, "teardown_running", "Cleanup is still running. Check the environment for the final outcome.");
+    if (!(await removal))
       throw new ApiError(
         409,
         "teardown_refused",
         "Environment is not provider-managed",
       );
     const settled = requireEnvironment(deps.db, environment.id);
+    if (settled.teardownStatus === "running" || (settled.teardownStatus === null && settled.retireAt !== null))
+      throw new ApiError(409, "teardown_running", "Environment cleanup is pending.");
     if (settled.teardownStatus !== "removed")
       throw new ApiError(
         409,

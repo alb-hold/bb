@@ -1738,6 +1738,58 @@ describe("core environment orchestration", () => {
       });
     }));
 
+  it("returns a pending outcome while a slow removal continues", async () =>
+    withTestHarness(async (harness) => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const remove = vi.fn(async () => {
+        await gate;
+        return { status: "removed" as const };
+      });
+      const fixture = setup(harness, { remove });
+      fixture.ask();
+      await fixture.settled();
+      const id = fixture.attach();
+      try {
+        const response = await harness.app.request(`/api/v1/environments/${id}/cleanup`, { method: "POST" });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: "teardown_running" });
+        expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("running");
+      } finally {
+        release();
+        await sweepProviderEnvironment(harness.deps, id);
+      }
+      expect(remove).toHaveBeenCalledOnce();
+      expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+    }));
+
+  it("reports a thrown provider lookup and retries after backoff", async () =>
+    withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const fixture = setup(harness);
+      fixture.ask();
+      await fixture.settled();
+      const id = fixture.attach();
+      const lookup = vi.fn(() => fixture.record).mockImplementationOnce(() => {
+        throw new Error("Provider lookup interrupted");
+      });
+      setPluginEnvironmentProviderBridge({
+        listEnvironmentProviders: () => [fixture.record],
+        getEnvironmentProvider: lookup,
+        invokeProvider: async (_record, _label, run) => ({ ok: true, value: await run() }),
+        decisionTimeoutMs: 10_000,
+      });
+      const response = await harness.app.request(`/api/v1/environments/${id}/cleanup`, { method: "POST" });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: "teardown_failed", message: "Provider lookup interrupted" });
+      expect(getEnvironment(harness.db, id)).toMatchObject({
+        teardownStatus: "failed", teardownAttempt: 1, retireAt: Date.now() + 60_000,
+      });
+      vi.setSystemTime(Date.now() + 60_001);
+      await sweepProviderLifecycles(harness.deps);
+      expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+    }));
+
   it("reports an unpublished worktree base through the cleanup CLI", async () => {
     const harness = await startTestServer();
     const root = await mkdtemp(join(tmpdir(), "bb-cleanup-"));

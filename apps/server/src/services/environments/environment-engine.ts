@@ -1083,6 +1083,23 @@ async function sweepProviderEnvironmentInSlot(
   }
 }
 
+async function runExplicitCleanupAttempt(
+  deps: Deps,
+  environmentId: string,
+  attempt: number,
+  sweep: () => Promise<void>,
+): Promise<void> {
+  try {
+    await sweep();
+  } catch (error) {
+    const current = getEnvironment(deps.db, environmentId);
+    if (!current || current.teardownStatus === "removed") return;
+    if (current.teardownAttempt === attempt)
+      writeEnvironment(deps, environmentId, { teardownAttempt: attempt + 1 });
+    writeEnvironmentTeardownFailure(deps, environmentId, errorMessage(error));
+  }
+}
+
 export async function cleanupEnvironment(
   deps: Deps,
   environmentId: string,
@@ -1105,7 +1122,9 @@ export async function cleanupEnvironment(
         : `Needs recovery. Inspect the workspace, then run bb environment cleanup ${environmentId} --recover.`,
     );
   writeEnvironment(deps, environmentId, { retireAt: Date.now() });
-  await sweepProviderEnvironment(deps, environmentId);
+  await runExplicitCleanupAttempt(deps, environmentId, row.teardownAttempt, () =>
+    sweepProviderEnvironment(deps, environmentId),
+  );
   return true;
 }
 
@@ -1117,7 +1136,7 @@ export async function recoverEnvironmentCleanup(
   if (map.has(environmentId))
     throw new ApiError(
       409,
-      "teardown_refused",
+      "teardown_running",
       "Environment cleanup is still running",
     );
   await runTrackedOperation({
@@ -1238,7 +1257,9 @@ export async function recoverEnvironmentCleanup(
             teardownMessage: null,
           });
         });
-        await sweepProviderEnvironmentInSlot(deps, environmentId, signal);
+        await runExplicitCleanupAttempt(deps, environmentId, 0, () =>
+          sweepProviderEnvironmentInSlot(deps, environmentId, signal),
+        );
       });
     },
   }).done;
