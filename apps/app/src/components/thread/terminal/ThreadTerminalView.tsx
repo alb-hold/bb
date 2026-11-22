@@ -3879,7 +3879,7 @@ export function ThreadTerminalView({
         await withAsyncCatchAndFinally(async () => {
           const outputPromise = sdk.terminals.output({
             terminalId: sessionRef.current.id,
-            ...(retainNativeOutput ? {} : { tailBytes: 64 * 1024 }),
+            tailBytes: 64 * 1024,
           });
           lifecycle.retainedReplayTimeout = setTimeout(() => {
             lifecycle.retainedReplayTimeout = null;

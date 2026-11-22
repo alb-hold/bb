@@ -4684,7 +4684,9 @@ describe("terminal first paint", () => {
     const surface = document.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
     )!;
-    expect(testState.output.mock.calls[0]?.[0]).not.toHaveProperty("tailBytes");
+    expect(testState.output.mock.calls[0]?.[0]).toMatchObject({
+      tailBytes: 64 * 1024,
+    });
     expect(surface.style.opacity).toBe("0");
     await act(async () => {
       finishOutput({
