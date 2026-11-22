@@ -1,5 +1,8 @@
 import { terminalCreateTargetSchema } from "./terminal-create-target.js";
-export { terminalCreateTargetSchema, type TerminalCreateTarget } from "./terminal-create-target.js";
+export {
+  terminalCreateTargetSchema,
+  type TerminalCreateTarget,
+} from "./terminal-create-target.js";
 import { z } from "zod";
 import {
   TERMINAL_DATA_MAX_BASE64_LENGTH,
@@ -24,6 +27,13 @@ export const terminalSessionIdSchema = z
     ),
   );
 
+const liveFrameSchema = z.object({
+  terminalId: terminalSessionIdSchema,
+  seq: z.number().int().nonnegative(),
+  at: z.number().int().nonnegative(),
+  provenance: z.literal("live"),
+});
+
 export const terminalSessionSchema = z.object({
   id: z.string().min(1),
   threadId: z.string().min(1).nullable(),
@@ -39,6 +49,8 @@ export const terminalSessionSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   lastUserInputAt: z.number().int().nonnegative().nullable(),
+  firstLiveFrame: liveFrameSchema.optional(),
+  attachLiveFrame: liveFrameSchema.optional(),
   attention: z
     .object({
       at: z.number().int().nonnegative(),

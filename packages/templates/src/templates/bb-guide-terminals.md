@@ -110,6 +110,7 @@ and never copy or open anything until the user taps the offered action.
 
   bb terminal show <terminal-id>
   bb terminal attach <terminal-id>        Ctrl-B d detaches
+    --report-timing                       Write the first live frame after attach to stderr as JSON
   bb terminal send <terminal-id> --text <text> [--enter]
     --stdin                               Read bytes from stdin instead of --text
   bb terminal resize <terminal-id> --cols <n> --rows <n>

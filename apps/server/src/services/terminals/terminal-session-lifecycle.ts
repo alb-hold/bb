@@ -28,6 +28,7 @@ import {
   takePendingTerminalDaemonClose,
   getSessionById,
   getTerminalSession,
+  recordFirstTerminalFrame,
   HOST_RETAINED_OUTPUT_BYTES,
   getRetainedTerminalOutput,
   countTerminalSessions,
@@ -1115,7 +1116,11 @@ export class TerminalSessionLifecycle {
         rebuild.bufferedBytes = 0;
         for (const chunk of buffered) {
           if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
-          state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
+          state.pushBase64(
+            chunk.seq,
+            chunk.dataBase64,
+            this.frameCallback(session, chunk.seq),
+          );
           rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
           await yieldToEventLoop();
         }
@@ -1299,6 +1304,13 @@ export class TerminalSessionLifecycle {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastUserInputAt: row.lastUserInputAt,
+      ...(row.firstLiveFrame && {
+        firstLiveFrame: {
+          ...row.firstLiveFrame,
+          terminalId: row.id,
+          provenance: "live" as const,
+        },
+      }),
       attention:
         attention === null || attention.clearedAt !== null
           ? null
@@ -2307,6 +2319,45 @@ export class TerminalSessionLifecycle {
     };
   }
 
+  private readonly frameObservers = new Map<
+    string,
+    Map<TerminalClientSocket, number>
+  >();
+
+  private frameCallback(session: TerminalSessionRow, seq: number) {
+    if (session.firstLiveFrame && !this.frameObservers.has(session.id))
+      return undefined;
+    return () => {
+      const frame = {
+        terminalId: session.id,
+        seq,
+        at: Date.now(),
+        provenance: "live" as const,
+      };
+      if (!session.firstLiveFrame)
+        recordFirstTerminalFrame(this.options.db, session.id, {
+          seq,
+          at: frame.at,
+        });
+      const observers = this.frameObservers.get(session.id);
+      if (!observers) return;
+      for (const [socket, nextSeq] of observers) {
+        if (seq < nextSeq) continue;
+        observers.delete(socket);
+        const current = getTerminalById(this.options.db, session.id);
+        if (current)
+          this.options.hub.sendTerminalSocketMessage(socket, {
+            type: "session-updated",
+            session: {
+              ...this.toTerminalSession(current),
+              attachLiveFrame: frame,
+            },
+          });
+      }
+      if (!observers.size) this.frameObservers.delete(session.id);
+    };
+  }
+
   private retainTerminalOutput(
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
@@ -2319,6 +2370,7 @@ export class TerminalSessionLifecycle {
         session.rows,
         chunk.seq,
         chunk.dataBase64,
+        this.frameCallback(session, chunk.seq),
       );
     } else if (!rebuild.cancelled) {
       const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
@@ -3384,6 +3436,9 @@ export class TerminalSessionLifecycle {
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
+    const observers = this.frameObservers.get(args.terminalId);
+    observers?.delete(args.socket);
+    if (!observers?.size) this.frameObservers.delete(args.terminalId);
     this.outputFlow.removeClient(args.terminalId, args.socket);
     if (!this.options.hub.hasTerminalClients(args.terminalId)) {
       this.forwardedNextSeqByTerminalId.delete(args.terminalId);
@@ -4967,6 +5022,11 @@ export class TerminalSessionLifecycle {
       current.id,
       pending.socket,
     );
+    const observers =
+      this.frameObservers.get(current.id) ??
+      new Map<TerminalClientSocket, number>();
+    observers.set(pending.socket, message.nextSeq);
+    this.frameObservers.set(current.id, observers);
     this.addOutputFlowClient(current.id, pending.socket, message.nextSeq);
     this.setForwardedNextSeq(
       current.id,

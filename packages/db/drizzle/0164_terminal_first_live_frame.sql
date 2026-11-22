@@ -1,0 +1,1 @@
+ALTER TABLE `terminal_sessions` ADD `first_live_frame` text;

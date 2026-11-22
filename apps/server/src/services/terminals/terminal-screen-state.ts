@@ -400,7 +400,7 @@ async function serializeHistory(terminal: HeadlessTerminal, maxBytes: number) {
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
-    | { kind: "base64"; data: string }
+    | { kind: "base64"; data: string; rendered?: () => void }
     | { kind: "bytes"; data: Uint8Array }
     | { kind: "resize"; cols: number; rows: number }
     | { kind: "read"; read: () => void }
@@ -465,14 +465,14 @@ export class TerminalScreenState {
     this.enqueue({ kind: "bytes", data });
   }
 
-  pushBase64(seq: number, data: string): void {
+  pushBase64(seq: number, data: string, rendered?: () => void): void {
     if (this.disposed || !this.valid || seq < this.nextSeq) return;
     if (seq !== this.nextSeq) {
       this.invalidate();
       return;
     }
     this.nextSeq += 1;
-    this.enqueue({ kind: "base64", data });
+    this.enqueue({ kind: "base64", data, rendered });
   }
 
   private trackPartialSequence(data: Uint8Array): void {
@@ -603,7 +603,7 @@ export class TerminalScreenState {
 
   private enqueue(
     work:
-      | { kind: "base64"; data: string }
+      | { kind: "base64"; data: string; rendered?: () => void }
       | { kind: "bytes"; data: Uint8Array }
       | { kind: "resize"; cols: number; rows: number }
       | { kind: "read"; read: () => void },
@@ -661,10 +661,14 @@ export class TerminalScreenState {
                     : next.data;
                 const batch = [data];
                 let bytes = data.byteLength;
-                while (this.pendingWork.length > 0) {
+                while (
+                  this.pendingWork.length > 0 &&
+                  !(next.kind === "base64" && next.rendered)
+                ) {
                   const queued = this.pendingWork[0];
                   if (
                     !queued ||
+                    (queued.kind === "base64" && queued.rendered) ||
                     queued.kind === "resize" ||
                     queued.kind === "read"
                   )
@@ -694,6 +698,26 @@ export class TerminalScreenState {
                   return;
                 }
                 this.terminal.write(data, () => {
+                  if (
+                    next.kind === "base64" &&
+                    next.rendered &&
+                    !this.disposed &&
+                    !this.terminal.modes.synchronizedOutputMode &&
+                    isTerminalReplaySafeBoundary(this.parserState)
+                  ) {
+                    const buffer = this.terminal.buffer.active;
+                    for (let row = 0; row < this.rows; row++) {
+                      if (
+                        buffer
+                          .getLine(buffer.baseY + row)
+                          ?.translateToString(true)
+                          .trim()
+                      ) {
+                        next.rendered();
+                        break;
+                      }
+                    }
+                  }
                   const elapsed = performance.now() - started;
                   if (elapsed > 8)
                     this.replayBatchBytes = Math.max(
@@ -866,6 +890,7 @@ export class TerminalScreenStateCache {
     rows: number,
     seq: number,
     data: string,
+    rendered?: () => void,
   ): void {
     let state = this.states.get(terminalId);
     if (state === undefined) {
@@ -874,7 +899,7 @@ export class TerminalScreenStateCache {
       this.states.set(terminalId, state);
     }
     state.resize(cols, rows);
-    state.pushBase64(seq, data);
+    state.pushBase64(seq, data, rendered);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {

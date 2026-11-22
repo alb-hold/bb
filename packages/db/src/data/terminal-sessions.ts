@@ -410,6 +410,22 @@ export function getTerminalSession(
   return row === undefined ? null : (withHolderBacked(db, [row])[0] ?? null);
 }
 
+export function recordFirstTerminalFrame(
+  db: TerminalSessionConnection,
+  terminalId: string,
+  frame: { seq: number; at: number },
+): void {
+  db.update(terminalSessions)
+    .set({ firstLiveFrame: frame })
+    .where(
+      and(
+        eq(terminalSessions.id, terminalId),
+        isNull(terminalSessions.firstLiveFrame),
+      ),
+    )
+    .run();
+}
+
 export function updateTerminalSession(
   db: TerminalSessionConnection,
   args: UpdateTerminalSessionArgs,

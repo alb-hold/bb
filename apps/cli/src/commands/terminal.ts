@@ -770,21 +770,28 @@ export function registerTerminalCommands(
   terminal
     .command("attach <terminalId>")
     .description("Attach to a running terminal session")
+    .option("--report-timing", "Print the first live frame as JSON on stderr")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: TerminalJsonOptions) => {
-        if (opts.json) {
-          const session = await createCliBbSdk(getUrl()).terminals.get({
+      action(
+        async (
+          terminalId: string,
+          opts: TerminalJsonOptions & { reportTiming?: boolean },
+        ) => {
+          if (opts.json) {
+            const session = await createCliBbSdk(getUrl()).terminals.get({
+              terminalId,
+            });
+            outputJson(opts, session);
+            return;
+          }
+          await attachTerminal({
+            baseUrl: getUrl(),
+            reportTiming: opts.reportTiming,
             terminalId,
           });
-          outputJson(opts, session);
-          return;
-        }
-        await attachTerminal({
-          baseUrl: getUrl(),
-          terminalId,
-        });
-      }),
+        },
+      ),
     );
 
   terminal
@@ -1005,11 +1012,13 @@ export function registerTerminalCommands(
         const sdk = createCliBbSdk(getUrl());
         const plan = await resolveTerminalWaitPlan({ opts, sdk, terminalId });
         const report = await observeTerminal({ plan, sdk, terminalId });
-        const matched = report.result.observation === "matched"
-          ? opts.contains ?? opts.regex
-          : report.condition === null && report.result.observation === "exited"
-            ? "exit"
-            : undefined;
+        const matched =
+          report.result.observation === "matched"
+            ? (opts.contains ?? opts.regex)
+            : report.condition === null &&
+                report.result.observation === "exited"
+              ? "exit"
+              : undefined;
         reportTerminalObservation({
           json: opts.json === true,
           report,
@@ -1343,6 +1352,7 @@ function terminalWebsocketUrl(args: {
 }
 
 export async function attachTerminal(args: {
+  reportTiming?: boolean;
   baseUrl: string;
   terminalId: string;
 }): Promise<void> {
@@ -1380,6 +1390,13 @@ export async function attachTerminal(args: {
       },
       onMessage: (message) => {
         switch (message.type) {
+          case "session-updated":
+            if (args.reportTiming && message.session.attachLiveFrame) {
+              process.stderr.write(
+                JSON.stringify(message.session.attachLiveFrame) + "\n",
+              );
+            }
+            return;
           case "output":
             process.stdout.write(
               Buffer.from(message.chunk.dataBase64, "base64"),
