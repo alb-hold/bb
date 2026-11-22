@@ -3928,12 +3928,14 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
-  it("lists an exited terminal with all of its queued output without a separate flush", async () => {
+  it.each([false, true])("lists a failed terminal with its retained tail (overflow: %s)", async (overflow) => {
     const fixture = await setup();
-    const chunks = [
-      ...outputChunks(),
-      { seq: outputChunks().length, dataBase64: Buffer.alloc(64 * 1024, 65).toString("base64") },
-    ];
+    const prefix = outputChunks();
+    const tail = {
+      seq: prefix.length,
+      dataBase64: Buffer.alloc(TERMINAL_RETAINED_OUTPUT_BYTES, 65).toString("base64"),
+    };
+    const chunks = overflow ? [...prefix, tail] : prefix;
     for (const chunk of chunks) {
       fixture.daemonSocket.receive({
         type: "terminal.output",
@@ -3964,7 +3966,7 @@ describe("terminal output retained from the data plane", () => {
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
       }),
-    ).toEqual(chunks);
+    ).toEqual(overflow ? [tail] : prefix);
     fixture.child.shutdown();
   });
 
