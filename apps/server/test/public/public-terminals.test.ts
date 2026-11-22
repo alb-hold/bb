@@ -1518,11 +1518,18 @@ describe("public terminal routes", () => {
         type: "terminal.replay",
         requestId: attachMessage.requestId,
         terminalId: stored.id,
-        chunks: [],
+        chunks: [
+          { seq: 0, dataBase64: Buffer.from("retained").toString("base64") },
+        ],
         replayStartSeq: 0,
-        nextSeq: 0,
+        nextSeq: 1,
       },
     });
+    expect(
+      fixture.harness.deps.terminalSessions.getTerminal({
+        terminalId: stored.id,
+      }).firstLiveFrame,
+    ).toBeUndefined();
     expect(readBrowserMessages(browserSocket)).toContainEqual(
       expect.objectContaining({
         type: "attached",

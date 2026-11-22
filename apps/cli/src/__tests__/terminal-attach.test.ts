@@ -114,6 +114,69 @@ describe("terminal attach", () => {
     expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { reportTiming: true, serverTiming: false },
+    { reportTiming: false, serverTiming: true },
+    { reportTiming: true, serverTiming: true },
+  ])(
+    "reports a frame only when requested and supplied ($reportTiming, $serverTiming)",
+    async ({ reportTiming, serverTiming }) => {
+      prepareInteractiveTerminal();
+      const terminalId = "term_jrmcc9gspm";
+      const frame = { terminalId, seq: 2, at: 1234, provenance: "live" };
+      const session = {
+        id: terminalId,
+        threadId: null,
+        environmentId: null,
+        hostId: "host",
+        title: "Terminal",
+        initialCwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        status: "running",
+        exitCode: null,
+        closeReason: null,
+        createdAt: 1,
+        updatedAt: 2,
+        lastUserInputAt: null,
+      };
+      const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      const attached = attachTerminal({
+        baseUrl: "http://localhost:3001",
+        terminalId,
+        reportTiming,
+      });
+      try {
+        openSocket();
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "attached",
+            session,
+            replayStartSeq: 0,
+            nextSeq: 2,
+          }),
+        });
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "session-updated",
+            session: {
+              ...session,
+              ...(serverTiming ? { attachLiveFrame: frame } : {}),
+            },
+          }),
+        });
+        if (reportTiming && serverTiming)
+          expect(stderr).toHaveBeenCalledWith(JSON.stringify(frame) + "\n");
+        else expect(stderr).not.toHaveBeenCalled();
+        expect(stdout).not.toHaveBeenCalled();
+      } finally {
+        socket.onclose?.();
+        await attached;
+      }
+    },
+  );
+
   it.each([false, true])(
     "claims the terminal size immediately before delivering CLI input (queued=%s)",
     async (queued) => {
