@@ -1797,6 +1797,7 @@ describe("core environment orchestration", () => {
             path,
             rootPath: root,
           });
+          if (identity.status === "missing") return { status: "removed" };
           if (identity.status !== "identified")
             throw new Error(identity.status);
           const reasons = await preservation.findPreservationReasons(
@@ -1873,16 +1874,13 @@ describe("core environment orchestration", () => {
           },
         });
       }
-      await run("git", [
-        "-C",
-        source,
-        "update-ref",
-        "refs/remotes/origin/main",
-        sha.trim(),
-      ]);
-      const success = await cleanup("--recover");
-      expect(success.code).toBe(0);
-      expect(JSON.parse(success.stdout)).toEqual({ ok: true });
+      await run("git", ["-C", source, "worktree", "remove", path]);
+      for (const flags of [["--recover"], []]) {
+        const success = await cleanup(...flags);
+        expect(success.code, success.stdout).toBe(0);
+        expect(JSON.parse(success.stdout)).toEqual({ ok: true });
+        expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+      }
     } finally {
       await harness.close();
       await rm(root, { recursive: true, force: true });
