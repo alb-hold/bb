@@ -25,6 +25,7 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import {
   ARCHIVED_THREADS_LIST_KIND,
+  SIDEBAR_SELECTED_THREAD_TARGET_KIND,
   allThreadDetailBootstrapQueryKeyPrefix,
   allThreadQueryKeyPrefix,
   sidebarNavigationQueryKey,
@@ -156,6 +157,7 @@ const THREAD_LISTS: ViewFamily = {
   membership(queryKey) {
     const scope = queryKey[1];
     if (scope === ARCHIVED_THREADS_LIST_KIND) return "archived";
+    if (scope === SIDEBAR_SELECTED_THREAD_TARGET_KIND) return "active";
     if (isRecord(scope) && typeof scope.archived === "boolean")
       return scope.archived ? "archived" : "active";
     return "any";

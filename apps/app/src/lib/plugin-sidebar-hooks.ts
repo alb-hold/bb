@@ -47,8 +47,11 @@ import { useArchivedThreads } from "@/hooks/queries/thread-queries";
 import {
   useSidebarNavigation,
   useSidebarNavigationPaging,
-  useSidebarNavigationPreview,
 } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSelectedSidebarThreadId,
+  useSidebarNavigationPreviewWithSelected,
+} from "@/hooks/queries/sidebar-selected-thread-projection";
 import {
   usePinThread,
   useUnpinThread,
@@ -198,7 +201,8 @@ export function useSidebarThreads(
     ],
   );
   const query = useSidebarNavigation();
-  const preview = useSidebarNavigationPreview();
+  const selectedThreadId = useSelectedSidebarThreadId();
+  const preview = useSidebarNavigationPreviewWithSelected(selectedThreadId);
   const previewRows = active && options?.experimental_previewRows === true;
   const paging = useSidebarNavigationPaging({ enabled: active });
   useEffect(() => {

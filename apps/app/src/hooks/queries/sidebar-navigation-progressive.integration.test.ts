@@ -17,7 +17,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { withTestHarness } from "../../../../server/test/helpers/test-app.js";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+import { useSidebarThreads } from "@/lib/plugin-sidebar-hooks";
 import { invalidateRealtimeQueriesFetchedBeforeInitialConnect } from "@/hooks/cache-owners/system-cache-effects";
+import { patchThreadEntity } from "@/hooks/cache-owners/thread-entity-store";
 import { sidebarNavigationQueryKey } from "./query-keys";
 import {
   SIDEBAR_BOOTSTRAP_CACHE_KEY,
@@ -33,6 +35,10 @@ import {
   useSidebarNavigationPaging,
   useSidebarNavigationPreview,
 } from "./sidebar-navigation-query";
+import {
+  SelectedSidebarThreadIdProvider,
+  useSidebarNavigationPreviewWithSelected,
+} from "./sidebar-selected-thread-projection";
 
 const routeState = vi.hoisted(() => ({
   threadId: undefined as string | undefined,
@@ -679,7 +685,9 @@ it.each(["archived", "hidden", "active-offpage"] as const)(
         const { result } = renderHook(
           () => {
             useMobileRecentsThreadReveal();
-            const preview = useSidebarNavigationPreview();
+            const preview = useSidebarNavigationPreviewWithSelected(
+              routeState.threadId,
+            );
             const collapsed = useAtomValue(mobileRecentsCollapsedThreadIdsAtom);
             return { preview, collapsed };
           },
@@ -687,22 +695,37 @@ it.each(["archived", "hidden", "active-offpage"] as const)(
         );
 
         await waitFor(() =>
-          expect(result.current.preview?.personalProject.threads).toHaveLength(
-            25,
-          ),
+          expect(
+            result.current.preview?.personalProject.threads.length ?? 0,
+          ).toBeGreaterThanOrEqual(25),
         );
         if (kind === "active-offpage") {
           await waitFor(() =>
+            expect(
+              result.current.preview?.personalProject.threads.some(
+                (row) => row.id === activeChildId,
+              ),
+            ).toBe(true),
+          );
+          await waitFor(() =>
             expect(result.current.collapsed).not.toContain(parentId),
           );
-          expect(
-            fetchUrls.some((url) => url.includes("/api/v1/threads/ancestors")),
-          ).toBe(true);
+          const mobileRows = getMobileRecentThreads({
+            collapsedThreadIds: new Set(result.current.collapsed),
+            draftThreadIds: new Set(),
+            threads: result.current.preview!.personalProject.threads,
+            overview: result.current.preview!.overview,
+          });
+          expect(mobileRows.some((row) => row.thread.id === activeChildId)).toBe(
+            true,
+          );
         } else {
           await waitFor(() =>
             expect(
-              fetchUrls.some((url) =>
-                url.includes(`/api/v1/threads/${routeState.threadId}`),
+              fetchUrls.some(
+                (url) =>
+                  url.includes("/api/v1/threads") &&
+                  url.includes(`threadIds=${routeState.threadId}`),
               ),
             ).toBe(true),
           );
@@ -710,6 +733,11 @@ it.each(["archived", "hidden", "active-offpage"] as const)(
             await Promise.resolve();
           });
           expect(result.current.collapsed).toContain(parentId);
+          expect(
+            result.current.preview?.personalProject.threads.some(
+              (row) => row.id === routeState.threadId,
+            ),
+          ).toBe(false);
           expect(
             fetchUrls.some((url) => url.includes("/api/v1/threads/ancestors")),
           ).toBe(false);
@@ -729,3 +757,228 @@ it.each(["archived", "hidden", "active-offpage"] as const)(
     );
   },
 );
+
+it("renders off-page selected root and nested child rows on both desktop sidebar and mobile without draining active pages, preserving reactive patches and selection switching", async () => {
+  await withTestHarness(
+    { seedFirstPartyProviders: false },
+    async ({ app, db }) => {
+      const grandparentId = "thr_proj_grandparent";
+      const offpageRootId = "thr_proj_offpage_root";
+      const offpageParentId = "thr_proj_offpage_parent";
+      const offpageChildId = "thr_proj_offpage_child";
+      const insert = db.$client.prepare(
+        "INSERT INTO threads (id, project_id, provider_id, title, status, parent_thread_id, visibility, created_at, updated_at, last_read_at, latest_attention_at, archived_at) VALUES (?, ?, 'codex', ?, 'idle', ?, 'visible', ?, 1, 1, 1, NULL)",
+      );
+      insert.run(grandparentId, PERSONAL_PROJECT_ID, "Grandparent", null, 300);
+      for (let i = 0; i < 24; i++) {
+        insert.run(
+          `thr_proj_filler_${i}`,
+          PERSONAL_PROJECT_ID,
+          `Filler ${i}`,
+          null,
+          200 - i,
+        );
+      }
+      insert.run(
+        offpageRootId,
+        PERSONAL_PROJECT_ID,
+        "Off-page Root",
+        null,
+        3,
+      );
+      insert.run(
+        offpageParentId,
+        PERSONAL_PROJECT_ID,
+        "Off-page Parent",
+        grandparentId,
+        2,
+      );
+      insert.run(
+        offpageChildId,
+        PERSONAL_PROJECT_ID,
+        "Off-page Nested Child",
+        offpageParentId,
+        1,
+      );
+
+      const storageKey = "bb.mobileRecents.collapsedThreads";
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify([grandparentId, offpageParentId]),
+      );
+
+      const fetchUrls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const req = new Request(input, init);
+          fetchUrls.push(req.url);
+          return app.fetch(req);
+        },
+      );
+
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+
+      function SidebarAndMobileSurface({
+        selectedThreadId,
+      }: {
+        selectedThreadId: string | undefined;
+      }) {
+        return createElement(
+          SelectedSidebarThreadIdProvider,
+          { threadId: selectedThreadId, children: createElement(InnerSurface, { selectedThreadId }) },
+        );
+      }
+
+      function InnerSurface({
+        selectedThreadId,
+      }: {
+        selectedThreadId: string | undefined;
+      }) {
+        useMobileRecentsThreadReveal();
+        const desktopSidebar = useSidebarThreads({
+          experimental_lifecycles: ["active"],
+          experimental_previewRows: true,
+        });
+        const mobilePreview =
+          useSidebarNavigationPreviewWithSelected(selectedThreadId);
+        const collapsed = useAtomValue(mobileRecentsCollapsedThreadIdsAtom);
+        const mobileRows = mobilePreview
+          ? getMobileRecentThreads({
+              collapsedThreadIds: new Set(collapsed),
+              draftThreadIds: new Set(),
+              threads: mobilePreview.personalProject.threads,
+              overview: mobilePreview.overview,
+            })
+          : [];
+        return createElement(
+          "div",
+          null,
+          createElement(
+            "div",
+            { "data-testid": "desktop-sidebar-rows" },
+            desktopSidebar.threads.map((thread) =>
+              createElement(
+                "div",
+                {
+                  key: thread.id,
+                  "data-desktop-row-id": thread.id,
+                },
+                thread.displayTitle,
+              ),
+            ),
+          ),
+          createElement(
+            "div",
+            { "data-testid": "mobile-recents-rows" },
+            mobileRows.map((row) =>
+              createElement(
+                "div",
+                {
+                  key: row.thread.id,
+                  "data-mobile-row-id": row.thread.id,
+                },
+                row.thread.title ?? row.thread.id,
+              ),
+            ),
+          ),
+          createElement(
+            "div",
+            { "data-testid": "paging-meta" },
+            `${String(desktopSidebar.experimental_activePages?.hasNextPage)}:${String(desktopSidebar.experimental_activePages?.projectCounts?.[PERSONAL_PROJECT_ID])}`,
+          ),
+        );
+      }
+
+      routeState.threadId = offpageRootId;
+      const view = render(
+        createElement(SidebarAndMobileSurface, {
+          selectedThreadId: offpageRootId,
+        }),
+        { wrapper },
+      );
+
+      await waitFor(() => {
+        expect(
+          view.container.querySelector(
+            `[data-desktop-row-id="${offpageRootId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Root");
+        expect(
+          view.container.querySelector(
+            `[data-mobile-row-id="${offpageRootId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Root");
+      });
+      expect(view.getByTestId("paging-meta").textContent).toBe("true:28");
+
+      act(() => {
+        patchThreadEntity(queryClient, offpageRootId, {
+          title: "Off-page Root Updated",
+        });
+      });
+      await waitFor(() => {
+        expect(
+          view.container.querySelector(
+            `[data-desktop-row-id="${offpageRootId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Root Updated");
+        expect(
+          view.container.querySelector(
+            `[data-mobile-row-id="${offpageRootId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Root Updated");
+      });
+
+      routeState.threadId = offpageChildId;
+      view.rerender(
+        createElement(SidebarAndMobileSurface, {
+          selectedThreadId: offpageChildId,
+        }),
+      );
+
+      await waitFor(() => {
+        expect(
+          view.container.querySelector(
+            `[data-desktop-row-id="${offpageParentId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Parent");
+        expect(
+          view.container.querySelector(
+            `[data-desktop-row-id="${offpageChildId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Nested Child");
+        expect(
+          view.container.querySelector(
+            `[data-mobile-row-id="${offpageParentId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Parent");
+        expect(
+          view.container.querySelector(
+            `[data-mobile-row-id="${offpageChildId}"]`,
+          )?.textContent,
+        ).toBe("Off-page Nested Child");
+      });
+      expect(
+        view.container.querySelector(
+          `[data-desktop-row-id="${offpageRootId}"]`,
+        ),
+      ).toBeNull();
+      expect(
+        view.container.querySelector(`[data-mobile-row-id="${offpageRootId}"]`),
+      ).toBeNull();
+
+      const sidebarBootstrapCalls = fetchUrls.filter((url) =>
+        url.includes("/api/v1/sidebar-bootstrap"),
+      );
+      expect(sidebarBootstrapCalls).toHaveLength(1);
+      expect(
+        new URL(sidebarBootstrapCalls[0]!).searchParams.get("cursor"),
+      ).toBeNull();
+      expect(view.getByTestId("paging-meta").textContent).toBe("true:28");
+      expect(
+        queryClient.getQueryData(sidebarNavigationQueryKey()),
+      ).toBeUndefined();
+    },
+  );
+});

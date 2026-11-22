@@ -134,10 +134,11 @@ import {
 } from "./RootComposeSecondaryContent";
 import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { useSidebarNavigationPaging } from "@/hooks/queries/sidebar-navigation-query";
 import {
-  useSidebarNavigationPaging,
-  useSidebarNavigationPreview,
-} from "@/hooks/queries/sidebar-navigation-query";
+  useSelectedSidebarThreadId,
+  useSidebarNavigationPreviewWithSelected,
+} from "@/hooks/queries/sidebar-selected-thread-projection";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -543,8 +544,11 @@ function RootComposeSurface({
     setEnvironmentSelectionValue,
     renderPromptBox,
   } = composer;
-  const navigationPreview = useSidebarNavigationPreview();
   const isCompactViewport = useIsCompactViewport();
+  const selectedSidebarThreadId = useSelectedSidebarThreadId();
+  const navigationPreview = useSidebarNavigationPreviewWithSelected(
+    selectedSidebarThreadId,
+  );
   const navigationPaging = useSidebarNavigationPaging({
     enabled: isCompactViewport,
   });

@@ -17,6 +17,8 @@ import type {
   ThreadListResponse,
 } from "@bb/server-contract";
 import {
+  SIDEBAR_SELECTED_THREAD_TARGET_KIND,
+  THREADS_QUERY_KEY,
   archivedThreadsListQueryKey,
   sidebarNavigationQueryKey,
 } from "@/hooks/queries/query-keys";
@@ -90,8 +92,28 @@ function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
     ) ??
     readCachedSidebarBootstrap() ??
     undefined;
+  const active = threadEntryMapFor(navigation);
+  const selectedTargets = queryClient.getQueriesData<ThreadListResponse>({
+    queryKey: [THREADS_QUERY_KEY, SIDEBAR_SELECTED_THREAD_TARGET_KIND],
+  });
+  let mutableTargets: Map<string, ThreadListEntry> | null = null;
+  for (const [, rows] of selectedTargets) {
+    if (!rows || rows.length === 0) continue;
+    for (const row of rows) {
+      if (
+        row.archivedAt !== null ||
+        row.deletedAt !== null ||
+        row.visibility === "hidden" ||
+        (mutableTargets ?? active).has(row.id)
+      ) {
+        continue;
+      }
+      mutableTargets ??= new Map(active);
+      mutableTargets.set(row.id, row);
+    }
+  }
   return mergeArchivedEntries(
-    threadEntryMapFor(navigation),
+    mutableTargets ?? active,
     queryClient.getQueryData<ArchivedThreadsData>(
       archivedThreadsListQueryKey({}),
     ),
@@ -103,6 +125,14 @@ const SOURCE_QUERY_HASHES: ReadonlySet<string> = new Set([
   hashKey(sidebarNavigationPreviewQueryKey()),
   hashKey(archivedThreadsListQueryKey({})),
 ]);
+
+function isSidebarEntriesSourceQuery(queryKey: readonly unknown[], queryHash: string): boolean {
+  return (
+    SOURCE_QUERY_HASHES.has(queryHash) ||
+    (queryKey[0] === THREADS_QUERY_KEY &&
+      queryKey[1] === SIDEBAR_SELECTED_THREAD_TARGET_KIND)
+  );
+}
 
 function createSidebarThreadEntriesStore(
   queryClient: QueryClient,
@@ -136,7 +166,11 @@ function createSidebarThreadEntriesStore(
     if (unsubscribeSource !== null) return;
     published = readSidebarThreadEntries(queryClient);
     unsubscribeSource = queryClient.getQueryCache().subscribe((event) => {
-      if (SOURCE_QUERY_HASHES.has(event.query.queryHash)) syncFromSource();
+      if (
+        isSidebarEntriesSourceQuery(event.query.queryKey, event.query.queryHash)
+      ) {
+        syncFromSource();
+      }
     });
   };
 

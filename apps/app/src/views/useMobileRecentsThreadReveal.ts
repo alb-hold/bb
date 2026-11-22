@@ -1,16 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useSetAtom } from "jotai";
-import type { ThreadListEntry, ThreadWithRuntime } from "@bb/domain";
+import type { ThreadListEntry } from "@bb/domain";
 import { isThreadRead } from "@bb/client-core";
 import { useRouteState } from "@/hooks/useRouteState";
-import {
-  useSidebarNavigation,
-  useSidebarNavigationPreview,
-} from "@/hooks/queries/sidebar-navigation-query";
-import { threadQueryKey } from "@/hooks/queries/query-keys";
+import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { useSidebarNavigationPreviewWithSelected } from "@/hooks/queries/sidebar-selected-thread-projection";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
-import { sdk } from "@/lib/sdk";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
 export interface MobileRecentsRevealState {
@@ -25,6 +20,11 @@ export const INITIAL_MOBILE_RECENTS_REVEAL_STATE: MobileRecentsRevealState = {
   previousUnreadIds: null,
 };
 
+type MobileRecentsRevealRow = Pick<
+  ThreadListEntry,
+  "id" | "parentThreadId" | "lastReadAt" | "latestAttentionAt"
+> & { visibility?: ThreadListEntry["visibility"] };
+
 export function stepMobileRecentsReveal(
   state: MobileRecentsRevealState,
   {
@@ -34,12 +34,7 @@ export function stepMobileRecentsReveal(
   }: {
     isPlaceholderData: boolean;
     selectedThreadId: string | undefined;
-    threads:
-      | readonly (Pick<
-          ThreadListEntry,
-          "id" | "parentThreadId" | "lastReadAt" | "latestAttentionAt"
-        > & { visibility?: ThreadListEntry["visibility"] })[]
-      | null;
+    threads: readonly MobileRecentsRevealRow[] | null;
   },
 ): { ancestorIds: ReadonlySet<string>; state: MobileRecentsRevealState } {
   const navigated = state.previousThreadId !== selectedThreadId;
@@ -97,97 +92,52 @@ export function stepMobileRecentsReveal(
   };
 }
 
-function hasSelectedThreadAncestry(
-  selectedThreadId: string,
-  threads: readonly Pick<ThreadListEntry, "id" | "parentThreadId">[],
-): boolean {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+function collectSelectedChain(
+  selectedThreadId: string | undefined,
+  rows: readonly ThreadListEntry[],
+): ThreadListEntry[] {
+  if (!selectedThreadId) return [];
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const chain: ThreadListEntry[] = [];
   let current = byId.get(selectedThreadId);
-  if (!current) return false;
-  let remaining = byId.size;
-  while (current.parentThreadId !== null && remaining > 0) {
-    const parent = byId.get(current.parentThreadId);
-    if (!parent) return false;
-    current = parent;
-    remaining -= 1;
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.push(current);
+    current =
+      current.parentThreadId !== null
+        ? byId.get(current.parentThreadId)
+        : undefined;
   }
-  return true;
+  return chain;
 }
 
 export function useMobileRecentsThreadReveal(): void {
-  const queryClient = useQueryClient();
   const { threadId: selectedThreadId } = useRouteState();
   const { data: navigation, isPlaceholderData } = useSidebarNavigation();
-  const preview = useSidebarNavigationPreview();
+  const projectedPreview =
+    useSidebarNavigationPreviewWithSelected(selectedThreadId);
   const setCollapsedThreadIds = useSetAtom(mobileRecentsCollapsedThreadIdsAtom);
   const complete = navigation && !isPlaceholderData ? navigation : undefined;
-  const previewThreads = useMemo(
-    () => (preview ? listSidebarNavigationThreads(preview) : null),
-    [preview],
-  );
-  const needsTargetedSelectedReveal =
-    selectedThreadId !== undefined &&
-    complete === undefined &&
-    previewThreads !== null &&
-    !hasSelectedThreadAncestry(selectedThreadId, previewThreads);
 
-  useEffect(() => {
-    if (!needsTargetedSelectedReveal || selectedThreadId === undefined) {
-      return;
+  const threads = useMemo<readonly MobileRecentsRevealRow[] | null>(() => {
+    if (complete) return listSidebarNavigationThreads(complete);
+    const unreadTree = projectedPreview?.overview?.unreadTree;
+    if (!unreadTree) return null;
+    if (!selectedThreadId || !projectedPreview) return unreadTree;
+    const selectedChain = collectSelectedChain(
+      selectedThreadId,
+      listSidebarNavigationThreads(projectedPreview),
+    );
+    if (selectedChain.length === 0) return unreadTree;
+    const byId = new Map<string, MobileRecentsRevealRow>(
+      unreadTree.map((row) => [row.id, row]),
+    );
+    for (const row of selectedChain) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
     }
-    const controller = new AbortController();
-    const revealSelection = async () => {
-      const cached = queryClient.getQueryData<ThreadWithRuntime>(
-        threadQueryKey(selectedThreadId),
-      );
-      const thread =
-        cached ??
-        (await sdk.threads.get({
-          threadId: selectedThreadId,
-          signal: controller.signal,
-        }));
-      if (
-        controller.signal.aborted ||
-        thread.archivedAt !== null ||
-        thread.deletedAt !== null ||
-        thread.visibility === "hidden"
-      ) {
-        return;
-      }
-      const { threads: ancestry } =
-        await sdk.threads.experimental_listAncestors({
-          threadIds: [selectedThreadId],
-          signal: controller.signal,
-        });
-      if (controller.signal.aborted) return;
-      const ancestorIds = new Set(
-        ancestry.find((entry) => entry.threadId === selectedThreadId)
-          ?.ancestorIds ?? [],
-      );
-      if (ancestorIds.size === 0) return;
-      setCollapsedThreadIds((current) => {
-        const next = current.filter((id) => !ancestorIds.has(id));
-        return next.length === current.length ? current : next;
-      });
-    };
-    void revealSelection().catch(() => undefined);
-    return () => {
-      controller.abort();
-    };
-  }, [
-    needsTargetedSelectedReveal,
-    queryClient,
-    selectedThreadId,
-    setCollapsedThreadIds,
-  ]);
-
-  const threads = useMemo(
-    () =>
-      complete
-        ? listSidebarNavigationThreads(complete)
-        : (preview?.overview?.unreadTree ?? null),
-    [complete, preview?.overview],
-  );
+    return [...byId.values()];
+  }, [complete, projectedPreview, selectedThreadId]);
   const revealState = useRef(INITIAL_MOBILE_RECENTS_REVEAL_STATE);
 
   useEffect(() => {
