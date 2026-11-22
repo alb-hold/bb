@@ -4709,6 +4709,106 @@ describe("terminal first paint", () => {
     expect(paintOpacities.every((opacity) => opacity === "0")).toBe(true);
   });
 
+  it("disables stdin and ignores input while keeping retained output after a running terminal exits", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    let activeTerminal: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      parent,
+    ) {
+      activeTerminal = this;
+      return open.call(this, parent);
+    });
+    testState.screen.mockResolvedValue(null);
+    const session = renderMobileTerminal({ status: "running" }, true);
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket did not mount",
+    );
+    const socket = testState.sockets[0];
+    if (!socket || !activeTerminal) throw new Error("terminal did not mount");
+    const terminal: Terminal = activeTerminal;
+    const readBuffer = () =>
+      Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+        terminal.buffer.active.getLine(index)?.translateToString(true) ?? "",
+      ).join("\n");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    const onDataSpy = vi.fn();
+    const dataSub = terminal.onData(onDataSpy);
+    try {
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("retained output before exit\r\n") },
+      });
+      await waitForReadinessCondition(
+        () => expect(readBuffer()).toContain("retained output before exit"),
+        "running output was not written",
+      );
+      expect(terminal.options.disableStdin).toBe(false);
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (!textarea) throw new Error("terminal input did not mount");
+      textarea.focus();
+      fireEvent.keyDown(textarea, {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        keyCode: 37,
+        which: 37,
+      });
+      expect(onDataSpy).toHaveBeenCalledTimes(1);
+      const sentInputsBeforeExit = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((msg) => msg.type === "input").length;
+      expect(sentInputsBeforeExit).toBe(1);
+      const bufferBeforeExit = readBuffer();
+
+      const exitedSession = {
+        ...session,
+        status: "exited" as const,
+        exitCode: 1,
+        closeReason: "process-exit" as const,
+      };
+      await act(async () => {
+        socket.receive({ type: "exited", session: exitedSession });
+        rerenderMobileTerminal(exitedSession);
+        await Promise.resolve();
+      });
+
+      expect(terminal.options.disableStdin).toBe(true);
+      onDataSpy.mockClear();
+      fireEvent.keyDown(textarea, {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        keyCode: 37,
+        which: 37,
+      });
+      fireEvent.keyDown(textarea, {
+        key: "a",
+        code: "KeyA",
+        keyCode: 65,
+        which: 65,
+      });
+      expect(onDataSpy).not.toHaveBeenCalled();
+      const sentInputsAfterExit = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((msg) => msg.type === "input").length;
+      expect(sentInputsAfterExit).toBe(sentInputsBeforeExit);
+      expect(readBuffer()).toContain("retained output before exit");
+      expect(readBuffer()).toContain(bufferBeforeExit.trim());
+    } finally {
+      dataSub.dispose();
+    }
+  });
+
   it("preserves a full prompt band when phone fit is narrower than retained output", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);

@@ -1562,6 +1562,9 @@ export function ThreadTerminalView({
     isPanelOpenRef.current = isPanelOpen;
     sessionStatusRef.current = session.status;
     sessionRef.current = session;
+    if (terminalRef.current) {
+      terminalRef.current.options.disableStdin = session.status === "exited";
+    }
     onAutoFocusHandledRef.current = onAutoFocusHandled;
     onOpenLinkRef.current = effectiveOnOpenLink;
     onSessionChangeRef.current = onSessionChange;
@@ -3218,6 +3221,8 @@ export function ThreadTerminalView({
             message.session.status === "exited")
         ) {
           lifecycle.processExitedSeen = true;
+          sessionStatusRef.current = "exited";
+          activeTerminal.options.disableStdin = true;
         }
         if (message.type === "error") {
           if (
