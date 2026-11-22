@@ -1784,12 +1784,7 @@ function ProjectListComponent({
             isFetchingNextPage: activePages.isFetchingNextPage,
           }
         : null,
-    [
-      activePages?.childCounts,
-      activePages?.hasNextPage,
-      activePages?.isFetchingNextPage,
-      activePages?.unreadTree,
-    ],
+    [activePages],
   );
   const toggleThreadCollapsed = useCallback<ToggleCollapsedId>(
     (threadId) => {

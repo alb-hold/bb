@@ -136,44 +136,41 @@ export function useMobileRecentsThreadReveal(): void {
       return;
     }
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const cached = queryClient.getQueryData<ThreadWithRuntime>(
-          threadQueryKey(selectedThreadId),
-        );
-        const thread =
-          cached ??
-          (await sdk.threads.get({
-            threadId: selectedThreadId,
-            signal: controller.signal,
-          }));
-        if (
-          controller.signal.aborted ||
-          thread.archivedAt !== null ||
-          thread.deletedAt !== null ||
-          thread.visibility === "hidden"
-        ) {
-          return;
-        }
-        const { threads: ancestry } =
-          await sdk.threads.experimental_listAncestors({
-            threadIds: [selectedThreadId],
-            signal: controller.signal,
-          });
-        if (controller.signal.aborted) return;
-        const ancestorIds = new Set(
-          ancestry.find((entry) => entry.threadId === selectedThreadId)
-            ?.ancestorIds ?? [],
-        );
-        if (ancestorIds.size === 0) return;
-        setCollapsedThreadIds((current) => {
-          const next = current.filter((id) => !ancestorIds.has(id));
-          return next.length === current.length ? current : next;
-        });
-      } catch {
+    const revealSelection = async () => {
+      const cached = queryClient.getQueryData<ThreadWithRuntime>(
+        threadQueryKey(selectedThreadId),
+      );
+      const thread =
+        cached ??
+        (await sdk.threads.get({
+          threadId: selectedThreadId,
+          signal: controller.signal,
+        }));
+      if (
+        controller.signal.aborted ||
+        thread.archivedAt !== null ||
+        thread.deletedAt !== null ||
+        thread.visibility === "hidden"
+      ) {
         return;
       }
-    })();
+      const { threads: ancestry } =
+        await sdk.threads.experimental_listAncestors({
+          threadIds: [selectedThreadId],
+          signal: controller.signal,
+        });
+      if (controller.signal.aborted) return;
+      const ancestorIds = new Set(
+        ancestry.find((entry) => entry.threadId === selectedThreadId)
+          ?.ancestorIds ?? [],
+      );
+      if (ancestorIds.size === 0) return;
+      setCollapsedThreadIds((current) => {
+        const next = current.filter((id) => !ancestorIds.has(id));
+        return next.length === current.length ? current : next;
+      });
+    };
+    void revealSelection().catch(() => undefined);
     return () => {
       controller.abort();
     };

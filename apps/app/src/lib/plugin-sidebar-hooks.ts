@@ -208,6 +208,7 @@ export function useSidebarThreads(
   }, [active, paging, previewRows]);
   const complete = query.isPlaceholderData ? undefined : query.data;
   const data = previewRows || !active ? (complete ?? preview ?? query.data) : complete;
+  const overview = complete === undefined ? preview?.overview : undefined;
   const activePages = useMemo<
     PluginSidebarThreadsState["experimental_activePages"]
   >(
@@ -218,16 +219,16 @@ export function useSidebarThreads(
             isFetchingNextPage: paging.isFetchingNextPage,
             isFetchNextPageError: paging.isFetchNextPageError,
             fetchNextPage: paging.fetchNextPage,
-            ...(complete === undefined && preview?.overview
+            ...(overview
               ? {
-                  projectCounts: preview.overview.counts,
-                  childCounts: preview.overview.childCounts,
-                  unreadTree: preview.overview.unreadTree,
+                  projectCounts: overview.counts,
+                  childCounts: overview.childCounts,
+                  unreadTree: overview.unreadTree,
                 }
               : {}),
           }
         : undefined,
-    [previewRows, paging, complete, preview],
+    [previewRows, paging, overview],
   );
   const activityNow = useSecondTick(
     data?.projects.some((project) =>

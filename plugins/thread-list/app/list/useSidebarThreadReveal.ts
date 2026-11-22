@@ -200,7 +200,7 @@ export function useSidebarThreadReveal(): void {
       isUnread: thread.isUnread,
       isHidden: thread.isHidden,
     }));
-  }, [activePages?.unreadTree, isPartial, status, threads]);
+  }, [activePages, isPartial, status, threads]);
   const unreadState = useRef(INITIAL_SIDEBAR_UNREAD_REVEAL_STATE);
 
   useEffect(() => {
@@ -231,79 +231,76 @@ export function useSidebarThreadReveal(): void {
       return;
     }
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const selected = await sdk.threads.get({
-          threadId: routedThreadId,
-          signal: controller.signal,
-        });
-        if (
-          controller.signal.aborted ||
-          selected.archivedAt !== null ||
-          selected.deletedAt !== null ||
-          selected.visibility === "hidden"
-        ) {
-          return;
-        }
-        const { threads: ancestry } =
-          await sdk.threads.experimental_listAncestors({
-            threadIds: [routedThreadId],
-            signal: controller.signal,
-          });
-        if (controller.signal.aborted) return;
-        const ancestorIds =
-          ancestry.find((entry) => entry.threadId === routedThreadId)
-            ?.ancestorIds ?? [];
-        if (ancestorIds.length > 0) {
-          expandThreadAncestors(new Set(ancestorIds), true);
-        }
-        if (selected.environmentId !== null) {
-          revealEnvironmentIds(new Set([selected.environmentId]));
-        }
-        const rootId = ancestorIds[ancestorIds.length - 1];
-        const loadedRoot = rootId ? threadById.get(rootId) : undefined;
-        let sidebarProjectId = selected.projectId;
-        let isPinned = selected.pinnedAt !== null;
-        let sectionId = selected.sectionId;
-        let host: SidebarThread["host"] = null;
-        if (loadedRoot) {
-          sidebarProjectId = loadedRoot.projectId;
-          isPinned = isPinned || loadedRoot.isPinned;
-          sectionId = loadedRoot.sectionId;
-          host = loadedRoot.host;
-        } else if (rootId) {
-          const root = await sdk.threads.get({
-            threadId: rootId,
-            signal: controller.signal,
-          });
-          if (controller.signal.aborted) return;
-          sidebarProjectId = root.projectId;
-          isPinned = isPinned || root.pinnedAt !== null;
-          sectionId = root.sectionId;
-        }
-        const expansion = getThreadSidebarExpansion({
-          organizationMode,
-          isPinned,
-          thread: { host, sectionId },
-          sidebarProjectId,
-          personalProjectId,
-        });
-        if (expansion.machineKey) {
-          revealMachineKeys(new Set([expansion.machineKey]));
-        }
-        if (expansion.sectionKey) {
-          revealThreadSectionKeys(new Set([expansion.sectionKey]));
-        }
-        if (expansion.projectId) {
-          revealProjectIds(new Set([expansion.projectId]));
-        }
-        if (expansion.sidebarSectionId) {
-          revealSidebarSectionIds(new Set([expansion.sidebarSectionId]));
-        }
-      } catch {
+    const revealSelection = async () => {
+      const selected = await sdk.threads.get({
+        threadId: routedThreadId,
+        signal: controller.signal,
+      });
+      if (
+        controller.signal.aborted ||
+        selected.archivedAt !== null ||
+        selected.deletedAt !== null ||
+        selected.visibility === "hidden"
+      ) {
         return;
       }
-    })();
+      const { threads: ancestry } =
+        await sdk.threads.experimental_listAncestors({
+          threadIds: [routedThreadId],
+          signal: controller.signal,
+        });
+      if (controller.signal.aborted) return;
+      const ancestorIds =
+        ancestry.find((entry) => entry.threadId === routedThreadId)
+          ?.ancestorIds ?? [];
+      if (ancestorIds.length > 0) {
+        expandThreadAncestors(new Set(ancestorIds), true);
+      }
+      if (selected.environmentId !== null) {
+        revealEnvironmentIds(new Set([selected.environmentId]));
+      }
+      const rootId = ancestorIds[ancestorIds.length - 1];
+      const loadedRoot = rootId ? threadById.get(rootId) : undefined;
+      let sidebarProjectId = selected.projectId;
+      let isPinned = selected.pinnedAt !== null;
+      let sectionId = selected.sectionId;
+      let host: SidebarThread["host"] = null;
+      if (loadedRoot) {
+        sidebarProjectId = loadedRoot.projectId;
+        isPinned = isPinned || loadedRoot.isPinned;
+        sectionId = loadedRoot.sectionId;
+        host = loadedRoot.host;
+      } else if (rootId) {
+        const root = await sdk.threads.get({
+          threadId: rootId,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        sidebarProjectId = root.projectId;
+        isPinned = isPinned || root.pinnedAt !== null;
+        sectionId = root.sectionId;
+      }
+      const expansion = getThreadSidebarExpansion({
+        organizationMode,
+        isPinned,
+        thread: { host, sectionId },
+        sidebarProjectId,
+        personalProjectId,
+      });
+      if (expansion.machineKey) {
+        revealMachineKeys(new Set([expansion.machineKey]));
+      }
+      if (expansion.sectionKey) {
+        revealThreadSectionKeys(new Set([expansion.sectionKey]));
+      }
+      if (expansion.projectId) {
+        revealProjectIds(new Set([expansion.projectId]));
+      }
+      if (expansion.sidebarSectionId) {
+        revealSidebarSectionIds(new Set([expansion.sidebarSectionId]));
+      }
+    };
+    void revealSelection().catch(() => undefined);
     return () => {
       controller.abort();
     };

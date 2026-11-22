@@ -6,6 +6,7 @@ import {
 import {
   hashKey,
   infiniteQueryOptions,
+  skipToken,
   queryOptions,
   useInfiniteQuery,
   useQuery,
@@ -186,7 +187,7 @@ function sidebarNavigationPagesQueryOptions(client: QueryClient, enabled: boolea
 export function useSidebarNavigationPreview() {
   return useQuery<SidebarBootstrapResponse | null>({
     queryKey: sidebarNavigationPreviewQueryKey(),
-    enabled: false,
+    queryFn: skipToken,
     staleTime: Infinity,
   }).data;
 }
