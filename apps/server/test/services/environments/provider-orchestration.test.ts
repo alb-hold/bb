@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createBbSdk } from "@bb/sdk/core";
 import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
 import { createHttpTransport } from "@bb/sdk/node";
@@ -78,6 +80,7 @@ import {
   seedTurnStarted,
 } from "../../helpers/seed.js";
 import {
+  startTestServer,
   withTestHarness,
   type TestAppHarness,
 } from "../../helpers/test-app.js";
@@ -1734,6 +1737,214 @@ describe("core environment orchestration", () => {
         retireAt: null,
       });
     }));
+
+  it("returns a pending outcome while a slow removal continues", async () =>
+    withTestHarness(async (harness) => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const remove = vi.fn(async () => {
+        await gate;
+        return { status: "removed" as const };
+      });
+      const fixture = setup(harness, { remove });
+      fixture.ask();
+      await fixture.settled();
+      const id = fixture.attach();
+      try {
+        const response = await harness.app.request(`/api/v1/environments/${id}/cleanup`, { method: "POST" });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: "teardown_running" });
+        expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("running");
+      } finally {
+        release();
+        await sweepProviderEnvironment(harness.deps, id);
+      }
+      expect(remove).toHaveBeenCalledOnce();
+      expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+    }));
+
+  it("reports a thrown provider lookup and retries after backoff", async () =>
+    withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const fixture = setup(harness);
+      fixture.ask();
+      await fixture.settled();
+      const id = fixture.attach();
+      const lookup = vi.fn(() => fixture.record).mockImplementationOnce(() => {
+        throw new Error("Provider lookup interrupted");
+      });
+      setPluginEnvironmentProviderBridge({
+        listEnvironmentProviders: () => [fixture.record],
+        getEnvironmentProvider: lookup,
+        invokeProvider: async (_record, _label, run) => ({ ok: true, value: await run() }),
+        decisionTimeoutMs: 10_000,
+      });
+      const response = await harness.app.request(`/api/v1/environments/${id}/cleanup`, { method: "POST" });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: "teardown_failed", message: "Provider lookup interrupted" });
+      expect(getEnvironment(harness.db, id)).toMatchObject({
+        teardownStatus: "failed", teardownAttempt: 1, retireAt: Date.now() + 60_000,
+      });
+      lookup.mockImplementationOnce(() => { throw new Error("Second interruption"); });
+      vi.setSystemTime(Date.now() + 60_001);
+      await sweepProviderLifecycles(harness.deps);
+      expect(getEnvironment(harness.db, id)).toMatchObject({
+        teardownStatus: "failed", teardownMessage: "Second interruption",
+        teardownAttempt: 2, retireAt: Date.now() + 120_000,
+      });
+      vi.setSystemTime(Date.now() + 120_001);
+      await sweepProviderLifecycles(harness.deps);
+      expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+    }));
+
+  it("reports an unpublished worktree base through the cleanup CLI", async () => {
+    const harness = await startTestServer();
+    const root = await mkdtemp(join(tmpdir(), "bb-cleanup-"));
+    const path = join(root, "worktree");
+    const source = join(root, "source");
+    const run = promisify(execFile);
+    try {
+      await run("git", ["init", source]);
+      await run("git", [
+        "-C",
+        source,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "unpublished",
+      ]);
+      await run("git", [
+        "-C",
+        source,
+        "worktree",
+        "add",
+        "-b",
+        "fixture",
+        path,
+      ]);
+      const { stdout: sha } = await run("git", [
+        "-C",
+        path,
+        "rev-parse",
+        "HEAD",
+      ]);
+      const preservation = await vi.importActual<{
+        identifyWorktree(args: {
+          path: string;
+          rootPath: string;
+        }): Promise<
+          | { status: "identified"; identity: unknown }
+          | { status: "missing" | "preserve" }
+        >;
+        findPreservationReasons(
+          identity: unknown,
+          signal: undefined,
+        ): Promise<string[]>;
+      }>(
+        "../../../../../plugins/environment-git-worktree/host/worktree-preservation.ts",
+      );
+      const fixture = setup(harness, {
+        create: async () => ({ status: "created", path, ownsPath: true }),
+        remove: async () => {
+          const identity = await preservation.identifyWorktree({
+            path,
+            rootPath: root,
+          });
+          if (identity.status === "missing") return { status: "removed" };
+          if (identity.status !== "identified")
+            throw new Error(identity.status);
+          const reasons = await preservation.findPreservationReasons(
+            identity.identity,
+            undefined,
+          );
+          if (reasons.length)
+            return { status: "retained", message: reasons.join("\n") };
+          await run("git", ["-C", source, "worktree", "remove", path]);
+          return { status: "removed" };
+        },
+      });
+      fixture.ask();
+      await fixture.settled();
+      const id = fixture.attach();
+      registerHostRpcResponder(harness, {
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        handle: async ({ command }) => {
+          if (command.type === "environment.hook.cancel")
+            return { ok: true, result: { status: "terminated" } };
+          if (command.type === "environment.inspect_cleanup")
+            return {
+              ok: true,
+              result: {
+                supported: true,
+                active: false,
+                pids: [],
+                unreadablePids: [],
+              },
+            };
+          throw new Error(`Unexpected RPC: ${command.type}`);
+        },
+      });
+      const cleanup = (...flags: string[]) =>
+        new Promise<{
+          code: number | string;
+          stdout: string;
+        }>((resolve) => {
+          execFile(
+            process.execPath,
+            [
+              "--conditions=source",
+              "--import",
+              "tsx",
+              "../cli/src/index.ts",
+              "environment",
+              "cleanup",
+              id,
+              ...flags,
+              "--json",
+            ],
+            {
+              cwd: import.meta.dirname + "/../../..",
+              env: {
+                ...process.env,
+                BB_DATA_DIR: root,
+                BB_SERVER_URL: harness.baseUrl,
+              },
+            },
+            (error, stdout) => resolve({ code: error?.code ?? 0, stdout }),
+          );
+        });
+      for (const flags of [[], ["--recover"]]) {
+        const result = await cleanup(...flags);
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          ok: false,
+          error: {
+            code: "teardown_failed",
+            message: expect.stringContaining(
+              `its base commit ${sha.trim()} is not reachable from any remote-tracking branch`,
+            ),
+          },
+        });
+      }
+      await run("git", ["-C", source, "worktree", "remove", path]);
+      for (const flags of [["--recover"], []]) {
+        const success = await cleanup(...flags);
+        expect(success.code, success.stdout).toBe(0);
+        expect(JSON.parse(success.stdout)).toEqual({ ok: true });
+        expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
+      }
+    } finally {
+      await harness.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("rejects cleanup of an unmanaged checkout", async () =>
     withTestHarness(async (harness) => {

@@ -251,6 +251,8 @@ const interruptedCleanup = (env: Environment) =>
   (env.lifecycle.teardown.message?.startsWith("Needs recovery:") ?? false);
 type LeftoverCleanup = HostStorageLeftoverWorktree["cleanup"];
 function leftoverFailure(error: unknown): LeftoverCleanup {
+  if (typeof error === "object" && error !== null && "code" in error && error.code === "teardown_running")
+    return { state: "retrying" };
   const text = error instanceof Error ? error.message : String(error);
   if (text.includes("process inspection"))
     return { state: "recoveryUnsupported" };
