@@ -92,18 +92,25 @@ export function registerEnvironmentRoutes(
     if (environmentHasLiveThreads(deps.db, environment.id))
       throw new ApiError(
         409,
-        "invalid_request",
+        "teardown_refused",
         "Environment still has live threads",
       );
     if (query?.recover === "true") {
       await recoverEnvironmentCleanup(deps, environment.id);
-      return context.json({ ok: true } as const);
-    }
-    if (!cleanupEnvironment(deps, environment.id))
+    } else if (!(await cleanupEnvironment(deps, environment.id)))
       throw new ApiError(
         409,
-        "invalid_request",
+        "teardown_refused",
         "Environment is not provider-managed",
+      );
+    const settled = requireEnvironment(deps.db, environment.id);
+    if (settled.teardownStatus !== "removed")
+      throw new ApiError(
+        409,
+        settled.teardownStatus === "failed"
+          ? "teardown_failed"
+          : "teardown_refused",
+        settled.teardownMessage ?? "The environment was retained.",
       );
     return context.json({ ok: true } as const);
   });

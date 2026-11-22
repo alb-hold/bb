@@ -182,7 +182,7 @@ export function registerEnvironmentCommands(
             recover: opts.recover,
           });
           if (!outputJson(opts, result))
-            console.log("Environment cleanup requested.");
+            console.log("Environment cleanup completed.");
         },
       ),
     );

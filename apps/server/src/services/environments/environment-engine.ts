@@ -1083,7 +1083,10 @@ async function sweepProviderEnvironmentInSlot(
   }
 }
 
-export function cleanupEnvironment(deps: Deps, environmentId: string): boolean {
+export async function cleanupEnvironment(
+  deps: Deps,
+  environmentId: string,
+): Promise<boolean> {
   const row = getEnvironment(deps.db, environmentId);
   if (
     row === null ||
@@ -1096,16 +1099,13 @@ export function cleanupEnvironment(deps: Deps, environmentId: string): boolean {
   if (row.teardownAttempt >= MAX_REMOVE_ATTEMPTS)
     throw new ApiError(
       409,
-      "invalid_request",
-      `Needs recovery. Inspect the workspace, then run bb environment cleanup ${environmentId} --recover.`,
+      "teardown_refused",
+      row.teardownMessage?.startsWith("Needs recovery:")
+        ? row.teardownMessage
+        : `Needs recovery. Inspect the workspace, then run bb environment cleanup ${environmentId} --recover.`,
     );
   writeEnvironment(deps, environmentId, { retireAt: Date.now() });
-  void sweepProviderEnvironment(deps, environmentId).catch((error) => {
-    deps.logger.warn(
-      { environmentId, error: errorMessage(error) },
-      "Environment removal will retry",
-    );
-  });
+  await sweepProviderEnvironment(deps, environmentId);
   return true;
 }
 
@@ -1117,7 +1117,7 @@ export async function recoverEnvironmentCleanup(
   if (map.has(environmentId))
     throw new ApiError(
       409,
-      "invalid_request",
+      "teardown_refused",
       "Environment cleanup is still running",
     );
   await runTrackedOperation({
@@ -1134,7 +1134,7 @@ export async function recoverEnvironmentCleanup(
       )
         throw new ApiError(
           409,
-          "invalid_request",
+          "teardown_refused",
           "Recovery requires a failed, unused provider-managed environment",
         );
       const workspacePath = row.providerOwnsPath ? row.path : null;
@@ -1157,7 +1157,7 @@ export async function recoverEnvironmentCleanup(
           )
             throw new ApiError(
               409,
-              "invalid_request",
+              "teardown_refused",
               `Recovery refused: ${
                 !inspection.supported
                   ? "process inspection requires Linux"
@@ -1191,7 +1191,7 @@ export async function recoverEnvironmentCleanup(
         )
           throw new ApiError(
             409,
-            "invalid_request",
+            "teardown_refused",
             "Environment changed during recovery inspection; inspect it again",
           );
         deps.db.transaction(() => {
