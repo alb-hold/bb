@@ -131,6 +131,7 @@ interface ToThreadResponseFromThreadArgs {
 }
 
 interface ToThreadResponseWithHostArgs extends ToThreadResponseFromThreadArgs {
+  native: NativeTerminalThreadRecord | null;
   environmentHostId: string | null;
 }
 
@@ -516,14 +517,9 @@ function toThreadResponseWithHost(
       ? addNativeActivityDiagnostic(
           args.thread,
           runtime,
-          getNativeActivityThread(
-            {
-              db: deps.db,
-              hub: deps.hub,
-              providerRegistry: deps.providerRegistry,
-            },
-            args.thread,
-          ),
+          supportsNativeActivity({ ...deps, providerRegistry: deps.providerRegistry }, args.thread)
+            ? args.native
+            : null,
           args.now,
         )
       : runtime,
@@ -548,9 +544,12 @@ function buildThreadResponseFromThread(
   deps: PluginThreadResponseDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
+  const native = getNativeTerminalThread(deps.db, args.thread.id);
+  const environmentRow = args.thread.environmentId === null ? null : getEnvironment(deps.db, args.thread.environmentId);
   const threadWithRuntime = toThreadResponseWithHost(deps, {
     ...args,
-    environmentHostId: resolveThreadEnvironmentHostId(deps, args.thread),
+    environmentHostId: environmentRow?.hostId ?? null,
+    native,
   });
   return {
     ...threadWithRuntime,
@@ -559,7 +558,7 @@ function buildThreadResponseFromThread(
         threadIds: [args.thread.id],
         includeHidden: true,
       })[0]?.hasPendingInteraction === true,
-    nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
+    nativeTerminal: native !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
         threadIds: [args.thread.id],
@@ -580,7 +579,7 @@ function buildThreadResponseFromThread(
       })[0]?.queuedMessageCount ?? 0,
     workspaceSharing: ((): { threadCount: number } | null => {
       try {
-        return resolveWorkspaceSharing(deps, args.thread);
+        return resolveWorkspaceSharing(deps, environmentRow);
       } catch {
         return null;
       }
@@ -590,12 +589,8 @@ function buildThreadResponseFromThread(
 
 function resolveWorkspaceSharing(
   deps: ThreadRuntimeDisplayDeps,
-  thread: Thread,
+  environmentRow: ReturnType<typeof getEnvironment>,
 ): { threadCount: number } | null {
-  const environmentRow =
-    thread.environmentId === null
-      ? null
-      : getEnvironment(deps.db, thread.environmentId);
   const environment =
     environmentRow === null
       ? null

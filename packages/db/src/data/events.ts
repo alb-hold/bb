@@ -3,6 +3,7 @@ import { isBeforeLatestThreadEvent } from "./event-pruning-guards.js";
 import { rewindResolvedItemPruning } from "./resolved-item-pruning.js";
 import { acquireProjectAttachmentOwnership } from "./project-attachments.js";
 import {
+  LEGACY_CODEX_GOAL_EXTENSION_KIND,
   storedAttachmentPaths,
   type ProjectAttachmentOwnershipMode,
 } from "@bb/domain";
@@ -1950,18 +1951,9 @@ export function listLatestThreadStateEventRowsByScope(
   db: DbQueryConnection,
   args: { scope: ThreadListEnrichmentScope; kind: string },
 ): StoredEventRow[] {
-  const stateTypes = [
-    "thread/goal/updated",
-    "thread/goal/cleared",
-    "thread/extensionState/updated",
-  ] as const satisfies readonly ThreadEventType[];
-  const stateTypesPredicate = sql.raw(
-    `IN (${stateTypes.map((type) => `'${type}'`).join(", ")})`,
-  );
-  const kindPredicate = sql`(
-    candidate.type <> 'thread/extensionState/updated'
-    OR json_extract(candidate.data, '$.kind') = ${args.kind}
-  )`;
+  const isGoal = args.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND;
+  const index = isGoal ? sql`events_goal_thread_sequence_idx` : sql`events_thread_state_thread_sequence_idx`;
+  const kind = isGoal ? sql`'provider-codex/goal'` : sql`${args.kind}`;
   const requestedThreads = threadListEnrichmentRequestedThreads(args.scope);
   return db.all<StoredEventRow>(sql`
     SELECT ${sql.join(
@@ -1974,10 +1966,10 @@ export function listLatestThreadStateEventRowsByScope(
     WHERE events.rowid IN (
       SELECT (
         SELECT candidate.rowid
-        FROM events AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+        FROM events AS candidate INDEXED BY ${index}
         WHERE candidate.thread_id = requested.column1
-          AND candidate.type ${stateTypesPredicate}
-          AND ${kindPredicate}
+          AND candidate.type ${THREAD_STATE_TYPES_PREDICATE}
+          AND (candidate.type <> 'thread/extensionState/updated' OR json_extract(candidate.data, '$.kind') = ${kind})
         ORDER BY candidate.sequence DESC
         LIMIT 1
       )

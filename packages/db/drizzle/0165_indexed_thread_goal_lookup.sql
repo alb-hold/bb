@@ -1,0 +1,1 @@
+CREATE INDEX `events_goal_thread_sequence_idx` ON `events` (`thread_id`,`sequence`) WHERE "events"."type" IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated') AND ("events"."type" <> 'thread/extensionState/updated' OR json_extract("events"."data", '$.kind') = 'provider-codex/goal');
