@@ -1785,7 +1785,14 @@ describe("core environment orchestration", () => {
       expect(getEnvironment(harness.db, id)).toMatchObject({
         teardownStatus: "failed", teardownAttempt: 1, retireAt: Date.now() + 60_000,
       });
+      lookup.mockImplementationOnce(() => { throw new Error("Second interruption"); });
       vi.setSystemTime(Date.now() + 60_001);
+      await sweepProviderLifecycles(harness.deps);
+      expect(getEnvironment(harness.db, id)).toMatchObject({
+        teardownStatus: "failed", teardownMessage: "Second interruption",
+        teardownAttempt: 2, retireAt: Date.now() + 120_000,
+      });
+      vi.setSystemTime(Date.now() + 120_001);
       await sweepProviderLifecycles(harness.deps);
       expect(getEnvironment(harness.db, id)?.teardownStatus).toBe("removed");
     }));

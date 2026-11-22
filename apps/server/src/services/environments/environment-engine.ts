@@ -941,6 +941,23 @@ async function sweepProviderEnvironmentInSlot(
   environmentId: string,
   signal: AbortSignal,
 ): Promise<void> {
+  const attempt = getEnvironment(deps.db, environmentId)?.teardownAttempt;
+  try {
+    await sweepProviderEnvironmentAttempt(deps, environmentId, signal);
+  } catch (error) {
+    const current = getEnvironment(deps.db, environmentId);
+    if (!current || current.teardownStatus === "removed") return;
+    if (current.teardownAttempt === attempt)
+      writeEnvironment(deps, environmentId, { teardownAttempt: attempt + 1 });
+    writeEnvironmentTeardownFailure(deps, environmentId, errorMessage(error));
+  }
+}
+
+async function sweepProviderEnvironmentAttempt(
+  deps: Deps,
+  environmentId: string,
+  signal: AbortSignal,
+): Promise<void> {
   let row = getEnvironment(deps.db, environmentId);
   if (
     row === null ||
@@ -1083,23 +1100,6 @@ async function sweepProviderEnvironmentInSlot(
   }
 }
 
-async function runExplicitCleanupAttempt(
-  deps: Deps,
-  environmentId: string,
-  attempt: number,
-  sweep: () => Promise<void>,
-): Promise<void> {
-  try {
-    await sweep();
-  } catch (error) {
-    const current = getEnvironment(deps.db, environmentId);
-    if (!current || current.teardownStatus === "removed") return;
-    if (current.teardownAttempt === attempt)
-      writeEnvironment(deps, environmentId, { teardownAttempt: attempt + 1 });
-    writeEnvironmentTeardownFailure(deps, environmentId, errorMessage(error));
-  }
-}
-
 export async function cleanupEnvironment(
   deps: Deps,
   environmentId: string,
@@ -1122,9 +1122,7 @@ export async function cleanupEnvironment(
         : `Needs recovery. Inspect the workspace, then run bb environment cleanup ${environmentId} --recover.`,
     );
   writeEnvironment(deps, environmentId, { retireAt: Date.now() });
-  await runExplicitCleanupAttempt(deps, environmentId, row.teardownAttempt, () =>
-    sweepProviderEnvironment(deps, environmentId),
-  );
+  await sweepProviderEnvironment(deps, environmentId);
   return true;
 }
 
@@ -1257,9 +1255,7 @@ export async function recoverEnvironmentCleanup(
             teardownMessage: null,
           });
         });
-        await runExplicitCleanupAttempt(deps, environmentId, 0, () =>
-          sweepProviderEnvironmentInSlot(deps, environmentId, signal),
-        );
+        await sweepProviderEnvironmentInSlot(deps, environmentId, signal);
       });
     },
   }).done;
