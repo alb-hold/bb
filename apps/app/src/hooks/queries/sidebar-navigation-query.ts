@@ -1,7 +1,19 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import {
+  clearSidebarPreview,
+  publishSidebarPreview,
+  sidebarNavigationPreviewQueryKey,
+} from "../cache-owners/sidebar-preview-cache";
+import {
+  queryOptions,
+  useQuery,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useCallback } from "react";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
-import type { SidebarBootstrapResponse } from "@bb/server-contract";
+import {
+  mergeSidebarBootstrapPages,
+  type SidebarBootstrapResponse,
+} from "@bb/server-contract";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { apiClient } from "@/lib/api-server";
 import { request, requestOptions } from "@/lib/api";
@@ -19,12 +31,53 @@ import {
   writeCachedSidebarBootstrap,
 } from "@/lib/sidebar-bootstrap-cache";
 
-function fetchSidebarNavigation(
-  signal?: AbortSignal,
-): Promise<SidebarBootstrapResponse> {
-  return request<SidebarBootstrapResponse>(
-    apiClient["sidebar-bootstrap"].$get(undefined, requestOptions(signal)),
-  );
+const SIDEBAR_PAGE_SIZE = 25;
+
+export function useSidebarNavigationPreview() {
+  return useQuery<SidebarBootstrapResponse | null>({
+    queryKey: sidebarNavigationPreviewQueryKey(),
+    enabled: false,
+    staleTime: Infinity,
+  }).data;
+}
+
+export async function fetchSidebarNavigation({
+  client,
+  signal,
+}: {
+  client: QueryClient;
+  signal: AbortSignal;
+}): Promise<SidebarBootstrapResponse> {
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  let preview: SidebarBootstrapResponse | undefined;
+  try {
+    for (;;) {
+      let next: string | undefined;
+      const page = await request<SidebarBootstrapResponse>(
+        apiClient["sidebar-bootstrap"].$get(
+          { query: { limit: String(SIDEBAR_PAGE_SIZE), cursor } },
+          requestOptions(signal),
+        ),
+        (response) => {
+          next = response.headers.get("X-BB-Next-Cursor") ?? undefined;
+        },
+      );
+      signal.throwIfAborted();
+      const snapshot = mergeSidebarBootstrapPages(preview, page);
+      if (!next) {
+        writeCachedSidebarBootstrap(snapshot);
+        return snapshot;
+      }
+      if (seenCursors.has(next))
+        throw new Error("Sidebar returned a repeated continuation");
+      seenCursors.add(next);
+      preview = publishSidebarPreview(client, snapshot);
+      cursor = next;
+    }
+  } finally {
+    if (preview) clearSidebarPreview(client, preview);
+  }
 }
 
 export function useSidebarNavigation(options?: QueryOptions) {
@@ -36,11 +89,7 @@ export function useSidebarNavigation(options?: QueryOptions) {
 
   return useQuery<SidebarBootstrapResponse>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: async ({ signal }) => {
-      const response = await fetchSidebarNavigation(signal);
-      writeCachedSidebarBootstrap(response);
-      return response;
-    },
+    queryFn: fetchSidebarNavigation,
     enabled,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     placeholderData: () => readCachedSidebarBootstrap() ?? undefined,
@@ -52,7 +101,7 @@ export function useProjectDisplayName(
 ): string | undefined {
   const { data } = useQuery<SidebarBootstrapResponse>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: ({ signal }) => fetchSidebarNavigation(signal),
+    queryFn: fetchSidebarNavigation,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     enabled: Boolean(projectId),
   });
@@ -75,7 +124,7 @@ export function sidebarNavigationThreadSelectionQueryOptions<T>(
 ) {
   return queryOptions<SidebarBootstrapResponse, Error, T>({
     queryKey: sidebarNavigationQueryKey(),
-    queryFn: ({ signal }) => fetchSidebarNavigation(signal),
+    queryFn: fetchSidebarNavigation,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
     enabled: false,
     select: selectFromNavigation,

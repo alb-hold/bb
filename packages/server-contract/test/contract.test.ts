@@ -532,6 +532,8 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "Thread list queries may omit filters and pagination to include the corresponding unfiltered/default set.",
     fields: [
       "threadListQuerySchema.archived",
+      "threadListQuerySchema.cursor",
+      "threadListQuerySchema.fields",
       "threadListQuerySchema.environmentId",
       "threadListQuerySchema.hostId",
       "threadListQuerySchema.sectionId",

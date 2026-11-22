@@ -134,6 +134,7 @@ import {
 } from "./RootComposeSecondaryContent";
 import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -518,6 +519,7 @@ function RootComposeSurface({
     isProjectless,
     projects,
     sidebarNavigation,
+    sidebarNavigationComplete,
     sidebarNavigationError,
     currentProject,
     projectSources,
@@ -538,6 +540,7 @@ function RootComposeSurface({
     setEnvironmentSelectionValue,
     renderPromptBox,
   } = composer;
+  const navigationPreview = useSidebarNavigationPreview();
   const rootPanelEnvironmentId =
     parsedEnvironment?.type === "reuse"
       ? parsedEnvironment.environmentId
@@ -680,9 +683,15 @@ function RootComposeSurface({
     return () => window.cancelAnimationFrame(handle);
   }, [focusPromptBox, isPointerCoarse, location.key, shouldFocusPrompt]);
 
+  const recentNavigation = sidebarNavigationComplete
+    ? sidebarNavigation
+    : (navigationPreview ?? sidebarNavigation);
   const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
-    [sidebarNavigation],
+    () =>
+      buildMobileRecentThreads({
+        sidebarNavigation: recentNavigation,
+      }),
+    [recentNavigation],
   );
   const systemProviders = useProviderDirectory().data;
   const mobileRecentProvidersById = useMemo(() => {
@@ -694,16 +703,16 @@ function RootComposeSurface({
   }, [systemProviders]);
   const mobileRecentProjectNamesById = useMemo(() => {
     const namesById = new Map<string, string>();
-    if (!sidebarNavigation) return namesById;
+    if (!recentNavigation) return namesById;
     namesById.set(
-      sidebarNavigation.personalProject.id,
-      sidebarNavigation.personalProject.name,
+      recentNavigation.personalProject.id,
+      recentNavigation.personalProject.name,
     );
-    for (const project of sidebarNavigation.projects) {
+    for (const project of recentNavigation.projects) {
       namesById.set(project.id, project.name);
     }
     return namesById;
-  }, [sidebarNavigation]);
+  }, [recentNavigation]);
 
   const providerCliStatus = useHostProviderCliStatus({
     hostId: rootProjectHostId,
@@ -1567,6 +1576,7 @@ function RootComposeSurface({
                     providersById={mobileRecentProvidersById}
                     showCreatingRow={isSubmitting}
                     threads={mobileRecentThreads}
+                    completeSnapshot={sidebarNavigationComplete}
                   />
                 }
                 isSecondaryPanelOpen={isSecondaryPanelOpen}

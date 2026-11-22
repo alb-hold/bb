@@ -113,6 +113,7 @@ vi.mock("@/lib/sdk", () => ({
   },
 }));
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
   useSidebarNavigation: () => ({
     data: {
       sections: [],

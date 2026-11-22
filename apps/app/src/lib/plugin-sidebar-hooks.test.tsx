@@ -93,6 +93,7 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 }));
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
   useSidebarNavigation: () => ({ data: state.data, isError: false }),
 }));
 

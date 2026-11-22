@@ -1,3 +1,4 @@
+import { finishThreadPage, parseThreadCursor } from "./list-pagination.js";
 import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
 import { and, eq, ne } from "drizzle-orm";
@@ -38,6 +39,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import {
+  toThreadListSummary,
   effectiveDisplayStatus,
   PROMPT_HISTORY_SEARCH_LIMIT_DEFAULT,
   PROMPT_HISTORY_SEARCH_LIMIT_MAX,
@@ -364,6 +366,16 @@ export function registerThreadBaseRoutes(
       limit: query.limit,
       offset: query.offset,
     });
+    if (query.cursor && (offset !== undefined || limit === undefined)) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "cursor requires limit and cannot be combined with offset",
+      );
+    }
+    const after = query.cursor
+      ? parseThreadCursor(query.cursor, query.archived === "true")
+      : undefined;
     setCurrentThreadListSlowQueryContext(
       context,
       query,
@@ -386,6 +398,7 @@ export function registerThreadBaseRoutes(
         requireThreadSection(deps, query.sectionId);
       }
       const options = {
+        ...(after ? { after } : {}),
         ...(query.projectId ? { projectId: query.projectId } : {}),
         ...(query.environmentId ? { environmentId: query.environmentId } : {}),
         ...(query.hostId ? { hostId: query.hostId } : {}),
@@ -414,7 +427,15 @@ export function registerThreadBaseRoutes(
         ...(limit !== undefined ? { limit } : {}),
         ...(offset !== undefined ? { offset } : {}),
       };
-      const threads = listThreadsWithPendingInteractionState(deps.db, options);
+      const threads = listThreadsWithPendingInteractionState(
+        deps.db,
+        limit !== undefined && Number.isSafeInteger(limit)
+          ? { ...options, limit: limit + 1 }
+          : options,
+      );
+      if (limit !== undefined) {
+        finishThreadPage(context, threads, limit, query.archived === "true");
+      }
       void Promise.all(
         threads
           .slice(0, NATIVE_STATUS_LIST_LIMIT)
@@ -425,11 +446,17 @@ export function registerThreadBaseRoutes(
           "Native status list reconciliation failed",
         );
       });
+      const entries = toThreadListEntryResponses(deps, {
+        threads,
+        scope:
+          limit === undefined
+            ? buildThreadListEnrichmentScope(deps.db, options)
+            : { kind: "ids", ids: threads.map((thread) => thread.id) },
+      }) satisfies ThreadListEntry[];
       return context.json(
-        toThreadListEntryResponses(deps, {
-          threads,
-          scope: buildThreadListEnrichmentScope(deps.db, options),
-        }) satisfies ThreadListEntry[],
+        query.fields === "summary"
+          ? { rows: entries.map(toThreadListSummary) }
+          : entries,
       );
     } finally {
       clearCurrentThreadListSlowQueryContext();

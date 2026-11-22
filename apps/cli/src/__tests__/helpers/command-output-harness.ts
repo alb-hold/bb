@@ -18,13 +18,6 @@ vi.mock("../../client.js", async () => {
     await vi.importActual<typeof import("@bb/sdk/core")>("@bb/sdk/core");
   const { createHttpTransport } =
     await vi.importActual<typeof import("@bb/sdk/node")>("@bb/sdk/node");
-  const toResponse = (resolved: MockTransportResolved): Response =>
-    resolved instanceof Response
-      ? resolved
-      : new Response(JSON.stringify(resolved), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
   const createCliBbSdk = vi.fn((baseUrl: string) => {
     const realTransport = createHttpTransport({ baseUrl, runtime: "node" });
     return createBbSdk({
@@ -130,6 +123,14 @@ function asServerClient(value: ServerClientOverride): ServerClient {
 type ApiStubHandler = (
   ...args: never[]
 ) => MockTransportResolved | MockTransportPromise;
+function toResponse(resolved: MockTransportResolved): Response {
+  return resolved instanceof Response
+    ? resolved
+    : new Response(JSON.stringify(resolved), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+}
 interface ApiStubNode {
   [segment: string]: ApiStubNode | ApiStubHandler;
 }
@@ -146,7 +147,8 @@ export function stubServerApi(handlers: Record<string, ApiStubHandler>): void {
       node[segment] = child;
       node = child;
     }
-    node[segments[segments.length - 1]] = handler;
+    node[segments[segments.length - 1]] = async (...args: never[]) =>
+      toResponse(await handler(...args));
   }
   createClientMock.mockReturnValue(asServerClient({ api }));
 }

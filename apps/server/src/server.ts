@@ -583,6 +583,7 @@ export function createApp(
   app.use(
     "*",
     cors({
+      exposeHeaders: ["X-BB-Pagination", "X-BB-Next-Cursor"],
       origin: (origin, context) => {
         if (context.req.path === "/health") {
           return "*";

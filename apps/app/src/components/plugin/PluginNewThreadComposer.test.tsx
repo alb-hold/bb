@@ -376,6 +376,7 @@ const OTHER_PROJECT = makeProjectWithThreadsResponse({
 
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
   useSidebarNavigation: () =>
     mocks.sidebarNavigationSettled
       ? {

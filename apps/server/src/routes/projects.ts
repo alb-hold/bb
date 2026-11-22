@@ -39,7 +39,11 @@ import {
   type ProjectWithThreadsResponse,
   type PublicApiSchema,
 } from "@bb/server-contract";
-import type { Hono } from "hono";
+import {
+  finishThreadPage,
+  parseThreadCursor,
+} from "./threads/list-pagination.js";
+import type { Context, Hono } from "hono";
 import type { AppDeps } from "../types.js";
 import { COMMAND_TIMEOUT_MS } from "../constants.js";
 import { ApiError } from "../errors.js";
@@ -221,20 +225,34 @@ function buildProjectsWithThreadsResponse(
   );
 }
 
+interface SidebarPage {
+  context: Pick<Context, "header">;
+  limit: number;
+  after?: ReturnType<typeof parseThreadCursor>;
+}
+
 function buildProjectsWithThreadsResponseFromRows(
   deps: AppDeps,
   projectRows: ProjectResponseProjectFields[],
+  page?: SidebarPage,
 ): ProjectWithThreadsResponse[] {
   const projects = buildProjectResponsesFromRows(deps, projectRows);
   const projectIds = projects.map((project) => project.id);
-  const threadListOptions = { archived: false, projectIds };
+  const threadListOptions = {
+    archived: false,
+    projectIds,
+    ...(page ? { limit: page.limit + 1, after: page.after } : {}),
+  };
   const threadRows = listThreadsWithPendingInteractionStateForProjects(
     deps.db,
     threadListOptions,
   );
+  if (page) finishThreadPage(page.context, threadRows, page.limit, false);
   const threadResponses = toThreadListEntryResponses(deps, {
     threads: threadRows,
-    scope: buildProjectThreadListEnrichmentScope(deps.db, threadListOptions),
+    scope: page
+      ? { kind: "ids", ids: threadRows.map((row) => row.id) }
+      : buildProjectThreadListEnrichmentScope(deps.db, threadListOptions),
   });
   const threadsByProjectId = new Map<
     string,
@@ -260,7 +278,7 @@ function buildProjectsWithThreadsResponseFromRows(
   }));
 }
 
-function buildSidebarBootstrapResponse(deps: AppDeps) {
+function buildSidebarBootstrapResponse(deps: AppDeps, page?: SidebarPage) {
   const personalProject = getPersonalProject(deps.db);
   if (!personalProject) {
     throw new ApiError(
@@ -269,10 +287,12 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
       "Personal project is not initialized",
     );
   }
-  const personalProjectResponse = buildProjectsWithThreadsResponseFromRows(
-    deps,
-    [personalProject],
-  )[0];
+  const [personalProjectResponse, ...projects] =
+    buildProjectsWithThreadsResponseFromRows(
+      deps,
+      [personalProject, ...listPublicProjects(deps.db)],
+      page,
+    );
   if (!personalProjectResponse) {
     throw new ApiError(
       500,
@@ -282,10 +302,7 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
   }
   return {
     sections: listThreadSections(deps.db),
-    projects: buildProjectsWithThreadsResponseFromRows(
-      deps,
-      listPublicProjects(deps.db),
-    ),
+    projects,
     personalProject: personalProjectResponse,
   };
 }
@@ -434,9 +451,26 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     );
   });
 
-  get(routes.sidebarBootstrap, (context) =>
-    context.json(buildSidebarBootstrapResponse(deps)),
-  );
+  get(routes.sidebarBootstrap, (context, query) => {
+    if (query.limit === undefined) {
+      if (query.cursor !== undefined)
+        throw new ApiError(400, "invalid_request", "cursor requires limit");
+      return context.json(buildSidebarBootstrapResponse(deps));
+    }
+    const limit = parseBoundedPositiveOptionalInteger({
+      name: "limit",
+      value: query.limit,
+      defaultValue: 100,
+      max: 500,
+    });
+    const after =
+      query.cursor === undefined
+        ? undefined
+        : parseThreadCursor(query.cursor, false);
+    return context.json(
+      buildSidebarBootstrapResponse(deps, { context, limit, after }),
+    );
+  });
 
   post(routes.create, async (context, payload) => {
     const { source } = payload;

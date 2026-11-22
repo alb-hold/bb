@@ -87,6 +87,8 @@ describe("bb thread list command output", () => {
 
     expect(list).toHaveBeenCalledWith({
       query: {
+        fields: "summary",
+        limit: "100",
         archived: "false",
         projectId: "proj-1",
         parentThreadId: "thread-manager-1",
@@ -104,7 +106,11 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { parentThreadId: "thread-manager-1" },
+      query: {
+        fields: "summary",
+        limit: "100",
+        parentThreadId: "thread-manager-1",
+      },
     });
   });
 
@@ -114,7 +120,9 @@ describe("bb thread list command output", () => {
 
     await runCommand(["thread", "list"], register);
 
-    expect(list).toHaveBeenCalledWith({ query: { archived: "false" } });
+    expect(list).toHaveBeenCalledWith({
+      query: { fields: "summary", limit: "100", archived: "false" },
+    });
   });
 
   it("bb thread list selects archived threads with --archived", async () => {
@@ -123,7 +131,9 @@ describe("bb thread list command output", () => {
 
     await runCommand(["thread", "list", "--archived"], register);
 
-    expect(list).toHaveBeenCalledWith({ query: { archived: "true" } });
+    expect(list).toHaveBeenCalledWith({
+      query: { fields: "summary", limit: "100", archived: "true" },
+    });
   });
 
   it("bb thread list includes archived and active threads with --all", async () => {
@@ -132,7 +142,9 @@ describe("bb thread list command output", () => {
 
     await runCommand(["thread", "list", "--all"], register);
 
-    expect(list).toHaveBeenCalledWith({ query: {} });
+    expect(list).toHaveBeenCalledWith({
+      query: { fields: "summary", limit: "100" },
+    });
   });
 
   it("bb thread list rejects --all with --archived", async () => {
@@ -158,9 +170,7 @@ describe("bb thread list command output", () => {
       register,
     );
 
-    expect(list).toHaveBeenCalledWith({
-      query: { threadIds: "thr_a,thr_b" },
-    });
+    expect(list).toHaveBeenCalledWith({ query: { threadIds: "thr_a,thr_b" } });
   });
 
   it("bb thread list returns an archived thread requested by ID", async () => {
@@ -186,7 +196,7 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { threadIds: "thread-archived-by-id" },
+      query: { fields: "summary", threadIds: "thread-archived-by-id" },
     });
     expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
       "thread-archived-by-id",
@@ -203,7 +213,7 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { threadIds: "thread-1", archived: "true" },
+      query: { fields: "summary", threadIds: "thread-1", archived: "true" },
     });
   });
 
@@ -221,7 +231,7 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { archived: "false", hostId: "host_removed123" },
+      query: { limit: "100", archived: "false", hostId: "host_removed123" },
     });
     expect(hosts).not.toHaveBeenCalled();
   });
@@ -233,7 +243,12 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list", "--include-hidden"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: { archived: "false", includeHidden: "true" },
+      query: {
+        fields: "summary",
+        limit: "100",
+        archived: "false",
+        includeHidden: "true",
+      },
     });
   });
 
@@ -253,7 +268,12 @@ describe("bb thread list command output", () => {
 
       await runCommand(["thread", "list", ...args, "--json"], register);
 
-      expect(list).toHaveBeenCalledWith({ query });
+      expect(list).toHaveBeenCalledWith({
+        query: {
+          ...(!args.includes("--thread") ? { limit: "100" } : {}),
+          ...query,
+        },
+      });
     },
   );
 
@@ -333,7 +353,7 @@ describe("bb thread list command output", () => {
       await runCommand(["thread", "list"], register);
 
       expect(list).toHaveBeenCalledWith({
-        query: { archived: "false" },
+        query: { fields: "summary", limit: "100", archived: "false" },
       });
       expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
         "",
@@ -363,7 +383,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: { archived: "false" },
+      query: { fields: "summary", limit: "100", archived: "false" },
     });
     expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
       "",
@@ -582,7 +602,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: { archived: "false" },
+      query: { fields: "summary", limit: "100", archived: "false" },
     });
   });
 });

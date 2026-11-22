@@ -69,6 +69,7 @@ interface RootComposeMobileRecentsProps {
   providersById: ReadonlyMap<string, ProviderInfo>;
   showCreatingRow: boolean;
   threads: readonly ThreadListEntry[];
+  completeSnapshot?: boolean;
 }
 
 function MobileRecentThreadRow({
@@ -177,6 +178,7 @@ export function RootComposeMobileRecents({
   providersById,
   showCreatingRow,
   threads,
+  completeSnapshot = true,
 }: RootComposeMobileRecentsProps) {
   const [collapsedThreadIdList, setCollapsedThreadIdList] = useAtom(
     mobileRecentsCollapsedThreadIdsAtom,
@@ -200,7 +202,7 @@ export function RootComposeMobileRecents({
     [setCollapsedThreadIdList],
   );
   useEffect(() => {
-    if (highlightedThreadId === null) return;
+    if (!completeSnapshot || highlightedThreadId === null) return;
     const ancestorIds = getMobileRecentAncestorIds({
       threadId: highlightedThreadId,
       threads,
@@ -210,7 +212,12 @@ export function RootComposeMobileRecents({
       const next = current.filter((id) => !ancestorIds.includes(id));
       return next.length === current.length ? current : next;
     });
-  }, [highlightedThreadId, setCollapsedThreadIdList, threads]);
+  }, [
+    completeSnapshot,
+    highlightedThreadId,
+    setCollapsedThreadIdList,
+    threads,
+  ]);
   const recentThreads = useMemo(
     () =>
       getMobileRecentThreads({

@@ -241,6 +241,7 @@ export interface NewThreadComposerState {
   isProjectless: boolean;
   projects: readonly SidebarProject[] | undefined;
   sidebarNavigation: SidebarBootstrapResponse | undefined;
+  sidebarNavigationComplete: boolean;
   sidebarNavigationError: boolean;
   currentProject: SidebarProject | undefined;
   projectSources: SidebarProject["sources"];
@@ -2500,6 +2501,9 @@ export function NewThreadComposer({
         isProjectless,
         projects,
         sidebarNavigation: sidebarNavigationQuery.data,
+        sidebarNavigationComplete:
+          sidebarNavigationQuery.data !== undefined &&
+          !sidebarNavigationQuery.isPlaceholderData,
         sidebarNavigationError: sidebarNavigationQuery.isError,
         currentProject,
         projectSources,

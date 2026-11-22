@@ -257,6 +257,7 @@ import {
   type ThreadCountResponse,
   type ThreadListQuery,
   type ThreadListResponse,
+  type ThreadListWireResponse,
   type ThreadConversationOutlineQuery,
   type ThreadConversationOutlineResponse,
   type ThreadOpenRequest,
@@ -575,7 +576,10 @@ export const publicApiRoutes = {
     sidebarBootstrap: defineRoute({
       path: "/sidebar-bootstrap",
       method: "get",
-      request: noRequest(),
+      request: optionalQueryRequest<
+        EmptyInput,
+        Pick<ThreadListQuery, "limit" | "cursor">
+      >(threadListQuerySchema.pick({ limit: true, cursor: true })),
       response: jsonResponse<SidebarBootstrapResponse>(),
     }),
     get: defineRoute({
@@ -1420,7 +1424,7 @@ export const publicApiRoutes = {
       request: optionalQueryRequest<EmptyInput, ThreadListQuery>(
         threadListQuerySchema,
       ),
-      response: jsonResponse<ThreadListResponse>(),
+      response: jsonResponse<ThreadListWireResponse>(),
     }),
     count: defineRoute({
       path: "/threads/count",

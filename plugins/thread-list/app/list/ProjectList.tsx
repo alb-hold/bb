@@ -1354,7 +1354,7 @@ function ProjectListComponent({
     personalProject,
     archived,
     projectNamesById,
-  } = useSidebarData();
+  } = useSidebarData(true);
   const [createdSections, setCreatedSections] = useState<
     SidebarSectionDefinition[]
   >([]);

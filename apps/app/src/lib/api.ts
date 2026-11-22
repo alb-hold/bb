@@ -119,8 +119,10 @@ async function requestResponse(
 
 export async function request<T>(
   responsePromise: Promise<Response>,
+  onResponse?: (response: Response) => void,
 ): Promise<T> {
   const res = await requestResponse(responsePromise);
+  onResponse?.(res);
   const text = await res.text();
   return JSON.parse(text) as T;
 }

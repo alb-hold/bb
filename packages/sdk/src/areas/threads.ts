@@ -1,4 +1,6 @@
 import {
+  toThreadListSummary,
+  type ThreadListSummary,
   maskResolvedProviderEnvironmentRow,
   withEffectiveDisplayStatus,
   type PromptInput,
@@ -39,6 +41,7 @@ import type {
   ThreadCountQuery,
   ThreadCountResponse,
   ThreadListResponse,
+  ThreadListWireResponse,
   ThreadMessageResponse,
   ThreadRunningResponse,
   ThreadOpenResponse,
@@ -660,6 +663,9 @@ export interface ThreadsArea {
   queue: ThreadQueueArea;
   interactions: ThreadInteractionsArea;
   list(args?: ThreadListArgs): Promise<ThreadListResult>;
+  experimental_listSummaries(
+    args?: ThreadListArgs,
+  ): Promise<ThreadListSummary[]>;
   listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
@@ -763,6 +769,54 @@ function listQuery(args: ThreadListArgs | undefined): ThreadListQuery {
       ? {}
       : { hasParent: args.hasParent ? "true" : "false" }),
   };
+}
+
+export function fullThreadListRows(
+  body: ThreadListWireResponse,
+): ThreadListResponse {
+  if (!Array.isArray(body)) throw new Error("Expected complete thread entries");
+  return body;
+}
+
+async function readThreadListPages<T extends ThreadListSummary>(
+  { transport }: CreateSdkAreaArgs,
+  input: ThreadListArgs | undefined,
+  fields: ThreadListQuery["fields"],
+  rowsOf: (body: ThreadListWireResponse) => T[],
+): Promise<T[]> {
+  const query = { ...listQuery(input), ...(fields ? { fields } : {}) };
+  const read = (params: ThreadListQuery) =>
+    transport.api.v1.threads.$get(
+      { query: params },
+      ...signalRequestArgs(input?.signal),
+    );
+  if (input?.limit !== undefined || input?.threadIds !== undefined) {
+    return rowsOf(await transport.readJson(read(query))).map(
+      withEffectiveDisplayStatus,
+    );
+  }
+  const pageSize = 100;
+  const result: T[] = [];
+  const seenCursors = new Set<string>();
+  let params: ThreadListQuery = { ...query, limit: String(pageSize) };
+  for (;;) {
+    const response = await transport.resolve(read(params));
+    const rows = rowsOf(await transport.readJson(Promise.resolve(response)));
+    if (!response.headers.has("X-BB-Pagination")) {
+      const complete =
+        rows.length === pageSize
+          ? rowsOf(await transport.readJson(read(query)))
+          : rows;
+      return complete.map(withEffectiveDisplayStatus);
+    }
+    for (const row of rows) result.push(withEffectiveDisplayStatus(row));
+    const cursor = response.headers.get("X-BB-Next-Cursor");
+    if (!cursor) return result;
+    if (seenCursors.has(cursor))
+      throw new Error("Thread list returned a repeated cursor");
+    seenCursors.add(cursor);
+    params = { ...query, offset: undefined, limit: String(pageSize), cursor };
+  }
 }
 
 function countQuery(args: ThreadCountArgs | undefined): ThreadCountQuery {
@@ -1464,15 +1518,13 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     },
     queue,
     interactions,
-    async list(input) {
-      return transport
-        .readJson(
-          transport.api.v1.threads.$get(
-            { query: listQuery(input) },
-            ...signalRequestArgs(input?.signal),
-          ),
-        )
-        .then((threads) => threads.map(withEffectiveDisplayStatus));
+    list(input) {
+      return readThreadListPages(args, input, undefined, fullThreadListRows);
+    },
+    experimental_listSummaries(input) {
+      return readThreadListPages(args, input, "summary", (body) =>
+        Array.isArray(body) ? body.map(toThreadListSummary) : body.rows,
+      );
     },
     async markRead(input) {
       return transport

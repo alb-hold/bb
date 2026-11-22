@@ -10,6 +10,7 @@ export * from "./common.js";
 export * from "./device-handoff-identity.js";
 export * from "./errors.js";
 export * from "./public-api.js";
+export * from "./sidebar-bootstrap-pages.js";
 export * from "./thread-timeline.js";
 export * from "./thread-timeline-delta.js";
 

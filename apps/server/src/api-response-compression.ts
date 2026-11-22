@@ -76,17 +76,18 @@ async function compressBufferedApiJsonResponse(
   context: Context,
 ): Promise<void> {
   const original = context.res;
-  const bytes = Buffer.from(await original.arrayBuffer());
-  let body: Uint8Array<ArrayBuffer> = new Uint8Array(bytes);
+  const serialized = await original.arrayBuffer();
+  let body: ArrayBuffer | Uint8Array<ArrayBuffer> = serialized;
   let contentEncoding: string | null = null;
-  const compressible = bytes.length >= API_RESPONSE_COMPRESSION_MIN_BYTES;
+  const compressible =
+    serialized.byteLength >= API_RESPONSE_COMPRESSION_MIN_BYTES;
   if (compressible) {
     const candidate = rankAcceptedAssetEncodings(
       context.req.header("accept-encoding"),
       API_RESPONSE_ENCODINGS,
     )[0];
     if (candidate !== undefined) {
-      body = new Uint8Array(await candidate.compress(bytes));
+      body = new Uint8Array(await candidate.compress(Buffer.from(serialized)));
       contentEncoding = candidate.encoding;
     }
   }

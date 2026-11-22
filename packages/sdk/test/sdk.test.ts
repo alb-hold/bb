@@ -943,6 +943,45 @@ describe("@bb/sdk", () => {
     expect(receivedSignal).toBe(controller.signal);
   });
 
+  it("collects sidebar continuation rows before returning a complete project", async () => {
+    const urls: URL[] = [];
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        runtime: "node",
+        fetch: async (input) => {
+          const url = new URL(String(input));
+          urls.push(url);
+          const first = !url.searchParams.has("cursor");
+          return Response.json(
+            {
+              sections: [],
+              projects: [],
+              personalProject: {
+                id: "personal",
+                threads: [{ id: first ? "one" : "two" }],
+              },
+            },
+            { headers: first ? { "X-BB-Next-Cursor": "continue" } : {} },
+          );
+        },
+      }),
+    });
+    const navigation = await sdk.projects.sidebarBootstrap();
+    expect(
+      navigation.personalProject.threads.map((thread) => thread.id),
+    ).toEqual(["one", "two"]);
+    expect(
+      urls.map((url) => [
+        url.searchParams.get("limit"),
+        url.searchParams.get("cursor"),
+      ]),
+    ).toEqual([
+      ["100", null],
+      ["100", "continue"],
+    ]);
+  });
+
   it("maps personal-project list options while forwarding the abort signal", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | null | undefined;
@@ -1561,7 +1600,7 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true",
+        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true&limit=100",
       },
     ]);
   });
@@ -2156,7 +2195,7 @@ describe("@bb/sdk", () => {
     });
 
     expect(queue.requests[0]?.url).toBe(
-      "http://bb.test/api/v1/threads?includeHidden=true",
+      "http://bb.test/api/v1/threads?includeHidden=true&limit=100",
     );
     expect(JSON.parse(queue.requests[1]?.bodyText ?? "{}")).toEqual({
       visibility: "hidden",
