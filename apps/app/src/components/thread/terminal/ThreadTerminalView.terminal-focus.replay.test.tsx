@@ -4657,6 +4657,7 @@ describe("terminal first paint", () => {
     const write = Terminal.prototype.write;
     vi.spyOn(Terminal.prototype, "write").mockImplementation(
       function (this: Terminal, data, callback) {
+        expect(this.options.disableStdin).toBe(true);
         paintOpacities.push(
           document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
             .opacity,
@@ -4682,6 +4683,7 @@ describe("terminal first paint", () => {
     const surface = document.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
     )!;
+    expect(testState.output.mock.calls[0]?.[0]).not.toHaveProperty("tailBytes");
     expect(surface.style.opacity).toBe("0");
     await act(async () => {
       finishOutput({

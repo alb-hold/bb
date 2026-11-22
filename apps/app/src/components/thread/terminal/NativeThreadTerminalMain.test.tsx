@@ -486,7 +486,7 @@ describe("NativeThreadTerminalMain", () => {
     },
   );
 
-  it("shows the exited terminal panel with an ended bar and Resume", () => {
+  it("shows the exited terminal panel with an ended bar and Resume", async () => {
     hooks.listTerminals.mockReturnValue({
       data: {
         sessions: [
@@ -520,7 +520,16 @@ describe("NativeThreadTerminalMain", () => {
     );
     expect(screen.getByText("Claude Code session ended (exit 2)")).toBeTruthy();
     expect(screen.getByText("Session session-native")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy session ID" })).toBeTruthy();
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      await act(async () => screen.getByRole("button", { name: "Copy session ID" }).click());
+      expect(writeText).toHaveBeenCalledWith("session-native");
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
     expect(screen.getByText("process exit")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(screen.getByTestId("terminal-panel")).toBeTruthy();

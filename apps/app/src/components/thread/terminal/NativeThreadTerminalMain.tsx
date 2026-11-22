@@ -286,7 +286,7 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
       >
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2">
             <span className="font-medium">
               {endedLabel}
               {state.exitCode !== null
@@ -294,7 +294,7 @@ export function NativeThreadTerminalMain({
                 : ""}
             </span>
             {session.closeReason ? (
-              <span className="ml-2 text-muted-foreground">{session.closeReason.replaceAll("-", " ")}</span>
+              <span className="text-muted-foreground">{session.closeReason.replaceAll("-", " ")}</span>
             ) : null}
             {view.nativeSessionId === null ? null : (
               <SessionIdentity id={view.nativeSessionId} />

@@ -3930,7 +3930,11 @@ describe("terminal output retained from the data plane", () => {
 
   it("lists an exited terminal with all of its queued output without a separate flush", async () => {
     const fixture = await setup();
-    for (const chunk of outputChunks()) {
+    const chunks = [
+      ...outputChunks(),
+      { seq: outputChunks().length, dataBase64: Buffer.alloc(64 * 1024, 65).toString("base64") },
+    ];
+    for (const chunk of chunks) {
       fixture.daemonSocket.receive({
         type: "terminal.output",
         terminalId: fixture.terminal.id,
@@ -3960,7 +3964,7 @@ describe("terminal output retained from the data plane", () => {
         terminalSessionId: fixture.terminal.id,
         now: Date.now(),
       }),
-    ).toEqual(outputChunks());
+    ).toEqual(chunks);
     fixture.child.shutdown();
   });
 
