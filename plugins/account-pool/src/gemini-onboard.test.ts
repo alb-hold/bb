@@ -17,6 +17,7 @@ interface FakeCall {
 function fakeCodeAssist(script: {
   loads: unknown[];
   loadsByBase?: Partial<Record<"prod" | "daily", unknown[]>>;
+  loadFailureByBase?: Partial<Record<"prod" | "daily", { status: number } | Error>>;
   onboard?: unknown;
   onboardReplies?: unknown[];
   operations?: unknown[];
@@ -47,6 +48,9 @@ function fakeCodeAssist(script: {
         : null;
     if (rest === "/v1internal:loadCodeAssist") {
       calls.push({ method: "loadCodeAssist", base, body });
+      const failure = script.loadFailureByBase?.[base];
+      if (failure instanceof Error) throw failure;
+      if (failure) return new Response("{}", { status: failure.status });
       const source = script.loadsByBase?.[base]
         ? loadsByBase[base]
         : loads;
@@ -405,6 +409,27 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       ["loadCodeAssist", "prod"],
       ["loadCodeAssist", "daily"],
     ]);
+  });
+
+  it.each([
+    ["HTTP 500", { status: 500 }, "Gemini loadCodeAssist failed with HTTP 500."],
+    ["network rejection", new TypeError("fetch failed"), "fetch failed"],
+  ])("preserves daily load failures with prod tier diagnostics (%s)", async (_name, failure, original) => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [{ currentTier: { id: "standard-tier" }, paidTier: { id: "ultra-tier", usesGcpTos: false }, allowedTiers: [{ id: "standard-tier", isDefault: true }, { id: "ultra-tier" }] }],
+      },
+      loadFailureByBase: { daily: failure as { status: number } | Error },
+    });
+    let caught: unknown;
+    try { await google.adapter.importAccount(); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(`${original} (stage: loadCodeAssist daily; tier ids: prod [current=standard-tier, paid=ultra-tier, allowed=standard-tier(default),ultra-tier])`);
+    expect((caught as Error).cause).toBe(failure instanceof Error ? failure : expect.any(Error));
+    expect((caught as Error).message).not.toContain(TOKEN);
+    expect((caught as Error).message).not.toContain(EMAIL);
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([["loadCodeAssist", "prod"], ["loadCodeAssist", "daily"]]);
   });
 
   it("includes the current, paid, and default tier ids in no-project errors", async () => {

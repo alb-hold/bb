@@ -715,7 +715,16 @@ export function createGeminiAdapter(options: {
           ) {
             const prodLoaded = loaded;
             const prodTierDiagnostics = offeredTierIds(prodLoaded);
-            const dailyLoaded = await load("daily");
+            let dailyLoaded: unknown;
+            try {
+              dailyLoaded = await load("daily");
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `${message} (stage: loadCodeAssist daily; tier ids: prod [${offeredTierIds(prodLoaded)}])`,
+                { cause: error },
+              );
+            }
             const dailyInfo = parseLoadCodeAssist(dailyLoaded);
             project = dailyInfo?.project ?? null;
             if (dailyInfo !== null && project !== null) {
