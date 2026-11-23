@@ -1441,9 +1441,19 @@ bb pool account add --provider codex --login
 bb pool account login-poll --session <id>
 bb pool account add --provider claude --import
 bb pool account add --provider codex --import
+bb pool account add --provider gemini --import [--dry-run] [--home <dir>]
 printf '%s\n' "$ANTHROPIC_API_KEY" | bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]
 bb pool account refresh <id>
 ```
+
+`bb pool account add --provider gemini --import [--home <dir>]` pools an
+Antigravity sign-in. It loads Code Assist from the daily endpoint first and
+falls back to prod, then onboarding, only when daily has no project. Add
+`--dry-run` to run the same checks without adding or onboarding anything: it
+prints each endpoint's tier ids and whether it has a project, the endpoint the
+import would use, and how many usage windows `retrieveUserQuotaSummary`
+returned, never the token, email or project id. The RPC is
+`account.probeImport` with `{provider: "gemini", home?}`.
 
 The Claude login start command creates a ten-minute in-memory PKCE session,
 prints a browser authorization URL and session ID, then exits. After sign-in,

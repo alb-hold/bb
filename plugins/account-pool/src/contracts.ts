@@ -403,6 +403,69 @@ export const accountAddInputSchema = z
 
 export type AccountAddInput = z.infer<typeof accountAddInputSchema>;
 
+export const accountImportProbeInputSchema = z
+  .object({
+    provider: providerSchema,
+    home: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type AccountImportProbeInput = z.infer<
+  typeof accountImportProbeInputSchema
+>;
+
+const geminiEndpointSchema = z.enum(["daily", "prod"]);
+
+export const importProbeEndpointSchema = z
+  .object({
+    endpoint: geminiEndpointSchema,
+    status: z.enum(["answered", "unreadable", "failed", "not-loaded"]),
+    currentTier: z.string().nullable(),
+    paidTier: z.string().nullable(),
+    allowedTiers: z.array(
+      z.object({ id: z.string(), isDefault: z.boolean() }).strict(),
+    ),
+    projectPresent: z.boolean(),
+  })
+  .strict();
+
+export const importProbeSchema = z
+  .object({
+    provider: providerSchema,
+    endpoints: z.array(importProbeEndpointSchema),
+    wouldUse: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("project"),
+          loadedFrom: geminiEndpointSchema,
+          servesOn: geminiEndpointSchema,
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("onboard"),
+          endpoint: z.literal("prod"),
+          tierId: z.string(),
+        })
+        .strict(),
+      z.object({ kind: z.literal("none") }).strict(),
+    ]),
+    quota: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("answered"),
+          windows: z.number().int().nonnegative(),
+        })
+        .strict(),
+      z.object({ kind: z.literal("failed") }).strict(),
+      z.object({ kind: z.literal("not-checked") }).strict(),
+    ]),
+  })
+  .strict();
+
+export type ImportProbe = z.infer<typeof importProbeSchema>;
+export type ImportProbeEndpoint = z.infer<typeof importProbeEndpointSchema>;
+
 export const loginTargetSchema = z.discriminatedUnion("kind", [
   z
     .object({

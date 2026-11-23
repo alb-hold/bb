@@ -13,6 +13,7 @@ import {
 import { setTimeout as wait } from "node:timers/promises";
 import {
   accountAddInputSchema,
+  accountImportProbeInputSchema,
   accountIdInputSchema,
   accountPriorityInputSchema,
   accountReorderInputSchema,
@@ -32,6 +33,7 @@ import {
   type AccountPoolConfigSetInput,
   type AccountSummary,
   type FamilyQuota,
+  type ImportProbe,
   type LimitWindow,
   type LocalLogin,
   type PoolStatus,
@@ -255,6 +257,33 @@ function formatStatus(status: PoolStatusReport, display: PoolDisplay): string {
   ].join("\n");
 }
 
+function formatImportProbe(probe: ImportProbe): string {
+  const endpoints = probe.endpoints.map((endpoint) => {
+    if (endpoint.status !== "answered")
+      return `${endpoint.endpoint}: ${endpoint.status}`;
+    const allowed =
+      endpoint.allowedTiers
+        .map((tier) => (tier.isDefault ? `${tier.id}(default)` : tier.id))
+        .join(",") || "none";
+    return `${endpoint.endpoint}: answered; current=${endpoint.currentTier ?? "none"}, paid=${endpoint.paidTier ?? "none"}, allowed=${allowed}; project: ${endpoint.projectPresent ? "yes" : "no"}`;
+  });
+  const wouldUse =
+    probe.wouldUse.kind === "project"
+      ? `project from ${probe.wouldUse.loadedFrom}, serves on ${probe.wouldUse.servesOn}`
+      : probe.wouldUse.kind === "onboard"
+        ? `onboard on ${probe.wouldUse.endpoint} to ${probe.wouldUse.tierId}`
+        : "nothing; the import would fail";
+  const quota =
+    probe.quota.kind === "answered"
+      ? `answered, ${probe.quota.windows} window${probe.quota.windows === 1 ? "" : "s"}`
+      : probe.quota.kind;
+  return `${[
+    ...endpoints,
+    `would import: ${wouldUse}`,
+    `quota summary: ${quota}`,
+  ].join("\n")}\n`;
+}
+
 function formatConfig(config: AccountPoolConfig): string {
   return [
     `anthropicUpstreamBaseUrl: ${config.anthropicUpstreamBaseUrl}`,
@@ -381,7 +410,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.\nGemini --import --dry-run runs the same Code Assist checks without adding or onboarding anything, and prints only tier ids, whether each endpoint has a project, the endpoint the import would use, and how many usage windows the quota summary returned.",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
@@ -397,6 +426,11 @@ export function registerPoolCli(
               aliases: ["import-local", "local"],
               description:
                 "Import the provider's existing login from this bb server host",
+            },
+            "dry-run": {
+              type: "boolean",
+              description:
+                "Gemini --import only: check what the import would use and print tier ids, without adding or onboarding the account",
             },
             home: {
               type: "string",
@@ -436,6 +470,35 @@ export function registerPoolCli(
           run: (input, ctx) =>
             attempt(async () => {
               const provider = input.options.provider;
+              if (input.options["dry-run"] === true) {
+                if (!input.options.import || provider !== "gemini")
+                  throw new PluginCliError(
+                    "--dry-run works only with --provider gemini --import.",
+                    { code: "invalid_value" },
+                  );
+                if (
+                  input.options.label !== undefined ||
+                  input.options.priority !== undefined
+                )
+                  throw new PluginCliError(
+                    "--dry-run adds nothing, so it takes no --label or --priority.",
+                    { code: "invalid_value" },
+                  );
+                const probe = await operations.probeImport(
+                  accountImportProbeInputSchema.parse({
+                    provider,
+                    ...(input.options.home === undefined
+                      ? {}
+                      : { home: input.options.home }),
+                  }),
+                );
+                return {
+                  exitCode: 0,
+                  stdout: input.options.json
+                    ? json({ ok: true, probe })
+                    : formatImportProbe(probe),
+                };
+              }
               if (input.options.login) {
                 if (provider === "gemini") {
                   if (input.options.home !== undefined)

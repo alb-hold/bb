@@ -4,6 +4,7 @@ import type {
   AccountPoolConfig,
   AccountQuota,
   AccountSecret,
+  ImportProbe,
   ModelFamily,
   PoolProvider,
 } from "./contracts.js";
@@ -96,6 +97,7 @@ export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
   importAccount(options?: { home?: string }): Promise<ImportedProviderAccount>;
+  probeImport?(options?: { home?: string }): Promise<ImportProbe>;
   localLogin(): Promise<{
     email: string | null;
     planLabel: string | null;

@@ -2,6 +2,8 @@ import { z } from "zod";
 import type {
   AccountQuota,
   AccountSecret,
+  ImportProbe,
+  ImportProbeEndpoint,
   LimitWindow,
   LimitWindowSlot,
 } from "./contracts.js";
@@ -83,7 +85,7 @@ const tierSchema = z
 const loadCodeAssistSchema = z
   .object({
     cloudaicompanionProject: z
-      .union([z.string(), z.object({ id: z.string() }).passthrough()])
+      .union([z.string(), z.object({ id: z.string().nullish() }).passthrough()])
       .nullish(),
     currentTier: tierSchema,
     paidTier: tierSchema,
@@ -243,9 +245,9 @@ export function geminiQuotaRejection(
 export function geminiWindowsFromQuota(
   payload: unknown,
   now: number,
-): LimitWindow[] | null {
+): LimitWindow[] {
   const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
-  if (!parsed.success) return null;
+  if (!parsed.success) return [];
   const slots = new Map<LimitWindowSlot, LimitWindow>();
   const buckets = [
     ...(parsed.data.buckets ?? []),
@@ -462,13 +464,6 @@ function tierToOnboard(payload: unknown): string | null {
   );
 }
 
-function isUltraPaidTier(payload: unknown): boolean {
-  const parsed = loadCodeAssistSchema.safeParse(payload);
-  if (!parsed.success) return false;
-  return /ultra/iu.test(parsed.data.paidTier?.id ?? "") ||
-    /ultra/iu.test(parsed.data.paidTier?.name ?? "");
-}
-
 function offeredTierIds(payload: unknown): string {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success) return "current=none, paid=none, allowed=none";
@@ -482,6 +477,167 @@ function offeredTierIds(payload: unknown): string {
     )
     .join(",") || "none";
   return `current=${current}, paid=${paid}, allowed=${allowed}`;
+}
+
+type LoadOutcome =
+  | { kind: "answered"; payload: unknown; info: GeminiProjectInfo }
+  | { kind: "unreadable" }
+  | { kind: "failed"; error: unknown };
+
+type GeminiSources =
+  | { daily: LoadOutcome & { kind: "answered" }; prod: null }
+  | { daily: LoadOutcome; prod: LoadOutcome };
+
+type GeminiImportPlan =
+  | {
+      kind: "project";
+      loadedFrom: "daily" | "prod";
+      project: string;
+      info: GeminiProjectInfo & { tier: string };
+    }
+  | {
+      kind: "onboard";
+      tierId: string;
+      tierIds: string;
+      dailyTierIds: string;
+      project: string | null;
+      prodInfo: GeminiProjectInfo;
+    }
+  | { kind: "refuse"; error: Error };
+
+async function loadOutcome(call: () => Promise<unknown>): Promise<LoadOutcome> {
+  try {
+    const payload = await call();
+    const info = parseLoadCodeAssist(payload);
+    return info === null
+      ? { kind: "unreadable" }
+      : { kind: "answered", payload, info };
+  } catch (error) {
+    return { kind: "failed", error };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function outcomeTierIds(outcome: LoadOutcome): string {
+  if (outcome.kind === "answered") return offeredTierIds(outcome.payload);
+  if (outcome.kind === "unreadable") return "unreadable loadCodeAssist answer";
+  return `loadCodeAssist failed: ${errorMessage(outcome.error)}`;
+}
+
+function hasProjectAndTier(
+  outcome: LoadOutcome,
+): outcome is LoadOutcome & { kind: "answered" } {
+  return (
+    outcome.kind === "answered" &&
+    outcome.info.project !== null &&
+    outcome.info.tier !== null
+  );
+}
+
+function planGeminiImport(
+  sources: GeminiSources,
+  importedProject: string | null,
+): GeminiImportPlan {
+  const { daily, prod } = sources;
+  if (prod === null) {
+    const { project, tier } = daily.info;
+    if (project === null || tier === null)
+      return {
+        kind: "refuse",
+        error: new Error("Gemini Code Assist daily answer lost its project."),
+      };
+    return {
+      kind: "project",
+      loadedFrom: "daily",
+      project,
+      info: { ...daily.info, tier },
+    };
+  }
+  const dailyTierIds = outcomeTierIds(daily);
+  if (prod.kind === "failed")
+    return {
+      kind: "refuse",
+      error: new Error(
+        `${errorMessage(prod.error)} (stage: loadCodeAssist prod; tier ids: daily [${dailyTierIds}])`,
+        { cause: prod.error },
+      ),
+    };
+  if (prod.kind === "unreadable")
+    return {
+      kind: "refuse",
+      error: new Error(
+        `Gemini Code Assist sent an unreadable answer for this account (stage: loadCodeAssist; tier ids: daily [${dailyTierIds}]).`,
+      ),
+    };
+  const tierIds = `prod [${offeredTierIds(prod.payload)}]; daily [${dailyTierIds}]`;
+  const project = prod.info.project ?? importedProject;
+  if (project !== null && prod.info.tier !== null)
+    return {
+      kind: "project",
+      loadedFrom: "prod",
+      project,
+      info: { ...prod.info, tier: prod.info.tier },
+    };
+  const tierId = tierToOnboard(prod.payload);
+  if (tierId === null)
+    return {
+      kind: "refuse",
+      error: new Error(
+        `Gemini Code Assist has no ${missingFields(project, prod.info.tier)} for this account and offered no tier to onboard it to (stage: loadCodeAssist; tier ids: ${tierIds}).`,
+      ),
+    };
+  return {
+    kind: "onboard",
+    tierId,
+    tierIds,
+    dailyTierIds,
+    project:
+      tierId === "standard-tier" && project === null
+        ? process.env.GOOGLE_CLOUD_PROJECT?.trim() || null
+        : project,
+    prodInfo: prod.info,
+  };
+}
+
+function probeTiers(payload: unknown): {
+  currentTier: string | null;
+  paidTier: string | null;
+  allowedTiers: Array<{ id: string; isDefault: boolean }>;
+} {
+  const parsed = loadCodeAssistSchema.safeParse(payload);
+  if (!parsed.success)
+    return { currentTier: null, paidTier: null, allowedTiers: [] };
+  return {
+    currentTier: parsed.data.currentTier?.id ?? null,
+    paidTier: parsed.data.paidTier?.id ?? null,
+    allowedTiers: (parsed.data.allowedTiers ?? []).flatMap((tier) =>
+      tier?.id == null ? [] : [{ id: tier.id, isDefault: tier.isDefault === true }],
+    ),
+  };
+}
+
+function probeEndpoint(
+  endpoint: "daily" | "prod",
+  outcome: LoadOutcome | null,
+): ImportProbeEndpoint {
+  if (outcome?.kind !== "answered")
+    return {
+      endpoint,
+      status: outcome === null ? "not-loaded" : outcome.kind,
+      currentTier: null,
+      paidTier: null,
+      allowedTiers: [],
+      projectPresent: false,
+    };
+  return {
+    endpoint,
+    status: "answered",
+    ...probeTiers(outcome.payload),
+    projectPresent: outcome.info.project !== null,
+  };
 }
 
 function missingFields(project: string | null, tier: string | null): string {
@@ -622,6 +778,51 @@ export function createGeminiAdapter(options: {
     (options.fetch ?? fetch)(input, init);
   const clock = () => (options.now ?? Date.now)();
   const readCredentials = options.importCredentials ?? importGeminiCredentials;
+  const signIn = async (importOptions?: { home?: string }) => {
+    const imported = await readCredentials(importOptions?.home);
+    const refreshed = await refreshGoogleToken(
+      doFetch,
+      clock,
+      options.refreshUrl,
+      imported.refreshToken,
+      imported.client,
+    ).catch((error: unknown) => {
+      if (
+        imported.clientSource === "antigravity-installed-app" &&
+        error instanceof OAuthRefreshError
+      )
+        throw new Error(
+          `The Antigravity sign-in has no OAuth client of its own, and Google did not renew it with Antigravity's installed-app client (${error.message}) Sign in through bb's Antigravity (antigravity-acp) agent, then retry.`,
+        );
+      throw error;
+    });
+    return {
+      imported,
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token ?? imported.refreshToken,
+      idToken: refreshed.id_token ?? null,
+      expiresAt:
+        refreshed.expires_in === undefined
+          ? null
+          : clock() + Math.round(refreshed.expires_in * 1_000),
+    };
+  };
+  const loadOn = (endpoint: "prod" | "daily", accessToken: string) =>
+    codeAssistCall(
+      doFetch,
+      bases[endpoint],
+      "loadCodeAssist",
+      accessToken,
+      LOAD_CODE_ASSIST_BODY,
+    );
+  const loadSources = async (accessToken: string): Promise<GeminiSources> => {
+    const daily = await loadOutcome(() => loadOn("daily", accessToken));
+    if (hasProjectAndTier(daily)) return { daily, prod: null };
+    return {
+      daily,
+      prod: await loadOutcome(() => loadOn("prod", accessToken)),
+    };
+  };
   return {
     provider: "gemini",
     upstreamName: "Google Gemini",
@@ -630,30 +831,8 @@ export function createGeminiAdapter(options: {
       return imported === null ? null : { email: null, planLabel: null };
     },
     async importAccount(importOptions) {
-      const imported = await readCredentials(importOptions?.home);
-      const refreshed = await refreshGoogleToken(
-        doFetch,
-        clock,
-        options.refreshUrl,
-        imported.refreshToken,
-        imported.client,
-      ).catch((error: unknown) => {
-        if (
-          imported.clientSource === "antigravity-installed-app" &&
-          error instanceof OAuthRefreshError
-        )
-          throw new Error(
-            `The Antigravity sign-in has no OAuth client of its own, and Google did not renew it with Antigravity's installed-app client (${error.message}) Sign in through bb's Antigravity (antigravity-acp) agent, then retry.`,
-          );
-        throw error;
-      });
-      const accessToken = refreshed.access_token;
-      const refreshToken = refreshed.refresh_token ?? imported.refreshToken;
-      const idToken = refreshed.id_token ?? null;
-      const expiresAt =
-        refreshed.expires_in === undefined
-          ? null
-          : clock() + Math.round(refreshed.expires_in * 1_000);
+      const signedIn = await signIn(importOptions);
+      const { imported, accessToken, refreshToken, idToken, expiresAt } = signedIn;
       const email = await googleEmail(
         doFetch,
         options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
@@ -664,21 +843,6 @@ export function createGeminiAdapter(options: {
           "bb could not read this Google account's email, so it cannot tell whether the account is already in the pool. Check the connection and retry.",
         );
       }
-      const load = (endpoint: "prod" | "daily") =>
-        codeAssistCall(
-          doFetch,
-          bases[endpoint],
-          "loadCodeAssist",
-          accessToken,
-          LOAD_CODE_ASSIST_BODY,
-        );
-      let loaded = await load("prod");
-      let info = parseLoadCodeAssist(loaded);
-      if (info === null)
-        throw new Error(
-          "Gemini Code Assist sent an unreadable answer for this account (stage: loadCodeAssist).",
-        );
-      let project = info.project ?? imported.projectId;
       const accountWithProject = (
         resolvedProject: string,
         resolvedInfo: GeminiProjectInfo & { tier: string },
@@ -698,79 +862,77 @@ export function createGeminiAdapter(options: {
           client: imported.client,
         },
       });
-      let dailyTierDiagnostics: string | null = null;
-      if (project === null || info.tier === null) {
-        const tierId = tierToOnboard(loaded);
-        if (tierId === null)
-          throw new Error(
-            `Gemini Code Assist has no ${missingFields(project, info.tier)} for this account and offered no tier to onboard it to (stage: loadCodeAssist; tier ids: ${offeredTierIds(loaded)}).`,
-          );
-        if (tierId === "standard-tier" && project === null) {
-          project = process.env.GOOGLE_CLOUD_PROJECT?.trim() || null;
-          if (
-            project === null &&
-            info.endpoint === "daily" &&
-            info.tier !== "standard-tier" &&
-            isUltraPaidTier(loaded)
-          ) {
-            const prodLoaded = loaded;
-            const prodTierDiagnostics = offeredTierIds(prodLoaded);
-            let dailyLoaded: unknown;
-            try {
-              dailyLoaded = await load("daily");
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              throw new Error(
-                `${message} (stage: loadCodeAssist daily; tier ids: prod [${offeredTierIds(prodLoaded)}])`,
-                { cause: error },
-              );
-            }
-            const dailyInfo = parseLoadCodeAssist(dailyLoaded);
-            project = dailyInfo?.project ?? null;
-            if (dailyInfo !== null && project !== null) {
-              info = { ...dailyInfo, tier: dailyInfo.tier ?? info.tier };
-              const tier = info.tier;
-              if (tier === null)
-                throw new Error(
-                  `Gemini Code Assist returned a project without a tier (stage: loadCodeAssist; tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [${offeredTierIds(dailyLoaded)}])`,
-                );
-              return accountWithProject(project, { ...info, tier });
-            }
-            dailyTierDiagnostics = dailyInfo === null
-              ? "unreadable daily loadCodeAssist answer"
-              : offeredTierIds(dailyLoaded);
-            info = { ...info, endpoint: "prod" };
-          }
-        }
-        const onboarded = await onboardCodeAssist({
-          doFetch,
-          baseUrl: bases.prod,
-          accessToken,
-          tierId,
-          tierIds:
-            dailyTierDiagnostics === null
-              ? offeredTierIds(loaded)
-              : `prod [${offeredTierIds(loaded)}]; daily [${dailyTierDiagnostics}]`,
-          project,
-          pollMs: options.onboarding?.pollMs ?? ONBOARD_POLL_MS,
-          timeoutMs: options.onboarding?.timeoutMs ?? ONBOARD_TIMEOUT_MS,
-        });
-        loaded = await load("prod");
-        info = parseLoadCodeAssist(loaded) ?? info;
-        project = info.project ?? onboarded ?? project;
-        if (project === null && tierId === "standard-tier")
-          throw new Error(`Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: prod [${offeredTierIds(loaded)}]; daily [${dailyTierDiagnostics ?? "not checked"}])`);
-        if (project === null || info.tier === null)
-          throw new Error(
-            `Gemini Code Assist still has no ${missingFields(project, info.tier)} for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${offeredTierIds(loaded)}).`,
-          );
-      }
-      const tier = info.tier;
-      if (tier === null)
+      const plan = planGeminiImport(
+        await loadSources(accessToken),
+        imported.projectId,
+      );
+      if (plan.kind === "refuse") throw plan.error;
+      if (plan.kind === "project")
+        return accountWithProject(plan.project, plan.info);
+      const onboarded = await onboardCodeAssist({
+        doFetch,
+        baseUrl: bases.prod,
+        accessToken,
+        tierId: plan.tierId,
+        tierIds: plan.tierIds,
+        project: plan.project,
+        pollMs: options.onboarding?.pollMs ?? ONBOARD_POLL_MS,
+        timeoutMs: options.onboarding?.timeoutMs ?? ONBOARD_TIMEOUT_MS,
+      });
+      const loaded = await loadOn("prod", accessToken);
+      const info = parseLoadCodeAssist(loaded) ?? plan.prodInfo;
+      const project = info.project ?? onboarded ?? plan.project;
+      const tierIds = `prod [${offeredTierIds(loaded)}]; daily [${plan.dailyTierIds}]`;
+      if (project === null && plan.tierId === "standard-tier")
         throw new Error(
-          `Gemini Code Assist still has no tier for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${offeredTierIds(loaded)}).`,
+          `Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: ${tierIds})`,
         );
-      return accountWithProject(project, { ...info, tier });
+      if (project === null || info.tier === null)
+        throw new Error(
+          `Gemini Code Assist still has no ${missingFields(project, info.tier)} for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${tierIds}).`,
+        );
+      return accountWithProject(project, { ...info, tier: info.tier });
+    },
+    async probeImport(importOptions) {
+      const { imported, accessToken } = await signIn(importOptions);
+      const sources = await loadSources(accessToken);
+      const plan = planGeminiImport(sources, imported.projectId);
+      let quota: ImportProbe["quota"] = { kind: "not-checked" };
+      if (plan.kind === "project") {
+        try {
+          const windows = geminiWindowsFromQuota(
+            await codeAssistCall(
+              doFetch,
+              bases[plan.info.endpoint],
+              "retrieveUserQuotaSummary",
+              accessToken,
+              { project: plan.project },
+            ),
+            clock(),
+          );
+          quota = { kind: "answered", windows: windows.length };
+        } catch {
+          quota = { kind: "failed" };
+        }
+      }
+      return {
+        provider: "gemini",
+        endpoints: [
+          probeEndpoint("daily", sources.daily),
+          probeEndpoint("prod", sources.prod),
+        ],
+        wouldUse:
+          plan.kind === "project"
+            ? {
+                kind: "project",
+                loadedFrom: plan.loadedFrom,
+                servesOn: plan.info.endpoint,
+              }
+            : plan.kind === "onboard"
+              ? { kind: "onboard", endpoint: "prod", tierId: plan.tierId }
+              : { kind: "none" },
+        quota,
+      };
     },
     parseRequest(body, _headers, url) {
       const call = geminiGatewayCall(url);
@@ -890,7 +1052,7 @@ export function createGeminiAdapter(options: {
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           context.fetch,
-          bases.prod,
+          baseFor(context.account),
           "loadCodeAssist",
           secret.accessToken,
           LOAD_CODE_ASSIST_BODY,
@@ -931,8 +1093,6 @@ export function createGeminiAdapter(options: {
         ),
         now,
       );
-      if (windows === null)
-        throw new Error("Usage refresh returned unreadable data.");
       context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");

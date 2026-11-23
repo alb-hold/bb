@@ -571,7 +571,7 @@ describe("Gemini quota parsing", () => {
       geminiWindowsFromQuota(
         { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0 }] },
         5,
-      )?.[0],
+      )[0],
     ).toMatchObject({ status: "rejected", utilization: 1 });
   });
 
@@ -1303,6 +1303,59 @@ describe("Gemini account pool", () => {
     expect(login.stderr).toContain("No antigravity-acp agent is configured");
   });
 
+  it("dry-runs a Gemini import from the CLI without adding or onboarding anything", async () => {
+    const google = await startGoogle({
+      projects: { "tok-c": "proj-c" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/c": creds("tok-c"),
+    });
+    const probe = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--import",
+      "--dry-run",
+      "--home",
+      "/homes/c",
+    ]);
+    expect(probe.exitCode).toBe(0);
+    expect(probe.stdout).toBe(
+      [
+        "daily: answered; current=none, paid=none, allowed=none; project: yes",
+        "prod: not-loaded",
+        "would import: project from daily, serves on daily",
+        "quota summary: answered, 1 window",
+        "",
+      ].join("\n"),
+    );
+    for (const secret of ["proj-c", "tok-c", "c@example.com"])
+      expect(`${probe.stdout}${probe.stderr}`).not.toContain(secret);
+    expect(
+      google.calls
+        .filter((call) => call.endpoint !== undefined)
+        .map((call) => [call.method, call.endpoint]),
+    ).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["retrieveUserQuotaSummary", "daily"],
+    ]);
+    const listed = await fixture.host.harness.behavior.runCli(["account", "list"]);
+    expect(listed.stdout).not.toContain("gemini");
+    const rejected = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--dry-run",
+    ]);
+    expect(rejected.exitCode).not.toBe(0);
+    expect(rejected.stderr).toContain("--dry-run works only with --provider gemini --import.");
+  });
+
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
     const google = await startGoogle({
       projects: { "tok-c": "proj-c", "tok-d": "proj-d" },
@@ -1799,7 +1852,7 @@ describe("Gemini account pool", () => {
     await addGemini(fixture.host, "/homes/e", 100);
     const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
     expect(loads.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["prod"]));
+    expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["daily"]));
     for (const call of loads)
       expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     const env = await geminiEnv(fixture.host);

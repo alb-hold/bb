@@ -2,6 +2,7 @@ import { defineRpcContract, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   accountAddInputSchema,
+  accountImportProbeInputSchema,
   accountDisableSubscriptionInputSchema,
   accountPoolConfigSchema,
   accountPoolConfigSetInputSchema,
@@ -18,6 +19,7 @@ import {
   codexLoginPollSchema,
   codexLoginStartSchema,
   hubTokenSummarySchema,
+  importProbeSchema,
   localLoginSchema,
   loginCompleteInputSchema,
   loginStartInputSchema,
@@ -54,6 +56,10 @@ export const accountPoolRpcContract = defineRpcContract({
   "account.add": {
     input: accountAddInputSchema,
     output: accountSchema,
+  },
+  "account.probeImport": {
+    input: accountImportProbeInputSchema,
+    output: importProbeSchema,
   },
   "account.list": {
     input: z.null(),
@@ -195,6 +201,7 @@ export function createRpcHandlers(
     "routing.selection.set": ({ threadId, provider, accountId }) =>
       operations.selectAccount(threadId, provider, accountId),
     "account.add": (input) => operations.add(input),
+    "account.probeImport": (input) => operations.probeImport(input),
     "account.list": () => operations.list(),
     "account.remove": async ({ id }) => ({
       removed: await operations.remove(id),
