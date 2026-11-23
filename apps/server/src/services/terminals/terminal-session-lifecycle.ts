@@ -4716,8 +4716,10 @@ export class TerminalSessionLifecycle {
     message: TerminalReplayMessage,
   ): void {
     this.catchingUpTerminalIds.delete(pending.terminalId);
+    const threadId =
+      getTerminalById(this.options.db, pending.terminalId)?.threadId ?? null;
     for (const chunk of message.chunks) {
-      this.forwardTerminalOutput(pending.terminalId, chunk);
+      this.forwardTerminalOutput(pending.terminalId, chunk, threadId);
     }
   }
 

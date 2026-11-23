@@ -113,11 +113,11 @@ describe("native terminal thread mirror state", () => {
       ) {
         terminalChangeNotifications.push(message.id);
         if (sameTickHasOutput === null && message.id === threadIdForListener) {
-          sameTickHasOutput = harness.app
-            .request(`/api/v1/threads/${message.id}/native-terminal`)
-            .then(async (res) =>
-              nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
-            );
+          sameTickHasOutput = Promise.resolve(
+            harness.app.request(`/api/v1/threads/${message.id}/native-terminal`),
+          ).then(async (res) =>
+            nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
+          );
         }
       }
     });
@@ -336,11 +336,11 @@ describe("native terminal thread mirror state", () => {
         message.changes.includes("terminals-changed") &&
         sameTickHasOutput === null
       ) {
-        sameTickHasOutput = harness.app
-          .request(`/api/v1/threads/${thread.id}/native-terminal`)
-          .then(async (res) =>
-            nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
-          );
+        sameTickHasOutput = Promise.resolve(
+          harness.app.request(`/api/v1/threads/${thread.id}/native-terminal`),
+        ).then(async (res) =>
+          nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
+        );
       }
     });
 
@@ -373,6 +373,144 @@ describe("native terminal thread mirror state", () => {
           {
             seq: 0,
             dataBase64: Buffer.from("Replayed output\r\n", "utf8").toString(
+              "base64",
+            ),
+          },
+        ],
+      },
+    });
+
+    expect(sameTickHasOutput).not.toBeNull();
+    expect(await sameTickHasOutput).toBe(true);
+  });
+
+  it("emits terminals-changed with hasOutput: true in the same tick when first output arrives via catch-up replay", async () => {
+    const db = createMigratedConnection();
+    migratedDbs.push(db);
+    const harness = await createTestAppHarness({ db });
+    harnesses.push(harness);
+
+    const seeded = seedHostSession(harness.deps, { id: "catchup-host" });
+    const { project } = seedProjectWithSource(harness.deps, {
+      hostId: seeded.host.id,
+      path: "/tmp/catchup-project",
+    });
+    const environment = seedEnvironment(harness.deps, {
+      hostId: seeded.host.id,
+      path: "/tmp/catchup-workspace",
+      projectId: project.id,
+      status: "ready",
+    });
+    const socket = createFakeDaemonSocket();
+    harness.hub.registerDaemon(seeded.session.id, seeded.host.id, socket);
+
+    const createRes = await harness.app.request("/api/v1/threads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        providerId: "claude-code",
+        origin: "cli",
+        nativeTerminal: true,
+        input: textInput("Check catch-up first output"),
+        environment: {
+          type: "reuse",
+          environmentId: environment.id,
+        },
+      }),
+    });
+    expect(createRes.status).toBe(201);
+    const thread = threadResponseSchema.parse(await readJson(createRes));
+
+    const open = await waitForTerminalOpen(socket);
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      message: {
+        type: "terminal.opened",
+        requestId: open.requestId,
+        terminalId: open.terminalId,
+        shell: "/bin/zsh",
+        title: "Claude Code",
+        initialCwd: environment.path ?? "/tmp/catchup-workspace",
+        cols: open.cols,
+        rows: open.rows,
+      },
+    });
+    await settlePendingNativeTerminalOpen(thread.id);
+
+    const browserSocket = {
+      close: vi.fn(),
+      send: vi.fn(),
+    };
+    harness.deps.terminalSessions.attachBrowserTerminal({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      sinceSeq: 0,
+      outputAcks: false,
+      resizeAcks: false,
+    });
+    const initialAttach = daemonMessages(socket).find(
+      (message) => message.type === "terminal.attach",
+    );
+    expect(initialAttach).toBeDefined();
+
+    await harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: initialAttach!.requestId,
+        terminalId: open.terminalId,
+        replayStartSeq: 0,
+        nextSeq: 0,
+        chunks: [],
+      },
+    });
+
+    harness.deps.terminalSessions.handleDaemonSessionClosed({
+      sessionId: seeded.session.id,
+    });
+    await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+      hostId: seeded.host.id,
+      daemonSessionId: seeded.session.id,
+    });
+
+    const catchUpAttach = daemonMessages(socket)
+      .filter((message) => message.type === "terminal.attach")
+      .at(-1);
+    expect(catchUpAttach).toBeDefined();
+    expect(catchUpAttach!.requestId).not.toBe(initialAttach!.requestId);
+
+    let sameTickHasOutput: Promise<boolean | undefined> | null = null;
+    harness.hub.onChangedMessage((message) => {
+      if (
+        message.entity === "thread" &&
+        message.id === thread.id &&
+        message.changes.includes("terminals-changed") &&
+        sameTickHasOutput === null
+      ) {
+        sameTickHasOutput = Promise.resolve(
+          harness.app.request(`/api/v1/threads/${thread.id}/native-terminal`),
+        ).then(async (res) =>
+          nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
+        );
+      }
+    });
+
+    await harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: catchUpAttach!.requestId,
+        terminalId: open.terminalId,
+        replayStartSeq: 0,
+        nextSeq: 1,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from("Catch-up output\r\n", "utf8").toString(
               "base64",
             ),
           },
