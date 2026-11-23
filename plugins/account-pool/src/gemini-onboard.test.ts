@@ -378,6 +378,66 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(error).not.toContain(TOKEN);
     expect(error).not.toContain(EMAIL);
   });
+
+  it("continues Pro onboarding when the daily endpoint has no project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+          {
+            cloudaicompanionProject: "proj-pro",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+        daily: [{ paidTier: { id: "g1-pro-tier", usesGcpTos: false } }],
+      },
+      onboard: {
+        done: true,
+        response: { cloudaicompanionProject: "proj-pro" },
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-pro",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["loadCodeAssist", "daily"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it("includes both endpoint tier ids when Pro onboarding still has no project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+        ],
+        daily: [{ paidTier: { id: "g1-pro-tier", usesGcpTos: false } }],
+      },
+      onboard: { done: true, response: {} },
+    });
+    const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
+    expect(error).toContain("GOOGLE_CLOUD_PROJECT");
+    expect(error).toContain("prod [current=none, paid=g1-pro-tier, allowed=standard-tier(default),g1-pro-tier]");
+    expect(error).toContain("daily [current=none, paid=g1-pro-tier, allowed=none]");
+  });
 });
 
 describe("Gemini Neon quota", () => {

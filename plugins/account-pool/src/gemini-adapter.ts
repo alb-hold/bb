@@ -674,6 +674,7 @@ export function createGeminiAdapter(options: {
           client: imported.client,
         },
       });
+      let dailyTierDiagnostics: string | null = null;
       if (project === null || info.tier === null) {
         const tierId = tierToOnboard(loaded);
         if (tierId === null)
@@ -688,14 +689,11 @@ export function createGeminiAdapter(options: {
             info.tier !== "standard-tier"
           ) {
             const prodLoaded = loaded;
+            const prodTierDiagnostics = offeredTierIds(prodLoaded);
             const dailyLoaded = await load("daily");
             const dailyInfo = parseLoadCodeAssist(dailyLoaded);
-            if (dailyInfo === null)
-              throw new Error(
-                `Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [current=none, paid=none, allowed=none])`,
-              );
-            project = dailyInfo.project ?? null;
-            if (project !== null) {
+            project = dailyInfo?.project ?? null;
+            if (dailyInfo !== null && project !== null) {
               info = { ...dailyInfo, tier: dailyInfo.tier ?? info.tier };
               const tier = info.tier;
               if (tier === null)
@@ -703,10 +701,11 @@ export function createGeminiAdapter(options: {
                   `Gemini Code Assist returned a project without a tier (stage: loadCodeAssist; tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [${offeredTierIds(dailyLoaded)}])`,
                 );
               return accountWithProject(project, { ...info, tier });
-            } else
-              throw new Error(
-                `Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [${offeredTierIds(dailyLoaded)}])`,
-              );
+            }
+            dailyTierDiagnostics = dailyInfo === null
+              ? "unreadable daily loadCodeAssist answer"
+              : offeredTierIds(dailyLoaded);
+            info = { ...info, endpoint: "prod" };
           }
         }
         const onboarded = await onboardCodeAssist({
@@ -722,7 +721,7 @@ export function createGeminiAdapter(options: {
         info = parseLoadCodeAssist(loaded) ?? info;
         project = info.project ?? onboarded ?? project;
         if (project === null && tierId === "standard-tier")
-          throw new Error(`Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: ${offeredTierIds(loaded)})`);
+          throw new Error(`Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: prod [${offeredTierIds(loaded)}]; daily [${dailyTierDiagnostics ?? "not checked"}])`);
         if (project === null || info.tier === null)
           throw new Error(
             `Gemini Code Assist still has no ${missingFields(project, info.tier)} for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${offeredTierIds(loaded)}).`,
