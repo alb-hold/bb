@@ -2334,6 +2334,7 @@ export class TerminalSessionLifecycle {
     if (session.storedFirstLiveFrame && !this.frameObservers.has(session.id))
       return undefined;
     return () => {
+      if (this.terminalOutputWritesStopped) return;
       const frame = {
         terminalId: session.id,
         seq,

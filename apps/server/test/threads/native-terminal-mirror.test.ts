@@ -41,7 +41,10 @@ const harnesses: TestAppHarness[] = [];
 const migratedDbs: DbConnection[] = [];
 
 afterEach(async () => {
-  for (const harness of harnesses.splice(0)) await harness.cleanup();
+  for (const harness of harnesses.splice(0)) {
+    await harness.deps.terminalSessions.flushRetainedOutputBeforeClose();
+    await harness.cleanup();
+  }
   for (const db of migratedDbs.splice(0)) db.$client.close();
 });
 
@@ -197,6 +200,10 @@ describe("native terminal thread mirror state", () => {
       },
     });
     expect(terminalChangeNotifications).toContain(thread.id);
+    await harness.deps.terminalSessions.readTerminalScreen({
+      terminalId: open.terminalId,
+      query: {},
+    });
 
     const afterOutputRes = await harness.app.request(
       `/api/v1/threads/${thread.id}/native-terminal`,
