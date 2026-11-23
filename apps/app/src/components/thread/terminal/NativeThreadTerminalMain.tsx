@@ -27,6 +27,7 @@ import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { reasoningLevelLabel } from "@/lib/reasoning-labels";
 import { NativeActivityNotice } from "./NativeActivityNotice";
 import { NativeTerminalActivity } from "./NativeComposerStatus";
+import { NativeThreadMirrorSection } from "./NativeThreadMirrorSection";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
 import {
@@ -143,6 +144,11 @@ export function NativeThreadTerminalMain({
   const waitingPrompts = nativeTerminalWaitingPrompts(
     interactionsQuery.data ?? [],
   );
+  const prompt = view.prompt ?? null;
+  const reply = view.reply ?? null;
+  const hasTerminalOutput = Boolean(
+    view.hasOutput || session?.firstLiveFrame !== undefined || reply !== null,
+  );
   const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const { refetch } = nativeQuery;
@@ -214,6 +220,11 @@ export function NativeThreadTerminalMain({
               activityTarget,
             )
           : null}
+        <NativeThreadMirrorSection
+          prompt={prompt}
+          reply={reply}
+          starting={!hasTerminalOutput}
+        />
         <NativeTerminalPanel
           initialSession={session ?? undefined}
           attentionShownAsBanner
@@ -238,14 +249,33 @@ export function NativeThreadTerminalMain({
   }
 
   if (state.kind === "preparing" || state.kind === "reconnecting") {
+    const label =
+      state.kind === "preparing"
+        ? `Preparing the workspace for ${providerLabel}…`
+        : `Reconnecting to ${providerLabel}…`;
+    if (prompt !== null || reply !== null) {
+      return (
+        <div
+          className="flex h-full min-h-0 min-w-0 flex-col bg-sidebar"
+          data-native-terminal-thread={view.providerId}
+        >
+          <NativeThreadMirrorSection
+            prompt={prompt}
+            reply={reply}
+            starting={false}
+          />
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
+            {label}
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
         data-native-terminal-thread={view.providerId}
       >
-        {state.kind === "preparing"
-          ? `Preparing the workspace for ${providerLabel}…`
-          : `Reconnecting to ${providerLabel}…`}
+        {label}
       </div>
     );
   }
@@ -307,6 +337,11 @@ export function NativeThreadTerminalMain({
             {view.nativeSessionId === null ? "Start session" : "Resume session"}
           </Button>
         </div>
+        <NativeThreadMirrorSection
+          prompt={prompt}
+          reply={reply}
+          starting={false}
+        />
         <div className="min-h-0 flex-1">
           <NativeTerminalPanel
             initialSession={session ?? undefined}
@@ -321,6 +356,43 @@ export function NativeThreadTerminalMain({
             target={{ kind: "thread", threadId }}
             terminalId={session.id}
           />
+        </div>
+      </div>
+    );
+  }
+
+  if (prompt !== null || reply !== null) {
+    return (
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col bg-sidebar"
+        data-native-terminal-thread={view.providerId}
+      >
+        <NativeThreadMirrorSection
+          prompt={prompt}
+          reply={reply}
+          starting={false}
+        />
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center text-sm">
+          <p className="font-medium text-foreground">
+            {endedLabel}
+            {state.exitCode !== null ? ` (exit ${state.exitCode})` : ""}
+          </p>
+          {historyExpired ? (
+            <p className="text-muted-foreground">
+              Terminal history expired. Resume to continue.
+            </p>
+          ) : null}
+          {view.nativeSessionId === null ? null : (
+            <SessionIdentity id={view.nativeSessionId} />
+          )}
+          <Button
+            disabled={openNative.isPending}
+            onClick={() => {
+              openNative.mutate({ threadId });
+            }}
+          >
+            {view.nativeSessionId === null ? "Start session" : "Resume session"}
+          </Button>
         </div>
       </div>
     );

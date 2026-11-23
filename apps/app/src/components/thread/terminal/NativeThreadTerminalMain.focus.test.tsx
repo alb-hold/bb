@@ -37,7 +37,8 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
   useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock("@tanstack/react-query", () => ({
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
   useQuery: () => ({
     data:
       execution.data === null

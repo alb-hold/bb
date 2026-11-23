@@ -9,6 +9,14 @@ import {
 } from "@bb/domain";
 import { terminalSessionSchema } from "./terminals.js";
 
+export const nativeTerminalThreadReplySchema = z.object({
+  text: z.string().min(1),
+  recordedAt: z.number().int().nonnegative(),
+});
+export type NativeTerminalThreadReply = z.infer<
+  typeof nativeTerminalThreadReplySchema
+>;
+
 export const nativeTerminalThreadSchema = z.object({
   threadId: z.string().min(1),
   providerId: z.string().min(1),
@@ -17,6 +25,9 @@ export const nativeTerminalThreadSchema = z.object({
   nativeSessionId: z.string().min(1).nullable(),
   canReturnToChat: z.boolean(),
   terminal: terminalSessionSchema.nullable(),
+  prompt: z.string().nullable().optional(),
+  hasOutput: z.boolean().optional(),
+  reply: nativeTerminalThreadReplySchema.nullable().optional(),
 });
 export type NativeTerminalThread = z.infer<typeof nativeTerminalThreadSchema>;
 

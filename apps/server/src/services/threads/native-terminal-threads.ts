@@ -11,9 +11,11 @@ import {
   setNativeTerminalToolCredential,
   getEnvironment,
   getNativeTerminalThread,
+  getNativeThreadReply,
   getStoredProviderSession,
   getTerminalSession,
   listTerminalSessions,
+  listThreadTerminalLatestOutputSeqs,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
@@ -374,6 +376,22 @@ function toNativeTerminalThread(
   record: NativeTerminalThreadRecord,
   terminal: TerminalSession | null = readRecordTerminal(deps, record),
 ): NativeTerminalThread {
+  const storedReply = getNativeThreadReply(deps.db, record.threadId);
+  const reply =
+    storedReply === null
+      ? null
+      : { text: storedReply.text, recordedAt: storedReply.recordedAt };
+  const hasOutput =
+    reply !== null ||
+    terminal?.firstLiveFrame !== undefined ||
+    (terminal !== null &&
+      Object.keys(
+        listThreadTerminalLatestOutputSeqs(
+          deps.db,
+          record.threadId,
+          terminal.id,
+        ),
+      ).length > 0);
   return {
     threadId: record.threadId,
     providerId: record.providerId,
@@ -384,6 +402,9 @@ function toNativeTerminalThread(
     model: record.model,
     canReturnToChat: canReturnToChat(deps, record),
     terminal,
+    prompt: record.prompt ?? record.initialPrompt,
+    hasOutput,
+    reply,
   };
 }
 

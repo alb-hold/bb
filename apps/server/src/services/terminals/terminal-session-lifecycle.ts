@@ -4995,8 +4995,13 @@ export class TerminalSessionLifecycle {
     ) {
       return;
     }
+    const hadForwardedOutput =
+      (this.forwardedNextSeqByTerminalId.get(current.id) ?? 0) > 0;
     this.retainTerminalOutput(current, toTerminalOutputChunk(outputChunk));
     this.forwardTerminalOutput(current.id, outputChunk);
+    if (!hadForwardedOutput && current.threadId !== null) {
+      this.options.hub.notifyThread(current.threadId, ["terminals-changed"]);
+    }
   }
 
   private forwardTerminalOutput(
