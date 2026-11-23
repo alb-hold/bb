@@ -90,6 +90,14 @@ const loadCodeAssistSchema = z
     currentTier: tierSchema,
     paidTier: tierSchema,
     allowedTiers: z.array(tierSchema).nullish(),
+    ineligibleTiers: z
+      .array(
+        z
+          .object({ tierId: tierText, reasonCode: tierText })
+          .passthrough()
+          .nullish(),
+      )
+      .nullish(),
   })
   .passthrough();
 
@@ -611,15 +619,19 @@ function probeTiers(payload: unknown): {
   currentTier: string | null;
   paidTier: string | null;
   allowedTiers: Array<{ id: string; isDefault: boolean }>;
+  ineligibleTiers: Array<{ id: string | null; reasonCode: string | null }>;
 } {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success)
-    return { currentTier: null, paidTier: null, allowedTiers: [] };
+    return { currentTier: null, paidTier: null, allowedTiers: [], ineligibleTiers: [] };
   return {
     currentTier: parsed.data.currentTier?.id ?? null,
     paidTier: parsed.data.paidTier?.id ?? null,
     allowedTiers: (parsed.data.allowedTiers ?? []).flatMap((tier) =>
       tier?.id == null ? [] : [{ id: tier.id, isDefault: tier.isDefault === true }],
+    ),
+    ineligibleTiers: (parsed.data.ineligibleTiers ?? []).flatMap((tier) =>
+      tier == null ? [] : [{ id: tier.tierId, reasonCode: tier.reasonCode }],
     ),
   };
 }
@@ -635,6 +647,7 @@ function probeEndpoint(
       currentTier: null,
       paidTier: null,
       allowedTiers: [],
+      ineligibleTiers: [],
       projectPresent: false,
     };
   return {
@@ -643,6 +656,10 @@ function probeEndpoint(
     ...probeTiers(outcome.payload),
     projectPresent: outcome.info.project !== null,
   };
+}
+
+export function clientIdSuffix(clientId: string): string {
+  return clientId.replace(/\.apps\.googleusercontent\.com$/u, "").slice(-6);
 }
 
 function missingFields(project: string | null, tier: string | null): string {
@@ -900,7 +917,19 @@ export function createGeminiAdapter(options: {
       return accountWithProject(project, { ...info, tier: info.tier });
     },
     async probeImport(importOptions) {
-      const { imported, accessToken } = await signIn(importOptions);
+      const { imported, accessToken, expiresAt } = await signIn(importOptions);
+      const credential: ImportProbe["credential"] = {
+        source: imported.source,
+        email: await googleEmail(
+          doFetch,
+          options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
+          accessToken,
+        ),
+        clientIdSuffix: clientIdSuffix(imported.client.clientId),
+        clientSource: imported.clientSource ?? "own",
+        storedExpiresAt: imported.storedExpiresAt,
+        accessTokenExpiresAt: expiresAt,
+      };
       const sources = await loadSources(accessToken);
       const plan = planGeminiImport(sources, imported.projectId);
       let quota: ImportProbe["quota"] = { kind: "not-checked" };
@@ -923,6 +952,7 @@ export function createGeminiAdapter(options: {
       }
       return {
         provider: "gemini",
+        credential,
         endpoints: [
           probeEndpoint("daily", sources.daily),
           probeEndpoint("prod", sources.prod),

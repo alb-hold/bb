@@ -1451,9 +1451,12 @@ Antigravity sign-in. It loads Code Assist from the daily endpoint first and
 falls back to prod, then onboarding, only when daily has no project. An
 account Google serves on prod also loads prod and keeps prod's project when
 prod has one. Add `--dry-run` to run the same checks without adding or onboarding anything: it
-prints each endpoint's tier ids and whether it has a project, the endpoint the
+prints where the sign-in came from (the token file path or the keychain item
+name), the Google account email, the last 6 characters of the OAuth client id,
+the stored and refreshed token expiry times, each endpoint's tier ids with
+ineligibility reason codes and whether it has a project, the endpoint the
 import would use, and how many usage windows `retrieveUserQuotaSummary`
-returned, never the token, email or project id. The RPC is
+returned, never a token, client secret, full client id or project id. The RPC is
 `account.probeImport` with `{provider: "gemini", home?}`.
 
 The Claude login start command creates a ten-minute in-memory PKCE session,

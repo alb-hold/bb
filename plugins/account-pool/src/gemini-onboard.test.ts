@@ -86,6 +86,8 @@ function fakeCodeAssist(script: {
       refreshToken: "refresh-onboard",
       client: { clientId: "agy-client", clientSecret: "agy-secret" },
       projectId: null,
+      source: { kind: "file", path: "/fake-home/antigravity-acp/acp_token.json" },
+      storedExpiresAt: Date.parse("2026-11-23T12:00:00Z"),
     }),
     onboarding: { pollMs: 5, timeoutMs: 60 },
   });
@@ -717,6 +719,14 @@ describe("Gemini import dry run", () => {
     const probe = await google.adapter.probeImport?.();
     expect(probe).toEqual({
       provider: "gemini",
+      credential: {
+        source: { kind: "file", path: "/fake-home/antigravity-acp/acp_token.json" },
+        email: EMAIL,
+        clientIdSuffix: "client",
+        clientSource: "own",
+        storedExpiresAt: Date.parse("2026-11-23T12:00:00Z"),
+        accessTokenExpiresAt: expect.any(Number),
+      },
       endpoints: [
         {
           endpoint: "daily",
@@ -724,6 +734,7 @@ describe("Gemini import dry run", () => {
           currentTier: "standard-tier",
           paidTier: "g1-ultra-tier",
           allowedTiers: [],
+          ineligibleTiers: [],
           projectPresent: true,
         },
         {
@@ -732,6 +743,7 @@ describe("Gemini import dry run", () => {
           currentTier: null,
           paidTier: null,
           allowedTiers: [],
+          ineligibleTiers: [],
           projectPresent: false,
         },
       ],
@@ -743,8 +755,9 @@ describe("Gemini import dry run", () => {
       ["retrieveUserQuotaSummary", "daily"],
     ]);
     expect(JSON.stringify(probe)).not.toContain("proj-daily-ultra");
-    expect(JSON.stringify(probe)).not.toContain(EMAIL);
     expect(JSON.stringify(probe)).not.toContain(TOKEN);
+    expect(JSON.stringify(probe)).not.toContain("refresh-onboard");
+    expect(JSON.stringify(probe)).not.toContain("agy-secret");
   });
 
   it("reports the onboarding it would do without calling onboardUser", async () => {
@@ -795,8 +808,31 @@ describe("Gemini import dry run", () => {
     ]);
     expect(google.calls[2]?.body).toEqual({ project: "proj-gcp-prod" });
     expect(JSON.stringify(probe)).not.toContain("proj-gcp");
-    expect(JSON.stringify(probe)).not.toContain(EMAIL);
     expect(JSON.stringify(probe)).not.toContain(TOKEN);
+  });
+
+  it("reports each ineligible tier's id and reason code", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        daily: [DAILY_NO_PROJECT],
+        prod: [
+          {
+            ...PROD_STANDARD_NO_PROJECT,
+            ineligibleTiers: [
+              { tierId: "free-tier", reasonCode: "INELIGIBLE_ACCOUNT", reasonMessage: "not for this account" },
+              { tierId: "g1-ultra-tier", reasonCode: "VALIDATION_REQUIRED" },
+            ],
+          },
+        ],
+      },
+    });
+    const probe = await google.adapter.probeImport?.();
+    expect(probe?.endpoints[1]?.ineligibleTiers).toEqual([
+      { id: "free-tier", reasonCode: "INELIGIBLE_ACCOUNT" },
+      { id: "g1-ultra-tier", reasonCode: "VALIDATION_REQUIRED" },
+    ]);
+    expect(JSON.stringify(probe)).not.toContain("not for this account");
   });
 
   it("reports a failed quota summary instead of throwing", async () => {

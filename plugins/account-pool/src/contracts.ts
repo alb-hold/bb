@@ -425,13 +425,39 @@ export const importProbeEndpointSchema = z
     allowedTiers: z.array(
       z.object({ id: z.string(), isDefault: z.boolean() }).strict(),
     ),
+    ineligibleTiers: z.array(
+      z
+        .object({ id: z.string().nullable(), reasonCode: z.string().nullable() })
+        .strict(),
+    ),
     projectPresent: z.boolean(),
+  })
+  .strict();
+
+export const importProbeCredentialSchema = z
+  .object({
+    source: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("file"), path: z.string() }).strict(),
+      z
+        .object({
+          kind: z.literal("keychain"),
+          service: z.string(),
+          account: z.string(),
+        })
+        .strict(),
+    ]),
+    email: z.string().nullable(),
+    clientIdSuffix: z.string(),
+    clientSource: z.enum(["own", "antigravity-installed-app"]),
+    storedExpiresAt: z.number().nullable(),
+    accessTokenExpiresAt: z.number().nullable(),
   })
   .strict();
 
 export const importProbeSchema = z
   .object({
     provider: providerSchema,
+    credential: importProbeCredentialSchema,
     endpoints: z.array(importProbeEndpointSchema),
     wouldUse: z.discriminatedUnion("kind", [
       z

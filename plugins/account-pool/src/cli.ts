@@ -265,8 +265,19 @@ function formatImportProbe(probe: ImportProbe): string {
       endpoint.allowedTiers
         .map((tier) => (tier.isDefault ? `${tier.id}(default)` : tier.id))
         .join(",") || "none";
-    return `${endpoint.endpoint}: answered; current=${endpoint.currentTier ?? "none"}, paid=${endpoint.paidTier ?? "none"}, allowed=${allowed}; project: ${endpoint.projectPresent ? "yes" : "no"}`;
+    const ineligible =
+      endpoint.ineligibleTiers
+        .map((tier) => `${tier.id ?? "unknown"}:${tier.reasonCode ?? "UNKNOWN"}`)
+        .join(",") || "none";
+    return `${endpoint.endpoint}: answered; current=${endpoint.currentTier ?? "none"}, paid=${endpoint.paidTier ?? "none"}, allowed=${allowed}, ineligible=${ineligible}; project: ${endpoint.projectPresent ? "yes" : "no"}`;
   });
+  const { credential } = probe;
+  const source =
+    credential.source.kind === "file"
+      ? `file ${credential.source.path}`
+      : `keychain item service "${credential.source.service}", account "${credential.source.account}"`;
+  const time = (at: number | null, absent: string) =>
+    at === null ? absent : new Date(at).toISOString();
   const wouldUse =
     probe.wouldUse.kind === "project"
       ? `project from ${probe.wouldUse.loadedFrom}, serves on ${probe.wouldUse.servesOn}`
@@ -278,6 +289,11 @@ function formatImportProbe(probe: ImportProbe): string {
       ? `answered, ${probe.quota.windows} window${probe.quota.windows === 1 ? "" : "s"}`
       : probe.quota.kind;
   return `${[
+    `credential: ${source}`,
+    `google account: ${credential.email ?? "unknown; the userinfo endpoint did not return an email"}`,
+    `oauth client: ...${credential.clientIdSuffix} (${credential.clientSource === "own" ? "from the sign-in" : "Antigravity installed-app"})`,
+    `stored expiry: ${time(credential.storedExpiresAt, "absent")}`,
+    `refreshed token expires: ${time(credential.accessTokenExpiresAt, "unknown")}`,
     ...endpoints,
     `would import: ${wouldUse}`,
     `quota summary: ${quota}`,
@@ -410,7 +426,7 @@ export function registerPoolCli(
           summary:
             "Sign in to Claude, Codex or Gemini, import credentials, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.\nGemini --import --dry-run runs the same Code Assist checks without adding or onboarding anything, and prints only tier ids, whether each endpoint has a project, the endpoint the import would use, and how many usage windows the quota summary returned.",
+            "--login prints the browser or device step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nGemini --login opens Google's sign-in in a Chrome window on a temporary profile and waits, up to 5 minutes, until Google confirms; it then adds the account and deletes the profile. Quitting that Chrome window or interrupting this command cancels the sign-in and adds nothing.\n--import reads the provider's existing login on this bb server host (~/.claude or ~/.codex). For Gemini it reads the Antigravity sign-in from ~/.gemini, then from the macOS keychain; macOS may ask once whether to allow it.\nGemini --import --dry-run runs the same Code Assist checks without adding or onboarding anything, and prints where the sign-in came from (file path or keychain item), the Google account email, the last 6 characters of the OAuth client id, the stored and refreshed token expiry times, each endpoint's tier ids with ineligibility reason codes and whether it has a project, the endpoint the import would use, and how many usage windows the quota summary returned. It never prints a token, client secret, full client id or project id.",
           unexpectedPositionalHint:
             "the provider belongs in --provider <claude|codex|gemini>, not a bare argument",
           options: {
