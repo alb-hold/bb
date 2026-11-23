@@ -16,12 +16,17 @@ interface FakeCall {
 
 function fakeCodeAssist(script: {
   loads: unknown[];
+  loadsByBase?: Partial<Record<"prod" | "daily", unknown[]>>;
   onboard?: unknown;
   onboardReplies?: unknown[];
   operations?: unknown[];
 }) {
   const calls: FakeCall[] = [];
   const loads = [...script.loads];
+  const loadsByBase = {
+    prod: [...(script.loadsByBase?.prod ?? [])],
+    daily: [...(script.loadsByBase?.daily ?? [])],
+  };
   const operations = [...(script.operations ?? [])];
   const json = (payload: unknown) =>
     new Response(JSON.stringify(payload), {
@@ -41,7 +46,10 @@ function fakeCodeAssist(script: {
         : null;
     if (rest === "/v1internal:loadCodeAssist") {
       calls.push({ method: "loadCodeAssist", base, body });
-      return json(loads.length > 1 ? loads.shift() : loads[0]);
+      const source = script.loadsByBase?.[base]
+        ? loadsByBase[base]
+        : loads;
+      return json(source.length > 1 ? source.shift() : source[0]);
     }
     if (rest === "/v1internal:onboardUser") {
       calls.push({ method: "onboardUser", base, body });
@@ -259,7 +267,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       loads: [{ allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier" }] }],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project and tier.*stage: loadCodeAssist; tier id received: none/u,
+      /no project and tier.*stage: loadCodeAssist; tier ids: current=none, paid=none, allowed=free-tier,g1-pro-tier/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -274,7 +282,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       ],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project for this account and offered no tier.*stage: loadCodeAssist; tier id received: g1-pro-tier/u,
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=free-tier/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -284,7 +292,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       loads: [{ paidTier: { id: "g1-pro-tier" }, allowedTiers: [] }],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project for this account and offered no tier.*stage: loadCodeAssist; tier id received: g1-pro-tier/u,
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=free-tier/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -306,6 +314,69 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       geminiEndpoint: "daily",
     });
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
+  });
+
+  it("loads an Ultra account from daily when prod has no managed project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            currentTier: { id: "standard-tier" },
+            paidTier: { id: "google-ai-ultra-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "google-ai-ultra-tier" },
+            ],
+          },
+        ],
+        daily: [
+          {
+            cloudaicompanionProject: { id: "proj-ultra-managed" },
+            currentTier: { id: "standard-tier" },
+            paidTier: {
+              id: "google-ai-ultra-tier",
+              name: "Google AI Ultra",
+              usesGcpTos: false,
+            },
+          },
+        ],
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-ultra-managed",
+      subscriptionType: "Google AI Ultra",
+      geminiEndpoint: "daily",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["loadCodeAssist", "daily"],
+    ]);
+  });
+
+  it("includes the current, paid, and default tier ids in no-project errors", async () => {
+    const google = fakeCodeAssist({
+      loads: [
+        {
+          currentTier: { id: "standard-tier" },
+          paidTier: { id: "ultra-tier", usesGcpTos: false },
+          allowedTiers: [{ id: "standard-tier", isDefault: true }],
+        },
+        {
+          currentTier: { id: "standard-tier" },
+          paidTier: { id: "ultra-tier", usesGcpTos: false },
+          allowedTiers: [{ id: "standard-tier", isDefault: true }],
+        },
+      ],
+      onboard: { done: true, response: {} },
+    });
+    const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
+    expect(error).toContain(
+      "current=standard-tier, paid=ultra-tier, allowed=standard-tier(default)",
+    );
+    expect(error).not.toContain(TOKEN);
+    expect(error).not.toContain(EMAIL);
   });
 });
 
