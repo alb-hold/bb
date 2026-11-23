@@ -387,6 +387,7 @@ export function recordNativeTerminalActivity(
         turnId: null,
         recordedAt: now,
       });
+      deps.hub.notifyThread(thread.id, ["terminals-changed"]);
     }
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);

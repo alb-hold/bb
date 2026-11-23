@@ -52,6 +52,7 @@ import {
   allTerminalsQueryKeyPrefix,
   environmentFilePreviewQueryKeyPrefix,
   hostsQueryKey,
+  nativeTerminalThreadQueryKey,
   serverMoveStatusQueryKey,
   systemAppUpdateQueryKey,
   pluginInstallJobsQueryKey,
@@ -1043,7 +1044,10 @@ function dirtyThreadTerminalQueries({
   threadId,
 }: ThreadRealtimeDirtyContext): QueryKey[] {
   return threadId
-    ? [terminalsQueryKey({ kind: "thread", threadId })]
+    ? [
+        terminalsQueryKey({ kind: "thread", threadId }),
+        nativeTerminalThreadQueryKey(threadId),
+      ]
     : [allTerminalsQueryKeyPrefix()];
 }
 

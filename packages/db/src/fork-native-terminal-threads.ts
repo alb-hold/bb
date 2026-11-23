@@ -12,6 +12,7 @@ export interface NativeTerminalThreadRecord {
   lastToolCallAt: number | null;
   lastToolCallSessionId: string | null;
   initialPrompt: string | null;
+  prompt: string | null;
   model: string | null;
   createdAt: number;
   updatedAt: number;
@@ -21,7 +22,7 @@ const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native
   terminal_session_id AS terminalSessionId, lost_idle_terminal_session_id AS lostIdleTerminalSessionId, last_evidence_at AS lastEvidenceAt,
   last_evidence_kind AS lastEvidenceKind,
   last_tool_call_at AS lastToolCallAt, last_tool_call_session_id AS lastToolCallSessionId,
-  initial_prompt AS initialPrompt, model,
+  initial_prompt AS initialPrompt, prompt, model,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
@@ -33,6 +34,7 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       terminal_session_id TEXT,
       last_evidence_kind TEXT,
       initial_prompt TEXT,
+      prompt TEXT,
       model TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -85,6 +87,14 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_tool_call_session_id TEXT`,
     );
   }
+  if (!columns.some((column) => column.name === "prompt")) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads ADD COLUMN prompt TEXT`,
+    );
+  }
+  db.$client.exec(
+    `UPDATE fork_native_terminal_threads SET prompt = initial_prompt WHERE prompt IS NULL AND initial_prompt IS NOT NULL`,
+  );
 }
 
 export function createNativeTerminalThread(
@@ -102,13 +112,14 @@ export function createNativeTerminalThread(
   db.$client
     .prepare(
       `INSERT INTO fork_native_terminal_threads
-         (thread_id, provider_id, native_session_id, terminal_session_id, initial_prompt, initial_images, model, created_at, updated_at)
-       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+         (thread_id, provider_id, native_session_id, terminal_session_id, initial_prompt, prompt, initial_images, model, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       args.threadId,
       args.providerId,
       args.nativeSessionId,
+      args.initialPrompt,
       args.initialPrompt,
       args.initialImages.length === 0
         ? null
@@ -128,6 +139,7 @@ export function createNativeTerminalThread(
     lastToolCallAt: null,
     lastToolCallSessionId: null,
     initialPrompt: args.initialPrompt,
+    prompt: args.initialPrompt,
     model: args.model,
     createdAt: now,
     updatedAt: now,

@@ -12,6 +12,7 @@ import {
   hostPathExistenceQueryKey,
   hostsQueryKey,
   hostProviderCliStatusQueryKey,
+  nativeTerminalThreadQueryKey,
   projectPathsQueryKey,
   projectCommandsQueryKey,
   projectFilePreviewQueryKey,
@@ -3058,10 +3059,23 @@ describe("createRealtimeCacheEffects", () => {
   });
 
 
-  it("invalidates cached thread terminals for terminal changes", () => {
+  it("invalidates cached thread terminals and native terminal metadata for terminal changes", () => {
     vi.useFakeTimers();
     const { effects, queryClient, terminalKey } =
       createRealtimeEffectsTestContext();
+    const nativeKey = nativeTerminalThreadQueryKey("thr_1");
+    queryClient.setQueryData(nativeKey, {
+      threadId: "thr_1",
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      model: null,
+      nativeSessionId: null,
+      canReturnToChat: false,
+      terminal: null,
+      prompt: "Hello",
+      hasOutput: false,
+      reply: null,
+    });
 
     effects.handleChanged({
       type: "changed",
@@ -3073,10 +3087,12 @@ describe("createRealtimeCacheEffects", () => {
     expect(queryClient.getQueryState(terminalKey)?.isInvalidated).not.toBe(
       true,
     );
+    expect(queryClient.getQueryState(nativeKey)?.isInvalidated).not.toBe(true);
 
     vi.advanceTimersByTime(50);
 
     expect(queryClient.getQueryState(terminalKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(nativeKey)?.isInvalidated).toBe(true);
 
     effects.dispose();
   });

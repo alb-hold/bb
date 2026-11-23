@@ -33,7 +33,10 @@ const hooks = vi.hoisted(() => ({
   openNative: vi.fn(),
 }));
 
-vi.mock("@tanstack/react-query", () => ({ useQuery: hooks.profile }));
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQuery: hooks.profile,
+}));
 
 vi.mock("./NativeTerminalPanel", () => ({
   NativeTerminalPanel: Object.assign(

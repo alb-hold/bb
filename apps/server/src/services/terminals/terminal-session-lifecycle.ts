@@ -1174,9 +1174,18 @@ export class TerminalSessionLifecycle {
     this.terminalScreenStates.resize(session.id, session.cols, session.rows);
   }
 
-  private setForwardedNextSeq(terminalId: string, nextSeq: number): void {
+  private setForwardedNextSeq(
+    terminalId: string,
+    nextSeq: number,
+    threadId: string | null,
+  ): void {
+    const hadForwardedOutput =
+      (this.forwardedNextSeqByTerminalId.get(terminalId) ?? 0) > 0;
     this.forwardedNextSeqByTerminalId.set(terminalId, nextSeq);
     noteForwardedTerminalOutputSeq(terminalId, nextSeq - 1);
+    if (!hadForwardedOutput && nextSeq > 0 && threadId !== null) {
+      this.options.hub.notifyThread(threadId, ["terminals-changed"]);
+    }
   }
 
   private forgetForwardedNextSeq(terminalId: string): void {
@@ -2334,17 +2343,24 @@ export class TerminalSessionLifecycle {
     if (session.storedFirstLiveFrame && !this.frameObservers.has(session.id))
       return undefined;
     return () => {
+      if (this.terminalOutputWritesStopped) return;
       const frame = {
         terminalId: session.id,
         seq,
         at: Date.now(),
         provenance: "live" as const,
       };
-      if (!session.storedFirstLiveFrame)
+      if (!session.storedFirstLiveFrame) {
         recordFirstTerminalFrame(this.options.db, session.id, {
           seq,
           at: frame.at,
         });
+        if (session.threadId !== null) {
+          this.options.hub.notifyThread(session.threadId, [
+            "terminals-changed",
+          ]);
+        }
+      }
       const observers = this.frameObservers.get(session.id);
       if (!observers) return;
       for (const [socket, observer] of observers) {
@@ -3454,6 +3470,7 @@ export class TerminalSessionLifecycle {
         this.forwardedNextSeqByTerminalId.get(args.session.id) ?? 0,
         nextSeq,
       ),
+      args.session.threadId,
     );
     this.options.hub.sendTerminalSocketMessage(args.socket, {
       type: "attached",
@@ -4699,8 +4716,10 @@ export class TerminalSessionLifecycle {
     message: TerminalReplayMessage,
   ): void {
     this.catchingUpTerminalIds.delete(pending.terminalId);
+    const threadId =
+      getTerminalById(this.options.db, pending.terminalId)?.threadId ?? null;
     for (const chunk of message.chunks) {
-      this.forwardTerminalOutput(pending.terminalId, chunk);
+      this.forwardTerminalOutput(pending.terminalId, chunk, threadId);
     }
   }
 
@@ -4996,18 +5015,19 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.retainTerminalOutput(current, toTerminalOutputChunk(outputChunk));
-    this.forwardTerminalOutput(current.id, outputChunk);
+    this.forwardTerminalOutput(current.id, outputChunk, current.threadId);
   }
 
   private forwardTerminalOutput(
     terminalId: string,
     chunk: TerminalOutputMessage["chunk"],
+    threadId: string | null,
   ): void {
     const nextSeq = this.forwardedNextSeqByTerminalId.get(terminalId) ?? 0;
     if (chunk.seq < nextSeq) {
       return;
     }
-    this.setForwardedNextSeq(terminalId, chunk.seq + 1);
+    this.setForwardedNextSeq(terminalId, chunk.seq + 1, threadId);
     for (const live of this.replayLiveOutput.get(terminalId) ?? []) {
       live.bytes += Buffer.byteLength(chunk.dataBase64, "base64");
       if (live.bytes <= TERMINAL_SCROLLBACK_MAX_BYTES)
@@ -5057,6 +5077,7 @@ export class TerminalSessionLifecycle {
         this.forwardedNextSeqByTerminalId.get(current.id) ?? 0,
         message.nextSeq,
       ),
+      current.threadId,
     );
     this.options.hub.sendTerminalSocketMessage(pending.socket, {
       type: "attached",

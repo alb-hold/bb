@@ -140,6 +140,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "hostProviderCliInstallJobsQueryKey",
     "hostProviderCliStatusQueryKey",
     "hostsQueryKey",
+    "nativeTerminalThreadQueryKey",
     "pluginSafeModeQueryKey",
     "serverMoveStatusQueryKey",
     "sidebarNavigationQueryKey",
@@ -587,7 +588,7 @@ describe("cache owner boundaries", () => {
     expect(collectRawCacheWriteViolations()).toEqual([]);
   });
 
-  it("keeps cache-owner query-key imports declared per owner (test-change-reason: the fork owners import host provider CLI and provider-state keys and no longer import two keys, so the per-owner declarations follow the imports)", () => {
+  it("keeps cache-owner query-key imports declared per owner (test-change-reason: the fork owners import host provider CLI, provider-state, and nativeTerminalThreadQueryKey keys and no longer import two keys, so the per-owner declarations follow the imports)", () => {
     expect(collectCacheOwnerQueryKeyImportViolations()).toEqual([]);
   });
 
