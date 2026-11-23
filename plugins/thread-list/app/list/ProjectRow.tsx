@@ -1631,14 +1631,17 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
     [activePagesOverview?.unreadTree, hasChildren, isCollapsed, node.thread.id],
   );
   const mergedChildActivity = useMemo<CollapsedChildActivity | undefined>(() => {
-    if (!offpageChildUnread) return undefined;
-    const base = getCollapsedChildActivity(node.stats.hiddenThreads);
+    if (!isCollapsed || !hasChildren) return undefined;
+    const base = getCollapsedChildActivity(node.stats.hiddenThreads, {
+      includeParentedUnread: true,
+    });
+    if (!offpageChildUnread) return base;
     return {
       ...base,
       unread: base.unread || offpageChildUnread.unread,
       unreadError: base.unreadError || offpageChildUnread.unreadError,
     };
-  }, [node.stats.hiddenThreads, offpageChildUnread]);
+  }, [hasChildren, isCollapsed, node.stats.hiddenThreads, offpageChildUnread]);
   const options = useMemo<ThreadRowOptions>(
     () =>
       getThreadRowOptions({

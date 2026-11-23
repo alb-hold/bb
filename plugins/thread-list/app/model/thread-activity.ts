@@ -314,9 +314,15 @@ type ThreadActivityShape = ThreadStatusShape &
   ThreadRuntimeShape &
   Pick<PluginSidebarThread, "id" | "activity" | "hasPendingInteraction" | "indicator">;
 
+export interface CollapsedChildActivityOptions {
+  includeParentedUnread?: boolean;
+}
+
 export function getCollapsedChildActivity(
   threads: readonly ThreadActivityShape[],
+  options?: CollapsedChildActivityOptions,
 ): CollapsedChildActivity {
+  const includeParentedUnread = options?.includeParentedUnread ?? false;
   const threadIds: string[] = [];
   let pending = false;
   let terminalAttention = false;
@@ -331,7 +337,9 @@ export function getCollapsedChildActivity(
   let unreadError = false;
   for (const thread of threads) {
     threadIds.push(thread.id);
-    const childUnreadDone = isUnreadDoneThread(thread);
+    const childUnreadDone = includeParentedUnread
+      ? (DONE_THREAD_STATUSES[thread.status] ?? false) && thread.isUnread
+      : isUnreadDoneThread(thread);
     if (childUnreadDone && thread.status === "error") {
       unreadError = true;
     } else if (childUnreadDone) {

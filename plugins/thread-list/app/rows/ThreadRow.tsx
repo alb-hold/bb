@@ -725,7 +725,9 @@ function ThreadRowComponent({
     parentOptions?.childActivity ??
     (parentOptions === null
       ? NO_COLLAPSED_CHILD_ACTIVITY
-      : getCollapsedChildActivity(parentOptions.hiddenThreads ?? []));
+      : getCollapsedChildActivity(parentOptions.hiddenThreads ?? [], {
+          includeParentedUnread: true,
+        }));
   const hasChildren = childCount > 0;
   const reserveActionSpace =
     crossProjectLabel !== null || (isParentRow && hasChildren);

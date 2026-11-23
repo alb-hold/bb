@@ -747,6 +747,36 @@ describe("thread-activity", () => {
         unreadError: false,
       });
     });
+
+    it("flags unread and unreadError for parented children when includeParentedUnread is set", () => {
+      const unreadParented = makeChild({
+        latestAttentionAt: 20,
+        lastReadAt: 10,
+        parentThreadId: "manager-1",
+      });
+      const unreadErrorParented = makeChild({
+        status: "error",
+        latestAttentionAt: 20,
+        lastReadAt: 10,
+        parentThreadId: "manager-1",
+      });
+      expect(
+        getCollapsedChildActivity([unreadParented], {
+          includeParentedUnread: true,
+        }),
+      ).toMatchObject({
+        unread: true,
+        unreadError: false,
+      });
+      expect(
+        getCollapsedChildActivity([unreadErrorParented], {
+          includeParentedUnread: true,
+        }),
+      ).toMatchObject({
+        unread: false,
+        unreadError: true,
+      });
+    });
   });
 });
 
