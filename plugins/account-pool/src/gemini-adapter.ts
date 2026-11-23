@@ -986,12 +986,7 @@ export function createGeminiAdapter(options: {
     async probeImport(importOptions) {
       const { imported, accessToken, expiresAt } = await signIn(importOptions);
       const credential: ImportProbe["credential"] = {
-        source: imported.source,
-        email: await googleEmail(
-          doFetch,
-          options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
-          accessToken,
-        ),
+        source: imported.source.kind,
         clientIdSuffix: clientIdSuffix(imported.client.clientId),
         clientSource: imported.clientSource ?? "own",
         storedExpiresAt: imported.storedExpiresAt,

@@ -272,10 +272,6 @@ function formatImportProbe(probe: ImportProbe): string {
     return `${endpoint.endpoint}: answered; current=${endpoint.currentTier ?? "none"}, paid=${endpoint.paidTier ?? "none"}, allowed=${allowed}, ineligible=${ineligible}; project: ${endpoint.projectPresent ? "yes" : "no"}`;
   });
   const { credential } = probe;
-  const source =
-    credential.source.kind === "file"
-      ? `file ${credential.source.path}`
-      : `keychain item service "${credential.source.service}", account "${credential.source.account}"`;
   const time = (at: number | null, absent: string) =>
     at === null ? absent : new Date(at).toISOString();
   const wouldUse =
@@ -289,8 +285,7 @@ function formatImportProbe(probe: ImportProbe): string {
       ? `answered, ${probe.quota.windows} window${probe.quota.windows === 1 ? "" : "s"}`
       : probe.quota.kind;
   return `${[
-    `credential: ${source}`,
-    `google account: ${credential.email ?? "unknown; the userinfo endpoint did not return an email"}`,
+    `credential: ${credential.source}`,
     `oauth client: ...${credential.clientIdSuffix} (${credential.clientSource === "own" ? "from the sign-in" : "Antigravity installed-app"})`,
     `stored expiry: ${time(credential.storedExpiresAt, "absent")}`,
     `refreshed token expires: ${time(credential.accessTokenExpiresAt, "unknown")}`,

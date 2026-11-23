@@ -1370,10 +1370,9 @@ describe("Gemini account pool", () => {
     ]);
     expect(probe.exitCode).toBe(0);
     const lines = probe.stdout.split("\n");
-    expect(lines[4]).toMatch(/^refreshed token expires: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u);
-    expect([...lines.slice(0, 4), ...lines.slice(5)]).toEqual([
-      'credential: keychain item service "gemini", account "antigravity-acp"',
-      "google account: c@example.com",
+    expect(lines[3]).toMatch(/^refreshed token expires: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u);
+    expect([...lines.slice(0, 3), ...lines.slice(4)]).toEqual([
+      "credential: keychain",
       "oauth client: ...xyz9q7 (from the sign-in)",
       "stored expiry: absent",
       "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
@@ -1405,6 +1404,61 @@ describe("Gemini account pool", () => {
     ]);
     expect(rejected.exitCode).not.toBe(0);
     expect(rejected.stderr).toContain("--dry-run works only with --provider gemini --import.");
+  });
+
+  it.each([
+    { kind: "file" as const, source: { kind: "file" as const, path: "/homes/d/leak-path-d/acp_token.json" }, hidden: "leak-path-d" },
+    {
+      kind: "keychain" as const,
+      source: { kind: "keychain" as const, service: "gemini", account: "leak-keychain-account-d" },
+      hidden: "leak-keychain-account-d",
+    },
+  ])("prints and returns no email, token, project id or $kind location in the dry run", async ({ kind, source, hidden }) => {
+    const google = await startGoogle({
+      projects: { "tok-d": "proj-d" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/d": { ...creds("tok-d"), source },
+    });
+    const printed = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--import",
+      "--dry-run",
+      "--home",
+      "/homes/d",
+    ]);
+    expect(printed.exitCode).toBe(0);
+    const payload = JSON.stringify(
+      await fixture.host.harness.behavior.callRpc("account.probeImport", {
+        provider: "gemini",
+        home: "/homes/d",
+      }),
+    );
+    const text = `${printed.stdout}${printed.stderr}`;
+    for (const hiddenValue of ["d@example.com", "tok-d", "refresh-tok-d", "proj-d", hidden]) {
+      expect(text).not.toContain(hiddenValue);
+      expect(payload).not.toContain(hiddenValue);
+    }
+    const lines = printed.stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      `credential: ${kind}`,
+      "oauth client: ...xyz9q7 (from the sign-in)",
+      "stored expiry: absent",
+    ]);
+    expect(lines[3]).toMatch(/^refreshed token expires: \d{4}-\d\d-\d\dT/u);
+    expect(lines[4]).toBe(
+      "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+    );
+    expect(JSON.parse(payload)).toMatchObject({
+      credential: { source: kind, clientIdSuffix: "xyz9q7", clientSource: "own" },
+      userAgent: "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+    });
   });
 
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {

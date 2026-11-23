@@ -740,8 +740,7 @@ describe("Gemini import dry run", () => {
     expect(probe).toEqual({
       provider: "gemini",
       credential: {
-        source: { kind: "file", path: "/fake-home/antigravity-acp/acp_token.json" },
-        email: EMAIL,
+        source: "file",
         clientIdSuffix: "client",
         clientSource: "own",
         storedExpiresAt: Date.parse("2026-11-23T12:00:00Z"),

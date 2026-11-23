@@ -436,17 +436,7 @@ export const importProbeEndpointSchema = z
 
 export const importProbeCredentialSchema = z
   .object({
-    source: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("file"), path: z.string() }).strict(),
-      z
-        .object({
-          kind: z.literal("keychain"),
-          service: z.string(),
-          account: z.string(),
-        })
-        .strict(),
-    ]),
-    email: z.string().nullable(),
+    source: z.enum(["file", "keychain"]),
     clientIdSuffix: z.string(),
     clientSource: z.enum(["own", "antigravity-installed-app"]),
     storedExpiresAt: z.number().nullable(),
