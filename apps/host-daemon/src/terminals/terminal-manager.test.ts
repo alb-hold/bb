@@ -2009,6 +2009,62 @@ describe("TerminalManager", () => {
     expect(pty.writeCalls).toHaveLength(3);
   });
 
+  it("answers cursor position queries immediately on spawn and resize without waiting for a client timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      let pendingFallback: ReturnType<typeof setTimeout> | null = null;
+      let paintCount = 0;
+      const paint = (label: string) => {
+        if (pendingFallback !== null) {
+          clearTimeout(pendingFallback);
+          pendingFallback = null;
+        }
+        paintCount += 1;
+        pty.emitData(`\x1b[?2026h\x1b[1;1H${label}-${paintCount}\x1b[?2026l`);
+      };
+      const originalWrite = pty.write.bind(pty);
+      pty.write = (data) => {
+        originalWrite(data);
+        const text = typeof data === "string" ? data : data.toString("utf8");
+        if (/^\x1b\[\d+;\d+R$/u.test(text) && pendingFallback !== null) {
+          paint("live");
+        }
+      };
+      const originalResize = pty.resize.bind(pty);
+      pty.resize = (cols, rows) => {
+        originalResize(cols, rows);
+        pendingFallback = setTimeout(() => paint("timeout"), 2_000);
+        pty.emitData("\x1b[6n");
+      };
+
+      pendingFallback = setTimeout(() => paint("timeout"), 2_000);
+      pty.emitData("\x1b[3;5H\x1b[6n");
+      vi.advanceTimersByTime(10);
+
+      expect(pty.writeCalls).toEqual(["\x1b[3;5R"]);
+      expect(collectTerminalOutput(harness.messages)).toContain("live-1");
+      expect(collectTerminalOutput(harness.messages)).not.toContain("\x1b[6n");
+      expect(collectTerminalOutput(harness.messages)).not.toContain("timeout");
+
+      await harness.manager.handleMessage({
+        type: "terminal.resize",
+        terminalId: "term-1",
+        cols: 85,
+        rows: 26,
+      });
+      vi.advanceTimersByTime(10);
+
+      expect(pty.writeCalls).toEqual(["\x1b[3;5R", "\x1b[1;7R"]);
+      expect(collectTerminalOutput(harness.messages)).toContain("live-2");
+      expect(collectTerminalOutput(harness.messages)).not.toContain("\x1b[6n");
+      expect(collectTerminalOutput(harness.messages)).not.toContain("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["generic", "native"])(
     "leaves %s color queries unchanged without a palette on initial open and reopen",
     async (kind) => {
