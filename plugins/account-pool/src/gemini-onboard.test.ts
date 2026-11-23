@@ -426,7 +426,13 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     try { await google.adapter.importAccount(); } catch (error) { caught = error; }
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toBe(`${original} (stage: loadCodeAssist daily; tier ids: prod [current=standard-tier, paid=ultra-tier, allowed=standard-tier(default),ultra-tier])`);
-    expect((caught as Error).cause).toBe(failure instanceof Error ? failure : expect.any(Error));
+    const cause = (caught as Error).cause;
+    if (failure instanceof Error) {
+      expect(cause).toBe(failure);
+    } else {
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message).toBe(original);
+    }
     expect((caught as Error).message).not.toContain(TOKEN);
     expect((caught as Error).message).not.toContain(EMAIL);
     expect(google.calls.map(({ method, base }) => [method, base])).toEqual([["loadCodeAssist", "prod"], ["loadCodeAssist", "daily"]]);
