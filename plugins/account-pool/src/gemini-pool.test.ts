@@ -1463,17 +1463,29 @@ describe("Gemini account pool", () => {
     expect(lines[4]).toBe(
       "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
     );
-    const returned = JSON.parse(payload);
-    expect(returned.credential).toEqual({
-      source: kind,
-      clientIdSuffix: "xyz9q7",
-      clientSource: "own",
-      storedExpiresAt: null,
-      accessTokenExpiresAt: expect.any(Number),
+    const unloaded = {
+      currentTier: null,
+      paidTier: null,
+      allowedTiers: [],
+      ineligibleTiers: [],
+    };
+    expect(JSON.parse(payload)).toEqual({
+      provider: "gemini",
+      credential: {
+        source: kind,
+        clientIdSuffix: "xyz9q7",
+        clientSource: "own",
+        storedExpiresAt: null,
+        accessTokenExpiresAt: expect.any(Number),
+      },
+      userAgent: "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+      endpoints: [
+        { endpoint: "daily", status: "answered", ...unloaded, projectPresent: true },
+        { endpoint: "prod", status: "not-loaded", ...unloaded, projectPresent: false },
+      ],
+      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
+      quota: { kind: "answered", windows: 1 },
     });
-    expect(returned.userAgent).toBe(
-      "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
-    );
   });
 
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
