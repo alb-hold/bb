@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { TerminalCursorPositionQueries } from "@bb/domain";
+import {
+  TerminalCursorPositionQueries,
+  unicodeV11CellWidth,
+} from "@bb/domain";
 
 describe("live cursor position queries", () => {
   for (const [query, replyPrefix] of [
@@ -23,7 +26,150 @@ describe("live cursor position queries", () => {
     }
   }
 
-  it("tracks cursor across CUP, relative moves, CR/LF, tabs, wrap, save/restore, alt screen, and resize", () => {
+  it("matches @xterm/addon-unicode11 cell widths for emoji, CJK, combining, ZWJ, variation selectors, and East Asian ambiguous characters", () => {
+    const cases: Array<[string, number, number]> = [
+      ["U+1F9E0 brain", 0x1f9e0, 2],
+      ["U+1FA70 ballet shoes", 0x1fa70, 2],
+      ["U+1FA95 banjo", 0x1fa95, 2],
+      ["U+1FAE8 shaking face (Unicode 14, width 1 in Unicode 11)", 0x1fae8, 1],
+      ["U+231A watch", 0x231a, 2],
+      ["U+26A1 high voltage", 0x26a1, 2],
+      ["U+2B50 star", 0x2b50, 2],
+      ["U+6F22 CJK ideograph", 0x6f22, 2],
+      ["U+0301 combining acute accent", 0x0301, 0],
+      ["U+200D zero-width joiner", 0x200d, 0],
+      ["U+FE0F variation selector-16", 0xfe0f, 0],
+      ["U+E0100 variation selector-17", 0xe0100, 0],
+      ["U+00A7 East Asian ambiguous section sign", 0x00a7, 1],
+      ["U+00B0 East Asian ambiguous degree sign", 0x00b0, 1],
+      ["U+03B1 East Asian ambiguous Greek alpha", 0x03b1, 1],
+      ["U+2500 East Asian ambiguous box drawing", 0x2500, 1],
+      ["U+2605 East Asian ambiguous black star", 0x2605, 1],
+    ];
+    for (const [, codePoint, expected] of cases) {
+      expect(unicodeV11CellWidth(codePoint)).toBe(expected);
+    }
+  });
+
+  it.each([
+    {
+      name: "wide emoji across U+1F900-1FAFF (U+1F9E0, U+1FA70, U+1FA95, U+1FAE8)",
+      cols: 20,
+      rows: 5,
+      input: "\u{1F9E0}\u{1FA70}\u{1FA95}\u{1FAE8}\x1b[6n",
+      expected: ["\x1b[1;8R"],
+    },
+    {
+      name: "BMP wide emoji symbols (U+231A, U+26A1, U+2B50)",
+      cols: 20,
+      rows: 5,
+      input: "\u231A\u26A1\u2B50\x1b[6n",
+      expected: ["\x1b[1;7R"],
+    },
+    {
+      name: "CJK, combining mark, ZWJ, and BMP variation selector",
+      cols: 20,
+      rows: 5,
+      input: "漢e\u0301\u{1F468}\u200D\u{1F469}\u2764\uFE0F\x1b[6n",
+      expected: ["\x1b[1;9R"],
+    },
+    {
+      name: "non-BMP variation selector U+E0100",
+      cols: 20,
+      rows: 5,
+      input: "a\u{E0100}b\x1b[6n",
+      expected: ["\x1b[1;3R"],
+    },
+    {
+      name: "East Asian ambiguous characters",
+      cols: 20,
+      rows: 5,
+      input: "§°±×÷α─★\x1b[6n",
+      expected: ["\x1b[1;9R"],
+    },
+    {
+      name: "wide CJK character at right edge wraps before printing",
+      cols: 5,
+      rows: 4,
+      input: "abcd漢\x1b[6nx\x1b[6n",
+      expected: ["\x1b[2;3R", "\x1b[2;4R"],
+    },
+    {
+      name: "wide emoji at right edge wraps before printing",
+      cols: 5,
+      rows: 4,
+      input: "abcd\u{1FA70}\x1b[6n",
+      expected: ["\x1b[2;3R"],
+    },
+    {
+      name: "wide character wrapping onto a 2-column line",
+      cols: 2,
+      rows: 4,
+      input: "a漢X\x1b[6n",
+      expected: ["\x1b[3;2R"],
+    },
+    {
+      name: "wide character at right edge with autowrap disabled",
+      cols: 5,
+      rows: 4,
+      input: "\x1b[?7labcd漢\x1b[6n",
+      expected: ["\x1b[1;5R"],
+    },
+    {
+      name: "scroll region with newlines at bottom",
+      cols: 10,
+      rows: 5,
+      input: "\x1b[2;4r\x1b[4;5H\n\n\x1b[6n",
+      expected: ["\x1b[4;5R"],
+    },
+    {
+      name: "scroll region newline below bottom clamps at screen bottom",
+      cols: 10,
+      rows: 5,
+      input: "\x1b[2;3r\x1b[4;3H\n\n\x1b[6n",
+      expected: ["\x1b[5;3R"],
+    },
+    {
+      name: "alternate screen enter and exit preserves main cursor",
+      cols: 10,
+      rows: 5,
+      input: "\x1b[3;6H\x1b[?1049h\x1b[2;4H\x1b[6n\x1b[?1049l\x1b[6n",
+      expected: ["\x1b[2;4R", "\x1b[3;6R"],
+    },
+    {
+      name: "DECSC/DECRC and SCOSC/SCORC cursor save and restore",
+      cols: 10,
+      rows: 5,
+      input:
+        "\x1b[2;5H\x1b7\x1b[4;9H\x1b8\x1b[6n\x1b[3;7H\x1b[s\x1b[1;1H\x1b[u\x1b[6n",
+      expected: ["\x1b[2;5R", "\x1b[3;7R"],
+    },
+    {
+      name: "origin mode relative CUP and CPR",
+      cols: 10,
+      rows: 6,
+      input:
+        "\x1b[2;5r\x1b[?6h\x1b[6n\x1b[2;4H\x1b[6n\x1b[99;1H\x1b[6n\x1b[?6l\x1b[6n",
+      expected: ["\x1b[2;1R", "\x1b[3;4R", "\x1b[5;1R", "\x1b[1;1R"],
+    },
+    {
+      name: "origin mode DECXCPR",
+      cols: 10,
+      rows: 6,
+      input: "\x1b[2;5r\x1b[?6h\x1b[?6n\x1b[2;4H\x1b[?6n\x1b[?6l\x1b[?6n",
+      expected: ["\x1b[?2;1R", "\x1b[?3;4R", "\x1b[?1;1R"],
+    },
+  ])(
+    "matches xterm.js Unicode 11 cursor position: $name",
+    ({ cols, rows, input, expected }) => {
+      const tracker = new TerminalCursorPositionQueries(cols, rows);
+      const replies: string[] = [];
+      tracker.push(input, (reply) => replies.push(reply));
+      expect(replies).toEqual(expected);
+    },
+  );
+
+  it("tracks cursor across CUP, relative moves, wrap, save/restore, alt screen, and resize", () => {
     const tracker = new TerminalCursorPositionQueries(10, 5);
     const replies: string[] = [];
     const push = (text: string) =>
