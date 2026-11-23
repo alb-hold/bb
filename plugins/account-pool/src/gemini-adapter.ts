@@ -903,7 +903,7 @@ export function createGeminiAdapter(options: {
           const windows = geminiWindowsFromQuota(
             await codeAssistCall(
               doFetch,
-              bases[plan.info.endpoint],
+              bases.daily,
               "retrieveUserQuotaSummary",
               accessToken,
               { project: plan.project },
@@ -1085,7 +1085,7 @@ export function createGeminiAdapter(options: {
       const windows = geminiWindowsFromQuota(
         await codeAssistCall(
           context.fetch,
-          bases[info.endpoint],
+          bases.daily,
           "retrieveUserQuotaSummary",
           secret.accessToken,
           { project },

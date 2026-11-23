@@ -701,6 +701,30 @@ describe("Gemini import dry run", () => {
     ]);
   });
 
+  it("reads a prod-served account's quota summary from daily", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        daily: [
+          {
+            cloudaicompanionProject: "proj-gcp",
+            currentTier: { id: "standard-tier" },
+            paidTier: { id: "enterprise-tier", usesGcpTos: true },
+          },
+        ],
+      },
+      quota: { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0.5 }] },
+    });
+    expect(await google.adapter.probeImport?.()).toMatchObject({
+      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "prod" },
+      quota: { kind: "answered", windows: 1 },
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["retrieveUserQuotaSummary", "daily"],
+    ]);
+  });
+
   it("reports a failed quota summary instead of throwing", async () => {
     const google = fakeCodeAssist({
       loads: [

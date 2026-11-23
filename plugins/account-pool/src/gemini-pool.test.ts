@@ -1907,7 +1907,44 @@ describe("Gemini account pool", () => {
             .map((call) => `${call.bearer} ${call.endpoint}`),
         ),
       ].sort(),
-    ).toEqual(["tok-a daily", "tok-e prod"]);
+    ).toEqual(["tok-a daily", "tok-e daily"]);
+  });
+
+  it("reads a prod-served account's usage from the daily quota summary", async () => {
+    const google = await startGoogle({
+      projects: { "tok-e": "proj-e" },
+      gcpTos: ["tok-e"],
+      quotaFraction: { "tok-e": 0.4 },
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/e": creds("tok-e"),
+    });
+    const added = await addGemini(fixture.host, "/homes/e", 0);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: added.id,
+    });
+    const codeAssist = google.calls.filter((call) =>
+      ["loadCodeAssist", "retrieveUserQuotaSummary"].includes(call.method),
+    );
+    expect(
+      [...new Set(codeAssist.map((call) => `${call.method} ${call.endpoint}`))].sort(),
+    ).toEqual([
+      "loadCodeAssist daily",
+      "loadCodeAssist prod",
+      "retrieveUserQuotaSummary daily",
+    ]);
+    const quotaCalls = codeAssist.filter(
+      (call) => call.method === "retrieveUserQuotaSummary",
+    );
+    expect(quotaCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of quotaCalls) expect(call.project).toBe("proj-e");
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(status.accounts).toHaveLength(1);
+    expect(status.accounts[0]?.limitWindows[0]?.utilization).toBeCloseTo(0.6);
   });
 
   it("fails over on RESOURCE_EXHAUSTED and rewrites the project to the next account", async () => {
