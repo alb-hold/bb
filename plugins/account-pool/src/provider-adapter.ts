@@ -112,6 +112,7 @@ export interface ProviderAdapter {
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
     upstreamMethod?: string;
+    unmetered?: boolean;
   };
   refuseClient?(headers: Headers): string | null;
   transformResponse?(

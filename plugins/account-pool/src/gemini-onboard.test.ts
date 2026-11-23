@@ -731,7 +731,7 @@ describe("Gemini import dry run", () => {
       },
       quota: {
         buckets: [
-          { bucketId: "gemini-3-pro", remainingFraction: 0.25 },
+          { bucketId: "gemini-4-neon", remainingFraction: 0.25 },
           { bucketId: "gemini-3-flash", remainingFraction: 0.5 },
         ],
       },
@@ -768,7 +768,30 @@ describe("Gemini import dry run", () => {
         },
       ],
       wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
-      quota: { kind: "answered", windows: 2 },
+      quota: {
+        kind: "answered",
+        windows: 1,
+        buckets: [
+          {
+            group: null,
+            bucketId: "gemini-4-neon",
+            displayName: null,
+            remainingFraction: 0.25,
+            resetTime: null,
+            disabled: false,
+            slot: "primary",
+          },
+          {
+            group: null,
+            bucketId: "gemini-3-flash",
+            displayName: null,
+            remainingFraction: 0.5,
+            resetTime: null,
+            disabled: false,
+            slot: "skipped",
+          },
+        ],
+      },
     });
     expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
       ["loadCodeAssist", "daily"],
@@ -814,7 +837,7 @@ describe("Gemini import dry run", () => {
         daily: [PROD_SERVED_DAILY],
         prod: [PROD_SERVED_PROD],
       },
-      quota: { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0.5 }] },
+      quota: { buckets: [{ bucketId: "gemini-4-neon", remainingFraction: 0.5 }] },
     });
     const probe = await google.adapter.probeImport?.();
     expect(probe).toMatchObject({
@@ -945,7 +968,7 @@ describe("importing an Antigravity sign-in with the Antigravity request", () => 
     const google = fakeCodeAssist({
       loads: [AGY_PAID_MANAGED],
       unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
-      quota: { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0.5 }] },
+      quota: { buckets: [{ bucketId: "gemini-4-neon", remainingFraction: 0.5 }] },
     });
     const probe = await google.adapter.probeImport?.();
     expect(probe).toMatchObject({
@@ -1025,7 +1048,7 @@ const LIVE_AGY_DAILY = {
 };
 const ONE_WINDOW = {
   buckets: [
-    { bucketId: "gemini-3-pro", remainingFraction: 0.5, resetTime: "2100-01-01T00:00:00Z" },
+    { bucketId: "gemini-4-neon", remainingFraction: 0.5, resetTime: "2100-01-01T00:00:00Z" },
   ],
 };
 const RUNTIME_VERSION_FAILURE =
@@ -1212,9 +1235,16 @@ describe("Gemini Neon quota", () => {
       },
       1_000,
     );
-    expect(windows).toMatchObject([
-      { slot: "primary", utilization: 0.5, status: "allowed" },
-      { slot: "secondary", utilization: 1, status: "rejected" },
+    expect(windows).toEqual([
+      {
+        slot: "primary",
+        windowMinutes: null,
+        utilization: 0.5,
+        resetAt: null,
+        status: "allowed",
+        observedAt: 1_000,
+        source: "usage",
+      },
     ]);
   });
 
@@ -1226,8 +1256,8 @@ describe("Gemini Neon quota", () => {
             {
               buckets: [
                 {
-                  bucketId: "gemini-3-pro",
-                  displayName: "Gemini Pro",
+                  bucketId: "gemini-4-neon",
+                  displayName: "Gemini 4 Neon",
                   remainingFraction: 0.75,
                   remainingAmount: "75",
                   resetTime: "2026-11-23T15:00:00Z",

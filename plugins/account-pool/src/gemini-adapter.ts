@@ -5,7 +5,6 @@ import type {
   ImportProbe,
   ImportProbeEndpoint,
   LimitWindow,
-  LimitWindowSlot,
 } from "./contracts.js";
 import {
   importGeminiCredentials,
@@ -137,15 +136,74 @@ const retrieveUserQuotaSummarySchema = z
     groups: z
       .array(
         z
-          .object({ buckets: z.array(quotaBucketSchema).nullish() })
+          .object({
+            displayName: z.string().nullish(),
+            buckets: z.array(quotaBucketSchema).nullish(),
+          })
           .passthrough(),
       )
       .nullish(),
   })
   .passthrough();
 
-const NON_GEMINI_BUCKET = /claude|gpt-oss|image/iu;
-const PRIMARY_BUCKET = /pro|carbon|argon|hydrogen|neon|orchestrator/iu;
+const NON_GEMINI_QUOTA = /claude|gpt|image/iu;
+const ROUTED_GEMINI_MODEL = /neon/iu;
+const OTHER_GEMINI_MODEL =
+  /(?:^|[^a-z])(?:pro|flash|lite|carbon|argon|hydrogen|orchestrator)(?:[^a-z]|$)/iu;
+const GEMINI_QUOTA = /gemini/iu;
+
+export interface GeminiQuotaBucket {
+  group: string | null;
+  bucketId: string | null;
+  displayName: string | null;
+  remainingFraction: number | null;
+  resetTime: string | null;
+  disabled: boolean;
+  slot: "primary" | "skipped";
+}
+
+function routesGeminiModel(name: string, group: string | null): boolean {
+  if (NON_GEMINI_QUOTA.test(name)) return false;
+  if (ROUTED_GEMINI_MODEL.test(name)) return true;
+  if (OTHER_GEMINI_MODEL.test(name)) return false;
+  if (GEMINI_QUOTA.test(name)) return true;
+  return (
+    group !== null && GEMINI_QUOTA.test(group) && !NON_GEMINI_QUOTA.test(group)
+  );
+}
+
+export function geminiQuotaBuckets(payload: unknown): GeminiQuotaBucket[] | null {
+  const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
+  if (!parsed.success) return null;
+  return [
+    ...(parsed.data.buckets ?? []).map((bucket) => ({ group: null, bucket })),
+    ...(parsed.data.groups ?? []).flatMap((group) =>
+      (group.buckets ?? []).map((bucket) => ({
+        group: group.displayName ?? null,
+        bucket,
+      })),
+    ),
+  ].map(({ group, bucket }) => {
+    const disabled = bucket.disabled === true;
+    const remainingFraction = bucket.remainingFraction ?? null;
+    const routed =
+      !disabled &&
+      remainingFraction !== null &&
+      routesGeminiModel(
+        `${bucket.bucketId ?? ""} ${bucket.displayName ?? ""}`,
+        group,
+      );
+    return {
+      group,
+      bucketId: bucket.bucketId ?? null,
+      displayName: bucket.displayName ?? null,
+      remainingFraction,
+      resetTime: bucket.resetTime ?? null,
+      disabled,
+      slot: routed ? "primary" : "skipped",
+    };
+  });
+}
 
 export interface GeminiProjectInfo {
   project: string | null;
@@ -243,7 +301,7 @@ export function geminiQuotaRejection(
   }
   if (status !== "RESOURCE_EXHAUSTED") return null;
   if (reason === null || !ACCOUNT_QUOTA_REASONS.has(reason)) return null;
-  if (model !== null && NON_GEMINI_BUCKET.test(model)) return null;
+  if (model !== null && NON_GEMINI_QUOTA.test(model)) return null;
   return {
     reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
@@ -255,25 +313,16 @@ export function geminiWindowsFromQuota(
   payload: unknown,
   now: number,
 ): LimitWindow[] {
-  const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
-  if (!parsed.success) return [];
-  const slots = new Map<LimitWindowSlot, LimitWindow>();
-  const buckets = [
-    ...(parsed.data.buckets ?? []),
-    ...(parsed.data.groups ?? []).flatMap((group) => group.buckets ?? []),
-  ];
-  for (const bucket of buckets) {
-    const name = bucket.bucketId ?? bucket.displayName ?? "";
-    if (NON_GEMINI_BUCKET.test(name)) continue;
-    if (bucket.disabled === true || bucket.remainingFraction == null) continue;
-    const slot: LimitWindowSlot = PRIMARY_BUCKET.test(name)
-      ? "primary"
-      : "secondary";
+  let routed: LimitWindow | null = null;
+  for (const bucket of geminiQuotaBuckets(payload) ?? []) {
+    if (bucket.slot === "skipped" || bucket.remainingFraction === null)
+      continue;
     const utilization = Math.max(0, Math.min(1, 1 - bucket.remainingFraction));
+    if (routed !== null && (routed.utilization ?? 0) >= utilization) continue;
     const reset =
-      bucket.resetTime == null ? Number.NaN : Date.parse(bucket.resetTime);
-    const next: LimitWindow = {
-      slot,
+      bucket.resetTime === null ? Number.NaN : Date.parse(bucket.resetTime);
+    routed = {
+      slot: bucket.slot,
       windowMinutes: null,
       utilization,
       resetAt: Number.isNaN(reset) ? null : reset,
@@ -281,14 +330,8 @@ export function geminiWindowsFromQuota(
       observedAt: now,
       source: "usage",
     };
-    const prior = slots.get(slot);
-    if (prior === undefined || (prior.utilization ?? 0) < utilization)
-      slots.set(slot, next);
   }
-  return (["primary", "secondary"] as const).flatMap((slot) => {
-    const window = slots.get(slot);
-    return window === undefined ? [] : [window];
-  });
+  return routed === null ? [] : [routed];
 }
 
 function googleStatusName(status: number): string {
@@ -997,18 +1040,19 @@ export function createGeminiAdapter(options: {
       let quota: ImportProbe["quota"] = { kind: "not-checked" };
       if (plan.kind === "project") {
         try {
-          const windows = geminiWindowsFromQuota(
-            await codeAssistCall(
-              doFetch,
-              bases.daily,
-              "retrieveUserQuotaSummary",
-              accessToken,
-              { project: plan.project },
-              await userAgent(),
-            ),
-            clock(),
+          const summary = await codeAssistCall(
+            doFetch,
+            bases.daily,
+            "retrieveUserQuotaSummary",
+            accessToken,
+            { project: plan.project },
+            await userAgent(),
           );
-          quota = { kind: "answered", windows: windows.length };
+          quota = {
+            kind: "answered",
+            windows: geminiWindowsFromQuota(summary, clock()).length,
+            buckets: geminiQuotaBuckets(summary) ?? [],
+          };
         } catch {
           quota = { kind: "failed" };
         }
@@ -1042,6 +1086,7 @@ export function createGeminiAdapter(options: {
           affinityId: null,
           parentAffinityId: null,
           upstreamMethod: "POST",
+          unmetered: call?.kind === "models",
           forAccount: (account) => encodeJson({ project: account.geminiProject }),
         };
       }
