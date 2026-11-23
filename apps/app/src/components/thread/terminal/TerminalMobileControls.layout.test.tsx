@@ -134,7 +134,7 @@ Promise.all(frames.map(async frame => {
 });
 </script>`,
           );
-          const { stdout } = await execFileAsync(
+          const { stdout, stderr } = await execFileAsync(
             chromiumPath!,
             [
               "--headless",
@@ -145,16 +145,19 @@ Promise.all(frames.map(async frame => {
               "--disable-extensions",
               "--disable-background-networking",
               "--no-first-run",
+              "--allow-file-access-from-files",
               "--blink-settings=primaryPointerType=2,availablePointerTypes=2",
               `--window-size=${width},900`,
-              "--virtual-time-budget=5000",
               "--dump-dom",
               pathToFileURL(file).href,
             ],
             { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
           );
           const raw = /<pre id="result">([^<]+)<\/pre>/.exec(stdout)?.[1];
-          expect(raw).toBeDefined();
+          expect(
+            raw,
+            `stdout=${stdout.slice(0, 400)} stderr=${stderr.slice(0, 400)}`,
+          ).toBeDefined();
           const result = z
             .object({
               coarse: z.boolean(),
@@ -211,7 +214,12 @@ Promise.all(frames.map(async frame => {
             expect(more?.chevron).toBe(true);
           }
         } finally {
-          await rm(dir, { recursive: true, force: true });
+          await rm(dir, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 100,
+          });
         }
       },
       40_000,
