@@ -379,7 +379,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(error).not.toContain(EMAIL);
   });
 
-  it("continues Pro onboarding when the daily endpoint has no project", async () => {
+  it("continues Pro onboarding without loading the daily endpoint", async () => {
     const google = fakeCodeAssist({
       loads: [],
       loadsByBase: {
@@ -396,7 +396,6 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
             paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
           },
         ],
-        daily: [{ paidTier: { id: "g1-pro-tier", usesGcpTos: false } }],
       },
       onboard: {
         done: true,
@@ -410,13 +409,12 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     });
     expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
       ["loadCodeAssist", "prod"],
-      ["loadCodeAssist", "daily"],
       ["onboardUser", "prod"],
       ["loadCodeAssist", "prod"],
     ]);
   });
 
-  it("includes both endpoint tier ids when Pro onboarding still has no project", async () => {
+  it("keeps the existing Pro no-project error without loading daily", async () => {
     const google = fakeCodeAssist({
       loads: [],
       loadsByBase: {
@@ -429,14 +427,57 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
             ],
           },
         ],
-        daily: [{ paidTier: { id: "g1-pro-tier", usesGcpTos: false } }],
       },
       onboard: { done: true, response: {} },
     });
     const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
     expect(error).toContain("GOOGLE_CLOUD_PROJECT");
-    expect(error).toContain("prod [current=none, paid=g1-pro-tier, allowed=standard-tier(default),g1-pro-tier]");
-    expect(error).toContain("daily [current=none, paid=g1-pro-tier, allowed=none]");
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it("keeps a Pro account on prod even when daily has a project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+          {
+            cloudaicompanionProject: "proj-pro-prod",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+        daily: [
+          {
+            cloudaicompanionProject: "proj-pro-daily",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+      },
+      onboard: {
+        done: true,
+        response: { cloudaicompanionProject: "proj-pro-prod" },
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-pro-prod",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
   });
 });
 

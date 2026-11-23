@@ -462,6 +462,13 @@ function tierToOnboard(payload: unknown): string | null {
   );
 }
 
+function isUltraPaidTier(payload: unknown): boolean {
+  const parsed = loadCodeAssistSchema.safeParse(payload);
+  if (!parsed.success) return false;
+  return /ultra/iu.test(parsed.data.paidTier?.id ?? "") ||
+    /ultra/iu.test(parsed.data.paidTier?.name ?? "");
+}
+
 function offeredTierIds(payload: unknown): string {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success) return "current=none, paid=none, allowed=none";
@@ -686,7 +693,8 @@ export function createGeminiAdapter(options: {
           if (
             project === null &&
             info.endpoint === "daily" &&
-            info.tier !== "standard-tier"
+            info.tier !== "standard-tier" &&
+            isUltraPaidTier(loaded)
           ) {
             const prodLoaded = loaded;
             const prodTierDiagnostics = offeredTierIds(prodLoaded);
