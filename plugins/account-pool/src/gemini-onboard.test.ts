@@ -254,6 +254,9 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(message).toMatch(
       /still pending.*stage: onboardUser operation; tier id: g1-pro-tier/u,
     );
+    expect(message).toContain(
+      "tier ids: current=none, paid=none, allowed=g1-pro-tier(default))",
+    );
     expect(message).not.toContain(TOKEN);
     expect(message).not.toContain(EMAIL);
     expect(

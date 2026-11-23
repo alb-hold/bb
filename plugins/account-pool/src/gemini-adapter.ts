@@ -502,10 +502,11 @@ async function getCodeAssistOperation(
   baseUrl: string,
   name: string,
   accessToken: string,
+  tierIds: string,
 ): Promise<unknown> {
   if (!OPERATION_NAME.test(name) || name.split("/").includes(".."))
     throw new Error(
-      "Gemini Code Assist onboarding returned an operation name bb does not accept (stage: onboardUser operation).",
+      `Gemini Code Assist onboarding returned an operation name bb does not accept (stage: onboardUser operation; tier ids: ${tierIds}).`,
     );
   const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const response = await doFetch(`${baseUrl}/v1internal/${name}`, {
@@ -519,7 +520,7 @@ async function getCodeAssistOperation(
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     throw new Error(
-      `Gemini Code Assist onboarding status check failed with HTTP ${response.status} (stage: onboardUser operation).`,
+      `Gemini Code Assist onboarding status check failed with HTTP ${response.status} (stage: onboardUser operation; tier ids: ${tierIds}).`,
     );
   }
   return response.json().catch(() => null);
@@ -540,6 +541,7 @@ async function onboardCodeAssist(args: {
   baseUrl: string;
   accessToken: string;
   tierId: string;
+  tierIds: string;
   project: string | null;
   pollMs: number;
   timeoutMs: number;
@@ -555,7 +557,7 @@ async function onboardCodeAssist(args: {
     const parsed = onboardOperationSchema.safeParse(payload);
     if (!parsed.success)
       throw new Error(
-        `Gemini Code Assist sent an unreadable onboarding answer (stage: onboardUser; fields: ${onboardingFields(payload).join(", ").slice(0, 1024) || "none"}).`,
+        `Gemini Code Assist sent an unreadable onboarding answer (stage: onboardUser; fields: ${onboardingFields(payload).join(", ").slice(0, 1024) || "none"}; tier ids: ${args.tierIds}).`,
       );
     return parsed.data;
   };
@@ -567,19 +569,19 @@ async function onboardCodeAssist(args: {
   while (operation.done !== true) {
     if (Date.now() >= deadline)
       throw new Error(
-        `Gemini Code Assist onboarding was still pending after ${Math.round(args.timeoutMs / 1_000)}s (stage: onboardUser operation; tier id: ${args.tierId}). Retry in a few minutes.`,
+        `Gemini Code Assist onboarding was still pending after ${Math.round(args.timeoutMs / 1_000)}s (stage: onboardUser operation; tier id: ${args.tierId}; tier ids: ${args.tierIds}). Retry in a few minutes.`,
       );
     await new Promise((resolve) => setTimeout(resolve, args.pollMs));
     operation = readOperation(
       name
-        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken)
+        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken, args.tierIds)
         : await onboard(),
     );
     name = operation.name || name;
   }
   if (operation.error != null)
     throw new Error(
-      `Gemini Code Assist refused to onboard this account (stage: onboardUser; tier id: ${args.tierId}; code: ${operation.error.code ?? "unknown"}).`,
+      `Gemini Code Assist refused to onboard this account (stage: onboardUser; tier id: ${args.tierId}; code: ${operation.error.code ?? "unknown"}; tier ids: ${args.tierIds}).`,
     );
   return operationProject(operation.response?.cloudaicompanionProject);
 }
@@ -721,6 +723,10 @@ export function createGeminiAdapter(options: {
           baseUrl: bases.prod,
           accessToken,
           tierId,
+          tierIds:
+            dailyTierDiagnostics === null
+              ? offeredTierIds(loaded)
+              : `prod [${offeredTierIds(loaded)}]; daily [${dailyTierDiagnostics}]`,
           project,
           pollMs: options.onboarding?.pollMs ?? ONBOARD_POLL_MS,
           timeoutMs: options.onboarding?.timeoutMs ?? ONBOARD_TIMEOUT_MS,
