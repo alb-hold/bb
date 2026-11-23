@@ -1823,6 +1823,27 @@ describe("Gemini account pool", () => {
     ]);
   });
 
+  it("keeps an account out of quota when its usage refresh returns an unreadable quota summary", async () => {
+    const { fixture, post, ids } = await twoAccounts(
+      (bearer) =>
+        bearer === "tok-a"
+          ? { status: 429, body: QUOTA_BODY }
+          : { status: 200, body: OK_BODY },
+      {},
+      [7],
+    );
+    expect((await post()).status).toBe(200);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: ids.a,
+    });
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const a = status.accounts.find((account) => account.id === ids.a);
+    expect(a?.usageRestriction?.reason).toBe("quota_exhausted");
+    expect(a?.limitWindows).toEqual([]);
+  });
+
   it("serves from the first account with that account's project", async () => {
     const { google, post } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
     const response = await post();

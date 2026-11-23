@@ -1101,20 +1101,22 @@ export function createGeminiAdapter(options: {
         accountId: context.account.id,
         limitWindows: windows,
         usageRestriction:
-          rejected.length === 0
-            ? null
-            : (previous.usageRestriction ?? {
-                reason: "quota_exhausted",
-                resetAt: rejected.reduce<number | null>(
-                  (earliest, window) =>
-                    window.resetAt === null
-                      ? earliest
-                      : earliest === null
-                        ? window.resetAt
-                        : Math.min(earliest, window.resetAt),
-                  null,
-                ),
-              }),
+          windows.length === 0
+            ? previous.usageRestriction
+            : rejected.length === 0
+              ? null
+              : (previous.usageRestriction ?? {
+                  reason: "quota_exhausted",
+                  resetAt: rejected.reduce<number | null>(
+                    (earliest, window) =>
+                      window.resetAt === null
+                        ? earliest
+                        : earliest === null
+                          ? window.resetAt
+                          : Math.min(earliest, window.resetAt),
+                    null,
+                  ),
+                }),
         observedAt: now,
         error: null,
       };
