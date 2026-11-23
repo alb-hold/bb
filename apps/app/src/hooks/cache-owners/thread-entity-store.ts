@@ -100,6 +100,16 @@ function threadRow(item: unknown): Fields | undefined {
   return isRecord(item) && typeof item.id === "string" ? item : undefined;
 }
 
+function sameItems(left: unknown, right: readonly unknown[]): boolean {
+  return (
+    Array.isArray(left) &&
+    (
+      left === right ||
+      (left.length === right.length && left.every((item, index) => item === right[index]))
+    )
+  );
+}
+
 const ROW_ITEMS = {
   threadOf: threadRow,
   withThread: (_item: unknown, thread: Fields) => thread,
@@ -132,16 +142,16 @@ const SIDEBAR: ViewFamily = {
     const overview =
       isRecord(data.overview) &&
       overviewDescendants !== undefined &&
-      overviewDescendants !== data.overview.descendants
+      !sameItems(data.overview.descendants, overviewDescendants)
         ? { ...data.overview, descendants: overviewDescendants }
         : data.overview;
     const nextPersonalProject =
-      personal === undefined || personal === data.personalProject.threads
+      personal === undefined || sameItems(data.personalProject.threads, personal)
         ? data.personalProject
         : { ...data.personalProject, threads: personal };
     const nextProjects = projects.map((project: unknown, index) => {
       const threads = items.get(projectSlot(project, index));
-      return isRecord(project) && threads !== undefined && threads !== project.threads
+      return isRecord(project) && threads !== undefined && !sameItems(project.threads, threads)
         ? { ...project, threads }
         : project;
     });
