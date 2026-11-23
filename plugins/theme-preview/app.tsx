@@ -1184,7 +1184,7 @@ function SettingsPage({
               marginTop: 2,
               fontSize: 12,
               lineHeight: "16px",
-              color: `color-mix(in oklab, ${v("subtle-foreground", v("muted-foreground"))} 75%, transparent)`,
+              color: `color-mix(in oklch, ${v("ink")} 85%, ${v("canvas")})`,
             }}
           >
             {description}

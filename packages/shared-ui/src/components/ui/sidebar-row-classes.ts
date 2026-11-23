@@ -104,3 +104,8 @@ export const SIDEBAR_FOOTER_ACTION_CLASS = cn(
   COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
   "bb-sidebar-chrome-icon items-center justify-center text-sidebar-icon-foreground hover:text-sidebar-foreground aria-[current=page]:text-sidebar-foreground data-[state=open]:text-sidebar-foreground [&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
 );
+
+export const SIDEBAR_NAVIGATION_PLACEMENT = {
+  builtin: "before-more",
+  plugin: "after-more",
+} as const;

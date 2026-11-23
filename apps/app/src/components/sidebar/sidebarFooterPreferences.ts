@@ -1,3 +1,4 @@
+import { SIDEBAR_NAVIGATION_PLACEMENT } from "@bb/shared-ui/sidebar-row-classes";
 import { type RefObject, useLayoutEffect, useState } from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -129,7 +130,8 @@ export function useSidebarFooterPreferences() {
     setPluginOrder({ order, keys: allPluginKeys });
   }
   const pluginKeys = allPluginKeys.filter((key) => !hidden.includes(key));
-  const isPrefixItem = (item: FooterItem) => item.kind === "builtin";
+  const isPrefixItem = (item: FooterItem) =>
+    SIDEBAR_NAVIGATION_PLACEMENT[item.kind] === "before-more";
   const prioritized = [
     ...ordered.filter(isPrefixItem),
     ...ordered

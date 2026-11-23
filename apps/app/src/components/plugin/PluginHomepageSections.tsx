@@ -24,7 +24,7 @@ function PluginHomepageSectionList({
         <section
           key={`${section.pluginId}/${section.id}/${section.generation}`}
           id={getPluginHomepageSectionAnchor(section.pluginId, section.id)}
-          className="space-y-3"
+          className="space-y-3 has-[>[data-bb-plugin-root]:empty]:hidden"
         >
           <h2 className="text-sm font-semibold text-foreground">
             {section.title}

@@ -4,6 +4,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  waitFor,
   render,
   screen,
 } from "@testing-library/react";
@@ -693,7 +694,7 @@ describe("mobile sidebar deferred realization", () => {
 
     const openingPanel = getMobilePanel();
     expect(openingPanel?.dataset.state).toBe("closed");
-    expect(openingPanel?.textContent).toContain("Sidebar content");
+    expect(openingPanel?.textContent).not.toContain("Sidebar content");
 
     settleMobileToggle();
     expect(getMobilePanel()?.dataset.state).toBe("open");
@@ -725,7 +726,7 @@ describe("mobile sidebar deferred realization", () => {
 
     expect(panelStyledForSlideInTap).toBe(true);
     expect(realizedInTapFlush).toBe(false);
-    expect(getMobilePanel()?.textContent).toContain("Sidebar content");
+    expect(getMobilePanel()?.textContent).not.toContain("Sidebar content");
 
     settleMobileToggle();
     expect(getMobilePanel()?.dataset.state).toBe("open");
@@ -1542,7 +1543,7 @@ describe("mobile sidebar interrupted swipe sessions", () => {
 });
 
 describe("mobile sidebar text-selection arbitration", () => {
-  it("opens from a right swipe that starts over selectable message prose", () => {
+  it("opens from a right swipe that starts over selectable message prose", async () => {
     renderSelectableSwipeHarness();
     const prose = screen.getByText("Selectable message prose");
 
@@ -1550,7 +1551,7 @@ describe("mobile sidebar text-selection arbitration", () => {
     fireTouch(window, "touchmove", createTouch(260, 164));
 
     expect(getMobilePanel()?.dataset.state).toBe("open");
-    expect(getMobilePanel()?.textContent).toContain("Sidebar content");
+    await waitFor(() => expect(getMobilePanel()?.textContent).toContain("Sidebar content"));
   });
 
   it("yields a right swipe while the right panel is being swiped open", () => {

@@ -394,6 +394,7 @@ it.each([false, true])(
       </QueryClientProvider>,
     );
     const input = await screen.findByRole("textbox", { name: "Ask anything." });
+    expect(input.classList.contains("max-md:min-h-11")).toBe(true);
     observer.disconnect();
     expect(commits.length).toBeGreaterThan(0);
     expect(commits.every(Boolean)).toBe(true);

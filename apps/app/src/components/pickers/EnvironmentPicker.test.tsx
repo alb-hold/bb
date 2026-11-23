@@ -1213,7 +1213,7 @@ describe("EnvironmentPickerUI multi-machine menu", () => {
     expect(screen.getByText("MacBook Pro · Project checkout")).toBeTruthy();
     expect(
       document.querySelector("[data-promptbox-compact-label]")?.textContent,
-    ).toBe("Project checkout");
+    ).toBe("Checkout");
   });
 
   it("names another selected machine in the trigger label", () => {

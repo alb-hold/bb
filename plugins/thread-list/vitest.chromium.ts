@@ -7,28 +7,44 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export function findChromium(): string | null {
+export function listChromiumCandidates(): string[] {
   const candidates = [
     process.env.BB_TEST_CHROMIUM,
     ...globSync(
       join(homedir(), ".cache/ms-playwright/chromium-*/chrome-linux*/chrome"),
     ),
+    ...globSync(
+      join(
+        homedir(),
+        ".cache/ms-playwright/chromium_headless_shell-*/chrome-*/headless_shell",
+      ),
+    ),
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
   ];
-  return (
-    candidates.find(
-      (candidate): candidate is string =>
-        candidate !== undefined && existsSync(candidate),
-    ) ?? null
-  );
+  return [
+    ...new Set(
+      candidates.filter(
+        (candidate): candidate is string =>
+          candidate !== undefined && existsSync(candidate),
+      ),
+    ),
+  ];
 }
 
-export async function warmUpChromium(chromiumPath: string): Promise<void> {
+export function findChromium(): string | null {
+  return listChromiumCandidates()[0] ?? null;
+}
+
+export async function warmUpChromium(
+  chromiumPath: string,
+  timeoutMs = 120_000,
+): Promise<boolean> {
   const dir = await mkdtemp(join(tmpdir(), "bb-chromium-warmup-"));
   try {
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       chromiumPath,
       [
         "--headless",
@@ -42,8 +58,11 @@ export async function warmUpChromium(chromiumPath: string): Promise<void> {
         "--dump-dom",
         "about:blank",
       ],
-      { timeout: 120_000 },
+      { timeout: timeoutMs },
     );
+    return /<html[\s>]/i.test(stdout);
+  } catch {
+    return false;
   } finally {
     await rm(dir, {
       recursive: true,
@@ -52,4 +71,15 @@ export async function warmUpChromium(chromiumPath: string): Promise<void> {
       retryDelay: 100,
     });
   }
+}
+
+export async function resolveWorkingChromium(): Promise<string | null> {
+  const candidates = listChromiumCandidates();
+  for (const candidate of candidates) {
+    if (await warmUpChromium(candidate, 15_000)) return candidate;
+    console.warn(
+      `[vitest.chromium] candidate failed --headless --dump-dom probe: ${candidate}`,
+    );
+  }
+  return candidates[0] ?? null;
 }

@@ -16,12 +16,18 @@ interface FakeCall {
 
 function fakeCodeAssist(script: {
   loads: unknown[];
+  loadsByBase?: Partial<Record<"prod" | "daily", unknown[]>>;
   onboard?: unknown;
   onboardReplies?: unknown[];
   operations?: unknown[];
+  onboardFailure?: { status: number } | { error: Error };
 }) {
   const calls: FakeCall[] = [];
   const loads = [...script.loads];
+  const loadsByBase = {
+    prod: [...(script.loadsByBase?.prod ?? [])],
+    daily: [...(script.loadsByBase?.daily ?? [])],
+  };
   const operations = [...(script.operations ?? [])];
   const json = (payload: unknown) =>
     new Response(JSON.stringify(payload), {
@@ -41,10 +47,17 @@ function fakeCodeAssist(script: {
         : null;
     if (rest === "/v1internal:loadCodeAssist") {
       calls.push({ method: "loadCodeAssist", base, body });
-      return json(loads.length > 1 ? loads.shift() : loads[0]);
+      const source = script.loadsByBase?.[base]
+        ? loadsByBase[base]
+        : loads;
+      return json(source.length > 1 ? source.shift() : source[0]);
     }
     if (rest === "/v1internal:onboardUser") {
       calls.push({ method: "onboardUser", base, body });
+      if (script.onboardFailure !== undefined) {
+        if ("error" in script.onboardFailure) throw script.onboardFailure.error;
+        return new Response("{}", { status: script.onboardFailure.status });
+      }
       return json(script.onboardReplies?.shift() ?? script.onboard);
     }
     if (rest.startsWith("/v1internal/operations/")) {
@@ -246,6 +259,9 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(message).toMatch(
       /still pending.*stage: onboardUser operation; tier id: g1-pro-tier/u,
     );
+    expect(message).toContain(
+      "tier ids: current=none, paid=none, allowed=g1-pro-tier(default))",
+    );
     expect(message).not.toContain(TOKEN);
     expect(message).not.toContain(EMAIL);
     expect(
@@ -254,12 +270,56 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     expect(google.calls.filter((call) => call.method === "loadCodeAssist")).toHaveLength(1);
   });
 
+  it.each([
+    {
+      name: "HTTP 500",
+      failure: { status: 500 },
+      original: "Gemini onboardUser failed with HTTP 500.",
+    },
+    {
+      name: "a network error",
+      failure: { error: new TypeError("fetch failed") },
+      original: "fetch failed",
+    },
+  ])(
+    "keeps the tier ids when the onboardUser request fails with $name",
+    async ({ failure, original }) => {
+      const google = fakeCodeAssist({
+        loads: [
+          {
+            paidTier: { id: "g1-pro-tier" },
+            allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier", isDefault: true }],
+          },
+        ],
+        onboardFailure: failure,
+      });
+      const error = await google.adapter.importAccount().then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message.startsWith(original)).toBe(true);
+      expect(message).toContain("stage: onboardUser; tier id: g1-pro-tier");
+      expect(message).toContain(
+        "tier ids: current=none, paid=g1-pro-tier, allowed=free-tier,g1-pro-tier(default))",
+      );
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(message).not.toContain(TOKEN);
+      expect(message).not.toContain(EMAIL);
+      expect(google.calls.map((call) => call.method)).toEqual([
+        "loadCodeAssist",
+        "onboardUser",
+      ]);
+    },
+  );
+
   it("does not guess a tier when Google marks none as the default", async () => {
     const google = fakeCodeAssist({
       loads: [{ allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier" }] }],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project and tier.*stage: loadCodeAssist; tier id received: none/u,
+      /no project and tier.*stage: loadCodeAssist; tier ids: current=none, paid=none, allowed=free-tier,g1-pro-tier/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -274,7 +334,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       ],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project for this account and offered no tier.*stage: loadCodeAssist; tier id received: g1-pro-tier/u,
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=free-tier/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -284,7 +344,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       loads: [{ paidTier: { id: "g1-pro-tier" }, allowedTiers: [] }],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project for this account and offered no tier.*stage: loadCodeAssist; tier id received: g1-pro-tier/u,
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=none/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });
@@ -306,6 +366,170 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       geminiEndpoint: "daily",
     });
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
+  });
+
+  it("loads an Ultra account from daily when prod has no managed project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            currentTier: { id: "standard-tier" },
+            paidTier: { id: "google-ai-ultra-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "google-ai-ultra-tier" },
+            ],
+          },
+        ],
+        daily: [
+          {
+            cloudaicompanionProject: { id: "proj-ultra-managed" },
+            currentTier: { id: "standard-tier" },
+            paidTier: {
+              id: "google-ai-ultra-tier",
+              name: "Google AI Ultra",
+              usesGcpTos: false,
+            },
+          },
+        ],
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-ultra-managed",
+      subscriptionType: "Google AI Ultra",
+      geminiEndpoint: "daily",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["loadCodeAssist", "daily"],
+    ]);
+  });
+
+  it("includes the current, paid, and default tier ids in no-project errors", async () => {
+    const google = fakeCodeAssist({
+      loads: [
+        {
+          currentTier: { id: "standard-tier" },
+          paidTier: { id: "ultra-tier", usesGcpTos: false },
+          allowedTiers: [{ id: "standard-tier", isDefault: true }],
+        },
+        {
+          currentTier: { id: "standard-tier" },
+          paidTier: { id: "ultra-tier", usesGcpTos: false },
+          allowedTiers: [{ id: "standard-tier", isDefault: true }],
+        },
+      ],
+      onboard: { done: true, response: {} },
+    });
+    const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
+    expect(error).toContain(
+      "current=standard-tier, paid=ultra-tier, allowed=standard-tier(default)",
+    );
+    expect(error).not.toContain(TOKEN);
+    expect(error).not.toContain(EMAIL);
+  });
+
+  it("continues Pro onboarding without loading the daily endpoint", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+          {
+            cloudaicompanionProject: "proj-pro",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+      },
+      onboard: {
+        done: true,
+        response: { cloudaicompanionProject: "proj-pro" },
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-pro",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it("keeps the existing Pro no-project error without loading daily", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+        ],
+      },
+      onboard: { done: true, response: {} },
+    });
+    const error = await google.adapter.importAccount().catch((reason: Error) => reason.message);
+    expect(error).toContain("GOOGLE_CLOUD_PROJECT");
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it("keeps a Pro account on prod even when daily has a project", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        prod: [
+          {
+            paidTier: { id: "g1-pro-tier", usesGcpTos: false },
+            allowedTiers: [
+              { id: "standard-tier", isDefault: true },
+              { id: "g1-pro-tier" },
+            ],
+          },
+          {
+            cloudaicompanionProject: "proj-pro-prod",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+        daily: [
+          {
+            cloudaicompanionProject: "proj-pro-daily",
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro", usesGcpTos: false },
+          },
+        ],
+      },
+      onboard: {
+        done: true,
+        response: { cloudaicompanionProject: "proj-pro-prod" },
+      },
+    });
+    const account = await google.adapter.importAccount();
+    expect(account).toMatchObject({
+      geminiProject: "proj-pro-prod",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "prod"],
+      ["loadCodeAssist", "prod"],
+    ]);
   });
 });
 

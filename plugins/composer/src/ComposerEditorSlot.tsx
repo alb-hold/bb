@@ -96,7 +96,7 @@ export const ComposerEditorSlot = memo(function ComposerEditorSlot({
           className={cn(
             "h-full min-h-full",
             isCompactLayout && "flex items-center",
-            "[&_.ProseMirror]:min-h-full [&_.ProseMirror]:leading-[1.7] [&_.ProseMirror]:outline-none",
+            "max-md:[&_.ProseMirror]:min-h-11 [&_.ProseMirror]:min-h-full [&_.ProseMirror]:leading-[1.7] [&_.ProseMirror]:outline-none",
             "[&_.ProseMirror_p]:m-0",
             "[&_.ProseMirror_blockquote]:my-1 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-surface-selected-border [&_.ProseMirror_blockquote]:pl-3 [&_.ProseMirror_blockquote]:text-muted-foreground",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none",

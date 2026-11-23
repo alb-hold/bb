@@ -1614,15 +1614,28 @@ describe("real worktree teardown preservation", () => {
           afterEntryQuarantined: async (entry, quarantined) => {
             const opened = state.handle;
             if (!entry.endsWith("/README.md") || opened === undefined) return;
-            await opened.writeFile("late-data\n");
             const originalTimes = state.originalTimes;
             if (originalTimes === undefined)
               throw new Error("missing original file times");
-            await utimes(
-              quarantined,
-              originalTimes.atimeMs / 1000,
-              originalTimes.mtimeMs / 1000,
-            );
+            const quarantinedStat = await fs.lstat(quarantined, {
+              bigint: true,
+            });
+            const deadline = Date.now() + 10_000;
+            for (;;) {
+              await opened.write("late-data\n", 0, "utf8");
+              await utimes(
+                quarantined,
+                originalTimes.atimeMs / 1000,
+                originalTimes.mtimeMs / 1000,
+              );
+              const afterStat = await fs.lstat(quarantined, { bigint: true });
+              if (
+                afterStat.ctimeNs !== quarantinedStat.ctimeNs ||
+                Date.now() >= deadline
+              )
+                break;
+              await delay(5);
+            }
           },
         }),
       ]).then(([settled]) => settled!);
