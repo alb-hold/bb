@@ -187,11 +187,11 @@ describe("live cursor position queries", () => {
 
     expect(replies).toEqual([
       "\x1b[1;1R",
-      "\x1b[1;10R",
+      "\x1b[1;11R",
       "\x1b[2;2R",
       "\x1b[4;7R",
       "\x1b[2;4R",
-      "\x1b[1;1R",
+      "\x1b[2;4R",
       "\x1b[2;4R",
       "\x1b[1;3R",
     ]);

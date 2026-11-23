@@ -14,6 +14,7 @@ type ParserState =
 interface SavedCursor {
   row: number;
   col: number;
+  pendingWrap: boolean;
   originMode: boolean;
   autowrap: boolean;
 }
@@ -204,18 +205,22 @@ export class TerminalCursorPositionQueries {
   private pendingWrap = false;
   private scrollTop = 0;
   private scrollBottom: number;
+  private altScrollTop = 0;
+  private altScrollBottom: number;
   private originMode = false;
   private autowrap = true;
   private altScreen = false;
   private savedMain: SavedCursor = {
     row: 0,
     col: 0,
+    pendingWrap: false,
     originMode: false,
     autowrap: true,
   };
   private savedAlt: SavedCursor = {
     row: 0,
     col: 0,
+    pendingWrap: false,
     originMode: false,
     autowrap: true,
   };
@@ -232,6 +237,7 @@ export class TerminalCursorPositionQueries {
     this.cols = Math.max(1, Math.floor(cols));
     this.rows = Math.max(1, Math.floor(rows));
     this.scrollBottom = this.rows - 1;
+    this.altScrollBottom = this.rows - 1;
     this.maxRepliesPerChunk = maxRepliesPerChunk;
   }
 
@@ -242,7 +248,27 @@ export class TerminalCursorPositionQueries {
     this.col = Math.min(this.col, this.cols - 1);
     this.scrollTop = 0;
     this.scrollBottom = this.rows - 1;
+    this.altScrollTop = 0;
+    this.altScrollBottom = this.rows - 1;
     this.pendingWrap = false;
+  }
+
+  private activeScrollTop(): number {
+    return this.altScreen ? this.altScrollTop : this.scrollTop;
+  }
+
+  private activeScrollBottom(): number {
+    return this.altScreen ? this.altScrollBottom : this.scrollBottom;
+  }
+
+  private setActiveScrollRegion(top: number, bottom: number): void {
+    if (this.altScreen) {
+      this.altScrollTop = top;
+      this.altScrollBottom = bottom;
+    } else {
+      this.scrollTop = top;
+      this.scrollBottom = bottom;
+    }
   }
 
   push(chunk: string, reply: (data: string) => void): string {
@@ -501,7 +527,7 @@ export class TerminalCursorPositionQueries {
 
   private formatReport(isPrivate: boolean): string {
     const reportRow = this.row + 1;
-    const reportCol = this.col + 1;
+    const reportCol = this.pendingWrap ? this.cols + 1 : this.col + 1;
     return isPrivate
       ? `\u001b[?${reportRow};${reportCol}R`
       : `\u001b[${reportRow};${reportCol}R`;
@@ -511,6 +537,7 @@ export class TerminalCursorPositionQueries {
     const saved: SavedCursor = {
       row: this.row,
       col: this.col,
+      pendingWrap: false,
       originMode: this.originMode,
       autowrap: this.autowrap,
     };
@@ -520,23 +547,31 @@ export class TerminalCursorPositionQueries {
 
   private restoreCursor(): void {
     const saved = this.altScreen ? this.savedAlt : this.savedMain;
-    this.row = Math.min(saved.row, this.rows - 1);
-    this.col = Math.min(saved.col, this.cols - 1);
     this.originMode = saved.originMode;
     this.autowrap = saved.autowrap;
+    if (this.originMode) {
+      this.row = Math.max(
+        this.activeScrollTop(),
+        Math.min(this.activeScrollBottom(), saved.row),
+      );
+    } else {
+      this.row = Math.min(saved.row, this.rows - 1);
+    }
+    this.col = Math.min(saved.col, this.cols - 1);
     this.pendingWrap = false;
   }
 
   private homeCursor(): void {
-    this.row = this.originMode ? this.scrollTop : 0;
+    this.row = this.originMode ? this.activeScrollTop() : 0;
     this.col = 0;
     this.pendingWrap = false;
   }
 
   private lineFeed(count = 1): void {
     if (count <= 0) return;
-    if (this.row <= this.scrollBottom) {
-      this.row = Math.min(this.scrollBottom, this.row + count);
+    const bottom = this.activeScrollBottom();
+    if (this.row <= bottom) {
+      this.row = Math.min(bottom, this.row + count);
       return;
     }
     this.row = Math.min(this.rows - 1, this.row + count);
@@ -578,7 +613,8 @@ export class TerminalCursorPositionQueries {
   }
 
   private reverseIndex(): void {
-    if (this.row === this.scrollTop) {
+    const top = this.activeScrollTop();
+    if (this.row === top) {
       return;
     }
     if (this.row > 0) {
@@ -589,15 +625,15 @@ export class TerminalCursorPositionQueries {
   private applyC0(code: number): void {
     switch (code) {
       case 0x08:
-        if (this.pendingWrap) {
-          this.pendingWrap = false;
-        } else if (this.col > 0) {
+        this.pendingWrap = false;
+        if (this.col > 0) {
           this.col -= 1;
         }
         return;
       case 0x09:
-        this.pendingWrap = false;
-        this.col = Math.min(this.cols - 1, (Math.floor(this.col / 8) + 1) * 8);
+        if (!this.pendingWrap) {
+          this.col = Math.min(this.cols - 1, (Math.floor(this.col / 8) + 1) * 8);
+        }
         return;
       case 0x0a:
       case 0x0b:
@@ -639,11 +675,25 @@ export class TerminalCursorPositionQueries {
         this.pendingWrap = false;
         this.scrollTop = 0;
         this.scrollBottom = this.rows - 1;
+        this.altScrollTop = 0;
+        this.altScrollBottom = this.rows - 1;
         this.originMode = false;
         this.autowrap = true;
         this.altScreen = false;
-        this.savedMain = { row: 0, col: 0, originMode: false, autowrap: true };
-        this.savedAlt = { row: 0, col: 0, originMode: false, autowrap: true };
+        this.savedMain = {
+          row: 0,
+          col: 0,
+          pendingWrap: false,
+          originMode: false,
+          autowrap: true,
+        };
+        this.savedAlt = {
+          row: 0,
+          col: 0,
+          pendingWrap: false,
+          originMode: false,
+          autowrap: true,
+        };
         return;
     }
   }
@@ -667,8 +717,8 @@ export class TerminalCursorPositionQueries {
             if (!this.altScreen) {
               this.saveCursor();
               this.altScreen = true;
-              this.row = 0;
-              this.col = 0;
+              this.altScrollTop = 0;
+              this.altScrollBottom = this.rows - 1;
               this.pendingWrap = false;
             }
           } else if (this.altScreen) {
@@ -688,13 +738,15 @@ export class TerminalCursorPositionQueries {
     }
 
     const parts = rawParams.length === 0 ? [] : rawParams.split(";");
-    const topBound = this.originMode ? this.scrollTop : 0;
-    const bottomBound = this.originMode ? this.scrollBottom : this.rows - 1;
+    const scrollTop = this.activeScrollTop();
+    const scrollBottom = this.activeScrollBottom();
+    const topBound = this.originMode ? scrollTop : 0;
+    const bottomBound = this.originMode ? scrollBottom : this.rows - 1;
 
     switch (finalByte) {
       case 0x41: {
         const n = parseCsiParam(parts[0], 1);
-        const limit = this.row >= this.scrollTop ? this.scrollTop : 0;
+        const limit = this.row >= scrollTop ? scrollTop : 0;
         this.row = Math.max(limit, this.row - n);
         this.pendingWrap = false;
         return;
@@ -702,8 +754,7 @@ export class TerminalCursorPositionQueries {
       case 0x42:
       case 0x65: {
         const n = parseCsiParam(parts[0], 1);
-        const limit =
-          this.row <= this.scrollBottom ? this.scrollBottom : this.rows - 1;
+        const limit = this.row <= scrollBottom ? scrollBottom : this.rows - 1;
         this.row = Math.min(limit, this.row + n);
         this.pendingWrap = false;
         return;
@@ -723,8 +774,7 @@ export class TerminalCursorPositionQueries {
       }
       case 0x45: {
         const n = parseCsiParam(parts[0], 1);
-        const limit =
-          this.row <= this.scrollBottom ? this.scrollBottom : this.rows - 1;
+        const limit = this.row <= scrollBottom ? scrollBottom : this.rows - 1;
         this.row = Math.min(limit, this.row + n);
         this.col = 0;
         this.pendingWrap = false;
@@ -732,7 +782,7 @@ export class TerminalCursorPositionQueries {
       }
       case 0x46: {
         const n = parseCsiParam(parts[0], 1);
-        const limit = this.row >= this.scrollTop ? this.scrollTop : 0;
+        const limit = this.row >= scrollTop ? scrollTop : 0;
         this.row = Math.max(limit, this.row - n);
         this.col = 0;
         this.pendingWrap = false;
@@ -770,11 +820,9 @@ export class TerminalCursorPositionQueries {
         const top = parseCsiParam(parts[0], 1) - 1;
         const bottom = parseCsiParam(parts[1], this.rows) - 1;
         if (top >= 0 && bottom < this.rows && top < bottom) {
-          this.scrollTop = top;
-          this.scrollBottom = bottom;
+          this.setActiveScrollRegion(top, bottom);
         } else {
-          this.scrollTop = 0;
-          this.scrollBottom = this.rows - 1;
+          this.setActiveScrollRegion(0, this.rows - 1);
         }
         this.homeCursor();
         return;
@@ -793,7 +841,10 @@ export class TerminalCursorPositionQueries {
   }
 
   private advancePrintable(width: number): void {
-    if (width === 0) return;
+    if (width === 0) {
+      if (this.col > 0 || this.pendingWrap) return;
+      width = 1;
+    }
     if (this.pendingWrap) {
       if (this.autowrap) {
         this.col = 0;
