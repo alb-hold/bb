@@ -209,4 +209,51 @@ describe("NativeThreadTerminalMain mirror states", () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
+
+  it("clears Starting terminal when a later update reports hasOutput true or firstLiveFrame", () => {
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [baseTerminal] },
+      dataUpdatedAt: 1,
+      isLoading: false,
+    });
+
+    const { rerender } = render(
+      <NativeThreadTerminalMain
+        projectId="proj_mirror"
+        runtime={{ displayStatus: "active" }}
+        threadId="thr_mirror"
+        threadIsProvisioning={false}
+        view={{ ...baseView, hasOutput: false }}
+      />,
+    );
+
+    expect(screen.getByText("Starting terminal…")).toBeTruthy();
+
+    const withFrame = {
+      ...baseTerminal,
+      firstLiveFrame: {
+        terminalId: baseTerminal.id,
+        seq: 0,
+        at: 1500,
+        provenance: "live" as const,
+      },
+    };
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [withFrame] },
+      dataUpdatedAt: 2,
+      isLoading: false,
+    });
+
+    rerender(
+      <NativeThreadTerminalMain
+        projectId="proj_mirror"
+        runtime={{ displayStatus: "active" }}
+        threadId="thr_mirror"
+        threadIsProvisioning={false}
+        view={{ ...baseView, hasOutput: false }}
+      />,
+    );
+
+    expect(screen.queryByText("Starting terminal…")).toBeNull();
+  });
 });

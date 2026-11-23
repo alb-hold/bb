@@ -1,4 +1,5 @@
 import {
+  forgetForwardedTerminalOutputSeq,
   listEvents,
   type DbConnection,
 } from "@bb/db";
@@ -13,7 +14,10 @@ import {
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NATIVE_TOOL_CREDENTIAL_ENV } from "../../src/services/threads/native-terminal-threads.js";
+import {
+  NATIVE_TOOL_CREDENTIAL_ENV,
+  settlePendingNativeTerminalOpen,
+} from "../../src/services/threads/native-terminal-threads.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -100,6 +104,7 @@ describe("native terminal thread mirror state", () => {
     const socket = createFakeDaemonSocket();
     harness.hub.registerDaemon(seeded.session.id, seeded.host.id, socket);
 
+    let sameTickHasOutput: Promise<boolean | undefined> | null = null;
     const terminalChangeNotifications: string[] = [];
     harness.hub.onChangedMessage((message) => {
       if (
@@ -107,8 +112,16 @@ describe("native terminal thread mirror state", () => {
         message.changes.includes("terminals-changed")
       ) {
         terminalChangeNotifications.push(message.id);
+        if (sameTickHasOutput === null && message.id === threadIdForListener) {
+          sameTickHasOutput = harness.app
+            .request(`/api/v1/threads/${message.id}/native-terminal`)
+            .then(async (res) =>
+              nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
+            );
+        }
       }
     });
+    let threadIdForListener: string | null = null;
 
     const promptText = "Summarize the failing migration in packages/db";
     const createRes = await harness.app.request("/api/v1/threads", {
@@ -185,6 +198,7 @@ describe("native terminal thread mirror state", () => {
     expect(afterLaunchView.reply).toBeNull();
 
     terminalChangeNotifications.length = 0;
+    threadIdForListener = thread.id;
     harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: seeded.host.id,
       sessionId: seeded.session.id,
@@ -200,21 +214,27 @@ describe("native terminal thread mirror state", () => {
       },
     });
     expect(terminalChangeNotifications).toContain(thread.id);
+    expect(sameTickHasOutput).not.toBeNull();
+    expect(await sameTickHasOutput).toBe(true);
+    threadIdForListener = null;
+
     await harness.deps.terminalSessions.readTerminalScreen({
       terminalId: open.terminalId,
       query: {},
     });
+    harness.deps.terminalSessions.flushAllRetainedOutput();
+    forgetForwardedTerminalOutputSeq(open.terminalId);
 
-    const afterOutputRes = await harness.app.request(
+    const afterRestartRes = await harness.app.request(
       `/api/v1/threads/${thread.id}/native-terminal`,
     );
-    expect(afterOutputRes.status).toBe(200);
-    const afterOutputView = nativeTerminalThreadSchema.parse(
-      await readJson(afterOutputRes),
+    expect(afterRestartRes.status).toBe(200);
+    const afterRestartView = nativeTerminalThreadSchema.parse(
+      await readJson(afterRestartRes),
     );
-    expect(afterOutputView.prompt).toBe(promptText);
-    expect(afterOutputView.hasOutput).toBe(true);
-    expect(afterOutputView.reply).toBeNull();
+    expect(afterRestartView.prompt).toBe(promptText);
+    expect(afterRestartView.hasOutput).toBe(true);
+    expect(afterRestartView.reply).toBeNull();
 
     terminalChangeNotifications.length = 0;
     const replyText = "Found the root cause in **migrate.ts**.\n\n- Fixed column check.";
@@ -251,5 +271,116 @@ describe("native terminal thread mirror state", () => {
 
     const eventsAfter = listEvents(db, { threadId: thread.id });
     expect(eventsAfter).toEqual(eventsBeforeOutputAndReply);
+  });
+
+  it("emits terminals-changed with hasOutput: true in the same tick when first output arrives via terminal replay", async () => {
+    const db = createMigratedConnection();
+    migratedDbs.push(db);
+    const harness = await createTestAppHarness({ db });
+    harnesses.push(harness);
+
+    const seeded = seedHostSession(harness.deps, { id: "replay-host" });
+    const { project } = seedProjectWithSource(harness.deps, {
+      hostId: seeded.host.id,
+      path: "/tmp/replay-project",
+    });
+    const environment = seedEnvironment(harness.deps, {
+      hostId: seeded.host.id,
+      path: "/tmp/replay-workspace",
+      projectId: project.id,
+      status: "ready",
+    });
+    const socket = createFakeDaemonSocket();
+    harness.hub.registerDaemon(seeded.session.id, seeded.host.id, socket);
+
+    const createRes = await harness.app.request("/api/v1/threads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        providerId: "claude-code",
+        origin: "cli",
+        nativeTerminal: true,
+        input: textInput("Check replay first output"),
+        environment: {
+          type: "reuse",
+          environmentId: environment.id,
+        },
+      }),
+    });
+    expect(createRes.status).toBe(201);
+    const thread = threadResponseSchema.parse(await readJson(createRes));
+
+    const open = await waitForTerminalOpen(socket);
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      message: {
+        type: "terminal.opened",
+        requestId: open.requestId,
+        terminalId: open.terminalId,
+        shell: "/bin/zsh",
+        title: "Claude Code",
+        initialCwd: environment.path ?? "/tmp/replay-workspace",
+        cols: open.cols,
+        rows: open.rows,
+      },
+    });
+    await settlePendingNativeTerminalOpen(thread.id);
+
+    let sameTickHasOutput: Promise<boolean | undefined> | null = null;
+    harness.hub.onChangedMessage((message) => {
+      if (
+        message.entity === "thread" &&
+        message.id === thread.id &&
+        message.changes.includes("terminals-changed") &&
+        sameTickHasOutput === null
+      ) {
+        sameTickHasOutput = harness.app
+          .request(`/api/v1/threads/${thread.id}/native-terminal`)
+          .then(async (res) =>
+            nativeTerminalThreadSchema.parse(await readJson(res)).hasOutput,
+          );
+      }
+    });
+
+    const browserSocket = {
+      close: vi.fn(),
+      send: vi.fn(),
+    };
+    harness.deps.terminalSessions.attachBrowserTerminal({
+      terminalId: open.terminalId,
+      socket: browserSocket,
+      sinceSeq: 0,
+      outputAcks: false,
+      resizeAcks: false,
+    });
+    const attach = daemonMessages(socket).find(
+      (message) => message.type === "terminal.attach",
+    );
+    expect(attach).toBeDefined();
+
+    await harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: attach!.requestId,
+        terminalId: open.terminalId,
+        replayStartSeq: 0,
+        nextSeq: 1,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from("Replayed output\r\n", "utf8").toString(
+              "base64",
+            ),
+          },
+        ],
+      },
+    });
+
+    expect(sameTickHasOutput).not.toBeNull();
+    expect(await sameTickHasOutput).toBe(true);
   });
 });
