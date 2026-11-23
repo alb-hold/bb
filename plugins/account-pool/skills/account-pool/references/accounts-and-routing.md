@@ -14,7 +14,6 @@ bb pool account add --provider codex --login
 bb pool account login-poll --session <id>
 bb pool account add --provider claude --import
 bb pool account add --provider codex --import
-bb pool account add --provider gemini --import [--dry-run] [--home <dir>]
 printf '%s\n' "$ANTHROPIC_API_KEY" | bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]
 bb pool account list [--json]
 bb pool account local [--json]
@@ -110,16 +109,7 @@ local Claude login before the pool can be disabled safely. Rotation keeps the
 prior token valid for ten minutes. Agents should pipe API keys to
 `--api-key-stdin`; the CLI rejects inline secret values. Prefer `--import` for
 an existing Claude Code login. The CLI Codex import path reads
-`~/.codex/auth.json` on the bb server host.
-`bb pool account add --provider gemini --import [--home <dir>]` pools an
-Antigravity sign-in. It loads Code Assist from the daily endpoint first and
-falls back to prod, then onboarding, only when daily has no project. Add
-`--dry-run` to run the same checks without adding or onboarding anything: it
-prints each endpoint's tier ids and whether it has a project, the endpoint the
-import would use, and how many usage windows `retrieveUserQuotaSummary`
-returned, never the token, email or project id. The RPC is
-`account.probeImport` with `{provider: "gemini", home?}`.
-OAuth quota refreshes on add or
+`~/.codex/auth.json` on the bb server host. `bb pool account add --provider gemini --import [--home <dir>]` pools an Antigravity sign-in. It loads Code Assist from the daily endpoint first and falls back to prod, then onboarding, only when daily has no project. Add `--dry-run` to run the same checks without adding or onboarding anything: it prints each endpoint's tier ids and whether it has a project, the endpoint the import would use, and how many usage windows `retrieveUserQuotaSummary` returned, never the token, email or project id. The RPC is `account.probeImport` with `{provider: "gemini", home?}`. OAuth quota refreshes on add or
 enable and every five minutes while an account is idle. When a request finds no
 eligible account, the pool first refreshes the OAuth accounts it considers
 exhausted, at most once every 30 seconds per account, so a plan upgrade or an

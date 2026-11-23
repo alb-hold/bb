@@ -1349,7 +1349,8 @@ describe("Gemini account pool", () => {
       "account",
       "add",
       "--provider",
-      "gemini",
+      "claude",
+      "--import",
       "--dry-run",
     ]);
     expect(rejected.exitCode).not.toBe(0);
@@ -1873,7 +1874,9 @@ describe("Gemini account pool", () => {
     await addGemini(fixture.host, "/homes/e", 100);
     const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
     expect(loads.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["daily"]));
+    expect(
+      [...new Set(loads.map((call) => `${call.bearer} ${call.endpoint}`))].sort(),
+    ).toEqual(["tok-a daily", "tok-e daily", "tok-e prod"]);
     for (const call of loads)
       expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     const env = await geminiEnv(fixture.host);
