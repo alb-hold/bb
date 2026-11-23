@@ -220,11 +220,13 @@ export function NativeThreadTerminalMain({
               activityTarget,
             )
           : null}
-        <NativeThreadMirrorSection
-          prompt={prompt}
-          reply={reply}
-          starting={!hasTerminalOutput}
-        />
+        {!hasTerminalOutput ? (
+          <NativeThreadMirrorSection
+            prompt={prompt}
+            reply={reply}
+            starting
+          />
+        ) : null}
         <NativeTerminalPanel
           initialSession={session ?? undefined}
           attentionShownAsBanner

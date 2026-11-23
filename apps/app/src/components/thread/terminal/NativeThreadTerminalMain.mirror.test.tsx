@@ -142,7 +142,7 @@ describe("NativeThreadTerminalMain mirror states", () => {
     ).toBeNull();
   });
 
-  it("hides Starting terminal once terminal output has been seen while keeping the prompt", () => {
+  it("hides the mirror once terminal output has been seen", () => {
     hooks.listTerminals.mockReturnValue({
       data: { sessions: [baseTerminal] },
       dataUpdatedAt: 1,
@@ -160,16 +160,12 @@ describe("NativeThreadTerminalMain mirror states", () => {
     );
 
     expect(
-      container.querySelector("[data-native-terminal-prompt-mirror]")
-        ?.textContent,
-    ).toContain("Explain why the build failed");
-    expect(screen.queryByText("Starting terminal…")).toBeNull();
-    expect(
-      container.querySelector("[data-native-terminal-reply-mirror]"),
+      container.querySelector("[data-native-terminal-mirror]"),
     ).toBeNull();
+    expect(screen.queryByText("Starting terminal…")).toBeNull();
   });
 
-  it("renders the final reply as markdown below the prompt once recorded", () => {
+  it("renders no mirror above a live terminal with output and a recorded reply", () => {
     hooks.listTerminals.mockReturnValue({
       data: { sessions: [baseTerminal] },
       dataUpdatedAt: 1,
@@ -184,6 +180,41 @@ describe("NativeThreadTerminalMain mirror states", () => {
         threadIsProvisioning={false}
         view={{
           ...baseView,
+          hasOutput: true,
+          reply: {
+            text: "Fixed **the build** in `main.ts`.",
+            recordedAt: 2000,
+          },
+        }}
+      />,
+    );
+
+    expect(
+      container.querySelector("[data-native-terminal-mirror]"),
+    ).toBeNull();
+  });
+
+  it("renders the final reply as markdown below the prompt when the session has ended", () => {
+    const exitedTerminal = {
+      ...baseTerminal,
+      status: "exited" as const,
+      exitCode: 0,
+    };
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [exitedTerminal] },
+      dataUpdatedAt: 1,
+      isLoading: false,
+    });
+
+    const { container } = render(
+      <NativeThreadTerminalMain
+        projectId="proj_mirror"
+        runtime={{ displayStatus: "idle" }}
+        threadId="thr_mirror"
+        threadIsProvisioning={false}
+        view={{
+          ...baseView,
+          terminal: exitedTerminal,
           hasOutput: true,
           reply: {
             text: "Fixed **the build** in `main.ts`.",
