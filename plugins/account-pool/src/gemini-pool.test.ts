@@ -1407,11 +1407,19 @@ describe("Gemini account pool", () => {
   });
 
   it.each([
-    { kind: "file" as const, source: { kind: "file" as const, path: "/homes/d/leak-path-d/acp_token.json" }, hidden: "leak-path-d" },
+    {
+      kind: "file" as const,
+      source: { kind: "file" as const, path: "/homes/d/leak-path-d/acp_token.json" },
+      hidden: ["leak-path-d"],
+    },
     {
       kind: "keychain" as const,
-      source: { kind: "keychain" as const, service: "gemini", account: "leak-keychain-account-d" },
-      hidden: "leak-keychain-account-d",
+      source: {
+        kind: "keychain" as const,
+        service: "leak-keychain-service-d",
+        account: "leak-keychain-account-d",
+      },
+      hidden: ["leak-keychain-service-d", "leak-keychain-account-d"],
     },
   ])("prints and returns no email, token, project id or $kind location in the dry run", async ({ kind, source, hidden }) => {
     const google = await startGoogle({
@@ -1441,7 +1449,7 @@ describe("Gemini account pool", () => {
       }),
     );
     const text = `${printed.stdout}${printed.stderr}`;
-    for (const hiddenValue of ["d@example.com", "tok-d", "refresh-tok-d", "proj-d", hidden]) {
+    for (const hiddenValue of ["d@example.com", "tok-d", "refresh-tok-d", "proj-d", ...hidden]) {
       expect(text).not.toContain(hiddenValue);
       expect(payload).not.toContain(hiddenValue);
     }
@@ -1455,10 +1463,17 @@ describe("Gemini account pool", () => {
     expect(lines[4]).toBe(
       "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
     );
-    expect(JSON.parse(payload)).toMatchObject({
-      credential: { source: kind, clientIdSuffix: "xyz9q7", clientSource: "own" },
-      userAgent: "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+    const returned = JSON.parse(payload);
+    expect(returned.credential).toEqual({
+      source: kind,
+      clientIdSuffix: "xyz9q7",
+      clientSource: "own",
+      storedExpiresAt: null,
+      accessTokenExpiresAt: expect.any(Number),
     });
+    expect(returned.userAgent).toBe(
+      "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+    );
   });
 
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
