@@ -208,13 +208,38 @@ describe("live cursor position queries", () => {
     expect(replies).toEqual(["\x1b[1;3R"]);
   });
 
-  it("caps replies per chunk for flood control while still stripping every query", () => {
-    const tracker = new TerminalCursorPositionQueries(80, 24, 3);
+  it("forwards overflow standard and private DSR queries instead of silently dropping them", () => {
+    const tracker = new TerminalCursorPositionQueries(80, 24);
     const replies: string[] = [];
-    expect(
-      tracker.push("\x1b[6n".repeat(10), (reply) => replies.push(reply)),
-    ).toBe("");
-    expect(replies).toHaveLength(3);
+    const queries = [
+      "\x1b[6n",
+      "\x1b[?6n",
+      "\x1b[6n",
+      "\x1b[?6n",
+      "\x1b[6n",
+      "\x1b[?6n",
+      "\x1b[6n",
+      "\x1b[?6n",
+      "\x1b[6n",
+      "\x1b[?6n",
+      "\x1b[6n",
+    ];
+    const output = tracker.push(`before${queries.join("")}after`, (reply) =>
+      replies.push(reply),
+    );
+    expect(replies).toEqual([
+      "\x1b[1;7R",
+      "\x1b[?1;7R",
+      "\x1b[1;7R",
+      "\x1b[?1;7R",
+      "\x1b[1;7R",
+      "\x1b[?1;7R",
+      "\x1b[1;7R",
+      "\x1b[?1;7R",
+    ]);
+    expect(output).toBe("before\x1b[6n\x1b[?6n\x1b[6nafter");
+    const forwardedQueries = output.match(/\x1b\[\??6n/g) ?? [];
+    expect(replies.length + forwardedQueries.length).toBe(queries.length);
   });
 
   it("preserves non-query CSI sequences that share a prefix, aborting ESC, and flushes held prefixes on close", () => {

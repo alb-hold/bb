@@ -420,6 +420,8 @@ export class TerminalCursorPositionQueries {
             if (repliesThisChunk < this.maxRepliesPerChunk) {
               repliesThisChunk += 1;
               reply(this.formatReport(isPrivate));
+            } else {
+              emitRaw(candidate);
             }
             index += 1;
             continue;
