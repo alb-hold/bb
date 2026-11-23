@@ -1,5 +1,13 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type Account, accountSchema } from "./contracts.js";
 import { createGeminiAdapter, geminiWindowsFromQuota } from "./gemini-adapter.js";
+import type { AdapterUsageContext } from "./provider-adapter.js";
+import { AccountStore, QUOTA_MIGRATIONS, QuotaStore } from "./store.js";
 import { antigravityRuntimeUserAgent } from "./gemini-gateway.js";
 
 const TOKEN = "access-token-onboard";
@@ -29,6 +37,7 @@ function fakeCodeAssist(script: {
   quota?: unknown;
   runtimeUserAgent?: () => Promise<string>;
   unrecognizedClientLoad?: unknown;
+  now?: () => number;
 }) {
   const calls: FakeCall[] = [];
   const loads = [...script.loads];
@@ -100,8 +109,9 @@ function fakeCodeAssist(script: {
     }),
     onboarding: { pollMs: 5, timeoutMs: 60 },
     runtimeUserAgent: script.runtimeUserAgent ?? (async () => AGY_AGENT),
+    ...(script.now === undefined ? {} : { now: script.now }),
   });
-  return { adapter, calls };
+  return { adapter, calls, fetch: doFetch };
 }
 
 const DAILY_NO_PROJECT = { currentTier: { id: "free-tier" } };
@@ -1005,6 +1015,190 @@ describe("importing an Antigravity sign-in with the Antigravity request", () => 
     const error = await google.adapter.importAccount().catch((caught: unknown) => caught);
     expect(String(error)).toMatch(/onboarded standard-tier on the Antigravity daily endpoint but returned no Google-managed project/u);
     expect(String(error)).not.toContain("GOOGLE_CLOUD_PROJECT");
+  });
+});
+
+const LIVE_AGY_DAILY = {
+  cloudaicompanionProject: "proj-live-agy",
+  currentTier: { id: "free-tier" },
+  paidTier: { id: "g1-ultra-lite-tier" },
+  allowedTiers: [{ id: "free-tier", isDefault: true }, { id: "standard-tier" }],
+};
+const ONE_WINDOW = {
+  buckets: [
+    { bucketId: "gemini-3-pro", remainingFraction: 0.5, resetTime: "2100-01-01T00:00:00Z" },
+  ],
+};
+const RUNTIME_VERSION_FAILURE =
+  "bb could not read the installed antigravity-acp runtime version (ACP initialize gave no agentInfo.version).";
+
+const usageDirs: string[] = [];
+
+async function usageStores() {
+  const dataDir = await fs.mkdtemp(path.join(tmpdir(), "bb-gemini-usage-agent-"));
+  usageDirs.push(dataDir);
+  const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
+  const database = host.bb.storage.database();
+  host.bb.storage.migrate(database, QUOTA_MIGRATIONS);
+  return {
+    accounts: new AccountStore(host.bb.storage.kv, path.join(dataDir, "secrets")),
+    quotas: new QuotaStore(database),
+  };
+}
+
+function pooledLiveAccount(): Account {
+  return accountSchema.parse({
+    id: randomUUID(),
+    provider: "gemini",
+    kind: "oauth",
+    label: EMAIL,
+    email: EMAIL,
+    geminiProject: "proj-live-agy",
+    geminiEndpoint: "daily",
+    subscriptionType: "g1-ultra-lite-tier",
+    rateLimitTier: null,
+    enabled: true,
+    priority: 0,
+    createdAt: 0,
+  });
+}
+
+function usageContext(
+  stores: Awaited<ReturnType<typeof usageStores>>,
+  account: Account,
+  doFetch: typeof fetch,
+  now: () => number,
+): AdapterUsageContext {
+  return {
+    account,
+    freshSecret: async () => ({
+      kind: "oauth",
+      accessToken: TOKEN,
+      refreshToken: "refresh-onboard",
+      expiresAt: null,
+    }),
+    accounts: stores.accounts,
+    quotas: stores.quotas,
+    fetch: doFetch,
+    now,
+  };
+}
+
+describe("the live Antigravity daily shape", () => {
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    while (usageDirs.length > 0)
+      await fs.rm(usageDirs.pop() ?? "", { recursive: true, force: true });
+  });
+
+  it("imports the daily project, serves on daily, onboards nothing and shows one usage window", async () => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      quota: ONE_WINDOW,
+    });
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-live-agy",
+      geminiEndpoint: "daily",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+    ]);
+    const stores = await usageStores();
+    const account = pooledLiveAccount();
+    await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now));
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(google.calls.some((call) => call.method === "onboardUser")).toBe(false);
+    expect(google.calls.some((call) => call.base === "prod")).toBe(false);
+    expect(google.calls.every((call) => call.userAgent === AGY_AGENT)).toBe(true);
+    const dryRun = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      quota: ONE_WINDOW,
+    });
+    const probe = await dryRun.adapter.probeImport?.();
+    expect(probe).toMatchObject({
+      userAgent: AGY_AGENT,
+      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
+      quota: { kind: "answered", windows: 1 },
+    });
+    expect(probe?.endpoints[0]).toMatchObject({
+      endpoint: "daily",
+      status: "answered",
+      currentTier: "free-tier",
+      paidTier: "g1-ultra-lite-tier",
+      ineligibleTiers: [],
+      projectPresent: true,
+    });
+  });
+
+  it("answers the same account with the UNSUPPORTED_CLIENT shape when the request lacks the Antigravity User-Agent", async () => {
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      runtimeUserAgent: async () => "node",
+    });
+    const probe = await google.adapter.probeImport?.();
+    expect(probe?.endpoints[0]).toMatchObject({
+      endpoint: "daily",
+      ineligibleTiers: [{ id: "free-tier", reasonCode: "UNSUPPORTED_CLIENT" }],
+      projectPresent: false,
+    });
+  });
+
+  it("keeps refreshing usage with the last User-Agent it read when a later version read fails", async () => {
+    let time = Date.parse("2026-11-23T18:00:00Z");
+    let reads = 0;
+    let failing = false;
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      quota: ONE_WINDOW,
+      now: () => time,
+      runtimeUserAgent: async () => {
+        reads += 1;
+        if (failing) throw new Error(RUNTIME_VERSION_FAILURE);
+        return AGY_AGENT;
+      },
+    });
+    const stores = await usageStores();
+    const account = pooledLiveAccount();
+    const context = usageContext(stores, account, google.fetch, () => time);
+    await google.adapter.refreshUsage(context);
+    failing = true;
+    time += 11 * 60 * 1_000;
+    google.calls.length = 0;
+    await google.adapter.refreshUsage(context);
+    expect(reads).toBe(2);
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(google.calls.map(({ method, userAgent }) => [method, userAgent])).toEqual([
+      ["loadCodeAssist", AGY_AGENT],
+      ["retrieveUserQuotaSummary", AGY_AGENT],
+    ]);
+  });
+
+  it("records a runtime_version error on the usage status and makes no Google call when no version was ever read", async () => {
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quota: ONE_WINDOW,
+      runtimeUserAgent: async () => {
+        throw new Error(RUNTIME_VERSION_FAILURE);
+      },
+    });
+    const stores = await usageStores();
+    const account = pooledLiveAccount();
+    await expect(
+      google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now)),
+    ).rejects.toThrow(RUNTIME_VERSION_FAILURE);
+    expect(stores.quotas.get(account.id).error).toBe(
+      `Gemini usage refresh stopped (runtime_version): ${RUNTIME_VERSION_FAILURE}`,
+    );
+    expect(google.calls).toEqual([]);
   });
 });
 

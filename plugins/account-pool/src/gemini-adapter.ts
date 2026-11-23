@@ -829,13 +829,23 @@ export function createGeminiAdapter(options: {
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
   let cachedAgent: { value: string; at: number } | null = null;
+  let readingAgent: Promise<string> | null = null;
   const userAgent = async () => {
     const at = (options.now ?? Date.now)();
     if (cachedAgent !== null && at - cachedAgent.at < USER_AGENT_TTL_MS)
       return cachedAgent.value;
-    const value = await options.runtimeUserAgent();
-    cachedAgent = { value, at };
-    return value;
+    readingAgent ??= options.runtimeUserAgent().finally(() => {
+      readingAgent = null;
+    });
+    try {
+      const value = await readingAgent;
+      cachedAgent = { value, at };
+      return value;
+    } catch (error) {
+      if (cachedAgent === null) throw error;
+      cachedAgent = { value: cachedAgent.value, at };
+      return cachedAgent.value;
+    }
   };
   const bases = {
     prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
@@ -1141,6 +1151,13 @@ export function createGeminiAdapter(options: {
     },
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
+      const agent = await userAgent().catch((error: unknown) => {
+        context.quotas.put({
+          ...context.quotas.get(context.account.id),
+          error: `Gemini usage refresh stopped (runtime_version): ${errorMessage(error)}`,
+        });
+        throw error;
+      });
       const secret = await context.freshSecret(context.signal);
       context.signal?.throwIfAborted();
       if (secret.kind !== "oauth") return;
@@ -1151,7 +1168,7 @@ export function createGeminiAdapter(options: {
           "loadCodeAssist",
           secret.accessToken,
           LOAD_CODE_ASSIST_BODY,
-          await userAgent(),
+          agent,
           context.signal,
         ),
       );
@@ -1185,7 +1202,7 @@ export function createGeminiAdapter(options: {
           "retrieveUserQuotaSummary",
           secret.accessToken,
           { project },
-          await userAgent(),
+          agent,
           context.signal,
         ),
         now,

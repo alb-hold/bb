@@ -1452,7 +1452,7 @@ falls back to prod, then onboarding, only when daily has no project. When onboar
 no `GOOGLE_CLOUD_PROJECT`, bb onboards on daily to the default tier daily offers
 and takes the Google-managed project instead. An
 account Google serves on prod also loads prod and keeps prod's project when
-prod has one. Every Code Assist call sends the Antigravity runtime User-Agent, `antigravity/acp/<version> (aidev_client; os_type=<os>; arch=<arch>)`, with the version read from the installed `antigravity-acp` agent's ACP `initialize` reply; the import fails with a clear message when that version cannot be read. Add `--dry-run` to run the same checks without adding or onboarding anything: it
+prod has one. Every Code Assist call sends the Antigravity runtime User-Agent, `antigravity/acp/<version> (aidev_client; os_type=<os>; arch=<arch>)`, with the version read from the installed `antigravity-acp` agent's ACP `initialize` reply; the import fails with a clear message when that version cannot be read. A usage refresh keeps using the last version it read when a later read fails; if no version was ever read, the account's usage status shows a `runtime_version` error and no Code Assist call is made. Add `--dry-run` to run the same checks without adding or onboarding anything: it
 prints where the sign-in came from (the token file path or the keychain item
 name), the Google account email, the last 6 characters of the OAuth client id,
 the stored and refreshed token expiry times, the request User-Agent, each endpoint's tier ids with
