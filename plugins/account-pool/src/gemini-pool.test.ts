@@ -62,7 +62,10 @@ async function accountSecretFiles(dir: string): Promise<string[]> {
   return entries.filter((entry) => /(^|\/)account-[^/]*\.json$/u.test(entry));
 }
 const THREAD = "thr_gemini2345";
-const CLIENT = { clientId: "agy-client", clientSecret: "agy-secret" };
+const CLIENT = {
+  clientId: "123456789012-fakeagyclient0123456789xyz9q7.apps.googleusercontent.com",
+  clientSecret: "agy-secret",
+};
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -112,12 +115,28 @@ describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
       refreshToken: "refresh-a",
       client: CLIENT,
       projectId: "proj-a",
+      source: { kind: "file", path: path.join(homeA, "antigravity-acp", "acp_token.json") },
+      storedExpiresAt: null,
     });
     await expect(importGeminiCredentials(homeB)).resolves.toEqual({
       refreshToken: "refresh-b",
       client: CLIENT,
       projectId: null,
+      source: { kind: "file", path: path.join(homeB, "antigravity-acp", "acp_token.json") },
+      storedExpiresAt: null,
     });
+  });
+
+  it.each<[string, unknown, number | null]>([
+    ["an ISO time", "2026-11-23T20:00:00Z", Date.parse("2026-11-23T20:00:00Z")],
+    ["epoch milliseconds", 1_795_000_000_000, 1_795_000_000_000],
+    ["epoch seconds", 1_795_000_000, 1_795_000_000_000],
+    ["a numeric string", "1795000000", 1_795_000_000_000],
+    ["no usable value", "soon", null],
+  ])("reads the stored token expiry from %s", (_name, expiry, expected) => {
+    expect(
+      parseGeminiCredentials(JSON.stringify({ refresh_token: "fake-refresh", expiry })).storedExpiresAt,
+    ).toBe(expected);
   });
 
   it("falls back to GEMINI_HOME, and says how to sign in when there is none", async () => {
@@ -139,7 +158,7 @@ describe("Gemini credentials from an antigravity-acp GEMINI_HOME", () => {
       ),
     ).toThrow();
     expect(parseGeminiCredentials(JSON.stringify({ refresh_token: "fake-refresh" }))).toEqual({
-      refreshToken: "fake-refresh", client: null, installedAppClient: "consumer", projectId: null,
+      refreshToken: "fake-refresh", client: null, installedAppClient: "consumer", projectId: null, storedExpiresAt: null,
     });
   });
 });
@@ -156,13 +175,17 @@ describe("Gemini credentials from the macOS keychain", () => {
     refreshToken: "fake-refresh-kc",
     client: { clientId: CLIENT.clientId, clientSecret: "fake-secret-kc" },
     projectId: "proj-kc",
+    storedExpiresAt: null,
   };
 
   it("imports credentials from the antigravity-acp keychain account", async () => {
     vi.stubEnv("GEMINI_HOME", await tempDir("bb-agy-kc-"));
     const readKeychain = vi.fn(async () => ({ kind: "found" as const, secret }));
     const readInstalledAppClient = vi.fn();
-    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain, readInstalledAppClient })).resolves.toEqual(expected);
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain, readInstalledAppClient })).resolves.toEqual({
+      ...expected,
+      source: { kind: "keychain", service: "gemini", account: "antigravity-acp" },
+    });
     expect(readInstalledAppClient).not.toHaveBeenCalled();
     expect(readKeychain).toHaveBeenCalledWith("gemini", "antigravity-acp");
   });
@@ -185,6 +208,8 @@ describe("Gemini credentials from the macOS keychain", () => {
     const readInstalledAppClient = vi.fn(async () => CLIENT);
     await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain, readInstalledAppClient })).resolves.toEqual({
       refreshToken: goToken.refresh_token, client: CLIENT, projectId: null, clientSource: "antigravity-installed-app",
+      source: { kind: "keychain", service: "gemini", account: target },
+      storedExpiresAt: variant === "camelCase" ? null : Date.parse(goToken.expiry),
     });
     expect(readInstalledAppClient).toHaveBeenCalledWith(business ? "business" : "consumer");
     expect(readKeychain.mock.calls.map(([, account]) => account)).toEqual(
@@ -224,7 +249,10 @@ describe("Gemini credentials from the macOS keychain", () => {
     const readKeychain = vi.fn(async (_service: string, account: string) => account === "antigravity-acp"
       ? { kind: "missing" as const }
       : { kind: "found" as const, secret: `go-keyring-base64:${Buffer.from(secret).toString("base64")}` });
-    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual(expected);
+    await expect(importGeminiCredentials(undefined, { platform: "darwin", readKeychain })).resolves.toEqual({
+      ...expected,
+      source: { kind: "keychain", service: "gemini", account: "antigravity" },
+    });
     expect(readKeychain.mock.calls.map(([service, account]) => [service, account])).toEqual([
       ["gemini", "antigravity-acp"],
       ["gemini", "antigravity"],
@@ -346,9 +374,11 @@ describe("Gemini import refresh errors", () => {
     const installed = code === "invalid_grant";
     const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: code }, { status: 400 }));
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl, fetch, upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials: async () => ({
         refreshToken: "fake-refresh-kc", client: CLIENT, projectId: null,
+        source: { kind: "keychain", service: "gemini", account: "antigravity" }, storedExpiresAt: null,
         ...(installed && { clientSource: "antigravity-installed-app" as const }),
       }),
     });
@@ -376,10 +406,12 @@ describe("Gemini import refresh with a stalled error body", () => {
       status, headers: { "content-type": "application/json" },
     }));
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token", fetch,
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials: async () => ({
         refreshToken: "fake-refresh-stall", client: CLIENT, projectId: null, clientSource: "antigravity-installed-app" as const,
+        source: { kind: "keychain", service: "gemini", account: "antigravity" }, storedExpiresAt: null,
       }),
     });
     const started = Date.now();
@@ -395,6 +427,7 @@ describe("Gemini adapter local login", () => {
     const home = await tempDir("bb-agy-empty-local-login-");
     vi.stubEnv("GEMINI_HOME", home);
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token",
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
     });
@@ -406,6 +439,7 @@ describe("Gemini adapter local login", () => {
       throw new Error("keychain-capable import must not run during listing");
     });
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token",
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials,
@@ -1048,6 +1082,7 @@ async function createGeminiFixture(
       : {}),
     geminiRefreshUrl: `${google.url}/token`,
     geminiUserinfoUrl: `${google.url}/userinfo`,
+    geminiRuntimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
     geminiUpstreamBaseUrls: {
       prod: `${google.url}/prod`,
       daily: `${google.url}/daily`,
@@ -1104,7 +1139,13 @@ async function createGeminiFixture(
 }
 
 function creds(access: string): ImportedGeminiCredentials {
-  return { refreshToken: `refresh-${access}`, client: CLIENT, projectId: null };
+  return {
+    refreshToken: `refresh-${access}`,
+    client: CLIENT,
+    projectId: null,
+    source: { kind: "keychain", service: "gemini", account: "antigravity-acp" },
+    storedExpiresAt: null,
+  };
 }
 
 type GeminiHost = Awaited<ReturnType<typeof createGeminiFixture>>["host"];
@@ -1328,16 +1369,20 @@ describe("Gemini account pool", () => {
       "/homes/c",
     ]);
     expect(probe.exitCode).toBe(0);
-    expect(probe.stdout).toBe(
-      [
-        "daily: answered; current=none, paid=none, allowed=none; project: yes",
-        "prod: not-loaded",
-        "would import: project from daily, serves on daily",
-        "quota summary: answered, 1 window",
-        "",
-      ].join("\n"),
-    );
-    for (const secret of ["proj-c", "tok-c", "c@example.com"])
+    const lines = probe.stdout.split("\n");
+    expect(lines[3]).toMatch(/^refreshed token expires: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u);
+    expect([...lines.slice(0, 3), ...lines.slice(4)]).toEqual([
+      "credential: keychain",
+      "oauth client: ...xyz9q7 (from the sign-in)",
+      "stored expiry: absent",
+      "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+      "daily: answered; current=none, paid=none, allowed=none, ineligible=none; project: yes",
+      "prod: not-loaded",
+      "would import: project from daily, serves on daily",
+      "quota summary: answered, 1 window",
+      "",
+    ]);
+    for (const secret of ["proj-c", "tok-c", "refresh-tok-c", CLIENT.clientId, CLIENT.clientSecret, "fakeagyclient"])
       expect(`${probe.stdout}${probe.stderr}`).not.toContain(secret);
     expect(
       google.calls
@@ -1359,6 +1404,88 @@ describe("Gemini account pool", () => {
     ]);
     expect(rejected.exitCode).not.toBe(0);
     expect(rejected.stderr).toContain("--dry-run works only with --provider gemini --import.");
+  });
+
+  it.each([
+    {
+      kind: "file" as const,
+      source: { kind: "file" as const, path: "/homes/d/leak-path-d/acp_token.json" },
+      hidden: ["leak-path-d"],
+    },
+    {
+      kind: "keychain" as const,
+      source: {
+        kind: "keychain" as const,
+        service: "leak-keychain-service-d",
+        account: "leak-keychain-account-d",
+      },
+      hidden: ["leak-keychain-service-d", "leak-keychain-account-d"],
+    },
+  ])("prints and returns no email, token, project id or $kind location in the dry run", async ({ kind, source, hidden }) => {
+    const google = await startGoogle({
+      projects: { "tok-d": "proj-d" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/d": { ...creds("tok-d"), source },
+    });
+    const printed = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--import",
+      "--dry-run",
+      "--home",
+      "/homes/d",
+    ]);
+    expect(printed.exitCode).toBe(0);
+    const payload = JSON.stringify(
+      await fixture.host.harness.behavior.callRpc("account.probeImport", {
+        provider: "gemini",
+        home: "/homes/d",
+      }),
+    );
+    const text = `${printed.stdout}${printed.stderr}`;
+    for (const hiddenValue of ["d@example.com", "tok-d", "refresh-tok-d", "proj-d", ...hidden]) {
+      expect(text).not.toContain(hiddenValue);
+      expect(payload).not.toContain(hiddenValue);
+    }
+    const lines = printed.stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      `credential: ${kind}`,
+      "oauth client: ...xyz9q7 (from the sign-in)",
+      "stored expiry: absent",
+    ]);
+    expect(lines[3]).toMatch(/^refreshed token expires: \d{4}-\d\d-\d\dT/u);
+    expect(lines[4]).toBe(
+      "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+    );
+    const unloaded = {
+      currentTier: null,
+      paidTier: null,
+      allowedTiers: [],
+      ineligibleTiers: [],
+    };
+    expect(JSON.parse(payload)).toEqual({
+      provider: "gemini",
+      credential: {
+        source: kind,
+        clientIdSuffix: "xyz9q7",
+        clientSource: "own",
+        storedExpiresAt: null,
+        accessTokenExpiresAt: expect.any(Number),
+      },
+      userAgent: "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
+      endpoints: [
+        { endpoint: "daily", status: "answered", ...unloaded, projectPresent: true },
+        { endpoint: "prod", status: "not-loaded", ...unloaded, projectPresent: false },
+      ],
+      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
+      quota: { kind: "answered", windows: 1 },
+    });
   });
 
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {

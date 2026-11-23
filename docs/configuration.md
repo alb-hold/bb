@@ -1448,12 +1448,18 @@ bb pool account refresh <id>
 
 `bb pool account add --provider gemini --import [--home <dir>]` pools an
 Antigravity sign-in. It loads Code Assist from the daily endpoint first and
-falls back to prod, then onboarding, only when daily has no project. An
+falls back to prod, then onboarding, only when daily has no project. When onboarding would otherwise go to standard-tier on prod with no project and
+no `GOOGLE_CLOUD_PROJECT`, bb onboards on daily to the default tier daily offers
+and takes the Google-managed project instead. An
 account Google serves on prod also loads prod and keeps prod's project when
-prod has one. Add `--dry-run` to run the same checks without adding or onboarding anything: it
-prints each endpoint's tier ids and whether it has a project, the endpoint the
+prod has one. Every Code Assist call sends the Antigravity runtime User-Agent, `antigravity/acp/<version> (aidev_client; os_type=<os>; arch=<arch>)`, with the version read from the installed `antigravity-acp` agent's ACP `initialize` reply; the import fails with a clear message when that version cannot be read. A usage refresh keeps using the last version it read when a later read fails; if no version was ever read, the account's usage status shows a `runtime_version` error and no Code Assist call is made. Add `--dry-run` to run the same checks without adding or onboarding anything: it
+prints whether the sign-in came from a token file or the keychain, the last 6
+characters of the OAuth client id and where that client came from, the stored
+and refreshed token expiry times, the request User-Agent, each endpoint's tier ids with
+ineligibility reason codes and whether it has a project, the endpoint the
 import would use, and how many usage windows `retrieveUserQuotaSummary`
-returned, never the token, email or project id. The RPC is
+returned, never an email, token, client secret, full client id, project id,
+file path or keychain account. The RPC is
 `account.probeImport` with `{provider: "gemini", home?}`.
 
 The Claude login start command creates a ten-minute in-memory PKCE session,
