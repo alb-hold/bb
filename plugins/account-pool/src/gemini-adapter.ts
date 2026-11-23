@@ -561,8 +561,23 @@ async function onboardCodeAssist(args: {
       );
     return parsed.data;
   };
-  const onboard = () =>
-    codeAssistCall(args.doFetch, args.baseUrl, "onboardUser", args.accessToken, body);
+  const onboard = async () => {
+    try {
+      return await codeAssistCall(
+        args.doFetch,
+        args.baseUrl,
+        "onboardUser",
+        args.accessToken,
+        body,
+      );
+    } catch (error) {
+      const original = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${original} (stage: onboardUser; tier id: ${args.tierId}; tier ids: ${args.tierIds})`,
+        { cause: error },
+      );
+    }
+  };
   let operation = readOperation(await onboard());
   let name = operation.name;
   const deadline = Date.now() + args.timeoutMs;

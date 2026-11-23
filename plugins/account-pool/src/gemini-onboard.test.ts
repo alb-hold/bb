@@ -20,6 +20,7 @@ function fakeCodeAssist(script: {
   onboard?: unknown;
   onboardReplies?: unknown[];
   operations?: unknown[];
+  onboardFailure?: { status: number } | { error: Error };
 }) {
   const calls: FakeCall[] = [];
   const loads = [...script.loads];
@@ -53,6 +54,10 @@ function fakeCodeAssist(script: {
     }
     if (rest === "/v1internal:onboardUser") {
       calls.push({ method: "onboardUser", base, body });
+      if (script.onboardFailure !== undefined) {
+        if ("error" in script.onboardFailure) throw script.onboardFailure.error;
+        return new Response("{}", { status: script.onboardFailure.status });
+      }
       return json(script.onboardReplies?.shift() ?? script.onboard);
     }
     if (rest.startsWith("/v1internal/operations/")) {
@@ -264,6 +269,50 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
     ).toBeGreaterThan(1);
     expect(google.calls.filter((call) => call.method === "loadCodeAssist")).toHaveLength(1);
   });
+
+  it.each([
+    {
+      name: "HTTP 500",
+      failure: { status: 500 },
+      original: "Gemini onboardUser failed with HTTP 500.",
+    },
+    {
+      name: "a network error",
+      failure: { error: new TypeError("fetch failed") },
+      original: "fetch failed",
+    },
+  ])(
+    "keeps the tier ids when the onboardUser request fails with $name",
+    async ({ failure, original }) => {
+      const google = fakeCodeAssist({
+        loads: [
+          {
+            paidTier: { id: "g1-pro-tier" },
+            allowedTiers: [{ id: "free-tier" }, { id: "g1-pro-tier", isDefault: true }],
+          },
+        ],
+        onboardFailure: failure,
+      });
+      const error = await google.adapter.importAccount().then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message.startsWith(original)).toBe(true);
+      expect(message).toContain("stage: onboardUser; tier id: g1-pro-tier");
+      expect(message).toContain(
+        "tier ids: current=none, paid=g1-pro-tier, allowed=free-tier,g1-pro-tier(default))",
+      );
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(message).not.toContain(TOKEN);
+      expect(message).not.toContain(EMAIL);
+      expect(google.calls.map((call) => call.method)).toEqual([
+        "loadCodeAssist",
+        "onboardUser",
+      ]);
+    },
+  );
 
   it("does not guess a tier when Google marks none as the default", async () => {
     const google = fakeCodeAssist({
