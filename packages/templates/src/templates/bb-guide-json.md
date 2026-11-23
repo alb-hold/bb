@@ -39,7 +39,10 @@ the most-parsed commands ends with the same shape.
     {project: {id, name} | null, thread: {id, status, title, parentThreadId, environment: {hostId, display} | null} | null, childThreads: [{id, status, title}] | null, pendingTodos, pluginsNeedingAttention: [{id, status}], dataDir}
 
   bb thread list --json
-    [{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)
+    [{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; walks all pages by default, or returns one page with --limit / --cursor; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)
+
+  bb thread native [id] --json
+    {threadId, providerId, displayName, model, nativeSessionId, canReturnToChat, terminal} for default or --convert; null for --chat
 
   bb thread show <id> [--usage] --json
     {thread: {id, status, archivedAt, title, projectId, environmentId, parentThreadId, ...}, environment: {id, hostId, path, branchName, ...} | null, pendingTodos, spendSummary, usageTimeline?}    (thread fields are under .thread; --usage includes compaction rows; status is the run state, archivedAt is null unless the thread is archived)

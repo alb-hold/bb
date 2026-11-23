@@ -2,7 +2,9 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
   status:
     "{project: {id, name} | null, thread: {id, status, title, parentThreadId, environment: {hostId, display} | null} | null, childThreads: [{id, status, title}] | null, pendingTodos, pluginsNeedingAttention: [{id, status}], dataDir}",
   "thread list":
-    "[{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)",
+    "[{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; walks all pages by default, or returns one page with --limit / --cursor; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)",
+  "thread native":
+    "{threadId, providerId, displayName, model, nativeSessionId, canReturnToChat, terminal} for default or --convert; null for --chat",
   "thread show":
     "{thread: {id, status, archivedAt, title, projectId, environmentId, parentThreadId, ...}, environment: {id, hostId, path, branchName, ...} | null, pendingTodos, spendSummary, usageTimeline?}    (thread fields are under .thread; --usage includes compaction rows; status is the run state, archivedAt is null unless the thread is archived)",
   "thread log":

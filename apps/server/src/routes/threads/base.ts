@@ -25,7 +25,6 @@ import {
   listNativeTerminalThreadsByIds,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
-  buildThreadListEnrichmentScope,
   markThreadDeleted,
   listThreadDeletionTree,
   listPluginThreadMetadata,
@@ -120,6 +119,8 @@ import { getActiveTurnId } from "../../services/threads/thread-events.js";
 import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
 
 const NATIVE_STATUS_LIST_LIMIT = 8;
+const DEFAULT_THREAD_LIST_LIMIT = 100;
+const MAX_THREAD_LIST_LIMIT = 500;
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -366,20 +367,31 @@ export function registerThreadBaseRoutes(
       limit: query.limit,
       offset: query.offset,
     });
-    if (query.cursor && (offset !== undefined || limit === undefined)) {
+    if (query.cursor && offset !== undefined) {
       throw new ApiError(
         400,
         "invalid_request",
-        "cursor requires limit and cannot be combined with offset",
+        "cursor cannot be combined with offset",
       );
     }
+    const threadIds =
+      query.threadIds === undefined
+        ? undefined
+        : parseThreadListThreadIds(query.threadIds);
+    const effectiveLimit = Math.min(
+      limit ??
+        (threadIds !== undefined
+          ? Math.max(DEFAULT_THREAD_LIST_LIMIT, threadIds.length)
+          : DEFAULT_THREAD_LIST_LIMIT),
+      MAX_THREAD_LIST_LIMIT,
+    );
     const after = query.cursor
       ? parseThreadCursor(query.cursor, query.archived === "true")
       : undefined;
     setCurrentThreadListSlowQueryContext(
       context,
       query,
-      limit,
+      effectiveLimit,
       offset,
       pluginService,
     );
@@ -414,9 +426,7 @@ export function registerThreadBaseRoutes(
         ...(query.originPluginId
           ? { originPluginId: query.originPluginId }
           : {}),
-        ...(query.threadIds === undefined
-          ? {}
-          : { threadIds: parseThreadListThreadIds(query.threadIds) }),
+        ...(threadIds === undefined ? {} : { threadIds }),
         includeHidden: query.includeHidden === "true",
         archived:
           query.archived === undefined ? undefined : query.archived === "true",
@@ -424,18 +434,19 @@ export function registerThreadBaseRoutes(
           query.hasParent === undefined
             ? undefined
             : query.hasParent === "true",
-        ...(limit !== undefined ? { limit } : {}),
+        limit: effectiveLimit,
         ...(offset !== undefined ? { offset } : {}),
       };
-      const threads = listThreadsWithPendingInteractionState(
-        deps.db,
-        limit !== undefined && Number.isSafeInteger(limit)
-          ? { ...options, limit: limit + 1 }
-          : options,
+      const threads = listThreadsWithPendingInteractionState(deps.db, {
+        ...options,
+        limit: effectiveLimit + 1,
+      });
+      finishThreadPage(
+        context,
+        threads,
+        effectiveLimit,
+        query.archived === "true",
       );
-      if (limit !== undefined) {
-        finishThreadPage(context, threads, limit, query.archived === "true");
-      }
       void Promise.all(
         threads
           .slice(0, NATIVE_STATUS_LIST_LIMIT)
@@ -448,10 +459,7 @@ export function registerThreadBaseRoutes(
       });
       const entries = toThreadListEntryResponses(deps, {
         threads,
-        scope:
-          limit === undefined
-            ? buildThreadListEnrichmentScope(deps.db, options)
-            : { kind: "ids", ids: threads.map((thread) => thread.id) },
+        scope: { kind: "ids", ids: threads.map((thread) => thread.id) },
       }) satisfies ThreadListEntry[];
       return context.json(
         query.fields === "summary"

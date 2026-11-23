@@ -1,6 +1,5 @@
 import {
   effectiveDisplayStatus,
-  withEffectiveDisplayStatus,
   type ThreadParentNotifications,
   type ThreadStatus,
   type ThreadTimelinePendingTodos,
@@ -12,7 +11,7 @@ import type {
   ThreadTimelineResponse,
   ThreadWithIncludesResponse,
 } from "@bb/server-contract";
-import { fullThreadListRows } from "./threads.js";
+import { fullThreadListRows, readThreadListPages } from "./threads.js";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
 export interface StatusGetArgs {
@@ -120,21 +119,16 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
         thread === null
           ? null
           : await fetchSilent(() =>
-              transport.readJson(
-                transport.api.v1.threads.$get(
-                  {
-                    query: { parentThreadId: thread.id },
-                  },
-                  ...signalRequestArgs(signal),
-                ),
+              readThreadListPages(
+                args,
+                { parentThreadId: thread.id, signal },
+                undefined,
+                fullThreadListRows,
               ),
             );
 
       return {
-        childThreads:
-          childThreads === null
-            ? null
-            : fullThreadListRows(childThreads).map(withEffectiveDisplayStatus),
+        childThreads,
         pendingTodos,
         project,
         thread: thread === null ? null : summarizeThread(thread),

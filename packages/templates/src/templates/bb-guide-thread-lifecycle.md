@@ -133,13 +133,17 @@ Lifecycle:
 
 Native terminal threads:
 
-  bb thread native [id] [--attach]         Open a --native thread's provider CLI terminal,
-                                           resuming the same session when it has exited
+  bb thread native [id] [--attach]         Default action (neither --convert nor --chat): open a
+                                           --native thread's provider CLI terminal, resuming the
+                                           same session when it has exited, and print its status
   bb thread native [id] --convert          Move a claude-code or codex chat thread to its
                                            terminal: stops its running turn, then resumes
-                                           the same session in claude or codex
+                                           the same session in claude or codex (combines with --attach)
   bb thread native [id] --chat             Move a converted thread back to chat: closes
                                            its terminal; bb continues the same session
+                                           (cannot combine with --convert or --attach)
+    --json                                 Print the native terminal view JSON (or null for --chat)
+                                           without attaching
 
   A thread is in one mode at a time. While it is in its terminal, chat sends
   paste into the terminal and bb starts no turns. Turns taken in the terminal

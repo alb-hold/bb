@@ -772,7 +772,11 @@ export function registerTerminalCommands(
     .description("Attach to a running terminal session")
     .addHelpText(
       "after",
-      "\nType or paste to send input. Press Ctrl-B, then lowercase d, to detach and leave the session running. If both keys arrive in one input chunk, bb forwards them. The session uses your terminal size on attach and when your window resizes.",
+      "\nType or paste to send input. Detach with Ctrl-B then d (default; override with\n--detach-key or BB_TERMINAL_DETACH_KEY) to leave the session running. The session\nuses your terminal size on attach and when your window resizes.",
+    )
+    .option(
+      "--detach-key <chord>",
+      "Key chord to detach without closing the session (default: ctrl-b,d; env: BB_TERMINAL_DETACH_KEY)",
     )
     .option("--json", "Print session metadata without attaching")
     .option(
@@ -783,7 +787,10 @@ export function registerTerminalCommands(
       action(
         async (
           terminalId: string,
-          opts: TerminalJsonOptions & { reportTiming?: boolean },
+          opts: TerminalJsonOptions & {
+            detachKey?: string;
+            reportTiming?: boolean;
+          },
         ) => {
           if (opts.json) {
             const session = await createCliBbSdk(getUrl()).terminals.get({
@@ -794,6 +801,7 @@ export function registerTerminalCommands(
           }
           await attachTerminal({
             baseUrl: getUrl(),
+            detachKey: opts.detachKey,
             reportTiming: opts.reportTiming,
             terminalId,
           });
@@ -1358,7 +1366,101 @@ function terminalWebsocketUrl(args: {
   return url.href;
 }
 
+export const DEFAULT_TERMINAL_DETACH_KEY = "ctrl-b,d";
+export const TERMINAL_DETACH_KEY_ENV = "BB_TERMINAL_DETACH_KEY";
+
+function parseDetachKeyToken(token: string, spec: string): number {
+  const normalized = token.trim();
+  const ctrlMatch = /^(?:ctrl-|\^)(.)$/iu.exec(normalized);
+  if (ctrlMatch) {
+    const ch = ctrlMatch[1]!.toLowerCase();
+    const code = ch.charCodeAt(0);
+    if (code >= 0x61 && code <= 0x7a) return code - 0x60;
+    if (ch === "@") return 0x00;
+    if (ch === "[") return 0x1b;
+    if (ch === "\\") return 0x1c;
+    if (ch === "]") return 0x1d;
+    if (ch === "^") return 0x1e;
+    if (ch === "_") return 0x1f;
+    if (ch === "?") return 0x7f;
+  }
+  if (normalized.length === 1) {
+    const code = normalized.charCodeAt(0);
+    if (code >= 0x20 && code <= 0x7e) return code;
+  }
+  throw new Error(
+    `Invalid detach key '${spec}'. Use one or two comma-separated keys such as ctrl-b,d or ctrl-],d.`,
+  );
+}
+
+export function parseTerminalDetachChord(spec: string): Uint8Array {
+  const parts = spec
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length < 1 || parts.length > 2) {
+    throw new Error(
+      `Invalid detach key '${spec}'. Use one or two comma-separated keys such as ctrl-b,d or ctrl-],d.`,
+    );
+  }
+  return Uint8Array.from(
+    parts.map((part) => parseDetachKeyToken(part, spec)),
+  );
+}
+
+export function createDetachInputHandler(
+  chord: Uint8Array,
+  onForward: (chunk: Buffer) => void,
+  onDetach: () => void,
+): (chunk: Buffer) => void {
+  if (chord.length === 1) {
+    const target = chord[0]!;
+    return (chunk: Buffer) => {
+      const idx = chunk.indexOf(target);
+      if (idx !== -1) {
+        if (idx > 0) onForward(chunk.subarray(0, idx));
+        onDetach();
+        return;
+      }
+      onForward(chunk);
+    };
+  }
+  const prefix = chord[0]!;
+  const second = chord[1]!;
+  let pendingPrefix = false;
+  return (chunk: Buffer) => {
+    if (chunk.length === 0) return;
+    let forwardStart = 0;
+    if (pendingPrefix) {
+      pendingPrefix = false;
+      if (chunk[0] === second) {
+        onDetach();
+        return;
+      }
+      onForward(Buffer.from([prefix]));
+    }
+    for (let i = 0; i < chunk.length; i += 1) {
+      if (chunk[i] !== prefix) continue;
+      if (i + 1 < chunk.length) {
+        if (chunk[i + 1] === second) {
+          if (i > forwardStart) onForward(chunk.subarray(forwardStart, i));
+          onDetach();
+          return;
+        }
+        continue;
+      }
+      if (i > forwardStart) onForward(chunk.subarray(forwardStart, i));
+      pendingPrefix = true;
+      return;
+    }
+    if (forwardStart < chunk.length) {
+      onForward(chunk.subarray(forwardStart));
+    }
+  };
+}
+
 export async function attachTerminal(args: {
+  detachKey?: string;
   reportTiming?: boolean;
   baseUrl: string;
   terminalId: string;
@@ -1366,6 +1468,11 @@ export async function attachTerminal(args: {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Attach requires an interactive terminal");
   }
+  const detachChord = parseTerminalDetachChord(
+    args.detachKey ??
+      process.env[TERMINAL_DETACH_KEY_ENV] ??
+      DEFAULT_TERMINAL_DETACH_KEY,
+  );
 
   const previousRawMode = process.stdin.isRaw;
   let cleanup = () => {};
@@ -1419,22 +1526,11 @@ export async function attachTerminal(args: {
         }
       },
     });
-    let detachPrefix = false;
-    const onInput = (chunk: Buffer) => {
-      if (chunk.length === 1 && chunk[0] === 0x02) {
-        detachPrefix = true;
-        return;
-      }
-      if (detachPrefix) {
-        detachPrefix = false;
-        if (chunk.length === 1 && chunk[0] === 0x64) {
-          transport.dispose();
-          return;
-        }
-        sendTerminalInput(transport, Buffer.from([0x02]));
-      }
-      sendTerminalInput(transport, chunk);
-    };
+    const onInput = createDetachInputHandler(
+      detachChord,
+      (chunk) => sendTerminalInput(transport, chunk),
+      () => transport.dispose(),
+    );
     const onResize = () => {
       transport.sendResize(
         process.stdout.columns || DEFAULT_COLS,

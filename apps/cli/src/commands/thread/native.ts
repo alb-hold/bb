@@ -438,7 +438,7 @@ export function registerNativeCommands(
   parent
     .command("native [threadId]")
     .description(
-      "Open a thread's native terminal, resuming its provider CLI session when it has exited. --convert moves a claude-code or codex chat thread to its terminal on the same session; --chat moves it back",
+      "Open a thread's native terminal (default when neither --convert nor --chat is given), resuming its provider CLI session if it has exited",
     )
     .option("--self", "Target the current thread (BB_THREAD_ID)")
     .option(
@@ -450,7 +450,17 @@ export function registerNativeCommands(
       "Move a converted thread back to chat: closes its terminal and lets bb continue the same session",
     )
     .option("--attach", "Attach this terminal to the native session")
-    .option("--json", "Print machine-readable JSON output")
+    .option("--json", "Print machine-readable JSON output without attaching")
+    .addHelpText(
+      "after",
+      [
+        "",
+        "Default action: without --convert or --chat, opens (or resumes) the native terminal",
+        "and prints its session and terminal status.",
+        "Flag combinations: --attach combines with default open or --convert; --chat cannot",
+        "be combined with --convert or --attach; --json prints metadata without attaching.",
+      ].join("\n"),
+    )
     .action(
       action(
         async (threadIdArg: string | undefined, opts: NativeOpenOptions) => {

@@ -25,6 +25,7 @@ import {
 import {
   BbHttpError,
   type BbSdk,
+  type NativeTerminalThreadResult,
   type ThreadGetResult,
   type ThreadExecutionProfileResult,
   type ThreadChildSummaryResult,
@@ -129,6 +130,7 @@ interface ThreadShowJsonPayload extends ThreadStatusPayload {
   environment: ThreadShowEnvironmentJsonPayload | null;
   pendingTodos: ThreadTimelinePendingTodos | null;
   execution: ThreadExecutionProfileResult | null;
+  nativeTerminal?: NativeTerminalThreadResult | null;
   childSummary: ThreadChildSummaryResult | null;
   spendSummary: ThreadSpendSummaryResult | null;
   usageTimeline?: ThreadTimelineResponse | null;
@@ -297,6 +299,24 @@ function deprecatedGitFlagsNotice(args: {
     `bb thread show ${usedFlags.join(", ")} ${usedFlags.length === 1 ? "is" : "are"} deprecated and will be removed. Use:`,
     ...commands.map((command) => `  ${command}`),
   ].join("\n");
+}
+
+export function printNativeSession(
+  nativeTerminal: NativeTerminalThreadResult,
+): void {
+  console.log("  Native session:");
+  console.log(
+    `    Provider: ${nativeTerminal.displayName} (${nativeTerminal.providerId})`,
+  );
+  console.log(
+    `    Model:    ${nativeTerminal.model ?? "(provider default)"}`,
+  );
+  console.log(
+    `    Session:  ${nativeTerminal.nativeSessionId ?? "(not yet recorded)"}`,
+  );
+  console.log(
+    `    Terminal: ${nativeTerminal.terminal ? `${nativeTerminal.terminal.id} (${nativeTerminal.terminal.status})` : "none (closed)"}`,
+  );
 }
 
 export function printExecutionProfile(
@@ -656,9 +676,10 @@ export function registerShowCommand(
           sdk,
           threadId,
         });
-        const execution = await sdk.threads
-          .executionProfile({ threadId })
-          .catch(() => null);
+        const [execution, nativeTerminal] = await Promise.all([
+          sdk.threads.executionProfile({ threadId }).catch(() => null),
+          sdk.nativeTerminals.get({ threadId }).catch(() => null),
+        ]);
 
         if (opts.json) {
           const environment = await getEnvironment();
@@ -670,6 +691,7 @@ export function registerShowCommand(
             ),
             pendingTodos,
             execution,
+            ...(nativeTerminal !== null ? { nativeTerminal } : {}),
             childSummary,
             spendSummary,
             ...(opts.usage ? { usageTimeline } : {}),
@@ -689,7 +711,11 @@ export function registerShowCommand(
         }
 
         printThreadStatus(statusPayload, environmentInfo, fetchedPullRequest);
-        printExecutionProfile(execution);
+        if (nativeTerminal !== null) {
+          printNativeSession(nativeTerminal);
+        } else {
+          printExecutionProfile(execution);
+        }
         if (spendSummary) {
           printSpendSummary(spendSummary);
           if (opts.usage) printTokenWeather(spendSummary, usageTimeline);

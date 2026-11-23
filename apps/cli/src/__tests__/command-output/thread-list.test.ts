@@ -114,6 +114,25 @@ describe("bb thread list command output", () => {
     });
   });
 
+  it("bb thread list passes --limit and --cursor for single-page listing", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--limit", "25", "--cursor", "tok_1"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: {
+        fields: "summary",
+        archived: "false",
+        limit: "25",
+        cursor: "tok_1",
+      },
+    });
+  });
+
   it("bb thread list defaults to active threads", async () => {
     const list = vi.fn(async () => []);
     stubServerApi({ "v1.threads.$get": list });

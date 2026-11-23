@@ -35,7 +35,7 @@ function registerRemovedManagerSubcommand(
 
 export function registerManagerCommands(program: Command): void {
   const manager = program
-    .command("manager")
+    .command("manager", { hidden: true })
     .description("Compatibility notice for removed manager commands")
     .action(
       action(async () => {

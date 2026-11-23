@@ -70,22 +70,52 @@ describe("thread list continuation", () => {
         const params = new URLSearchParams();
         if (filter.includeHidden) params.set("includeHidden", "true");
         if (filter.archived) params.set("archived", "true");
-        const response = await harness.app.request(`/api/v1/threads?${params}`);
-        const expected = threadListResponseSchema.parse(await response.json());
+        const firstDefault = await harness.app.request(
+          `/api/v1/threads?${params}`,
+        );
+        expect(firstDefault.status).toBe(200);
+        expect(firstDefault.headers.get("X-BB-Pagination")).toBe("cursor");
+        const firstDefaultText = await firstDefault.text();
+        const firstDefaultRows = threadListResponseSchema.parse(
+          JSON.parse(firstDefaultText),
+        );
+        expect(firstDefaultRows.length).toBe(100);
+        expect(firstDefault.headers.get("X-BB-Next-Cursor")).toBeTruthy();
+
+        const walkedIds: string[] = [];
+        let listCursor: string | null = null;
+        let totalWalkBytes = 0;
+        do {
+          const pageParams = new URLSearchParams(params);
+          if (listCursor !== null) pageParams.set("cursor", listCursor);
+          const pageRes = await harness.app.request(
+            `/api/v1/threads?${pageParams}`,
+          );
+          expect(pageRes.status).toBe(200);
+          expect(pageRes.headers.get("X-BB-Pagination")).toBe("cursor");
+          const pageText = await pageRes.text();
+          totalWalkBytes += Buffer.byteLength(pageText, "utf8");
+          const pageRows = threadListResponseSchema.parse(JSON.parse(pageText));
+          expect(pageRows.length).toBeLessThanOrEqual(100);
+          walkedIds.push(...pageRows.map((row) => row.id));
+          listCursor = pageRes.headers.get("X-BB-Next-Cursor");
+        } while (listCursor !== null);
+        expect(new Set(walkedIds).size).toBe(walkedIds.length);
+        expect(walkedIds.length).toBeGreaterThan(100);
+        expect(Buffer.byteLength(firstDefaultText, "utf8")).toBeLessThan(
+          totalWalkBytes,
+        );
+
         paths.length = 0;
         const result = await sdk.threads.list(filter);
-        expect(result.map((row) => row.id)).toEqual(
-          expected.map((row) => row.id),
-        );
+        expect(result.map((row) => row.id)).toEqual(walkedIds);
         expect(paths.length).toBeGreaterThan(1);
         expect(paths.every((path) => path.searchParams.has("limit"))).toBe(
           true,
         );
         expect(paths[1]?.searchParams.has("cursor")).toBe(true);
         const summaries = await sdk.threads.experimental_listSummaries(filter);
-        expect(summaries.map((row) => row.id)).toEqual(
-          expected.map((row) => row.id),
-        );
+        expect(summaries.map((row) => row.id)).toEqual(walkedIds);
         expect(summaries[0]).not.toHaveProperty("environmentPath");
         expect(summaries[0]).toMatchObject({
           title: result[0]?.title,
@@ -95,6 +125,13 @@ describe("thread list continuation", () => {
       }
       expect(
         (await harness.app.request("/api/v1/threads?limit=1&cursor=invalid"))
+          .status,
+      ).toBe(400);
+      expect(
+        (await harness.app.request("/api/v1/threads?cursor=invalid")).status,
+      ).toBe(400);
+      expect(
+        (await harness.app.request("/api/v1/threads?cursor=abc&offset=1"))
           .status,
       ).toBe(400);
     });

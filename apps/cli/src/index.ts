@@ -16,6 +16,22 @@ if (process.env.FORCE_COLOR !== undefined) {
 
 maybeReexecViaBbCli();
 
+const MAX_HELP_WIDTH = 100;
+
+function resolveHelpWidth(): number {
+  const columns = process.stdout.columns;
+  return typeof columns === "number" && columns > 0
+    ? Math.min(columns, MAX_HELP_WIDTH)
+    : MAX_HELP_WIDTH;
+}
+
+function applyHelpWidth(command: Command, helpWidth: number): void {
+  command.configureHelp({ helpWidth });
+  for (const subcommand of command.commands) {
+    applyHelpWidth(subcommand, helpWidth);
+  }
+}
+
 const program = new Command();
 
 program
@@ -225,6 +241,9 @@ async function main(): Promise<void> {
 
     return `
 
+Compatibility:
+  manager                            Compatibility notice for removed manager commands
+
 Current context:
   BB_PROJECT_ID: ${project}
   BB_THREAD_ID: ${thread}
@@ -235,6 +254,8 @@ Quick start:
   bb project list
   bb thread show <id>
   bb thread spawn --project <id> --provider codex --prompt "..."
+  bb thread spawn --project <id> --provider codex --native
+  bb thread native <id> --attach
 `;
   });
 
@@ -242,6 +263,7 @@ Quick start:
     register(program, deps);
   }
   await addJsonShapeHelp();
+  applyHelpWidth(program, resolveHelpWidth());
 
   const candidate = pluginProxyCandidate(firstArg, KNOWN_COMMAND_NAMES);
   if (candidate !== null) {

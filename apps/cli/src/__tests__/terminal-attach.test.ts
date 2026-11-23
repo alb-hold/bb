@@ -252,6 +252,73 @@ describe("terminal attach", () => {
     expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
 
+  it("detaches when Ctrl-B and d arrive in the same input chunk without forwarding them", async () => {
+    prepareInteractiveTerminal();
+    const attached = attachTerminal({
+      baseUrl: "http://localhost:3001",
+      terminalId: "term-same-chunk-detach",
+    });
+    openSocket();
+    socket.send.mockClear();
+
+    process.stdin.emit("data", Buffer.from([0x02, 0x64]));
+    socket.onclose?.();
+    await attached;
+
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("detaches with a custom chord via detachKey or BB_TERMINAL_DETACH_KEY", async () => {
+    prepareInteractiveTerminal();
+    const attached = attachTerminal({
+      baseUrl: "http://localhost:3001",
+      detachKey: "ctrl-],d",
+      terminalId: "term-custom-detach",
+    });
+    openSocket();
+    socket.send.mockClear();
+
+    process.stdin.emit("data", Buffer.from([0x02, 0x64]));
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: "input",
+        dataBase64: Buffer.from([0x02, 0x64]).toString("base64"),
+      }),
+    );
+
+    socket.send.mockClear();
+    process.stdin.emit("data", Buffer.from([0x1d, 0x64]));
+    socket.onclose?.();
+    await attached;
+
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("reads BB_TERMINAL_DETACH_KEY when detachKey option is omitted", async () => {
+    prepareInteractiveTerminal();
+    vi.stubEnv("BB_TERMINAL_DETACH_KEY", "ctrl-q");
+    try {
+      const attached = attachTerminal({
+        baseUrl: "http://localhost:3001",
+        terminalId: "term-env-detach",
+      });
+      openSocket();
+      socket.send.mockClear();
+
+      process.stdin.emit("data", Buffer.from([0x11]));
+      socket.onclose?.();
+      await attached;
+
+      expect(socket.close).toHaveBeenCalledOnce();
+      expect(socket.send).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("rejects socket construction failures and restores terminal mode", async () => {
     prepareInteractiveTerminal();
     const failure = new Error("WebSocket construction failed");

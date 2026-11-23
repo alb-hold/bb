@@ -1101,6 +1101,61 @@ describe("bb thread show command output", () => {
     });
   });
 
+  it("shows native session state instead of (no turn yet) for a native thread", async () => {
+    const thread: domain.Thread = fixtures.makeThread({
+      id: "thr-native-show",
+      projectId: "proj-1",
+      providerId: "codex",
+      status: "idle",
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    stubThreadApi({
+      "v1.threads.:id.$get": async () => thread,
+      "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+      "v1.threads.:id.execution-profile.$get": async () => ({
+        nextTurn: null,
+        overrides: { model: null, reasoningLevel: null },
+        lastRequested: null,
+        executed: null,
+      }),
+      "v1.threads.:id.native-terminal.$get": async () => ({
+        threadId: thread.id,
+        providerId: "codex",
+        displayName: "Codex",
+        model: "gpt-5.4",
+        nativeSessionId: "sess_native_123",
+        canReturnToChat: false,
+        terminal: {
+          id: "term_native_1",
+          threadId: thread.id,
+          environmentId: null,
+          hostId: "host_1",
+          title: "Codex",
+          initialCwd: "/tmp",
+          cols: 120,
+          rows: 36,
+          status: "running",
+          exitCode: null,
+          closeReason: null,
+          createdAt: 1,
+          updatedAt: 2,
+          lastUserInputAt: null,
+        },
+      }),
+    });
+
+    await runCommand(["thread", "show", thread.id], register);
+    const output = collectLogLines(vi.mocked(console.log)).join("\n");
+
+    expect(output).not.toContain("(no turn yet)");
+    expect(output).toContain("Native session:");
+    expect(output).toContain("Provider: Codex (codex)");
+    expect(output).toContain("Model:    gpt-5.4");
+    expect(output).toContain("Session:  sess_native_123");
+    expect(output).toContain("Terminal: term_native_1 (running)");
+  });
+
   it("keeps bb thread status as an alias for showing a thread", async () => {
     const thread: domain.Thread = fixtures.makeThread({
       id: "thread-status-show-alias",
