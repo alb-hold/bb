@@ -981,6 +981,7 @@ async function createGeminiFixture(
     kv?: Record<string, unknown>;
     loginControl?: string;
     loginTimeoutMs?: number;
+    loginStartupTimeoutMs?: number;
     runtimeGate?: Promise<void>;
   } = {},
 ) {
@@ -1068,6 +1069,9 @@ async function createGeminiFixture(
           ...(options.loginTimeoutMs === undefined
             ? {}
             : { geminiLoginTimeoutMs: options.loginTimeoutMs }),
+          ...(options.loginStartupTimeoutMs === undefined
+            ? {}
+            : { geminiLoginStartupTimeoutMs: options.loginStartupTimeoutMs }),
         }),
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
@@ -1523,6 +1527,60 @@ describe("Gemini account pool", () => {
       expect(isAlive(runtime.pid)).toBe(false);
     });
   }
+
+  it("adds nothing and leaves nothing behind when the sign-in window never opens", async () => {
+    const google = await startGoogle({
+      projects: { "tok-e": "proj-e" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const control = await tempDir("bb-gemini-login-control-");
+    await fs.writeFile(
+      path.join(control, "config.json"),
+      JSON.stringify({ version: "1.5.0", token: { access: "tok-e" } }),
+    );
+    await fs.writeFile(path.join(control, "never-open"), "");
+    const fixture = await createGeminiFixture(
+      google,
+      {},
+      { loginControl: control, loginStartupTimeoutMs: 1_000 },
+    );
+    const cli = fixture.host.harness.behavior;
+    const startedAt = Date.now();
+    const result = await cli.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--login",
+      "--label",
+      "never",
+    ]);
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("The Gemini sign-in window did not open within");
+    expect(result.stderr).not.toContain("tok-e");
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(elapsed).toBeLessThan(8_000);
+    const listed = JSON.parse(
+      (await cli.runCli(["account", "list", "--json"])).stdout,
+    ) as { accounts: Array<{ provider: string }> };
+    expect(listed.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
+    expect(await accountSecretFiles(fixture.dataDir)).toEqual([]);
+    const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
+    expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+    await expect(fs.access(path.join(control, "browser.json"))).rejects.toThrow();
+    const stuck = JSON.parse(
+      await fs.readFile(path.join(control, "stuck-browser.json"), "utf8"),
+    ) as { pid: number };
+    const runtime = JSON.parse(
+      await fs.readFile(path.join(control, "env.json"), "utf8"),
+    ) as { pid: number };
+    expect(isAlive(stuck.pid)).toBe(false);
+    expect(isAlive(runtime.pid)).toBe(false);
+  });
 
   it("points antigravity-acp at the hub with env only, through a home that holds no credential", async () => {
     const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
