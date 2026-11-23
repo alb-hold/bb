@@ -99,6 +99,79 @@ const PROD_STANDARD_NO_PROJECT = {
   allowedTiers: [{ id: "standard-tier", isDefault: true }],
 };
 
+const PROD_SERVED_DAILY = {
+  cloudaicompanionProject: "proj-gcp-daily",
+  currentTier: { id: "standard-tier" },
+  paidTier: { id: "enterprise-tier", usesGcpTos: true },
+};
+const PROD_SERVED_PROD = {
+  cloudaicompanionProject: "proj-gcp-prod",
+  currentTier: { id: "standard-tier" },
+  paidTier: { id: "enterprise-tier", usesGcpTos: true },
+};
+
+describe("choosing the project for an account both endpoints know", () => {
+  it("keeps prod's project and endpoint for a prod-served account whose daily project differs", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: { daily: [PROD_SERVED_DAILY], prod: [PROD_SERVED_PROD] },
+    });
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-gcp-prod",
+      geminiEndpoint: "prod",
+      subscriptionType: "enterprise-tier",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it.each<[string, Omit<Parameters<typeof fakeCodeAssist>[0], "loads">]>([
+    ["has no project", { loadsByBase: { daily: [PROD_SERVED_DAILY], prod: [PROD_STANDARD_NO_PROJECT] } }],
+    ["fails", { loadsByBase: { daily: [PROD_SERVED_DAILY] }, loadFailureByBase: { prod: { status: 503 } } }],
+  ])("uses daily's project for a prod-served account when prod %s", async (_name, script) => {
+    const google = fakeCodeAssist({ loads: [], ...script });
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-gcp-daily",
+      geminiEndpoint: "prod",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["loadCodeAssist", "prod"],
+    ]);
+  });
+
+  it("keeps daily's project for a daily-served account without loading prod", async () => {
+    const google = fakeCodeAssist({
+      loads: [],
+      loadsByBase: {
+        daily: [
+          {
+            cloudaicompanionProject: "proj-ultra-daily",
+            currentTier: { id: "standard-tier" },
+            paidTier: { id: "g1-ultra-tier", usesGcpTos: false },
+          },
+        ],
+        prod: [
+          {
+            cloudaicompanionProject: "proj-ultra-prod",
+            currentTier: { id: "standard-tier" },
+            paidTier: { id: "g1-ultra-tier", usesGcpTos: false },
+          },
+        ],
+      },
+    });
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-ultra-daily",
+      geminiEndpoint: "daily",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+    ]);
+  });
+});
+
 describe("adding a Google AI Pro account to the Gemini pool", () => {
   it("adds an account whose tier comes with an id and no name", async () => {
     const google = fakeCodeAssist({
@@ -701,28 +774,29 @@ describe("Gemini import dry run", () => {
     ]);
   });
 
-  it("reads a prod-served account's quota summary from daily", async () => {
+  it("dry-runs a prod-served account with prod's project and reads its quota summary from daily", async () => {
     const google = fakeCodeAssist({
       loads: [],
       loadsByBase: {
-        daily: [
-          {
-            cloudaicompanionProject: "proj-gcp",
-            currentTier: { id: "standard-tier" },
-            paidTier: { id: "enterprise-tier", usesGcpTos: true },
-          },
-        ],
+        daily: [PROD_SERVED_DAILY],
+        prod: [PROD_SERVED_PROD],
       },
       quota: { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0.5 }] },
     });
-    expect(await google.adapter.probeImport?.()).toMatchObject({
-      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "prod" },
+    const probe = await google.adapter.probeImport?.();
+    expect(probe).toMatchObject({
+      wouldUse: { kind: "project", loadedFrom: "prod", servesOn: "prod" },
       quota: { kind: "answered", windows: 1 },
     });
     expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
       ["loadCodeAssist", "daily"],
+      ["loadCodeAssist", "prod"],
       ["retrieveUserQuotaSummary", "daily"],
     ]);
+    expect(google.calls[2]?.body).toEqual({ project: "proj-gcp-prod" });
+    expect(JSON.stringify(probe)).not.toContain("proj-gcp");
+    expect(JSON.stringify(probe)).not.toContain(EMAIL);
+    expect(JSON.stringify(probe)).not.toContain(TOKEN);
   });
 
   it("reports a failed quota summary instead of throwing", async () => {

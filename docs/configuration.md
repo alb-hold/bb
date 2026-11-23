@@ -1448,8 +1448,9 @@ bb pool account refresh <id>
 
 `bb pool account add --provider gemini --import [--home <dir>]` pools an
 Antigravity sign-in. It loads Code Assist from the daily endpoint first and
-falls back to prod, then onboarding, only when daily has no project. Add
-`--dry-run` to run the same checks without adding or onboarding anything: it
+falls back to prod, then onboarding, only when daily has no project. An
+account Google serves on prod also loads prod and keeps prod's project when
+prod has one. Add `--dry-run` to run the same checks without adding or onboarding anything: it
 prints each endpoint's tier ids and whether it has a project, the endpoint the
 import would use, and how many usage windows `retrieveUserQuotaSummary`
 returned, never the token, email or project id. The RPC is

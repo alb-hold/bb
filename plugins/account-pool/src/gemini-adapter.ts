@@ -537,25 +537,30 @@ function hasProjectAndTier(
   );
 }
 
+function projectPlan(
+  outcome: LoadOutcome,
+  loadedFrom: "daily" | "prod",
+): GeminiImportPlan | null {
+  if (outcome.kind !== "answered") return null;
+  const { project, tier } = outcome.info;
+  if (project === null || tier === null) return null;
+  return { kind: "project", loadedFrom, project, info: { ...outcome.info, tier } };
+}
+
 function planGeminiImport(
   sources: GeminiSources,
   importedProject: string | null,
 ): GeminiImportPlan {
   const { daily, prod } = sources;
-  if (prod === null) {
-    const { project, tier } = daily.info;
-    if (project === null || tier === null)
-      return {
+  if (prod === null)
+    return (
+      projectPlan(daily, "daily") ?? {
         kind: "refuse",
         error: new Error("Gemini Code Assist daily answer lost its project."),
-      };
-    return {
-      kind: "project",
-      loadedFrom: "daily",
-      project,
-      info: { ...daily.info, tier },
-    };
-  }
+      }
+    );
+  const chosen = projectPlan(prod, "prod") ?? projectPlan(daily, "daily");
+  if (chosen !== null) return chosen;
   const dailyTierIds = outcomeTierIds(daily);
   if (prod.kind === "failed")
     return {
@@ -817,7 +822,8 @@ export function createGeminiAdapter(options: {
     );
   const loadSources = async (accessToken: string): Promise<GeminiSources> => {
     const daily = await loadOutcome(() => loadOn("daily", accessToken));
-    if (hasProjectAndTier(daily)) return { daily, prod: null };
+    if (hasProjectAndTier(daily) && daily.info.endpoint === "daily")
+      return { daily, prod: null };
     return {
       daily,
       prod: await loadOutcome(() => loadOn("prod", accessToken)),
