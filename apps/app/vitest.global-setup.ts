@@ -1,7 +1,4 @@
-import {
-  findChromium,
-  warmUpChromium,
-} from "../../plugins/thread-list/vitest.chromium.js";
+import { resolveWorkingChromium } from "../../plugins/thread-list/vitest.chromium.js";
 import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
@@ -11,7 +8,6 @@ declare module "vitest" {
 }
 
 export default async function setup(project: TestProject) {
-  const chromiumPath = findChromium();
+  const chromiumPath = await resolveWorkingChromium();
   project.provide("appChromiumPath", chromiumPath);
-  if (chromiumPath !== null) await warmUpChromium(chromiumPath);
 }

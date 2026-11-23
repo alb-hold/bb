@@ -1827,7 +1827,8 @@ describe.skipIf(chromiumPath === null && !process.env.CI)(
             file,
             `<!doctype html><style>body{margin:0}iframe{display:block;border:0;width:${width}px;height:600px}</style><iframe srcdoc="${frame}"></iframe><pre id="result"></pre><script>
 const frame=document.querySelector('iframe');
-frame.addEventListener('load',async()=>{
+(async()=>{
+  if(!frame.contentDocument||frame.contentDocument.readyState!=='complete'||!frame.contentDocument.querySelector('[data-app-terminal]')) await new Promise(resolve=>frame.addEventListener('load',resolve,{once:true}));
   const doc=frame.contentDocument, win=frame.contentWindow;
   await doc.fonts.ready;
   const root=doc.querySelector('[data-app-terminal]');
@@ -1846,10 +1847,10 @@ frame.addEventListener('load',async()=>{
   const lastRow={x:lastBox.x,y:Math.max(lastBox.y,screenBox.y),width:lastBox.width,height:Math.min(lastBox.bottom,screenBox.bottom)-Math.max(lastBox.y,screenBox.y)};
   const cell=screenBox.width/${currentTerminal().cols};
   document.querySelector('#result').textContent=JSON.stringify({coarse:win.matchMedia('(pointer: coarse)').matches,viewportWidth:win.innerWidth,viewportHeight:win.innerHeight,button:box(button),pane:box(pane),lastRow,lastColumn:{x:screenBox.right-cell,y:screenBox.y,width:cell,height:screenBox.height},composer:box(doc.querySelector('textarea[aria-label="Message composer"]')),controls:controls?box(controls):null,fontSizes:[...new Set([button,...button.querySelectorAll('*')].map(el=>win.getComputedStyle(el).fontSize))],rowTextWidth:text.width});
-});
+})();
 </script>`,
           );
-          const { stdout } = await execFileAsync(
+          const { stdout, stderr } = await execFileAsync(
             chromiumPath!,
             [
               "--headless",
@@ -1860,6 +1861,7 @@ frame.addEventListener('load',async()=>{
               "--disable-extensions",
               "--disable-background-networking",
               "--no-first-run",
+              "--allow-file-access-from-files",
               ...(width < 768
                 ? [
                     "--blink-settings=primaryPointerType=2,availablePointerTypes=2",
@@ -1872,7 +1874,10 @@ frame.addEventListener('load',async()=>{
             { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
           );
           const raw = /<pre id="result">([^<]+)<\/pre>/.exec(stdout)?.[1];
-          expect(raw).toBeDefined();
+          expect(
+            raw,
+            `stdout=${stdout.slice(0, 400)} stderr=${stderr.slice(0, 400)}`,
+          ).toBeDefined();
           const box = z.object({
             x: z.number(),
             y: z.number(),
@@ -1936,7 +1941,12 @@ frame.addEventListener('load',async()=>{
           if (result.controls)
             expect(overlaps(result.button, result.controls)).toBe(false);
         } finally {
-          await rm(dir, { recursive: true, force: true });
+          await rm(dir, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 100,
+          });
         }
       },
       40_000,
