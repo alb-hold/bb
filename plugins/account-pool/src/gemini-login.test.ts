@@ -423,4 +423,29 @@ describe("GeminiLogin", () => {
     expect(existsSync(path.join(fixture.control, "browser.json"))).toBe(false);
     expect(((await starting) as GeminiLoginError).reason).toBe("sign_in_cancelled");
   });
+
+  it("ends a sign-in still waiting for the Chrome window on dispose and leaves no process or timer", async () => {
+    const fixture = await setup();
+    await fs.writeFile(path.join(fixture.control, "never-open"), "");
+    const timers = () =>
+      process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+    const timersBefore = timers();
+    const starting = fixture.login.start({ label: null }).catch((e: unknown) => e);
+    await vi.waitFor(() =>
+      expect(existsSync(path.join(fixture.control, "stuck-browser.json"))).toBe(true),
+    );
+    const browser = await fixture.readJson("stuck-browser.json");
+    const runtime = await fixture.readJson("env.json");
+    const disposing = Date.now();
+    await fixture.login.dispose();
+    expect(Date.now() - disposing).toBeLessThan(3_000);
+    const error = await starting;
+    expect(error).toBeInstanceOf(GeminiLoginError);
+    expect((error as GeminiLoginError).reason).toBe("sign_in_cancelled");
+    expect(isAlive(browser.pid as number)).toBe(false);
+    expect(isAlive(runtime.pid as number)).toBe(false);
+    expect(await fixture.leftovers()).toEqual([]);
+    expect(fixture.imports).toEqual([]);
+    expect(timers()).toBeLessThanOrEqual(timersBefore);
+  });
 });

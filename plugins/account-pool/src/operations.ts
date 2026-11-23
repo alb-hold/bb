@@ -10,7 +10,11 @@ import type {
   PoolStatus,
   RoutedThreadStatus,
 } from "./contracts.js";
-import type { AccountAddInput } from "./contracts.js";
+import type {
+  AccountAddInput,
+  AccountImportProbeInput,
+  ImportProbe,
+} from "./contracts.js";
 import type { AccountPoolHub } from "./hub.js";
 import type {
   AccountStore,
@@ -121,6 +125,13 @@ export class PoolOperations {
       providerId: string,
     ) => Promise<LocalLoginUsage | null> = async () => null,
   ) {}
+
+  async probeImport(input: AccountImportProbeInput): Promise<ImportProbe> {
+    return this.hub.probeImport(
+      input.provider,
+      input.home === undefined ? undefined : { home: input.home },
+    );
+  }
 
   async add(input: AccountAddInput): Promise<Account> {
     const priority =

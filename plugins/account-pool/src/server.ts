@@ -117,6 +117,7 @@ export interface AccountPoolPluginOptions {
   resolveGeminiRuntime?: () => Promise<CommandSpec | null>;
   geminiLoginBrowser?: CommandSpec;
   geminiLoginTimeoutMs?: number;
+  geminiLoginStartupTimeoutMs?: number;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -771,6 +772,9 @@ export function createAccountPoolPlugin(
       ...(options.geminiLoginTimeoutMs === undefined
         ? {}
         : { timeoutMs: options.geminiLoginTimeoutMs }),
+      ...(options.geminiLoginStartupTimeoutMs === undefined
+        ? {}
+        : { startupTimeoutMs: options.geminiLoginStartupTimeoutMs }),
       importAccount: (home, target) =>
         operations.add(
           accountAddInputSchema.parse({

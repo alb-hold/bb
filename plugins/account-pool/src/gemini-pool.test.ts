@@ -571,7 +571,7 @@ describe("Gemini quota parsing", () => {
       geminiWindowsFromQuota(
         { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0 }] },
         5,
-      )?.[0],
+      )[0],
     ).toMatchObject({ status: "rejected", utilization: 1 });
   });
 
@@ -981,6 +981,7 @@ async function createGeminiFixture(
     kv?: Record<string, unknown>;
     loginControl?: string;
     loginTimeoutMs?: number;
+    loginStartupTimeoutMs?: number;
     runtimeGate?: Promise<void>;
   } = {},
 ) {
@@ -1068,6 +1069,9 @@ async function createGeminiFixture(
           ...(options.loginTimeoutMs === undefined
             ? {}
             : { geminiLoginTimeoutMs: options.loginTimeoutMs }),
+          ...(options.loginStartupTimeoutMs === undefined
+            ? {}
+            : { geminiLoginStartupTimeoutMs: options.loginStartupTimeoutMs }),
         }),
     importGeminiCredentials: async (home?: string) => {
       requestedHomes.push(home);
@@ -1303,6 +1307,60 @@ describe("Gemini account pool", () => {
     expect(login.stderr).toContain("No antigravity-acp agent is configured");
   });
 
+  it("dry-runs a Gemini import from the CLI without adding or onboarding anything", async () => {
+    const google = await startGoogle({
+      projects: { "tok-c": "proj-c" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/c": creds("tok-c"),
+    });
+    const probe = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--import",
+      "--dry-run",
+      "--home",
+      "/homes/c",
+    ]);
+    expect(probe.exitCode).toBe(0);
+    expect(probe.stdout).toBe(
+      [
+        "daily: answered; current=none, paid=none, allowed=none; project: yes",
+        "prod: not-loaded",
+        "would import: project from daily, serves on daily",
+        "quota summary: answered, 1 window",
+        "",
+      ].join("\n"),
+    );
+    for (const secret of ["proj-c", "tok-c", "c@example.com"])
+      expect(`${probe.stdout}${probe.stderr}`).not.toContain(secret);
+    expect(
+      google.calls
+        .filter((call) => call.endpoint !== undefined)
+        .map((call) => [call.method, call.endpoint]),
+    ).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["retrieveUserQuotaSummary", "daily"],
+    ]);
+    const listed = await fixture.host.harness.behavior.runCli(["account", "list"]);
+    expect(listed.stdout).not.toContain("gemini");
+    const rejected = await fixture.host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "claude",
+      "--import",
+      "--dry-run",
+    ]);
+    expect(rejected.exitCode).not.toBe(0);
+    expect(rejected.stderr).toContain("--dry-run works only with --provider gemini --import.");
+  });
+
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
     const google = await startGoogle({
       projects: { "tok-c": "proj-c", "tok-d": "proj-d" },
@@ -1469,6 +1527,60 @@ describe("Gemini account pool", () => {
       expect(isAlive(runtime.pid)).toBe(false);
     });
   }
+
+  it("adds nothing and leaves nothing behind when the sign-in window never opens", async () => {
+    const google = await startGoogle({
+      projects: { "tok-e": "proj-e" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const control = await tempDir("bb-gemini-login-control-");
+    await fs.writeFile(
+      path.join(control, "config.json"),
+      JSON.stringify({ version: "1.5.0", token: { access: "tok-e" } }),
+    );
+    await fs.writeFile(path.join(control, "never-open"), "");
+    const fixture = await createGeminiFixture(
+      google,
+      {},
+      { loginControl: control, loginStartupTimeoutMs: 1_000 },
+    );
+    const cli = fixture.host.harness.behavior;
+    const startedAt = Date.now();
+    const result = await cli.runCli([
+      "account",
+      "add",
+      "--provider",
+      "gemini",
+      "--login",
+      "--label",
+      "never",
+    ]);
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("The Gemini sign-in window did not open within");
+    expect(result.stderr).not.toContain("tok-e");
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(elapsed).toBeLessThan(8_000);
+    const listed = JSON.parse(
+      (await cli.runCli(["account", "list", "--json"])).stdout,
+    ) as { accounts: Array<{ provider: string }> };
+    expect(listed.accounts.filter((account) => account.provider === "gemini")).toEqual([]);
+    expect(await accountSecretFiles(fixture.dataDir)).toEqual([]);
+    const loginRoot = path.join(fixture.dataDir, "plugins", "account-pool", "gemini-login");
+    expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+    await expect(fs.access(path.join(control, "browser.json"))).rejects.toThrow();
+    const stuck = JSON.parse(
+      await fs.readFile(path.join(control, "stuck-browser.json"), "utf8"),
+    ) as { pid: number };
+    const runtime = JSON.parse(
+      await fs.readFile(path.join(control, "env.json"), "utf8"),
+    ) as { pid: number };
+    expect(isAlive(stuck.pid)).toBe(false);
+    expect(isAlive(runtime.pid)).toBe(false);
+  });
 
   it("points antigravity-acp at the hub with env only, through a home that holds no credential", async () => {
     const { env, fixture } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
@@ -1770,6 +1882,27 @@ describe("Gemini account pool", () => {
     ]);
   });
 
+  it("keeps an account out of quota when its usage refresh returns an unreadable quota summary", async () => {
+    const { fixture, post, ids } = await twoAccounts(
+      (bearer) =>
+        bearer === "tok-a"
+          ? { status: 429, body: QUOTA_BODY }
+          : { status: 200, body: OK_BODY },
+      {},
+      [7],
+    );
+    expect((await post()).status).toBe(200);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: ids.a,
+    });
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const a = status.accounts.find((account) => account.id === ids.a);
+    expect(a?.usageRestriction?.reason).toBe("quota_exhausted");
+    expect(a?.limitWindows).toEqual([]);
+  });
+
   it("serves from the first account with that account's project", async () => {
     const { google, post } = await twoAccounts(() => ({ status: 200, body: OK_BODY }));
     const response = await post();
@@ -1799,7 +1932,9 @@ describe("Gemini account pool", () => {
     await addGemini(fixture.host, "/homes/e", 100);
     const loads = google.calls.filter((call) => call.method === "loadCodeAssist");
     expect(loads.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(loads.map((call) => call.endpoint))).toEqual(new Set(["prod"]));
+    expect(
+      [...new Set(loads.map((call) => `${call.bearer} ${call.endpoint}`))].sort(),
+    ).toEqual(["tok-a daily", "tok-e daily", "tok-e prod"]);
     for (const call of loads)
       expect(call.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     const env = await geminiEnv(fixture.host);
@@ -1830,7 +1965,44 @@ describe("Gemini account pool", () => {
             .map((call) => `${call.bearer} ${call.endpoint}`),
         ),
       ].sort(),
-    ).toEqual(["tok-a daily", "tok-e prod"]);
+    ).toEqual(["tok-a daily", "tok-e daily"]);
+  });
+
+  it("reads a prod-served account's usage from the daily quota summary", async () => {
+    const google = await startGoogle({
+      projects: { "tok-e": "proj-e" },
+      gcpTos: ["tok-e"],
+      quotaFraction: { "tok-e": 0.4 },
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/e": creds("tok-e"),
+    });
+    const added = await addGemini(fixture.host, "/homes/e", 0);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: added.id,
+    });
+    const codeAssist = google.calls.filter((call) =>
+      ["loadCodeAssist", "retrieveUserQuotaSummary"].includes(call.method),
+    );
+    expect(
+      [...new Set(codeAssist.map((call) => `${call.method} ${call.endpoint}`))].sort(),
+    ).toEqual([
+      "loadCodeAssist daily",
+      "loadCodeAssist prod",
+      "retrieveUserQuotaSummary daily",
+    ]);
+    const quotaCalls = codeAssist.filter(
+      (call) => call.method === "retrieveUserQuotaSummary",
+    );
+    expect(quotaCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of quotaCalls) expect(call.project).toBe("proj-e");
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(status.accounts).toHaveLength(1);
+    expect(status.accounts[0]?.limitWindows[0]?.utilization).toBeCloseTo(0.6);
   });
 
   it("fails over on RESOURCE_EXHAUSTED and rewrites the project to the next account", async () => {

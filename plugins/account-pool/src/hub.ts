@@ -14,6 +14,7 @@ import type {
   AccountPoolConfig,
   AccountQuota,
   AccountSecret,
+  ImportProbe,
   ModelFamily,
   PoolProvider,
   PoolStatus,
@@ -356,6 +357,18 @@ export class AccountPoolHub {
     options?: { home?: string },
   ): Promise<ImportedProviderAccount> {
     return this.adapter(provider).importAccount(options);
+  }
+
+  async probeImport(
+    provider: PoolProvider,
+    options?: { home?: string },
+  ): Promise<ImportProbe> {
+    const adapter = this.adapter(provider);
+    if (adapter.probeImport === undefined)
+      throw new Error(
+        `${adapter.upstreamName} accounts have no import dry run.`,
+      );
+    return adapter.probeImport(options);
   }
 
   async replaceSecret(

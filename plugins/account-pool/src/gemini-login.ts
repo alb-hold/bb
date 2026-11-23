@@ -9,6 +9,7 @@ import { SUPPORTED_RUNTIME_VERSION } from "./gemini-gateway.js";
 
 
 export const GEMINI_LOGIN_TIMEOUT_MS = 5 * 60 * 1_000;
+export const GEMINI_LOGIN_STARTUP_TIMEOUT_MS = 2 * 60 * 1_000;
 const URL_WAIT_MS = 60_000;
 const INITIALIZE_WAIT_MS = 60_000;
 const KILL_GRACE_MS = 5_000;
@@ -66,6 +67,7 @@ export interface GeminiLoginOptions {
     target: GeminiLoginTarget,
   ) => Promise<GeminiLoginAccount>;
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -160,15 +162,28 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+async function raceTimeout<T, U>(
+  work: Array<Promise<T>>,
+  ms: number,
+  onTimeout: U,
+): Promise<T | U> {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      ...work,
+      delay(ms, onTimeout, { signal: timer.signal }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
+
 async function stop(child: ChildProcess | null): Promise<void> {
   if (child === null) return;
   if (alive(child)) {
     signalGroup(child, "SIGTERM");
     const done = exited(child);
-    const graceful = await Promise.race([
-      done.then(() => true),
-      delay(KILL_GRACE_MS).then(() => false),
-    ]);
+    const graceful = await raceTimeout([done.then(() => true)], KILL_GRACE_MS, false);
     if (!graceful) {
       signalGroup(child, "SIGKILL");
       await done;
@@ -298,6 +313,7 @@ export class GeminiLogin {
   private readonly sessions = new Map<string, Session>();
   private readonly root: string;
   private readonly timeoutMs: number;
+  private readonly startupTimeoutMs: number;
   private readonly now: () => number;
   private readonly browser: CommandSpec;
   private disposed = false;
@@ -307,6 +323,8 @@ export class GeminiLogin {
   constructor(private readonly options: GeminiLoginOptions) {
     this.root = path.join(options.dataDir, LOGIN_ROOT);
     this.timeoutMs = options.timeoutMs ?? GEMINI_LOGIN_TIMEOUT_MS;
+    this.startupTimeoutMs =
+      options.startupTimeoutMs ?? GEMINI_LOGIN_STARTUP_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.browser = options.browser ?? {
       command: DEFAULT_CHROME_COMMAND,
@@ -413,11 +431,19 @@ export class GeminiLogin {
       wake = resolve;
     });
     this.sessions.set(sessionId, session);
-    const deadline = this.now() + this.timeoutMs;
     let authenticated: Promise<unknown>;
     let authorizeUrl: string;
     const onAbort = () => this.cancel(sessionId);
     abort.addEventListener("abort", onAbort, { once: true });
+    const startupDeadline = this.now() + this.startupTimeoutMs;
+    const startup = setTimeout(() => {
+      if (session.cancelled !== null) return;
+      session.cancelled = {
+        reason: "sign_in_timeout",
+        message: `The Gemini sign-in window did not open within ${Math.round(this.startupTimeoutMs / 1_000)} seconds. No account was added.`,
+      };
+      session.wake();
+    }, Math.max(0, startupDeadline - this.now()));
     try {
       if (abort.aborted) onAbort();
       ({ authenticated, authorizeUrl } = await this.open(
@@ -425,14 +451,15 @@ export class GeminiLogin {
         runtime,
         woken,
       ));
-      if (session.cancelled !== null) throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
     } catch (error) {
       await this.cleanup(session);
       this.sessions.delete(sessionId);
       throw error;
     } finally {
+      clearTimeout(startup);
       abort.removeEventListener("abort", onAbort);
     }
+    const deadline = this.now() + this.timeoutMs;
     session.result = this.finish(session, target, authenticated, woken, deadline);
     void session.result.then((result) => {
       session.settled = result;
@@ -684,6 +711,15 @@ export class GeminiLogin {
         "browser_missing",
         `Google Chrome was not found at ${this.browser.command}, so bb cannot open a dedicated sign-in window.`,
       );
+    const lock = path.join(profile, "SingletonLock");
+    for (;;) {
+      this.live();
+      if (this.sessions.get(session.sessionId) !== session)
+        throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
+      if (session.cancelled !== null) return;
+      if (await exists(lock)) return;
+      await delay(POLL_MS);
+    }
   }
 
   private async finish(
@@ -695,17 +731,20 @@ export class GeminiLogin {
   ): Promise<GeminiLoginResult> {
     try {
       const remaining = Math.max(0, deadline - this.now());
-      const outcome = await Promise.race([
-        authenticated.then(
-          () => "ok" as const,
-          (error: unknown) =>
-            error instanceof AcpError && error.kind === "error"
-              ? ("denied" as const)
-              : ("closed" as const),
-        ),
-        delay(remaining).then(() => "timeout" as const),
-        woken.then(() => "woken" as const),
-      ]);
+      const outcome = await raceTimeout(
+        [
+          authenticated.then(
+            () => "ok" as const,
+            (error: unknown) =>
+              error instanceof AcpError && error.kind === "error"
+                ? ("denied" as const)
+                : ("closed" as const),
+          ),
+          woken.then(() => "woken" as const),
+        ],
+        remaining,
+        "timeout" as const,
+      );
       if (session.cancelled !== null) return { status: "error", ...session.cancelled };
       if (outcome === "timeout")
         return {
@@ -790,10 +829,6 @@ export class GeminiLogin {
     ms: number,
     woken: Promise<void>,
   ): Promise<T | undefined> {
-    return Promise.race([
-      work,
-      delay(ms).then(() => undefined),
-      woken.then(() => undefined),
-    ]);
+    return raceTimeout([work, woken.then(() => undefined)], ms, undefined);
   }
 }
