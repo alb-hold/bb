@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChromium, warmUpChromium } from "./vitest.chromium.js";
+import { resolveWorkingChromium } from "./vitest.chromium.js";
 import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
@@ -20,8 +20,7 @@ function insideMonorepo(from: string): boolean {
 }
 
 export default async function setup(project: TestProject) {
-  const chromiumPath = findChromium();
-  if (chromiumPath !== null) await warmUpChromium(chromiumPath);
+  const chromiumPath = await resolveWorkingChromium();
   project.provide("threadListChromiumPath", chromiumPath);
   const pluginRoot = dirname(fileURLToPath(import.meta.url));
   const cssPath = join(pluginRoot, ".bundled-runtime/dist/app.css");

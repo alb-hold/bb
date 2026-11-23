@@ -1867,6 +1867,7 @@ const frame=document.querySelector('iframe');
                     "--blink-settings=primaryPointerType=2,availablePointerTypes=2",
                   ]
                 : []),
+              "--virtual-time-budget=5000",
               "--dump-dom",
               pathToFileURL(file).href,
             ],

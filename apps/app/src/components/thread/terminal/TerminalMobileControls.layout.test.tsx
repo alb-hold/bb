@@ -148,6 +148,7 @@ Promise.all(frames.map(async frame => {
               "--allow-file-access-from-files",
               "--blink-settings=primaryPointerType=2,availablePointerTypes=2",
               `--window-size=${width},900`,
+              "--virtual-time-budget=5000",
               "--dump-dom",
               pathToFileURL(file).href,
             ],
