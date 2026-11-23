@@ -162,15 +162,28 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+async function raceTimeout<T, U>(
+  work: Array<Promise<T>>,
+  ms: number,
+  onTimeout: U,
+): Promise<T | U> {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      ...work,
+      delay(ms, onTimeout, { signal: timer.signal }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
+
 async function stop(child: ChildProcess | null): Promise<void> {
   if (child === null) return;
   if (alive(child)) {
     signalGroup(child, "SIGTERM");
     const done = exited(child);
-    const graceful = await Promise.race([
-      done.then(() => true),
-      delay(KILL_GRACE_MS).then(() => false),
-    ]);
+    const graceful = await raceTimeout([done.then(() => true)], KILL_GRACE_MS, false);
     if (!graceful) {
       signalGroup(child, "SIGKILL");
       await done;
@@ -700,6 +713,9 @@ export class GeminiLogin {
       );
     const lock = path.join(profile, "SingletonLock");
     for (;;) {
+      this.live();
+      if (this.sessions.get(session.sessionId) !== session)
+        throw new GeminiLoginError(CANCELLED.reason, CANCELLED.message);
       if (session.cancelled !== null) return;
       if (await exists(lock)) return;
       await delay(POLL_MS);
@@ -715,17 +731,20 @@ export class GeminiLogin {
   ): Promise<GeminiLoginResult> {
     try {
       const remaining = Math.max(0, deadline - this.now());
-      const outcome = await Promise.race([
-        authenticated.then(
-          () => "ok" as const,
-          (error: unknown) =>
-            error instanceof AcpError && error.kind === "error"
-              ? ("denied" as const)
-              : ("closed" as const),
-        ),
-        delay(remaining).then(() => "timeout" as const),
-        woken.then(() => "woken" as const),
-      ]);
+      const outcome = await raceTimeout(
+        [
+          authenticated.then(
+            () => "ok" as const,
+            (error: unknown) =>
+              error instanceof AcpError && error.kind === "error"
+                ? ("denied" as const)
+                : ("closed" as const),
+          ),
+          woken.then(() => "woken" as const),
+        ],
+        remaining,
+        "timeout" as const,
+      );
       if (session.cancelled !== null) return { status: "error", ...session.cancelled };
       if (outcome === "timeout")
         return {
@@ -810,10 +829,6 @@ export class GeminiLogin {
     ms: number,
     woken: Promise<void>,
   ): Promise<T | undefined> {
-    return Promise.race([
-      work,
-      delay(ms).then(() => undefined),
-      woken.then(() => undefined),
-    ]);
+    return raceTimeout([work, woken.then(() => undefined)], ms, undefined);
   }
 }
