@@ -24,6 +24,7 @@ import { updateCachedThreadListStatusState } from "./query-cache";
 import {
   beginThreadEntityPrediction,
   getThreadEntity,
+  registerThreadEntityViews,
 } from "./thread-entity-store";
 import {
   beginArchiveThreadAndChildrenTransaction,
@@ -105,6 +106,19 @@ function setup(rows: ThreadListEntry[]) {
 }
 
 describe("thread entity store", () => {
+  it("preserves the sidebar snapshot when a missing thread list is rebuilt empty", () => {
+    const { queryClient } = createQueryClientTestHarness();
+    const data = makeSidebarBootstrapResponse();
+    Reflect.deleteProperty(data.personalProject, "threads");
+    queryClient.setQueryData(sidebarNavigationQueryKey(), data);
+
+    registerThreadEntityViews(queryClient);
+
+    expect(queryClient.getQueryData(sidebarNavigationQueryKey())).toBe(data);
+    queryClient.setQueryData(sidebarNavigationQueryKey(), data);
+    expect(queryClient.getQueryData(sidebarNavigationQueryKey())).toBe(data);
+  });
+
   it.each([true, false])(
     "keeps pending interaction facets independent when list has %s",
     async (pending) => {

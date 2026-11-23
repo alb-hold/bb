@@ -101,12 +101,10 @@ function threadRow(item: unknown): Fields | undefined {
 }
 
 function sameItems(left: unknown, right: readonly unknown[]): boolean {
+  if (!Array.isArray(left)) return right.length === 0;
   return (
-    Array.isArray(left) &&
-    (
-      left === right ||
-      (left.length === right.length && left.every((item, index) => item === right[index]))
-    )
+    left === right ||
+    (left.length === right.length && left.every((item, index) => item === right[index]))
   );
 }
 
