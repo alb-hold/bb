@@ -1,7 +1,10 @@
 import { nanoid } from "nanoid";
 import { Link } from "react-router-dom";
 import { OptionPicker } from "@/components/pickers/OptionPicker";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import { Icon } from "@bb/shared-ui/icon";
 import { useState, type ReactNode } from "react";
 import { Switch } from "@bb/shared-ui/switch";
@@ -40,7 +43,17 @@ type EnvironmentEntry =
 
 export function MachineEnvironmentSettings() {
   const [scope, setScope] = useState(GLOBAL_SCOPE);
-  const projects = useSidebarNavigation().data?.projects ?? [];
+  const sidebarNavigation = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
+  const completeNavigation = sidebarNavigation.isPlaceholderData
+    ? undefined
+    : sidebarNavigation.data;
+  const projects =
+    (
+      completeNavigation ??
+      sidebarNavigationPreview ??
+      sidebarNavigation.data
+    )?.projects ?? [];
   const selected = projects.find((project) => project.id === scope) ?? null;
   return (
     <ScopedMachineEnvironmentSettings

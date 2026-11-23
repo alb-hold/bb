@@ -30,7 +30,7 @@ import {
   useUpdateProject,
 } from "@/hooks/mutations/project-mutations";
 import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { useSidebarNavigation, useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
 import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
 import { getSettingsProjectRoutePath } from "@/lib/route-paths";
 import {
@@ -120,6 +120,7 @@ function machineLabel(summary: ProjectSummary): string {
 
 interface SortableProjectRowProps {
   project: ProjectWithThreadsResponse;
+  threadCount: number;
   summary: ProjectSummary;
   dragDisabled: boolean;
   onRename: () => void;
@@ -128,6 +129,7 @@ interface SortableProjectRowProps {
 
 function SortableProjectRow({
   project,
+  threadCount,
   summary,
   dragDisabled,
   onRename,
@@ -196,7 +198,7 @@ function SortableProjectRow({
                   {machineLabel(summary)}
                 </span>
                 <span className="shrink-0">
-                  {pluralize(project.threads.length, "thread")}
+                  {pluralize(threadCount, "thread")}
                 </span>
               </div>
             </div>
@@ -235,7 +237,10 @@ export function ProjectsSettingsSection() {
     useState<ProjectDeleteDialogTarget | null>(null);
   const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
 
-  const serverProjects = sidebarNavigationQuery.data?.projects;
+  const preview = useSidebarNavigationPreview();
+  const complete = sidebarNavigationQuery.isPlaceholderData ? undefined : sidebarNavigationQuery.data;
+  const previewWithCounts = !complete && preview?.overview ? preview : undefined;
+  const serverProjects = complete?.projects ?? previewWithCounts?.projects;
   const [orderedProjects, setOrderedProjects] = useState(serverProjects);
   if (orderedProjects !== serverProjects) {
     setOrderedProjects(serverProjects);
@@ -321,6 +326,7 @@ export function ProjectsSettingsSection() {
               <SortableProjectRow
                 key={project.id}
                 project={project}
+                threadCount={previewWithCounts ? previewWithCounts.overview?.counts[project.id] ?? 0 : project.threads.length}
                 summary={summarizeMachines(project, hostById)}
                 dragDisabled={dragDisabled}
                 onRename={() => {

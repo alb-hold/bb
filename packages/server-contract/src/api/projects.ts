@@ -430,6 +430,20 @@ export type ProjectWithThreadsResponse = z.infer<
 >;
 
 export const sidebarBootstrapResponseSchema = z.object({
+  overview: z.object({
+    counts: z.record(z.string(), z.number().int().nonnegative()),
+    childCounts: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    unreadTree: z.array(z.object({
+      id: z.string(),
+      parentThreadId: z.string().nullable(),
+      projectId: z.string().optional(),
+      sectionId: z.string().nullable().optional(),
+      status: z.string().optional(),
+      lastReadAt: z.number().nullable(),
+      latestAttentionAt: z.number(),
+    })),
+    descendants: z.array(threadListEntrySchema).optional(),
+  }).optional(),
   sections: z.array(threadSectionSchema),
   projects: z.array(projectWithThreadsResponseSchema),
   personalProject: projectWithThreadsResponseSchema,

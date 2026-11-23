@@ -21,7 +21,10 @@ import {
   listProjectSourcesByProjectIds,
   listThreadSections,
   listThreadsWithPendingInteractionStateForProjects,
+  listSidebarThreadsWithPendingInteractionState,
+  listLiveVisibleDescendantThreads,
   buildProjectThreadListEnrichmentScope,
+  sidebarOverview,
   reorderProject,
   updateProject,
   updateProjectSource,
@@ -40,8 +43,8 @@ import {
   type PublicApiSchema,
 } from "@bb/server-contract";
 import {
-  finishThreadPage,
-  parseThreadCursor,
+  finishSidebarThreadPage,
+  parseSidebarThreadCursor,
 } from "./threads/list-pagination.js";
 import type { Context, Hono } from "hono";
 import type { AppDeps } from "../types.js";
@@ -225,35 +228,21 @@ function buildProjectsWithThreadsResponse(
   );
 }
 
+const SIDEBAR_OVERVIEW_DESCENDANTS_LIMIT = 100;
+
 interface SidebarPage {
   context: Pick<Context, "header">;
   limit: number;
-  after?: ReturnType<typeof parseThreadCursor>;
+  after?: ReturnType<typeof parseSidebarThreadCursor>;
+  overview?: boolean;
 }
 
-function buildProjectsWithThreadsResponseFromRows(
+function groupProjectThreadsResponses(
   deps: AppDeps,
-  projectRows: ProjectResponseProjectFields[],
-  page?: SidebarPage,
+  projects: ProjectResponse[],
+  projectIds: string[],
+  threadResponses: ProjectWithThreadsResponse["threads"],
 ): ProjectWithThreadsResponse[] {
-  const projects = buildProjectResponsesFromRows(deps, projectRows);
-  const projectIds = projects.map((project) => project.id);
-  const threadListOptions = {
-    archived: false,
-    projectIds,
-    ...(page ? { limit: page.limit + 1, after: page.after } : {}),
-  };
-  const threadRows = listThreadsWithPendingInteractionStateForProjects(
-    deps.db,
-    threadListOptions,
-  );
-  if (page) finishThreadPage(page.context, threadRows, page.limit, false);
-  const threadResponses = toThreadListEntryResponses(deps, {
-    threads: threadRows,
-    scope: page
-      ? { kind: "ids", ids: threadRows.map((row) => row.id) }
-      : buildProjectThreadListEnrichmentScope(deps.db, threadListOptions),
-  });
   const threadsByProjectId = new Map<
     string,
     ProjectWithThreadsResponse["threads"]
@@ -278,6 +267,32 @@ function buildProjectsWithThreadsResponseFromRows(
   }));
 }
 
+function buildProjectsWithThreadsResponseFromRows(
+  deps: AppDeps,
+  projectRows: ProjectResponseProjectFields[],
+): ProjectWithThreadsResponse[] {
+  const projects = buildProjectResponsesFromRows(deps, projectRows);
+  const projectIds = projects.map((project) => project.id);
+  const threadListOptions = {
+    archived: false,
+    projectIds,
+  };
+  const threadRows = listThreadsWithPendingInteractionStateForProjects(
+    deps.db,
+    threadListOptions,
+  );
+  const threadResponses = toThreadListEntryResponses(deps, {
+    threads: threadRows,
+    scope: buildProjectThreadListEnrichmentScope(deps.db, threadListOptions),
+  });
+  return groupProjectThreadsResponses(
+    deps,
+    projects,
+    projectIds,
+    threadResponses,
+  );
+}
+
 function buildSidebarBootstrapResponse(deps: AppDeps, page?: SidebarPage) {
   const personalProject = getPersonalProject(deps.db);
   if (!personalProject) {
@@ -287,12 +302,44 @@ function buildSidebarBootstrapResponse(deps: AppDeps, page?: SidebarPage) {
       "Personal project is not initialized",
     );
   }
-  const [personalProjectResponse, ...projects] =
-    buildProjectsWithThreadsResponseFromRows(
-      deps,
-      [personalProject, ...listPublicProjects(deps.db)],
-      page,
-    );
+  const projectRows = [personalProject, ...listPublicProjects(deps.db)];
+  const projectResponses = buildProjectResponsesFromRows(deps, projectRows);
+  const projectIds = projectResponses.map((project) => project.id);
+  const threadRows = listSidebarThreadsWithPendingInteractionState(deps.db, {
+    projectIds,
+    ...(page ? { limit: page.limit + 1, after: page.after } : {}),
+  });
+  if (page) finishSidebarThreadPage(page.context, threadRows, page.limit);
+  const descendantRows = page?.overview
+    ? listLiveVisibleDescendantThreads(deps.db, {
+        projectIds,
+        rootThreadIds: threadRows.map((row) => row.id),
+        limit: SIDEBAR_OVERVIEW_DESCENDANTS_LIMIT,
+      })
+    : [];
+  const allRows =
+    descendantRows.length > 0 ? [...threadRows, ...descendantRows] : threadRows;
+  const allResponses = toThreadListEntryResponses(deps, {
+    threads: allRows,
+    scope: page
+      ? { kind: "ids", ids: allRows.map((row) => row.id) }
+      : buildProjectThreadListEnrichmentScope(deps.db, {
+          archived: false,
+          projectIds,
+        }),
+  });
+  const pageThreadResponses =
+    descendantRows.length > 0
+      ? allResponses.slice(0, threadRows.length)
+      : allResponses;
+  const descendantResponses =
+    descendantRows.length > 0 ? allResponses.slice(threadRows.length) : [];
+  const [personalProjectResponse, ...projects] = groupProjectThreadsResponses(
+    deps,
+    projectResponses,
+    projectIds,
+    pageThreadResponses,
+  );
   if (!personalProjectResponse) {
     throw new ApiError(
       500,
@@ -301,6 +348,16 @@ function buildSidebarBootstrapResponse(deps: AppDeps, page?: SidebarPage) {
     );
   }
   return {
+    ...(page?.overview
+      ? {
+          overview: {
+            ...sidebarOverview(deps.db, projectIds),
+            ...(descendantResponses.length > 0
+              ? { descendants: descendantResponses }
+              : {}),
+          },
+        }
+      : {}),
     sections: listThreadSections(deps.db),
     projects,
     personalProject: personalProjectResponse,
@@ -466,9 +523,9 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     const after =
       query.cursor === undefined
         ? undefined
-        : parseThreadCursor(query.cursor, false);
+        : parseSidebarThreadCursor(query.cursor);
     return context.json(
-      buildSidebarBootstrapResponse(deps, { context, limit, after }),
+      buildSidebarBootstrapResponse(deps, { context, limit, after, overview: query.overview === "true" && after === undefined }),
     );
   });
 

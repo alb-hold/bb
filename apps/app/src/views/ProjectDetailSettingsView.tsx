@@ -61,7 +61,10 @@ import {
 } from "@/hooks/queries/host-path-queries";
 import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
 import { useProjectDefaultExecutionOptions } from "@/hooks/queries/project-default-execution-options-query";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import {
   useLocalPathPicker,
@@ -204,6 +207,7 @@ export function ProjectDetailSettingsView() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
   const hostsQuery = useHosts();
   const systemConfig = useSystemConfig();
   const defaultsQuery = useProjectDefaultExecutionOptions({ projectId });
@@ -223,7 +227,14 @@ export function ProjectDetailSettingsView() {
     useState<ProjectMachineSetupDialogTarget | null>(null);
   const [now] = useState(Date.now);
 
-  const projects = sidebarNavigationQuery.data?.projects;
+  const completeNavigation = sidebarNavigationQuery.isPlaceholderData
+    ? undefined
+    : sidebarNavigationQuery.data;
+  const projects = (
+    completeNavigation ??
+    sidebarNavigationPreview ??
+    sidebarNavigationQuery.data
+  )?.projects;
   const project = useMemo(
     () => projects?.find((entry) => entry.id === projectId) ?? null,
     [projectId, projects],

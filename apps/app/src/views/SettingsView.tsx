@@ -1,3 +1,4 @@
+import { firstScreenMetrics } from "@/lib/first-screen-performance";
 import { ApplicationLinkApprovalsSettings } from "@/components/settings/ApplicationLinkApprovalsSettings";
 import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
@@ -1144,6 +1145,14 @@ export function PrivacySettingsSection({
           />
         </SettingsWithControl>
 
+        <div>
+          <div className="font-medium">First screen latency</div>
+          {firstScreenMetrics.map(([label, name]) => {
+            const entry = performance.getEntriesByName?.(name).at(-1);
+            const value = entry?.entryType === "measure" ? entry.duration : entry?.startTime;
+            return <div key={name}>{label}: {value === undefined ? "No sample yet" : `${value.toFixed(1)} ms`}</div>;
+          })}
+        </div>
         <div>
           <div className="font-medium">Terminal latency</div>
           <TerminalLatencyDiagnostics />

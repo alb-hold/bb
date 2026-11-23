@@ -957,6 +957,11 @@ export const events = sqliteTable(
   ],
 );
 
+export const latestThreadGoals = sqliteTable("latest_thread_goals", {
+  threadId: text("thread_id").primaryKey(),
+  sequence: integer("sequence"),
+});
+
 export const retainedEventOutputs = sqliteTable(
   "retained_event_outputs",
   {

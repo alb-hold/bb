@@ -16,6 +16,13 @@ import {
 } from "./MachineEnvironmentSettings";
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: () => ({
     data: { projects: [{ id: "proj-a", name: "Project A" }] },
   }),

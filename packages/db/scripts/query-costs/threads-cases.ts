@@ -72,6 +72,7 @@ import {
   listThreadMentionRowsByIds,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
+  sidebarOverview,
   listUnarchivedAssignedChildThreads,
   markThreadDeleted,
   markThreadStorageDeleted,
@@ -423,6 +424,10 @@ const THREAD_LISTING_CASES: readonly QueryCostCase<ThreadsSeed>[] = [
         query: "tests",
         limitPerGroup: THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
       }),
+  },
+  {
+    name: `${THREADS}#sidebarOverview`,
+    run: (db, _fixture, seed) => sidebarOverview(db, seed.projectIds),
   },
   {
     name: `${THREADS}#listThreadsWithPendingInteractionStateForProjects`,

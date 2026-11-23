@@ -318,7 +318,7 @@ function invalidateTerminalTimelineQueryKeys({
 
 export function invalidateSidebarNavigation(queryClient: QueryClient): void {
   void queryClient.invalidateQueries(
-    { exact: true, queryKey: sidebarNavigationQueryKey() },
+    { queryKey: sidebarNavigationQueryKey() },
     { cancelRefetch: false },
   );
 }

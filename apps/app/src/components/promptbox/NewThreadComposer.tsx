@@ -112,7 +112,10 @@ import {
   useProjectPromptHistory,
   type SidebarProject,
 } from "@/hooks/queries/project-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import {
   useSystemConfig,
   useSystemProviders,
@@ -848,9 +851,13 @@ export function NewThreadComposer({
       : `${focusRequest ?? ""}:${localPromptBoxFocusRequest ?? ""}`;
 
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
+  const projectsNavigation = sidebarNavigationQuery.isPlaceholderData
+    ? (sidebarNavigationPreview ?? sidebarNavigationQuery.data)
+    : (sidebarNavigationQuery.data ?? sidebarNavigationPreview);
   const projects = useMemo(
-    () => sidebarNavigationQuery.data?.projects.map(stripProjectThreads),
-    [sidebarNavigationQuery.data],
+    () => projectsNavigation?.projects.map(stripProjectThreads),
+    [projectsNavigation],
   );
   const requestedCandidate = requestedProjectId ?? PERSONAL_PROJECT_ID;
   const candidateKnown =

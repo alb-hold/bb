@@ -111,6 +111,7 @@ export interface ArchivedThreadsListFilters {
 }
 
 export const ARCHIVED_THREADS_LIST_KIND = "archivedList";
+export const SIDEBAR_SELECTED_THREAD_TARGET_KIND = "sidebarSelectedTarget";
 
 type HostsQueryKey =
   readonly [typeof HOSTS_QUERY_KEY] | readonly [typeof HOSTS_QUERY_KEY, true];
@@ -187,6 +188,10 @@ type ProjectSourceBranchesQueryKey = readonly [
 export type SidebarNavigationQueryKey = readonly [
   typeof SIDEBAR_NAVIGATION_QUERY_KEY,
 ];
+export type SidebarNavigationPagesQueryKey = readonly [
+  typeof SIDEBAR_NAVIGATION_QUERY_KEY,
+  "pages",
+];
 type ThreadsQueryKey = readonly [typeof THREADS_QUERY_KEY];
 type ThreadListQueryKey = readonly [
   typeof THREADS_QUERY_KEY,
@@ -201,6 +206,11 @@ type ArchivedThreadsListQueryKey = readonly [
   typeof THREADS_QUERY_KEY,
   typeof ARCHIVED_THREADS_LIST_KIND,
   ArchivedThreadsListFilters,
+];
+export type SidebarSelectedThreadTargetQueryKey = readonly [
+  typeof THREADS_QUERY_KEY,
+  typeof SIDEBAR_SELECTED_THREAD_TARGET_KIND,
+  string,
 ];
 type DisabledThreadListQueryKey = readonly [
   typeof THREADS_DISABLED_QUERY_KEY,
@@ -667,6 +677,16 @@ export function projectSourceBranchesQueryKeyPrefix(
 
 export function sidebarNavigationQueryKey(): SidebarNavigationQueryKey {
   return [SIDEBAR_NAVIGATION_QUERY_KEY];
+}
+
+export function sidebarNavigationPagesQueryKey(): SidebarNavigationPagesQueryKey {
+  return [SIDEBAR_NAVIGATION_QUERY_KEY, "pages"];
+}
+
+export function sidebarSelectedThreadTargetQueryKey(
+  threadId: string,
+): SidebarSelectedThreadTargetQueryKey {
+  return [THREADS_QUERY_KEY, SIDEBAR_SELECTED_THREAD_TARGET_KIND, threadId];
 }
 
 export function threadsQueryKey(): ThreadsQueryKey {

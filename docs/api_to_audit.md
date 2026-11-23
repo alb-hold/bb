@@ -1,5 +1,9 @@
 # APIs To Audit
 
+## `PluginThreadTitleProps.experimental_fallbackTitle`
+
+The thread list passes the display title from a preview row until the live sidebar entry becomes available. Audit preview, archived, and live title rendering before stabilization.
+
 ## `ExperimentalComposerSubmission.experimental_onBlockedSubmit`
 
 A renderer reports a primary submission attempt that its readiness checks block.
@@ -5618,4 +5622,4 @@ contract and parser failure/retry coverage. It is not a Plugin Guide surface.
 
 Lists the title, project, status, pin and archive timestamps, runtime, activity and indicator used by the CLI thread table. It accepts the same selectors and limit as `threads.list`. Stabilize after the CLI and plugin callers confirm parity for the complete table across pages and older servers.
 
-The thread list renderer opts into intermediate rows using `experimental_useSidebarThreads({ experimental_lifecycles, experimental_previewRows: true })`. Use the default complete snapshot for unread transitions, counts and persisted navigation state. Stabilize after progressive rendering and complete-snapshot consumers pass the same paging regression on desktop and phone.
+The thread list renderer opts into intermediate rows using `experimental_useSidebarThreads({ experimental_lifecycles, experimental_previewRows: true })`. When active threads are paged on demand, `PluginSidebarThreadsState.experimental_activePages` exposes `{ hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage, projectCounts }` so the thread-list plugin can trigger the next page on scroll, group expansion, or an explicit Show more control, and keep projects with unloaded threads visible. Use the default complete snapshot for unread transitions, counts and persisted navigation state. Stabilize after progressive rendering, demand paging, and complete-snapshot consumers pass the same paging regression on desktop and phone.

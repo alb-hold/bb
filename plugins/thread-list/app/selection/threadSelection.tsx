@@ -223,7 +223,7 @@ export function ThreadSelectionProvider({
   useLayoutEffect(() => {
     store.setActiveThreadId(activeThreadId);
   }, [activeThreadId, store]);
-  const { projects } = useSidebarData();
+  const { projects } = useSidebarData(true);
   const listedThreadsById = useMemo(
     () =>
       new Map(

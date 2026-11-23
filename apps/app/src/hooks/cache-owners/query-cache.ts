@@ -30,6 +30,7 @@ import {
   type ThreadListQueryFilters,
 } from "../queries/query-keys";
 import { patchThreadEntity } from "./thread-entity-store";
+import { sidebarNavigationPreviewQueryKey } from "./sidebar-preview-cache";
 
 type TimelineRowsUpdater = (
   rows: readonly TimelineRow[],
@@ -302,6 +303,18 @@ export function findSidebarNavigationThreadPlaceholder(
   if (cached !== undefined) {
     return cached;
   }
+  const preview = queryClient.getQueryData<SidebarBootstrapResponse | null>(
+    sidebarNavigationPreviewQueryKey(),
+  );
+  if (preview) {
+    const previewMatch =
+      listSidebarNavigationThreads(preview).find(
+        (thread) => thread.id === threadId,
+      ) ?? preview.overview?.descendants?.find((thread) => thread.id === threadId);
+    if (previewMatch !== undefined) {
+      return previewMatch;
+    }
+  }
   const persisted = readCachedSidebarBootstrap();
   return persisted === null
     ? undefined
@@ -472,25 +485,35 @@ export function optimisticallyInsertThread(
     return;
   }
 
+  const patchNavigation = (
+    navigation: SidebarBootstrapResponse | null | undefined,
+  ): SidebarBootstrapResponse | null | undefined => {
+    if (!navigation) {
+      return navigation;
+    }
+    const updateProject = (
+      project: SidebarNavigationProject,
+    ): SidebarNavigationProject =>
+      project.id === thread.projectId
+        ? mapSidebarNavigationProjectThreads(project, upsertThread)
+        : project;
+    return {
+      ...navigation,
+      sections: navigation.sections,
+      projects: navigation.projects.map(updateProject),
+      personalProject: updateProject(navigation.personalProject),
+    };
+  };
+
   patchCachedQueryData<SidebarBootstrapResponse>(
     queryClient,
     sidebarNavigationQueryKey(),
-    (navigation) => {
-      if (!navigation) {
-        return navigation;
-      }
-      const updateProject = (
-        project: SidebarNavigationProject,
-      ): SidebarNavigationProject =>
-        project.id === thread.projectId
-          ? mapSidebarNavigationProjectThreads(project, upsertThread)
-          : project;
-      return {
-        sections: navigation.sections,
-        projects: navigation.projects.map(updateProject),
-        personalProject: updateProject(navigation.personalProject),
-      };
-    },
+    (navigation) => patchNavigation(navigation) ?? undefined,
+  );
+  patchCachedQueryData<SidebarBootstrapResponse | null>(
+    queryClient,
+    sidebarNavigationPreviewQueryKey(),
+    (navigation) => (navigation ? patchNavigation(navigation) : navigation),
   );
 }
 

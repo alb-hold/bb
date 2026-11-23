@@ -1012,7 +1012,7 @@ function ProviderUsageStatus(props: ExperimentalSidebarFooterDisclosureProps) {
     getStoreSnapshot,
   );
   const { threadId } = useBbContext();
-  const sidebarThreads = experimental_useSidebarThreads();
+  const sidebarThreads = experimental_useSidebarThreads({ experimental_previewRows: true, experimental_lifecycles: ["active"] });
   const threadMachineId = useMemo(
     () =>
       sidebarThreads.threads.find((thread) => thread.id === threadId)?.host

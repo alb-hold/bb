@@ -42,7 +42,10 @@ import {
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useServerMoveStatus } from "@/hooks/queries/server-move-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { machineAttentionIssue } from "@/hooks/useMachineAttention";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
@@ -200,6 +203,7 @@ export function MachinesSettingsSection() {
   const { providers: machineProviders } = useSystemMachineProviders();
   const { localDaemonHostId, platform: localDaemonPlatform } = useHostDaemon();
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
   const renameHost = useRenameHost();
   const retryHostUpdate = useRetryHostUpdate();
   const suspendHost = useSuspendHost();
@@ -219,7 +223,14 @@ export function MachinesSettingsSection() {
   const serverPrimaryHostId = systemConfig.data?.primaryHostId ?? null;
   const serverMoveEnabled = systemConfig.data?.experiments.serverMove ?? false;
   const serverMove = serverMoveStatus.data?.move ?? null;
-  const projects = sidebarNavigationQuery.data?.projects;
+  const completeNavigation = sidebarNavigationQuery.isPlaceholderData
+    ? undefined
+    : sidebarNavigationQuery.data;
+  const projects = (
+    completeNavigation ??
+    sidebarNavigationPreview ??
+    sidebarNavigationQuery.data
+  )?.projects;
   const projectCountByHostId = useMemo(() => {
     const counts = new Map<string, number>();
     for (const project of projects ?? []) {

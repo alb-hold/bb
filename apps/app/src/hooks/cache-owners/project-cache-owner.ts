@@ -8,6 +8,7 @@ import {
   projectsQueryKey,
   sidebarNavigationQueryKey,
 } from "../queries/query-keys";
+import { sidebarNavigationPreviewQueryKey } from "./sidebar-preview-cache";
 import { invalidateProjectDeleteQueries } from "./mutation-cache-effects";
 import { patchCachedQueryData } from "./cache-effect-utils";
 
@@ -124,6 +125,14 @@ export function applyProjectCreateResult({
         ? applyProjectToSidebarNavigation(currentNavigation, project)
         : currentNavigation,
   );
+  patchCachedQueryData<SidebarBootstrapResponse | null>(
+    queryClient,
+    sidebarNavigationPreviewQueryKey(),
+    (currentNavigation) =>
+      currentNavigation
+        ? applyProjectToSidebarNavigation(currentNavigation, project)
+        : currentNavigation,
+  );
 }
 
 export function applyProjectUpdateResult({
@@ -133,17 +142,25 @@ export function applyProjectUpdateResult({
   queryClient.setQueryData<ProjectResponse[]>(projectsQueryKey(), (projects) =>
     projects?.map((current) => (current.id === project.id ? project : current)),
   );
+  const updateProjects = (
+    navigation: SidebarBootstrapResponse | null | undefined,
+  ) =>
+    navigation
+      ? {
+          ...navigation,
+          projects: navigation.projects.map((current) =>
+            current.id === project.id ? { ...current, ...project } : current,
+          ),
+        }
+      : navigation;
   queryClient.setQueryData<SidebarBootstrapResponse>(
     sidebarNavigationQueryKey(),
-    (navigation) =>
-      navigation
-        ? {
-            ...navigation,
-            projects: navigation.projects.map((current) =>
-              current.id === project.id ? { ...current, ...project } : current,
-            ),
-          }
-        : navigation,
+    (navigation) => updateProjects(navigation) ?? undefined,
+  );
+  patchCachedQueryData<SidebarBootstrapResponse | null>(
+    queryClient,
+    sidebarNavigationPreviewQueryKey(),
+    (navigation) => (navigation ? updateProjects(navigation) : navigation),
   );
 }
 
@@ -161,6 +178,14 @@ export function applyProjectDeleteResult({
   patchCachedQueryData<SidebarBootstrapResponse>(
     queryClient,
     sidebarNavigationQueryKey(),
+    (currentNavigation) =>
+      currentNavigation
+        ? removeProjectFromSidebarNavigation(currentNavigation, projectId)
+        : currentNavigation,
+  );
+  patchCachedQueryData<SidebarBootstrapResponse | null>(
+    queryClient,
+    sidebarNavigationPreviewQueryKey(),
     (currentNavigation) =>
       currentNavigation
         ? removeProjectFromSidebarNavigation(currentNavigation, projectId)

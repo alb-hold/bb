@@ -38,6 +38,7 @@ import {
   useHiddenThreadsStatus,
   usePluginThreadRowStatusForThreads,
   useThreadGroupSplitIndicator,
+  type OffpageHiddenActivity,
 } from "./groupRollups.js";
 import { SplitPaneMiniMap } from "@/components/ui/split-pane-mini-map";
 import { COARSE_POINTER_ROW_ACTION_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
@@ -75,6 +76,7 @@ export interface TopLevelSidebarSectionProps {
   actionsOpen?: boolean;
   collapseControl?: TopLevelSidebarSectionCollapseControl;
   collapsedThreads?: readonly SidebarThread[];
+  offpageActivity?: OffpageHiddenActivity;
   dragBindings?: SidebarSortableDragBindings;
   sectionRef?: (element: HTMLDivElement | null) => void;
   sectionStyle?: CSSProperties;
@@ -98,6 +100,7 @@ export function TopLevelSidebarSection({
   actionsOpen = false,
   collapseControl,
   collapsedThreads,
+  offpageActivity,
   dragBindings,
   sectionRef,
   sectionStyle,
@@ -134,9 +137,12 @@ export function TopLevelSidebarSection({
   const rollup = useHiddenThreadsStatus(
     isCollapsed ? rollupThreads : NO_HIDDEN_THREADS,
     pluginStatus,
+    isCollapsed ? offpageActivity : undefined,
   );
   const showCollapsedActivity =
-    !status && isCollapsed && collapsedThreads !== undefined;
+    !status &&
+    isCollapsed &&
+    (collapsedThreads !== undefined || offpageActivity !== undefined);
   const collapsedActivityIndicator = showCollapsedActivity ? (
     <span
       data-sidebar-collapsed-activity-edge=""

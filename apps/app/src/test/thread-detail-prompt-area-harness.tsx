@@ -808,6 +808,13 @@ vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useProjectDisplayName: () => null,
+  useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
 }));
 
 vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({

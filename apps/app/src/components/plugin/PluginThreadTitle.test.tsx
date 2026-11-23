@@ -63,13 +63,14 @@ describe("PluginThreadTitle", () => {
     ]);
     const { container } = render(
       <>
-        <PluginThreadTitle threadId="thr_2" />
+        <PluginThreadTitle threadId="thr_2" experimental_fallbackTitle="Stale preview" />
+        <PluginThreadTitle threadId="thr_preview" experimental_fallbackTitle="Preview row" />
         <PluginThreadTitle threadId="thr_missing" />
       </>,
       { wrapper },
     );
     expect(screen.getByText("Untitled work")).toBeTruthy();
-    expect(container.textContent).toBe("Untitled work");
+    expect(container.textContent).toBe("Untitled workPreview row");
   });
   it("renders titles from cached archived threads", () => {
     const { wrapper, queryClient } = createQueryClientTestHarness();

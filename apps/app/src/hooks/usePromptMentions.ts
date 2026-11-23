@@ -131,7 +131,7 @@ export function usePromptMentions(
     currentThreadId: options.threadStorageThreadId,
     includeDirectories: true,
   });
-  const projectNamesQuery = useSidebarNavigation({
+  const projectNamesQuery = useSidebarNavigation({ includePreview: true,
     enabled: includeBuiltInSources && hasQuery,
   });
   const threadsQuery = useThreadMentionCandidates({

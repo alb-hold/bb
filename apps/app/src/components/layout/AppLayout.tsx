@@ -64,6 +64,10 @@ import { AppPageHeader, HEADER_ICON_BUTTON_CLASS } from "./AppPageHeader";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import {
+  SelectedSidebarThreadIdProvider,
+  useSidebarNavigationPreviewWithSelected,
+} from "@/hooks/queries/sidebar-selected-thread-projection";
+import {
   didThreadDetailBootstrapRefreshAfterMount,
   useThread,
   useThreadDetailBootstrap,
@@ -533,6 +537,13 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     contentShell,
     restoreIOSViewportOnKeyboardDismissal,
   );
+  useEffect(() => {
+    if (performance.getEntriesByName?.("bb:shell-painted").length) return;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => performance.mark?.("bb:shell-painted"));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const location = useLocation();
   useRedirectRetiredPluginPaths();
   const {
@@ -662,22 +673,26 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     ? new URLSearchParams(location.search).get("sectionId")
     : null;
   const sidebarNavigationQuery = useSidebarNavigation();
+  const sidebarNavigationPreview =
+    useSidebarNavigationPreviewWithSelected(threadId);
+  const effectiveSidebarNavigation = sidebarNavigationQuery.isPlaceholderData
+    ? (sidebarNavigationPreview ?? sidebarNavigationQuery.data)
+    : (sidebarNavigationQuery.data ?? sidebarNavigationPreview);
   const projects = useMemo(
-    () => sidebarNavigationQuery.data?.projects.map(stripProjectThreads),
-    [sidebarNavigationQuery.data],
+    () => effectiveSidebarNavigation?.projects.map(stripProjectThreads),
+    [effectiveSidebarNavigation],
   );
   const sidebarThreads = useMemo(() => {
-    const sidebarNavigation = sidebarNavigationQuery.data;
-    if (!sidebarNavigation) {
+    if (!effectiveSidebarNavigation) {
       return [];
     }
     return [
-      ...sidebarNavigation.projects.flatMap((project) => project.threads),
-      ...sidebarNavigation.personalProject.threads,
+      ...effectiveSidebarNavigation.projects.flatMap((project) => project.threads),
+      ...effectiveSidebarNavigation.personalProject.threads,
     ];
-  }, [sidebarNavigationQuery.data]);
+  }, [effectiveSidebarNavigation]);
   const titleMentionResources = useSidebarThreadTitleMentionResources(
-    sidebarNavigationQuery.data,
+    effectiveSidebarNavigation ?? undefined,
   );
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId ?? "", {
     enabled: isThreadView && Boolean(threadId),
@@ -920,7 +935,8 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   }, [documentTitle]);
 
   return (
-    <SidebarThreadEntriesProvider navigation={sidebarNavigationQuery.data}>
+    <SelectedSidebarThreadIdProvider threadId={threadId}>
+      <SidebarThreadEntriesProvider navigation={sidebarNavigationQuery.data}>
       <TooltipProvider delayDuration={300} disableHoverableContent>
         <ProjectActionsProvider>
           <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
@@ -1030,6 +1046,7 @@ function AppLayoutContent({ children }: AppLayoutProps) {
           </ThreadTitleMentionResourcesProvider>
         </ProjectActionsProvider>
       </TooltipProvider>
-    </SidebarThreadEntriesProvider>
+      </SidebarThreadEntriesProvider>
+    </SelectedSidebarThreadIdProvider>
   );
 }

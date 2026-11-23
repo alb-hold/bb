@@ -9,7 +9,10 @@ import {
 } from "../model/project-thread-groups.js";
 import { sectionKeyForThreadSection } from "../model/section-keys.js";
 import type { CollapsibleSidebarSectionId } from "../model/sidebar-section-id.js";
-import { useBbContext } from "@get-bb/plugin-sdk/app";
+import {
+  useBbContext,
+  type PluginSidebarThreadsState,
+} from "@get-bb/plugin-sdk/app";
 import type { OrganizationMode as SidebarOrganizationMode } from "../../shared/preferences.js";
 import { useSidebarData } from "../model/use-sidebar-data.js";
 import {
@@ -26,7 +29,7 @@ import { useExpandThreadAncestors } from "./useReadStatusGrouping.js";
 interface ThreadSidebarExpansionArgs {
   organizationMode: SidebarOrganizationMode;
   isPinned: boolean;
-  thread: SidebarThread;
+  thread: Pick<SidebarThread, "host" | "sectionId">;
   sidebarProjectId: string;
   personalProjectId: string | null;
 }
@@ -70,20 +73,129 @@ export function getThreadSidebarExpansion({
   return { projectId: sidebarProjectId };
 }
 
+type UnreadTreeRow = NonNullable<
+  NonNullable<
+    PluginSidebarThreadsState["experimental_activePages"]
+  >["unreadTree"]
+>[number];
+
+export interface SidebarUnreadEntry {
+  id: string;
+  parentThreadId: string | null;
+  isUnread: boolean;
+  isHidden?: boolean;
+}
+
+export interface SidebarUnreadRevealState {
+  previousUnreadIds: ReadonlySet<string> | null;
+}
+
+export const INITIAL_SIDEBAR_UNREAD_REVEAL_STATE: SidebarUnreadRevealState = {
+  previousUnreadIds: null,
+};
+
+export function stepSidebarUnreadReveal(
+  state: SidebarUnreadRevealState,
+  {
+    selectedThreadId,
+    entries,
+  }: {
+    selectedThreadId: string | undefined;
+    entries: readonly SidebarUnreadEntry[] | null;
+  },
+): { ancestorIds: ReadonlySet<string>; state: SidebarUnreadRevealState } {
+  if (entries === null) {
+    return { ancestorIds: new Set(), state };
+  }
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const unreadIds = new Set<string>();
+  const revealIds = new Set<string>();
+  for (const entry of entries) {
+    if (entry.isHidden || !entry.isUnread) continue;
+    unreadIds.add(entry.id);
+    if (
+      state.previousUnreadIds !== null &&
+      !state.previousUnreadIds.has(entry.id) &&
+      entry.id !== selectedThreadId
+    ) {
+      revealIds.add(entry.id);
+    }
+  }
+  const ancestorIds = new Set<string>();
+  for (const threadId of revealIds) {
+    let parentId = byId.get(threadId)?.parentThreadId ?? null;
+    while (parentId !== null && !ancestorIds.has(parentId)) {
+      const parent = byId.get(parentId);
+      if (!parent) break;
+      ancestorIds.add(parent.id);
+      parentId = parent.parentThreadId;
+    }
+  }
+  return {
+    ancestorIds,
+    state: { previousUnreadIds: unreadIds },
+  };
+}
+
+function toSidebarUnreadEntries(
+  unreadTree: readonly UnreadTreeRow[],
+): SidebarUnreadEntry[] {
+  return unreadTree.map((row) => ({
+    id: row.id,
+    parentThreadId: row.parentThreadId,
+    isUnread: (row.lastReadAt ?? 0) < row.latestAttentionAt,
+  }));
+}
+
 export function useSidebarThreadReveal(): void {
   const { threadId: routedThreadId } = useBbContext();
-  const { status, projects, personalProject } = useSidebarData();
+  const { status, projects, personalProject, activePages } =
+    useSidebarData(true);
   const preferencesReady = usePreferencesReady();
+  const expandThreadAncestors = useExpandThreadAncestors();
   const threads = useMemo<SidebarThread[]>(
     () => projects.flatMap((project) => project.threads),
     [projects],
   );
+  const personalProjectId = personalProject?.id ?? null;
+  const isPartial = activePages?.hasNextPage === true;
+  const unreadEntries = useMemo<readonly SidebarUnreadEntry[] | null>(() => {
+    if (status !== "ready") return null;
+    if (isPartial) {
+      return activePages?.unreadTree
+        ? toSidebarUnreadEntries(activePages.unreadTree)
+        : null;
+    }
+    return threads.map((thread) => ({
+      id: thread.id,
+      parentThreadId: thread.parentThreadId,
+      isUnread: thread.isUnread,
+      isHidden: thread.isHidden,
+    }));
+  }, [activePages?.unreadTree, isPartial, status, threads]);
+  const unreadState = useRef(INITIAL_SIDEBAR_UNREAD_REVEAL_STATE);
+
+  useEffect(() => {
+    if (!preferencesReady) return;
+    const { ancestorIds, state } = stepSidebarUnreadReveal(
+      unreadState.current,
+      {
+        selectedThreadId: routedThreadId ?? undefined,
+        entries: unreadEntries,
+      },
+    );
+    unreadState.current = state;
+    if (ancestorIds.size > 0) {
+      expandThreadAncestors(ancestorIds, false);
+    }
+  }, [expandThreadAncestors, preferencesReady, routedThreadId, unreadEntries]);
+
   useSidebarThreadRevealCore({
     selectedThreadId: routedThreadId ?? undefined,
     threads,
     threadsReady: status === "ready",
     preferencesReady,
-    personalProjectId: personalProject?.id ?? null,
+    personalProjectId,
   });
 }
 

@@ -4,6 +4,7 @@ import type { ThreadListEntry } from "@bb/domain";
 import { isThreadRead } from "@bb/client-core";
 import { useRouteState } from "@/hooks/useRouteState";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { useSidebarNavigationPreviewWithSelected } from "@/hooks/queries/sidebar-selected-thread-projection";
 import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
@@ -19,6 +20,11 @@ export const INITIAL_MOBILE_RECENTS_REVEAL_STATE: MobileRecentsRevealState = {
   previousUnreadIds: null,
 };
 
+type MobileRecentsRevealRow = Pick<
+  ThreadListEntry,
+  "id" | "parentThreadId" | "lastReadAt" | "latestAttentionAt"
+> & { visibility?: ThreadListEntry["visibility"] };
+
 export function stepMobileRecentsReveal(
   state: MobileRecentsRevealState,
   {
@@ -28,7 +34,7 @@ export function stepMobileRecentsReveal(
   }: {
     isPlaceholderData: boolean;
     selectedThreadId: string | undefined;
-    threads: readonly ThreadListEntry[] | null;
+    threads: readonly MobileRecentsRevealRow[] | null;
   },
 ): { ancestorIds: ReadonlySet<string>; state: MobileRecentsRevealState } {
   const navigated = state.previousThreadId !== selectedThreadId;
@@ -86,23 +92,61 @@ export function stepMobileRecentsReveal(
   };
 }
 
+function collectSelectedChain(
+  selectedThreadId: string | undefined,
+  rows: readonly ThreadListEntry[],
+): ThreadListEntry[] {
+  if (!selectedThreadId) return [];
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const chain: ThreadListEntry[] = [];
+  let current = byId.get(selectedThreadId);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.push(current);
+    current =
+      current.parentThreadId !== null
+        ? byId.get(current.parentThreadId)
+        : undefined;
+  }
+  return chain;
+}
+
 export function useMobileRecentsThreadReveal(): void {
   const { threadId: selectedThreadId } = useRouteState();
   const { data: navigation, isPlaceholderData } = useSidebarNavigation();
+  const projectedPreview =
+    useSidebarNavigationPreviewWithSelected(selectedThreadId);
   const setCollapsedThreadIds = useSetAtom(mobileRecentsCollapsedThreadIdsAtom);
-  const threads = useMemo(
-    () => (navigation ? listSidebarNavigationThreads(navigation) : []),
-    [navigation],
-  );
+  const complete = navigation && !isPlaceholderData ? navigation : undefined;
+
+  const threads = useMemo<readonly MobileRecentsRevealRow[] | null>(() => {
+    if (complete) return listSidebarNavigationThreads(complete);
+    const unreadTree = projectedPreview?.overview?.unreadTree;
+    if (!unreadTree) return null;
+    if (!selectedThreadId || !projectedPreview) return unreadTree;
+    const selectedChain = collectSelectedChain(
+      selectedThreadId,
+      listSidebarNavigationThreads(projectedPreview),
+    );
+    if (selectedChain.length === 0) return unreadTree;
+    const byId = new Map<string, MobileRecentsRevealRow>(
+      unreadTree.map((row) => [row.id, row]),
+    );
+    for (const row of selectedChain) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
+    return [...byId.values()];
+  }, [complete, projectedPreview, selectedThreadId]);
   const revealState = useRef(INITIAL_MOBILE_RECENTS_REVEAL_STATE);
 
   useEffect(() => {
     const { ancestorIds, state } = stepMobileRecentsReveal(
       revealState.current,
       {
-        isPlaceholderData,
+        isPlaceholderData: threads === null,
         selectedThreadId,
-        threads: navigation ? threads : null,
+        threads,
       },
     );
     revealState.current = state;

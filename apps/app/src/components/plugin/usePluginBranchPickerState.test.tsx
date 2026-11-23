@@ -14,6 +14,13 @@ import {
 const mocks = vi.hoisted(() => ({ navigationData: null as unknown }));
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: () => ({ data: mocks.navigationData }),
 }));
 

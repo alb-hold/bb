@@ -1,3 +1,4 @@
+import { observeSidebarPageScroll } from "@/lib/sidebar-page-scroll";
 import {
   getMobileRecentThreads,
   getMobileRecentAncestorIds,
@@ -27,6 +28,7 @@ import {
 } from "react";
 import { useAtom } from "jotai";
 import type { ProviderInfo, ThreadListEntry } from "@bb/domain";
+import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import {
   getThreadListIndicatorLabel,
   resolveThreadListIndicator,
@@ -38,6 +40,7 @@ import { getSidebarThreadRowPaddingLeft } from "@bb/shared-ui/sidebar-row-classe
 import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
+import { Button } from "@bb/shared-ui/button";
 import { getThreadRoutePath, isProjectlessProjectId } from "@/lib/route-paths";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
@@ -62,6 +65,20 @@ interface MobileRecentThreadRowProps {
   now: number;
 }
 
+
+
+function findScrollParent(element: HTMLElement | null): HTMLElement | null {
+  let current = element?.parentElement ?? null;
+  while (current !== null) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
 interface RootComposeMobileRecentsProps {
   maxRows?: number;
   highlightedThreadId: string | null;
@@ -70,6 +87,11 @@ interface RootComposeMobileRecentsProps {
   showCreatingRow: boolean;
   threads: readonly ThreadListEntry[];
   completeSnapshot?: boolean;
+  overview?: SidebarBootstrapResponse["overview"];
+  hasMoreThreads?: boolean;
+  isLoadingMoreThreads?: boolean;
+  isLoadMoreThreadsError?: boolean;
+  onLoadMoreThreads?: () => void;
 }
 
 function MobileRecentThreadRow({
@@ -179,7 +201,13 @@ export function RootComposeMobileRecents({
   showCreatingRow,
   threads,
   completeSnapshot = true,
+  overview,
+  hasMoreThreads = false,
+  isLoadingMoreThreads = false,
+  isLoadMoreThreadsError = false,
+  onLoadMoreThreads,
 }: RootComposeMobileRecentsProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [collapsedThreadIdList, setCollapsedThreadIdList] = useAtom(
     mobileRecentsCollapsedThreadIdsAtom,
   );
@@ -191,16 +219,51 @@ export function RootComposeMobileRecents({
   const activityNow = useSecondTick(
     threads.some((thread) => thread.runtime.nativeActivity !== undefined),
   );
+  const canLoadMore =
+    maxRows === undefined && hasMoreThreads && onLoadMoreThreads !== undefined;
   const toggleCollapsed = useCallback(
     (threadId: string) => {
+      if (
+        canLoadMore &&
+        collapsedThreadIds.has(threadId) &&
+        !isLoadingMoreThreads &&
+        !isLoadMoreThreadsError
+      ) {
+        onLoadMoreThreads();
+      }
       setCollapsedThreadIdList((current) =>
         current.includes(threadId)
           ? current.filter((id) => id !== threadId)
           : [...current, threadId],
       );
     },
-    [setCollapsedThreadIdList],
+    [
+      canLoadMore,
+      collapsedThreadIds,
+      isLoadMoreThreadsError,
+      isLoadingMoreThreads,
+      onLoadMoreThreads,
+      setCollapsedThreadIdList,
+    ],
   );
+  useEffect(() => {
+    if (
+      !canLoadMore ||
+      isLoadingMoreThreads ||
+      isLoadMoreThreadsError ||
+      !onLoadMoreThreads
+    ) {
+      return;
+    }
+    const scrollParent = findScrollParent(containerRef.current);
+    if (!scrollParent) return;
+    return observeSidebarPageScroll(scrollParent, onLoadMoreThreads);
+  }, [
+    canLoadMore,
+    isLoadMoreThreadsError,
+    isLoadingMoreThreads,
+    onLoadMoreThreads,
+  ]);
   useEffect(() => {
     if (!completeSnapshot || highlightedThreadId === null) return;
     const ancestorIds = getMobileRecentAncestorIds({
@@ -225,8 +288,9 @@ export function RootComposeMobileRecents({
         draftThreadIds,
         now: activityNow,
         threads,
+        overview: completeSnapshot ? undefined : overview,
       }),
-    [activityNow, collapsedThreadIds, draftThreadIds, threads],
+    [activityNow, collapsedThreadIds, completeSnapshot, draftThreadIds, overview, threads],
   );
   const hasMountedAllRows = useDeferredValue(true, false);
   const renderedThreads = hasMountedAllRows
@@ -238,48 +302,65 @@ export function RootComposeMobileRecents({
   }
 
   return (
-    <RecentThreadsSection>
-      {showCreatingRow ? (
-        <div
-          role="status"
-          className={cn(
-            "flex items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground",
-            MOBILE_RECENT_ROW_HEIGHT_CLASS,
-          )}
-        >
-          <span className="min-w-0 flex-1 truncate">Creating thread</span>
-          <span className="flex size-6 shrink-0 items-center justify-center">
-            <Icon
-              name="Loading"
-              className={cn(
-                "shrink-0 animate-spin",
-                SIDEBAR_WORKING_STATUS_COLOR_CLASS,
-                COARSE_POINTER_ICON_SIZE_CLASS,
-              )}
-              aria-hidden="true"
-            />
-          </span>
-        </div>
-      ) : null}
-      {recentThreads.length > 0 ? (
-        <ul className="space-y-px">
-          {renderedThreads.map((row) => (
-            <MobileRecentThreadRow
-              key={row.thread.id}
-              highlighted={row.thread.id === highlightedThreadId}
-              onToggleCollapsed={toggleCollapsed}
-              provider={providersById.get(row.thread.providerId) ?? null}
-              projectName={
-                isProjectlessProjectId(row.thread.projectId)
-                  ? null
-                  : (projectNamesById.get(row.thread.projectId) ?? null)
-              }
-              row={row}
-              now={activityNow}
-            />
-          ))}
-        </ul>
-      ) : null}
-    </RecentThreadsSection>
+    <div ref={containerRef}>
+      <RecentThreadsSection>
+        {showCreatingRow ? (
+          <div
+            role="status"
+            className={cn(
+              "flex items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground",
+              MOBILE_RECENT_ROW_HEIGHT_CLASS,
+            )}
+          >
+            <span className="min-w-0 flex-1 truncate">Creating thread</span>
+            <span className="flex size-6 shrink-0 items-center justify-center">
+              <Icon
+                name="Loading"
+                className={cn(
+                  "shrink-0 animate-spin",
+                  SIDEBAR_WORKING_STATUS_COLOR_CLASS,
+                  COARSE_POINTER_ICON_SIZE_CLASS,
+                )}
+                aria-hidden="true"
+              />
+            </span>
+          </div>
+        ) : null}
+        {recentThreads.length > 0 ? (
+          <ul className="space-y-px">
+            {renderedThreads.map((row) => (
+              <MobileRecentThreadRow
+                key={row.thread.id}
+                highlighted={row.thread.id === highlightedThreadId}
+                onToggleCollapsed={toggleCollapsed}
+                provider={providersById.get(row.thread.providerId) ?? null}
+                projectName={
+                  isProjectlessProjectId(row.thread.projectId)
+                    ? null
+                    : (projectNamesById.get(row.thread.projectId) ?? null)
+                }
+                row={row}
+                now={activityNow}
+              />
+            ))}
+          </ul>
+        ) : null}
+        {canLoadMore ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={isLoadingMoreThreads}
+            onClick={onLoadMoreThreads}
+            aria-label="Load more threads"
+          >
+            {isLoadingMoreThreads
+              ? "Loading…"
+              : isLoadMoreThreadsError
+                ? "Retry loading"
+                : "Show more"}
+          </Button>
+        ) : null}
+      </RecentThreadsSection>
+    </div>
   );
 }

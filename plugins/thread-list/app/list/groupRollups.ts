@@ -70,9 +70,15 @@ export interface HiddenThreadsStatus {
   isWorking: boolean;
 }
 
+export interface OffpageHiddenActivity {
+  unread: boolean;
+  unreadError: boolean;
+}
+
 export function useHiddenThreadsStatus(
   threads: readonly SidebarThread[],
   rowStatus: PluginSidebarThreadRowStatus | null,
+  offpageActivity?: OffpageHiddenActivity,
 ): HiddenThreadsStatus {
   const hasUnsubmittedDraft = useThreadsHaveDraft(threads);
   return useMemo(() => {
@@ -81,8 +87,9 @@ export function useHiddenThreadsStatus(
       hasPendingInteraction: activity.pending,
       hasTerminalAttention: activity.terminalAttention,
       hasUnsubmittedDraft,
-      hasUnreadError: activity.unreadError,
-      hasUnreadSuccess: activity.unread,
+      hasUnreadError:
+        activity.unreadError || (offpageActivity?.unreadError ?? false),
+      hasUnreadSuccess: activity.unread || (offpageActivity?.unread ?? false),
       isAutomationWoken: false,
       isBackgroundAgentActive: activity.backgroundAgent,
       isBackgroundCommandActive: activity.backgroundCommand,
@@ -99,5 +106,5 @@ export function useHiddenThreadsStatus(
       rowStatus,
       isWorking: activity.working || rowStatus?.tone === "running",
     };
-  }, [hasUnsubmittedDraft, rowStatus, threads]);
+  }, [hasUnsubmittedDraft, offpageActivity, rowStatus, threads]);
 }
