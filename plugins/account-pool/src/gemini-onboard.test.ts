@@ -292,7 +292,7 @@ describe("adding a Google AI Pro account to the Gemini pool", () => {
       loads: [{ paidTier: { id: "g1-pro-tier" }, allowedTiers: [] }],
     });
     await expect(google.adapter.importAccount()).rejects.toThrow(
-      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=free-tier/u,
+      /no project for this account and offered no tier.*stage: loadCodeAssist; tier ids: current=none, paid=g1-pro-tier, allowed=none/u,
     );
     expect(google.calls.map((call) => call.method)).toEqual(["loadCodeAssist"]);
   });

@@ -697,11 +697,12 @@ export function createGeminiAdapter(options: {
             project = dailyInfo.project ?? null;
             if (project !== null) {
               info = { ...dailyInfo, tier: dailyInfo.tier ?? info.tier };
-              if (info.tier === null)
+              const tier = info.tier;
+              if (tier === null)
                 throw new Error(
                   `Gemini Code Assist returned a project without a tier (stage: loadCodeAssist; tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [${offeredTierIds(dailyLoaded)}])`,
                 );
-              return accountWithProject(project, info);
+              return accountWithProject(project, { ...info, tier });
             } else
               throw new Error(
                 `Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: prod [${offeredTierIds(prodLoaded)}]; daily [${offeredTierIds(dailyLoaded)}])`,
@@ -727,7 +728,12 @@ export function createGeminiAdapter(options: {
             `Gemini Code Assist still has no ${missingFields(project, info.tier)} for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${offeredTierIds(loaded)}).`,
           );
       }
-      return accountWithProject(project, info);
+      const tier = info.tier;
+      if (tier === null)
+        throw new Error(
+          `Gemini Code Assist still has no tier for this account after onboarding (stage: loadCodeAssist after onboardUser; tier ids: ${offeredTierIds(loaded)}).`,
+        );
+      return accountWithProject(project, { ...info, tier });
     },
     parseRequest(body, _headers, url) {
       const call = geminiGatewayCall(url);
