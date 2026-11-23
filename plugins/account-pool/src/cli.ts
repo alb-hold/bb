@@ -294,6 +294,7 @@ function formatImportProbe(probe: ImportProbe): string {
     `oauth client: ...${credential.clientIdSuffix} (${credential.clientSource === "own" ? "from the sign-in" : "Antigravity installed-app"})`,
     `stored expiry: ${time(credential.storedExpiresAt, "absent")}`,
     `refreshed token expires: ${time(credential.accessTokenExpiresAt, "unknown")}`,
+    `request user-agent: ${probe.userAgent}`,
     ...endpoints,
     `would import: ${wouldUse}`,
     `quota summary: ${quota}`,

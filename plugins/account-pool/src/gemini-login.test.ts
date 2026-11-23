@@ -9,6 +9,7 @@ import {
   GeminiLogin,
   GeminiLoginError,
   antigravityLaunchFromCustomAgents,
+  readAntigravityRuntimeVersion,
   type GeminiLoginAccount,
   type GeminiLoginOptions,
   type GeminiLoginTarget,
@@ -147,6 +148,50 @@ describe("antigravityLaunchFromCustomAgents", () => {
     expect(
       antigravityLaunchFromCustomAgents([{ id: "antigravity-acp", command: "" }]),
     ).toBeNull();
+  });
+});
+
+describe("readAntigravityRuntimeVersion", () => {
+  const runtimeWith = async (config: RuntimeConfig) => {
+    const control = await fs.mkdtemp(path.join(tmpdir(), "bb-agy-version-test-"));
+    cleanups.push(() => fs.rm(control, { recursive: true, force: true }));
+    await fs.writeFile(path.join(control, "config.json"), JSON.stringify(config));
+    return {
+      control,
+      resolve: async () => ({ command: process.execPath, args: [FAKE_RUNTIME, control] }),
+    };
+  };
+
+  it("returns the version the installed runtime reports in ACP initialize and stops it", async () => {
+    const runtime = await runtimeWith({ version: "1.6.2" });
+    expect(await readAntigravityRuntimeVersion(runtime.resolve)).toBe("1.6.2");
+    const env = JSON.parse(await fs.readFile(path.join(runtime.control, "env.json"), "utf8")) as {
+      pid: number;
+      home: string;
+    };
+    expect(isAlive(env.pid)).toBe(false);
+    expect(existsSync(env.home)).toBe(false);
+  });
+
+  it("fails with a clear message and stops the runtime when it reports no version", async () => {
+    const runtime = await runtimeWith({ version: null });
+    const error = await readAntigravityRuntimeVersion(runtime.resolve, 500).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(GeminiLoginError);
+    expect((error as GeminiLoginError).reason).toBe("runtime_version");
+    expect((error as Error).message).toMatch(/could not read the installed antigravity-acp runtime version/u);
+    const env = JSON.parse(await fs.readFile(path.join(runtime.control, "env.json"), "utf8")) as {
+      pid: number;
+    };
+    expect(isAlive(env.pid)).toBe(false);
+  });
+
+  it("fails with runtime_missing when no antigravity-acp agent is configured", async () => {
+    const error = await readAntigravityRuntimeVersion(async () => null).catch(
+      (caught: unknown) => caught,
+    );
+    expect((error as GeminiLoginError).reason).toBe("runtime_missing");
   });
 });
 

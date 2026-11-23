@@ -53,6 +53,7 @@ import { createHub, waitForDelay } from "./hub.js";
 import {
   GEMINI_MODEL_ID,
   STATIC_GEMINI_MODEL_IDS,
+  antigravityRuntimeUserAgent,
 } from "./gemini-gateway.js";
 import { accountPoolHostContract } from "./host-contract.js";
 import { OAUTH_PROXY_ROUTE } from "./oauth-proxy-policy.js";
@@ -73,6 +74,7 @@ import { CodexDeviceLogin } from "./codex-device-login.js";
 import {
   GeminiLogin,
   antigravityLaunchFromCustomAgents,
+  readAntigravityRuntimeVersion,
   type CommandSpec,
 } from "./gemini-login.js";
 import {
@@ -100,6 +102,7 @@ export interface AccountPoolPluginOptions {
   geminiUserinfoUrl?: string;
   geminiOAuthClient?: GeminiOAuthClient;
   geminiUpstreamBaseUrls?: { prod: string; daily: string };
+  geminiRuntimeUserAgent?: () => Promise<string>;
   usageUrl?: string;
   drainTimeoutMs?: number;
   mutationDrainTimeoutMs?: number;
@@ -535,6 +538,14 @@ export function createAccountPoolPlugin(
     const transport =
       options.fetch === undefined ? createUpstreamTransport() : null;
     const upstreamFetch = options.fetch ?? transport?.fetch;
+    const resolveGeminiRuntime =
+      options.resolveGeminiRuntime ??
+      (async () => {
+        const settings = await bb.sdk.plugins.getSettings({
+          pluginId: PROVIDER_ACP_PLUGIN_ID,
+        });
+        return antigravityLaunchFromCustomAgents(settings.values.customAgents);
+      });
     const hub = createHub({
       accounts,
       quotas,
@@ -552,6 +563,12 @@ export function createAccountPoolPlugin(
       geminiUserinfoUrl: options.geminiUserinfoUrl,
       geminiOAuthClient: options.geminiOAuthClient,
       geminiUpstreamBaseUrls: options.geminiUpstreamBaseUrls,
+      geminiRuntimeUserAgent:
+        options.geminiRuntimeUserAgent ??
+        (async () =>
+          antigravityRuntimeUserAgent(
+            await readAntigravityRuntimeVersion(resolveGeminiRuntime),
+          )),
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
       importClaudeCredentials: options.importCredentials,
@@ -756,16 +773,7 @@ export function createAccountPoolPlugin(
         "plugins",
         bb.pluginId,
       ),
-      resolveRuntime:
-        options.resolveGeminiRuntime ??
-        (async () => {
-          const settings = await bb.sdk.plugins.getSettings({
-            pluginId: PROVIDER_ACP_PLUGIN_ID,
-          });
-          return antigravityLaunchFromCustomAgents(
-            settings.values.customAgents,
-          );
-        }),
+      resolveRuntime: resolveGeminiRuntime,
       ...(options.geminiLoginBrowser === undefined
         ? {}
         : { browser: options.geminiLoginBrowser }),

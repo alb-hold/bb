@@ -374,6 +374,7 @@ describe("Gemini import refresh errors", () => {
     const installed = code === "invalid_grant";
     const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: code }, { status: 400 }));
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl, fetch, upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials: async () => ({
         refreshToken: "fake-refresh-kc", client: CLIENT, projectId: null,
@@ -405,6 +406,7 @@ describe("Gemini import refresh with a stalled error body", () => {
       status, headers: { "content-type": "application/json" },
     }));
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token", fetch,
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials: async () => ({
@@ -425,6 +427,7 @@ describe("Gemini adapter local login", () => {
     const home = await tempDir("bb-agy-empty-local-login-");
     vi.stubEnv("GEMINI_HOME", home);
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token",
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
     });
@@ -436,6 +439,7 @@ describe("Gemini adapter local login", () => {
       throw new Error("keychain-capable import must not run during listing");
     });
     const adapter = createGeminiAdapter({
+      runtimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       refreshUrl: "https://example.invalid/token",
       upstreamBaseUrls: { prod: "https://example.invalid", daily: "https://example.invalid" },
       importCredentials,
@@ -1078,6 +1082,7 @@ async function createGeminiFixture(
       : {}),
     geminiRefreshUrl: `${google.url}/token`,
     geminiUserinfoUrl: `${google.url}/userinfo`,
+    geminiRuntimeUserAgent: async () => "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
     geminiUpstreamBaseUrls: {
       prod: `${google.url}/prod`,
       daily: `${google.url}/daily`,
@@ -1371,6 +1376,7 @@ describe("Gemini account pool", () => {
       "google account: c@example.com",
       "oauth client: ...xyz9q7 (from the sign-in)",
       "stored expiry: absent",
+      "request user-agent: antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)",
       "daily: answered; current=none, paid=none, allowed=none, ineligible=none; project: yes",
       "prod: not-loaded",
       "would import: project from daily, serves on daily",

@@ -2368,6 +2368,7 @@ export function createHub(options: {
   geminiUserinfoUrl?: string;
   geminiOAuthClient?: GeminiOAuthClient;
   geminiUpstreamBaseUrls?: GeminiUpstreamBaseUrls;
+  geminiRuntimeUserAgent?: () => Promise<string>;
   importGeminiCredentials?: (
     home?: string,
   ) => Promise<ImportedGeminiCredentials>;
@@ -2418,6 +2419,14 @@ export function createHub(options: {
           options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
         importCredentials: options.importGeminiCredentials,
         onModels: options.onGeminiModels,
+        runtimeUserAgent:
+          options.geminiRuntimeUserAgent ??
+          (() =>
+            Promise.reject(
+              new Error(
+                "bb has no antigravity-acp runtime to read its version from, so it cannot send the Antigravity User-Agent to Gemini Code Assist.",
+              ),
+            )),
         fetch: options.fetch,
         now: options.now,
       }),

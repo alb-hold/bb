@@ -458,6 +458,7 @@ export const importProbeSchema = z
   .object({
     provider: providerSchema,
     credential: importProbeCredentialSchema,
+    userAgent: z.string(),
     endpoints: z.array(importProbeEndpointSchema),
     wouldUse: z.discriminatedUnion("kind", [
       z
@@ -470,7 +471,7 @@ export const importProbeSchema = z
       z
         .object({
           kind: z.literal("onboard"),
-          endpoint: z.literal("prod"),
+          endpoint: geminiEndpointSchema,
           tierId: z.string(),
         })
         .strict(),

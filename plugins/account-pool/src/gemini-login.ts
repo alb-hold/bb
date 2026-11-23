@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { geminiCredentialsPath } from "./gemini-credentials.js";
@@ -309,6 +310,90 @@ function offersOAuth(result: unknown): boolean {
   );
 }
 
+export async function checkedAntigravityRuntime(
+  resolveRuntime: () => Promise<CommandSpec | null>,
+): Promise<CommandSpec> {
+  const runtime = await resolveRuntime().catch(() => null);
+  if (runtime === null)
+    throw new GeminiLoginError(
+      "runtime_missing",
+      `No antigravity-acp agent is configured. Add the "${ANTIGRAVITY_AGENT_ID}" entry to provider-acp's customAgents setting, pointing at the antigravity-acp ${SUPPORTED_RUNTIME_VERSION} runtime.`,
+    );
+  if (!path.isAbsolute(runtime.command))
+    throw new GeminiLoginError(
+      "runtime_missing",
+      `The "${ANTIGRAVITY_AGENT_ID}" agent's command is not an absolute path: ${runtime.command}`,
+    );
+  try {
+    await fs.access(runtime.command, fsConstants.X_OK);
+  } catch {
+    throw new GeminiLoginError(
+      "runtime_missing",
+      `The antigravity-acp runtime is missing or not executable: ${runtime.command}`,
+    );
+  }
+  return runtime;
+}
+
+export async function readAntigravityRuntimeVersion(
+  resolveRuntime: () => Promise<CommandSpec | null>,
+  waitMs: number = INITIALIZE_WAIT_MS,
+): Promise<string> {
+  const runtime = await checkedAntigravityRuntime(resolveRuntime);
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "bb-agy-version-"));
+  let child: ChildProcess | null = null;
+  try {
+    await fs.chmod(home, 0o700);
+    const started = spawn(runtime.command, [...runtime.args], {
+      cwd: home,
+      detached: true,
+      stdio: ["pipe", "pipe", "ignore"],
+      env: {
+        HOME: home,
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        GEMINI_HOME: home,
+        AGY_ACP_FORCE_FILE_STORAGE: "1",
+        ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+      },
+    });
+    child = started;
+    started.on("error", () => {});
+    const spawned = await new Promise<boolean>((resolve) => {
+      started.once("spawn", () => resolve(true));
+      started.once("error", () => resolve(false));
+    });
+    if (!spawned)
+      throw new GeminiLoginError(
+        "runtime_missing",
+        `The antigravity-acp runtime could not be started to read its version: ${runtime.command}`,
+      );
+    const acp = new AcpClient(started);
+    const initialized = await raceTimeout(
+      [
+        acp.request("initialize", {
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+        }),
+      ],
+      waitMs,
+      undefined,
+    ).catch(() => undefined);
+    const version = runtimeVersion(initialized);
+    if (version === null || !/^[0-9A-Za-z.+-]{1,64}$/u.test(version))
+      throw new GeminiLoginError(
+        "runtime_version",
+        `bb could not read the installed antigravity-acp runtime version (ACP initialize gave no agentInfo.version), so it cannot send the Antigravity User-Agent to Gemini Code Assist. Check the "${ANTIGRAVITY_AGENT_ID}" agent in provider-acp's customAgents setting.`,
+      );
+    return version;
+  } finally {
+    await stop(child);
+    await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 export class GeminiLogin {
   private readonly sessions = new Map<string, Session>();
   private readonly root: string;
@@ -508,27 +593,8 @@ export class GeminiLogin {
     this.sessions.clear();
   }
 
-  private async checkedRuntime(): Promise<CommandSpec> {
-    const runtime = await this.options.resolveRuntime().catch(() => null);
-    if (runtime === null)
-      throw new GeminiLoginError(
-        "runtime_missing",
-        `No antigravity-acp agent is configured. Add the "${ANTIGRAVITY_AGENT_ID}" entry to provider-acp's customAgents setting, pointing at the antigravity-acp ${SUPPORTED_RUNTIME_VERSION} runtime.`,
-      );
-    if (!path.isAbsolute(runtime.command))
-      throw new GeminiLoginError(
-        "runtime_missing",
-        `The "${ANTIGRAVITY_AGENT_ID}" agent's command is not an absolute path: ${runtime.command}`,
-      );
-    try {
-      await fs.access(runtime.command, fsConstants.X_OK);
-    } catch {
-      throw new GeminiLoginError(
-        "runtime_missing",
-        `The antigravity-acp runtime is missing or not executable: ${runtime.command}`,
-      );
-    }
-    return runtime;
+  private checkedRuntime(): Promise<CommandSpec> {
+    return checkedAntigravityRuntime(this.options.resolveRuntime);
   }
 
   private async open(

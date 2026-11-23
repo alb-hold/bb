@@ -56,6 +56,7 @@ export const DEFAULT_GEMINI_UPSTREAM_BASE_URLS: GeminiUpstreamBaseUrls = {
 export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
+const USER_AGENT_TTL_MS = 10 * 60 * 1_000;
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
 
 const refreshResponseSchema = z
@@ -384,6 +385,7 @@ async function codeAssistCall(
   method: string,
   accessToken: string,
   body: unknown,
+  userAgent: string,
   parentSignal?: AbortSignal,
 ): Promise<unknown> {
   const signal = AbortSignal.any([
@@ -396,6 +398,7 @@ async function codeAssistCall(
       authorization: `Bearer ${accessToken}`,
       "content-type": "application/json",
       accept: "application/json",
+      "user-agent": userAgent,
     },
     body: JSON.stringify(body),
     signal,
@@ -505,11 +508,12 @@ type GeminiImportPlan =
     }
   | {
       kind: "onboard";
+      endpoint: "daily" | "prod";
       tierId: string;
       tierIds: string;
       dailyTierIds: string;
       project: string | null;
-      prodInfo: GeminiProjectInfo;
+      loadedInfo: GeminiProjectInfo;
     }
   | { kind: "refuse"; error: Error };
 
@@ -602,17 +606,46 @@ function planGeminiImport(
         `Gemini Code Assist has no ${missingFields(project, prod.info.tier)} for this account and offered no tier to onboard it to (stage: loadCodeAssist; tier ids: ${tierIds}).`,
       ),
     };
+  const cloudProject =
+    tierId === "standard-tier" && project === null
+      ? process.env.GOOGLE_CLOUD_PROJECT?.trim() || null
+      : project;
+  const dailyTier =
+    tierId === "standard-tier" &&
+    cloudProject === null &&
+    daily.kind === "answered" &&
+    daily.info.project === null
+      ? defaultAllowedTier(daily.payload)
+      : null;
+  if (daily.kind === "answered" && dailyTier !== null)
+    return {
+      kind: "onboard",
+      endpoint: "daily",
+      tierId: dailyTier,
+      tierIds: `daily [${dailyTierIds}]; prod [${offeredTierIds(prod.payload)}]`,
+      dailyTierIds,
+      project: null,
+      loadedInfo: daily.info,
+    };
   return {
     kind: "onboard",
+    endpoint: "prod",
     tierId,
     tierIds,
     dailyTierIds,
-    project:
-      tierId === "standard-tier" && project === null
-        ? process.env.GOOGLE_CLOUD_PROJECT?.trim() || null
-        : project,
-    prodInfo: prod.info,
+    project: cloudProject,
+    loadedInfo: prod.info,
   };
+}
+
+function defaultAllowedTier(payload: unknown): string | null {
+  const parsed = loadCodeAssistSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  return (
+    (parsed.data.allowedTiers ?? []).find(
+      (tier) => tier?.isDefault === true && tier.id != null,
+    )?.id ?? null
+  );
 }
 
 function probeTiers(payload: unknown): {
@@ -681,6 +714,7 @@ async function getCodeAssistOperation(
   name: string,
   accessToken: string,
   tierIds: string,
+  userAgent: string,
 ): Promise<unknown> {
   if (!OPERATION_NAME.test(name) || name.split("/").includes(".."))
     throw new Error(
@@ -692,6 +726,7 @@ async function getCodeAssistOperation(
     headers: {
       authorization: `Bearer ${accessToken}`,
       accept: "application/json",
+      "user-agent": userAgent,
     },
     signal,
   });
@@ -721,6 +756,7 @@ async function onboardCodeAssist(args: {
   tierId: string;
   tierIds: string;
   project: string | null;
+  userAgent: string;
   pollMs: number;
   timeoutMs: number;
 }): Promise<string | null> {
@@ -747,6 +783,7 @@ async function onboardCodeAssist(args: {
         "onboardUser",
         args.accessToken,
         body,
+        args.userAgent,
       );
     } catch (error) {
       const original = error instanceof Error ? error.message : String(error);
@@ -767,7 +804,7 @@ async function onboardCodeAssist(args: {
     await new Promise((resolve) => setTimeout(resolve, args.pollMs));
     operation = readOperation(
       name
-        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken, args.tierIds)
+        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken, args.tierIds, args.userAgent)
         : await onboard(),
     );
     name = operation.name || name;
@@ -789,7 +826,17 @@ export function createGeminiAdapter(options: {
   now?: () => number;
   onModels?: (accountId: string, ids: string[]) => void;
   onboarding?: { pollMs: number; timeoutMs: number };
+  runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
+  let cachedAgent: { value: string; at: number } | null = null;
+  const userAgent = async () => {
+    const at = (options.now ?? Date.now)();
+    if (cachedAgent !== null && at - cachedAgent.at < USER_AGENT_TTL_MS)
+      return cachedAgent.value;
+    const value = await options.runtimeUserAgent();
+    cachedAgent = { value, at };
+    return value;
+  };
   const bases = {
     prod: options.upstreamBaseUrls.prod.replace(/\/+$/u, ""),
     daily: options.upstreamBaseUrls.daily.replace(/\/+$/u, ""),
@@ -829,15 +876,17 @@ export function createGeminiAdapter(options: {
           : clock() + Math.round(refreshed.expires_in * 1_000),
     };
   };
-  const loadOn = (endpoint: "prod" | "daily", accessToken: string) =>
+  const loadOn = async (endpoint: "prod" | "daily", accessToken: string) =>
     codeAssistCall(
       doFetch,
       bases[endpoint],
       "loadCodeAssist",
       accessToken,
       LOAD_CODE_ASSIST_BODY,
+      await userAgent(),
     );
   const loadSources = async (accessToken: string): Promise<GeminiSources> => {
+    await userAgent();
     const daily = await loadOutcome(() => loadOn("daily", accessToken));
     if (hasProjectAndTier(daily) && daily.info.endpoint === "daily")
       return { daily, prod: null };
@@ -894,18 +943,26 @@ export function createGeminiAdapter(options: {
         return accountWithProject(plan.project, plan.info);
       const onboarded = await onboardCodeAssist({
         doFetch,
-        baseUrl: bases.prod,
+        baseUrl: bases[plan.endpoint],
         accessToken,
         tierId: plan.tierId,
         tierIds: plan.tierIds,
         project: plan.project,
+        userAgent: await userAgent(),
         pollMs: options.onboarding?.pollMs ?? ONBOARD_POLL_MS,
         timeoutMs: options.onboarding?.timeoutMs ?? ONBOARD_TIMEOUT_MS,
       });
-      const loaded = await loadOn("prod", accessToken);
-      const info = parseLoadCodeAssist(loaded) ?? plan.prodInfo;
+      const loaded = await loadOn(plan.endpoint, accessToken);
+      const info = parseLoadCodeAssist(loaded) ?? plan.loadedInfo;
       const project = info.project ?? onboarded ?? plan.project;
-      const tierIds = `prod [${offeredTierIds(loaded)}]; daily [${plan.dailyTierIds}]`;
+      const tierIds =
+        plan.endpoint === "daily"
+          ? `daily [${offeredTierIds(loaded)}]`
+          : `prod [${offeredTierIds(loaded)}]; daily [${plan.dailyTierIds}]`;
+      if (project === null && plan.endpoint === "daily")
+        throw new Error(
+          `Gemini Code Assist onboarded ${plan.tierId} on the Antigravity daily endpoint but returned no Google-managed project (stage: loadCodeAssist after onboardUser; tier ids: ${tierIds}).`,
+        );
       if (project === null && plan.tierId === "standard-tier")
         throw new Error(
           `Gemini Code Assist returned no project for standard-tier onboarding. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID and retry the import. (tier ids: ${tierIds})`,
@@ -942,6 +999,7 @@ export function createGeminiAdapter(options: {
               "retrieveUserQuotaSummary",
               accessToken,
               { project: plan.project },
+              await userAgent(),
             ),
             clock(),
           );
@@ -953,6 +1011,7 @@ export function createGeminiAdapter(options: {
       return {
         provider: "gemini",
         credential,
+        userAgent: await userAgent(),
         endpoints: [
           probeEndpoint("daily", sources.daily),
           probeEndpoint("prod", sources.prod),
@@ -965,7 +1024,7 @@ export function createGeminiAdapter(options: {
                 servesOn: plan.info.endpoint,
               }
             : plan.kind === "onboard"
-              ? { kind: "onboard", endpoint: "prod", tierId: plan.tierId }
+              ? { kind: "onboard", endpoint: plan.endpoint, tierId: plan.tierId }
               : { kind: "none" },
         quota,
       };
@@ -1092,6 +1151,7 @@ export function createGeminiAdapter(options: {
           "loadCodeAssist",
           secret.accessToken,
           LOAD_CODE_ASSIST_BODY,
+          await userAgent(),
           context.signal,
         ),
       );
@@ -1125,6 +1185,7 @@ export function createGeminiAdapter(options: {
           "retrieveUserQuotaSummary",
           secret.accessToken,
           { project },
+          await userAgent(),
           context.signal,
         ),
         now,

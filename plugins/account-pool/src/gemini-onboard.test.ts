@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGeminiAdapter, geminiWindowsFromQuota } from "./gemini-adapter.js";
+import { antigravityRuntimeUserAgent } from "./gemini-gateway.js";
 
 const TOKEN = "access-token-onboard";
 const EMAIL = "pro-user@example.com";
@@ -7,11 +8,14 @@ const BASES = {
   prod: "https://code-assist.test/prod",
   daily: "https://code-assist.test/daily",
 };
+const AGY_AGENT = "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)";
+const AGY_REQUEST = /^antigravity\/acp\/[0-9][^ ]* \(aidev_client; os_type=[a-z]+; arch=[a-z0-9]+\)$/u;
 
 interface FakeCall {
   method: string;
   base: string;
   body: Record<string, unknown> | null;
+  userAgent: string | null;
 }
 
 function fakeCodeAssist(script: {
@@ -23,6 +27,8 @@ function fakeCodeAssist(script: {
   operations?: unknown[];
   onboardFailure?: { status: number } | { error: Error };
   quota?: unknown;
+  runtimeUserAgent?: () => Promise<string>;
+  unrecognizedClientLoad?: unknown;
 }) {
   const calls: FakeCall[] = [];
   const loads = [...script.loads];
@@ -47,8 +53,11 @@ function fakeCodeAssist(script: {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : null;
+    const userAgent = new Headers(init?.headers).get("user-agent");
     if (rest === "/v1internal:loadCodeAssist") {
-      calls.push({ method: "loadCodeAssist", base, body });
+      calls.push({ method: "loadCodeAssist", base, body, userAgent });
+      if (script.unrecognizedClientLoad !== undefined && !AGY_REQUEST.test(userAgent ?? ""))
+        return json(script.unrecognizedClientLoad);
       const failure = script.loadFailureByBase?.[base];
       if (failure instanceof Error) throw failure;
       if (failure) return new Response("{}", { status: failure.status });
@@ -58,7 +67,7 @@ function fakeCodeAssist(script: {
       return json(source.length > 1 ? source.shift() : source[0]);
     }
     if (rest === "/v1internal:onboardUser") {
-      calls.push({ method: "onboardUser", base, body });
+      calls.push({ method: "onboardUser", base, body, userAgent });
       if (script.onboardFailure !== undefined) {
         if ("error" in script.onboardFailure) throw script.onboardFailure.error;
         return new Response("{}", { status: script.onboardFailure.status });
@@ -66,13 +75,13 @@ function fakeCodeAssist(script: {
       return json(script.onboardReplies?.shift() ?? script.onboard);
     }
     if (rest === "/v1internal:retrieveUserQuotaSummary") {
-      calls.push({ method: "retrieveUserQuotaSummary", base, body });
+      calls.push({ method: "retrieveUserQuotaSummary", base, body, userAgent });
       return script.quota === undefined
         ? new Response("{}", { status: 404 })
         : json(script.quota);
     }
     if (rest.startsWith("/v1internal/operations/")) {
-      calls.push({ method: "getOperation", base, body });
+      calls.push({ method: "getOperation", base, body, userAgent });
       return json(operations.length > 1 ? operations.shift() : operations[0]);
     }
     return new Response("{}", { status: 404 });
@@ -90,6 +99,7 @@ function fakeCodeAssist(script: {
       storedExpiresAt: Date.parse("2026-11-23T12:00:00Z"),
     }),
     onboarding: { pollMs: 5, timeoutMs: 60 },
+    runtimeUserAgent: script.runtimeUserAgent ?? (async () => AGY_AGENT),
   });
   return { adapter, calls };
 }
@@ -727,6 +737,7 @@ describe("Gemini import dry run", () => {
         storedExpiresAt: Date.parse("2026-11-23T12:00:00Z"),
         accessTokenExpiresAt: expect.any(Number),
       },
+      userAgent: AGY_AGENT,
       endpoints: [
         {
           endpoint: "daily",
@@ -845,6 +856,155 @@ describe("Gemini import dry run", () => {
       wouldUse: { kind: "project", loadedFrom: "daily" },
       quota: { kind: "failed" },
     });
+  });
+});
+
+const UNSUPPORTED_CLIENT_NO_PROJECT = {
+  currentTier: null,
+  paidTier: null,
+  allowedTiers: [{ id: "standard-tier", isDefault: true }],
+  ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_CLIENT" }],
+};
+const AGY_PAID_MANAGED = {
+  cloudaicompanionProject: "proj-agy-managed",
+  currentTier: { id: "standard-tier" },
+  paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+};
+
+describe("the Antigravity runtime User-Agent", () => {
+  it.each([
+    ["1.5.0", "darwin", "arm64", "antigravity/acp/1.5.0 (aidev_client; os_type=darwin; arch=arm64)"],
+    ["1.6.2", "linux", "x64", "antigravity/acp/1.6.2 (aidev_client; os_type=linux; arch=amd64)"],
+  ])("builds the agent for runtime %s on %s/%s", (version, platform, arch, expected) => {
+    expect(antigravityRuntimeUserAgent(version, platform, arch)).toBe(expected);
+    expect(expected).toMatch(AGY_REQUEST);
+  });
+});
+
+describe("importing an Antigravity sign-in with the Antigravity request", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("imports the account Google answered UNSUPPORTED_CLIENT for, with no onboarding and no GOOGLE_CLOUD_PROJECT", async () => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+    const google = fakeCodeAssist({
+      loads: [AGY_PAID_MANAGED],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+    });
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-agy-managed",
+      geminiEndpoint: "daily",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+    ]);
+    expect(google.calls[0]).toMatchObject({
+      userAgent: AGY_AGENT,
+      body: { metadata: { ideType: "ANTIGRAVITY" } },
+    });
+  });
+
+  it("gets the UNSUPPORTED_CLIENT shape from the same fake when the request does not carry the Antigravity User-Agent", async () => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+    const google = fakeCodeAssist({
+      loads: [AGY_PAID_MANAGED],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      runtimeUserAgent: async () => "node",
+    });
+    const probe = await google.adapter.probeImport?.();
+    expect(probe?.endpoints).toMatchObject([
+      {
+        endpoint: "daily",
+        currentTier: null,
+        paidTier: null,
+        allowedTiers: [{ id: "standard-tier", isDefault: true }],
+        ineligibleTiers: [{ id: "free-tier", reasonCode: "UNSUPPORTED_CLIENT" }],
+        projectPresent: false,
+      },
+      {
+        endpoint: "prod",
+        ineligibleTiers: [{ id: "free-tier", reasonCode: "UNSUPPORTED_CLIENT" }],
+        projectPresent: false,
+      },
+    ]);
+    expect(google.calls.every((call) => call.userAgent === "node")).toBe(true);
+  });
+
+  it("sends the Antigravity User-Agent on the dry run's load and quota summary calls", async () => {
+    const google = fakeCodeAssist({
+      loads: [AGY_PAID_MANAGED],
+      unrecognizedClientLoad: UNSUPPORTED_CLIENT_NO_PROJECT,
+      quota: { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0.5 }] },
+    });
+    const probe = await google.adapter.probeImport?.();
+    expect(probe).toMatchObject({
+      userAgent: AGY_AGENT,
+      wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
+      quota: { kind: "answered", windows: 1 },
+    });
+    expect(google.calls.map((call) => [call.method, call.userAgent])).toEqual([
+      ["loadCodeAssist", AGY_AGENT],
+      ["retrieveUserQuotaSummary", AGY_AGENT],
+    ]);
+  });
+
+  it("fails with the runtime message and calls no Code Assist method when the runtime version cannot be read", async () => {
+    const google = fakeCodeAssist({
+      loads: [AGY_PAID_MANAGED],
+      runtimeUserAgent: () =>
+        Promise.reject(new Error("bb could not read the installed antigravity-acp runtime version")),
+    });
+    await expect(google.adapter.importAccount()).rejects.toThrow(
+      /could not read the installed antigravity-acp runtime version/u,
+    );
+    expect(google.calls).toEqual([]);
+  });
+
+  it("onboards on daily with no project and takes the Google-managed project when daily still has none", async () => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+    const script = {
+      loads: [],
+      loadsByBase: {
+        daily: [UNSUPPORTED_CLIENT_NO_PROJECT, AGY_PAID_MANAGED],
+        prod: [UNSUPPORTED_CLIENT_NO_PROJECT],
+      },
+      onboard: { done: true, response: { cloudaicompanionProject: { id: "proj-agy-managed" } } },
+    };
+    const dryRun = fakeCodeAssist(script);
+    const probe = await dryRun.adapter.probeImport?.();
+    expect(probe?.wouldUse).toEqual({ kind: "onboard", endpoint: "daily", tierId: "standard-tier" });
+    expect(dryRun.calls.some((call) => call.method === "onboardUser")).toBe(false);
+    const google = fakeCodeAssist(script);
+    expect(await google.adapter.importAccount()).toMatchObject({
+      geminiProject: "proj-agy-managed",
+      geminiEndpoint: "daily",
+      subscriptionType: "Google AI Pro",
+    });
+    expect(google.calls.map(({ method, base }) => [method, base])).toEqual([
+      ["loadCodeAssist", "daily"],
+      ["loadCodeAssist", "prod"],
+      ["onboardUser", "daily"],
+      ["loadCodeAssist", "daily"],
+    ]);
+    const onboard = google.calls.find((call) => call.method === "onboardUser");
+    expect(onboard?.body).toEqual({
+      tierId: "standard-tier",
+      metadata: { ideType: "ANTIGRAVITY" },
+    });
+    expect(onboard?.userAgent).toBe(AGY_AGENT);
+  });
+
+  it("names the daily endpoint, not GOOGLE_CLOUD_PROJECT, when daily onboarding returns no project", async () => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+    const google = fakeCodeAssist({
+      loads: [UNSUPPORTED_CLIENT_NO_PROJECT],
+      onboard: { done: true, response: {} },
+    });
+    const error = await google.adapter.importAccount().catch((caught: unknown) => caught);
+    expect(String(error)).toMatch(/onboarded standard-tier on the Antigravity daily endpoint but returned no Google-managed project/u);
+    expect(String(error)).not.toContain("GOOGLE_CLOUD_PROJECT");
   });
 });
 

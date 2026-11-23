@@ -71,6 +71,16 @@ export function geminiRuntimeRefusal(headers: Headers): string | null {
   return null;
 }
 
+export function antigravityRuntimeUserAgent(
+  version: string,
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string {
+  const osType = platform === "win32" ? "windows" : platform;
+  const archType = arch === "x64" ? "amd64" : arch;
+  return `antigravity/acp/${version} (aidev_client; os_type=${osType}; arch=${archType})`;
+}
+
 export function geminiUpstreamUserAgent(headers: Headers): string {
   const match = RUNTIME_USER_AGENT.exec(headers.get("user-agent") ?? "");
   if (match === null) return `antigravity/acp/${SUPPORTED_RUNTIME_VERSION}`;
