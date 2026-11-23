@@ -1156,6 +1156,13 @@
       "when": 1795309305528,
       "tag": "0164_terminal_first_live_frame",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "6",
+      "when": 1795324860765,
+      "tag": "0165_latest_thread_goals",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,13 @@ vi.mock("./queries/plugin-contribution-queries", () => ({
 }));
 
 vi.mock("./queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: mocks.useSidebarNavigation,
 }));
 

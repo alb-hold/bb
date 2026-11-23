@@ -9,3 +9,9 @@ The SDK and CLI collect the complete result when listing without a limit. SDK ca
 `GET /api/v1/sidebar-bootstrap` returns the personal project, public projects, sections, and their visible active threads. An explicit `limit` pages threads across all projects, up to 500 per request. Project and section metadata accompany each page. Use the same continuation headers as the thread list. Without a limit the bootstrap contains every matching thread.
 
 Pass `fields=summary` to the threads route for the fields used by the CLI table. Its response is an object with a `rows` array and the same pagination headers. The CLI uses this projection for text output and full entries for JSON.
+
+On the first sidebar bootstrap page, callers may request `overview=true` with
+`limit`. The response adds active visible thread counts by project and read
+state for unread threads and their visible ancestors. Missing counts mean
+zero. Continuations omit the overview. Ordinary list and bootstrap requests
+keep their original response shapes.

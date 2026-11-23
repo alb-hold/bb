@@ -1597,6 +1597,24 @@ export interface PluginSidebarThreadsState {
     isFetchNextPageError: boolean;
     fetchNextPage(): Promise<void>;
   } | null;
+  /** Present when active threads are paged on demand (`experimental_previewRows: true`). */
+  experimental_activePages?: {
+    hasNextPage: boolean;
+    isFetchingNextPage: boolean;
+    isFetchNextPageError: boolean;
+    fetchNextPage(): Promise<void>;
+    projectCounts?: Readonly<Record<string, number>>;
+    childCounts?: Readonly<Record<string, number>>;
+    unreadTree?: readonly {
+      id: string;
+      parentThreadId: string | null;
+      projectId?: string;
+      sectionId?: string | null;
+      status?: string;
+      lastReadAt: number | null;
+      latestAttentionAt: number;
+    }[];
+  };
   status: "loading" | "ready" | "error";
   threads: readonly PluginSidebarThread[];
   experimental_hosts?: readonly { id: string; name: string }[];
@@ -1742,6 +1760,7 @@ export type PluginBrowserBbSdk = Omit<BbSdkAreas, "threads"> & {
 export interface PluginThreadTitleProps {
   /** A thread in the sidebar's live view; renders nothing for an unknown id. */
   threadId: string;
+  experimental_fallbackTitle?: string;
 }
 
 /**

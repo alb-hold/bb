@@ -134,7 +134,11 @@ import {
 } from "./RootComposeSecondaryContent";
 import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
-import { useSidebarNavigationPreview } from "@/hooks/queries/sidebar-navigation-query";
+import { useSidebarNavigationPaging } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSelectedSidebarThreadId,
+  useSidebarNavigationPreviewWithSelected,
+} from "@/hooks/queries/sidebar-selected-thread-projection";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -540,7 +544,14 @@ function RootComposeSurface({
     setEnvironmentSelectionValue,
     renderPromptBox,
   } = composer;
-  const navigationPreview = useSidebarNavigationPreview();
+  const isCompactViewport = useIsCompactViewport();
+  const selectedSidebarThreadId = useSelectedSidebarThreadId();
+  const navigationPreview = useSidebarNavigationPreviewWithSelected(
+    selectedSidebarThreadId,
+  );
+  const navigationPaging = useSidebarNavigationPaging({
+    enabled: isCompactViewport,
+  });
   const rootPanelEnvironmentId =
     parsedEnvironment?.type === "reuse"
       ? parsedEnvironment.environmentId
@@ -757,7 +768,6 @@ function RootComposeSurface({
     fixedPanelTabsState,
   });
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
-  const isCompactViewport = useIsCompactViewport();
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport,
@@ -1577,6 +1587,21 @@ function RootComposeSurface({
                     showCreatingRow={isSubmitting}
                     threads={mobileRecentThreads}
                     completeSnapshot={sidebarNavigationComplete}
+                    overview={
+                      sidebarNavigationComplete
+                        ? undefined
+                        : navigationPreview?.overview
+                    }
+                    hasMoreThreads={
+                      isCompactViewport && navigationPaging.hasNextPage
+                    }
+                    isLoadingMoreThreads={navigationPaging.isFetchingNextPage}
+                    isLoadMoreThreadsError={
+                      navigationPaging.isFetchNextPageError
+                    }
+                    onLoadMoreThreads={() => {
+                      void navigationPaging.fetchNextPage();
+                    }}
                   />
                 }
                 isSecondaryPanelOpen={isSecondaryPanelOpen}

@@ -25,12 +25,14 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import {
   ARCHIVED_THREADS_LIST_KIND,
+  SIDEBAR_SELECTED_THREAD_TARGET_KIND,
   allThreadDetailBootstrapQueryKeyPrefix,
   allThreadQueryKeyPrefix,
   sidebarNavigationQueryKey,
   threadSearchQueryKeyPrefix,
   threadsQueryKey,
 } from "../queries/query-keys";
+import { sidebarNavigationPreviewQueryKey } from "./sidebar-preview-cache";
 
 type Fields = Record<string, unknown>;
 type ListFacetKey = Exclude<keyof ThreadListEntry, keyof ThreadWithRuntime>;
@@ -98,6 +100,14 @@ function threadRow(item: unknown): Fields | undefined {
   return isRecord(item) && typeof item.id === "string" ? item : undefined;
 }
 
+function sameItems(left: unknown, right: readonly unknown[]): boolean {
+  if (!Array.isArray(left)) return right.length === 0;
+  return (
+    left === right ||
+    (left.length === right.length && left.every((item, index) => item === right[index]))
+  );
+}
+
 const ROW_ITEMS = {
   threadOf: threadRow,
   withThread: (_item: unknown, thread: Fields) => thread,
@@ -109,30 +119,50 @@ const SIDEBAR: ViewFamily = {
   slots(data) {
     if (!isRecord(data) || !isRecord(data.personalProject)) return undefined;
     const projects = Array.isArray(data.projects) ? data.projects : [];
+    const overviewDescendants =
+      isRecord(data.overview) && Array.isArray(data.overview.descendants)
+        ? [{ key: "overview-descendants", items: data.overview.descendants }]
+        : [];
     return [
       { key: "personal", items: projectThreads(data.personalProject) },
       ...projects.map((project, index) => ({
         key: projectSlot(project, index),
         items: projectThreads(project),
       })),
+      ...overviewDescendants,
     ];
   },
   rebuild(data, items) {
     if (!isRecord(data) || !isRecord(data.personalProject)) return data;
     const personal = items.get("personal");
     const projects = Array.isArray(data.projects) ? data.projects : [];
+    const overviewDescendants = items.get("overview-descendants");
+    const overview =
+      isRecord(data.overview) &&
+      overviewDescendants !== undefined &&
+      !sameItems(data.overview.descendants, overviewDescendants)
+        ? { ...data.overview, descendants: overviewDescendants }
+        : data.overview;
+    const nextPersonalProject =
+      personal === undefined || sameItems(data.personalProject.threads, personal)
+        ? data.personalProject
+        : { ...data.personalProject, threads: personal };
+    const nextProjects = projects.map((project: unknown, index) => {
+      const threads = items.get(projectSlot(project, index));
+      return isRecord(project) && threads !== undefined && !sameItems(project.threads, threads)
+        ? { ...project, threads }
+        : project;
+    });
+    if (
+      overview === data.overview &&
+      nextPersonalProject === data.personalProject &&
+      nextProjects.every((project, index) => project === projects[index])
+    ) return data;
     return {
       ...data,
-      personalProject:
-        personal === undefined
-          ? data.personalProject
-          : { ...data.personalProject, threads: personal },
-      projects: projects.map((project: unknown, index) => {
-        const threads = items.get(projectSlot(project, index));
-        return isRecord(project) && threads !== undefined
-          ? { ...project, threads }
-          : project;
-      }),
+      ...(overview === undefined ? {} : { overview }),
+      personalProject: nextPersonalProject,
+      projects: nextProjects,
     };
   },
   ...ROW_ITEMS,
@@ -155,6 +185,7 @@ const THREAD_LISTS: ViewFamily = {
   membership(queryKey) {
     const scope = queryKey[1];
     if (scope === ARCHIVED_THREADS_LIST_KIND) return "archived";
+    if (scope === SIDEBAR_SELECTED_THREAD_TARGET_KIND) return "active";
     if (isRecord(scope) && typeof scope.archived === "boolean")
       return scope.archived ? "archived" : "active";
     return "any";
@@ -228,7 +259,10 @@ const DETAIL: ViewFamily = {
 
 function familyOf(queryKey: QueryKey): ViewFamily | undefined {
   const [head] = queryKey;
-  if (head === sidebarNavigationQueryKey()[0])
+  if (
+    head === sidebarNavigationQueryKey()[0] ||
+    head === sidebarNavigationPreviewQueryKey()[0]
+  )
     return queryKey.length === 1 ? SIDEBAR : undefined;
   if (head === threadsQueryKey()[0])
     return queryKey.length > 1 ? THREAD_LISTS : undefined;

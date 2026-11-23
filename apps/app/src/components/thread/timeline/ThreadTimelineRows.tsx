@@ -2425,6 +2425,7 @@ function TimelineRowItemWrapper({
   return (
     <div
       ref={composedRef}
+      {...{ elementtiming: isTopLevel ? `bb-thread-content:${row.threadId}` : undefined }}
       data-timeline-row-id={row.id}
       data-timeline-window-key={row.id}
       data-timeline-gap-before={marginTop}

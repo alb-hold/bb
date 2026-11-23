@@ -1,3 +1,4 @@
+import { observeFirstScreenPaint } from "./lib/first-screen-performance";
 import { scheduleHomeInteractionPreloads } from "./lib/home-interaction-preloads";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -22,6 +23,7 @@ import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-re
 import "./app.css";
 
 performance.mark("app-boot-started");
+observeFirstScreenPaint();
 scheduleHomeInteractionPreloads();
 
 installStaleChunkRecovery();

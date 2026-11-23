@@ -216,7 +216,11 @@ export function useSidebarData(previewRows = false) {
     ...(previewRows ? { experimental_previewRows: true } : {}),
   });
   return useMemo(
-    () => ({ ...getSidebarData(state), archived: state.experimental_archived }),
+    () => ({
+      ...getSidebarData(state),
+      archived: state.experimental_archived,
+      activePages: state.experimental_activePages,
+    }),
     [state],
   );
 }

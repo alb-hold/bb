@@ -17,9 +17,12 @@ import type {
   ThreadListResponse,
 } from "@bb/server-contract";
 import {
+  SIDEBAR_SELECTED_THREAD_TARGET_KIND,
+  THREADS_QUERY_KEY,
   archivedThreadsListQueryKey,
   sidebarNavigationQueryKey,
 } from "@/hooks/queries/query-keys";
+import { sidebarNavigationPreviewQueryKey } from "@/hooks/cache-owners/sidebar-preview-cache";
 import { writeSidebarNavigation } from "@/hooks/cache-owners/query-cache";
 import { readCachedSidebarBootstrap } from "./sidebar-bootstrap-cache";
 
@@ -50,6 +53,11 @@ export function threadEntryMapFor(
   for (const project of [...data.projects, data.personalProject]) {
     for (const thread of project.threads) entries.set(thread.id, thread);
   }
+  if (data.overview?.descendants) {
+    for (const thread of data.overview.descendants) {
+      if (!entries.has(thread.id)) entries.set(thread.id, thread);
+    }
+  }
   threadEntryMapByPayload.set(data, entries);
   return entries;
 }
@@ -79,15 +87,47 @@ function mergeArchivedEntries(
   return merged;
 }
 
+const targetEntryMaps = new WeakMap<ThreadListResponse, WeakMap<ThreadEntries, ThreadEntries>>();
+
+function mergeSelectedEntries(active: ThreadEntries, rows: ThreadListResponse): ThreadEntries {
+  let maps = targetEntryMaps.get(rows);
+  if (!maps) {
+    maps = new WeakMap();
+    targetEntryMaps.set(rows, maps);
+  }
+  const previous = maps.get(active);
+  if (previous) return previous;
+  let merged: Map<string, ThreadListEntry> | undefined;
+  for (const row of rows) {
+    if (row.archivedAt !== null || row.deletedAt !== null || row.visibility === "hidden" || active.has(row.id)) continue;
+    merged ??= new Map(active);
+    merged.set(row.id, row);
+  }
+  const result = merged ?? active;
+  maps.set(active, result);
+  return result;
+}
+
 function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
   const navigation =
     queryClient.getQueryData<SidebarBootstrapResponse>(
       sidebarNavigationQueryKey(),
     ) ??
+    queryClient.getQueryData<SidebarBootstrapResponse | null>(
+      sidebarNavigationPreviewQueryKey(),
+    ) ??
     readCachedSidebarBootstrap() ??
     undefined;
+  let active = threadEntryMapFor(navigation);
+  const selectedTargets = queryClient.getQueriesData<ThreadListResponse>({
+    queryKey: [THREADS_QUERY_KEY, SIDEBAR_SELECTED_THREAD_TARGET_KIND],
+    type: "active",
+  });
+  for (const [, rows] of selectedTargets) {
+    if (rows?.length) active = mergeSelectedEntries(active, rows);
+  }
   return mergeArchivedEntries(
-    threadEntryMapFor(navigation),
+    active,
     queryClient.getQueryData<ArchivedThreadsData>(
       archivedThreadsListQueryKey({}),
     ),
@@ -96,8 +136,17 @@ function readSidebarThreadEntries(queryClient: QueryClient): ThreadEntries {
 
 const SOURCE_QUERY_HASHES: ReadonlySet<string> = new Set([
   hashKey(sidebarNavigationQueryKey()),
+  hashKey(sidebarNavigationPreviewQueryKey()),
   hashKey(archivedThreadsListQueryKey({})),
 ]);
+
+function isSidebarEntriesSourceQuery(queryKey: readonly unknown[], queryHash: string): boolean {
+  return (
+    SOURCE_QUERY_HASHES.has(queryHash) ||
+    (queryKey[0] === THREADS_QUERY_KEY &&
+      queryKey[1] === SIDEBAR_SELECTED_THREAD_TARGET_KIND)
+  );
+}
 
 function createSidebarThreadEntriesStore(
   queryClient: QueryClient,
@@ -131,7 +180,11 @@ function createSidebarThreadEntriesStore(
     if (unsubscribeSource !== null) return;
     published = readSidebarThreadEntries(queryClient);
     unsubscribeSource = queryClient.getQueryCache().subscribe((event) => {
-      if (SOURCE_QUERY_HASHES.has(event.query.queryHash)) syncFromSource();
+      if (
+        isSidebarEntriesSourceQuery(event.query.queryKey, event.query.queryHash)
+      ) {
+        syncFromSource();
+      }
     });
   };
 
@@ -197,7 +250,11 @@ export function SidebarThreadEntriesProvider({
 }) {
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (navigation !== undefined) {
+    if (
+      navigation !== undefined &&
+      navigation !== readCachedSidebarBootstrap() &&
+      navigation !== queryClient.getQueryData(sidebarNavigationQueryKey())
+    ) {
       writeSidebarNavigation(queryClient, navigation);
     }
   }, [navigation, queryClient]);

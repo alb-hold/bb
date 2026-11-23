@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   machineEnvironmentSetSchema,
   machineEnvironmentDeleteSchema,
@@ -578,8 +579,8 @@ export const publicApiRoutes = {
       method: "get",
       request: optionalQueryRequest<
         EmptyInput,
-        Pick<ThreadListQuery, "limit" | "cursor">
-      >(threadListQuerySchema.pick({ limit: true, cursor: true })),
+        Pick<ThreadListQuery, "limit" | "cursor"> & { overview?: "true" }
+      >(threadListQuerySchema.pick({ limit: true, cursor: true }).extend({ overview: z.literal("true").optional() })),
       response: jsonResponse<SidebarBootstrapResponse>(),
     }),
     get: defineRoute({

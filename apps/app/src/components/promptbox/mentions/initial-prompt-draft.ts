@@ -87,7 +87,7 @@ export function initialPromptDraftQueryOptions({
 export function useInitialPromptDraft(
   text: string | null,
 ): PromptDraftState | undefined {
-  const navigation = useSidebarNavigation({ enabled: text !== null });
+  const navigation = useSidebarNavigation({ includePreview: true, enabled: text !== null });
   const resources = useSidebarThreadTitleMentionResources(navigation.data);
   const draft = useMemo<PromptDraftState>(
     () => ({

@@ -49,6 +49,8 @@ import {
   listArchivedThreadsPendingTeardown,
   listPendingThreadStorageDeletions,
   listDeferredLegacyTables,
+  listPendingGoalBackfills,
+  backfillThreadGoal,
   migrateNextCompletedEventItemOutput,
   migrateNextLegacyImageGenerationOutput,
   pruneRetainedTerminalOutput,
@@ -974,6 +976,19 @@ export const PERIODIC_SWEEP_JOBS: readonly PeriodicSweepJob[] = [
     sweep: (deps, now) => deps.pluginSchedules.dueScheduleSweep(now),
   },
   createThreadEventPruningJob(THREAD_PRUNING_SWEEP_LIMITS),
+  {
+    cadenceMs: 1_000,
+    category: "maintenance",
+    name: "latest-thread-goal-backfill",
+    background: true,
+    sweep: (deps) => defineItemSweep({
+      name: "latest-thread-goal-backfill",
+      concurrency: 1,
+      list: () => listPendingGoalBackfills(deps.db),
+      key: (row) => row.threadId,
+      process: (row) => backfillThreadGoal(deps.db, row.threadId),
+    }),
+  },
   {
     cadenceMs: DATABASE_MAINTENANCE_CHECK_INTERVAL_MS,
     category: "maintenance",

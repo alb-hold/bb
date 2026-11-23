@@ -1,6 +1,8 @@
 import type { ThreadListEntry } from "@bb/domain";
+import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import {
   buildChronologicalThreadList,
+  isThreadRead,
   type CollapsedChildActivity,
   type ProjectThreadItem,
 } from "@bb/client-core";
@@ -14,6 +16,36 @@ interface GetMobileRecentThreadsArgs {
   draftThreadIds: ReadonlySet<string>;
   threads: readonly ThreadListEntry[];
   now?: number;
+  overview?: SidebarBootstrapResponse["overview"];
+}
+
+interface OffpageUnreadSummary {
+  unread: boolean;
+  unreadError: boolean;
+}
+
+function buildOffpageUnreadByAncestor(
+  overview: SidebarBootstrapResponse["overview"],
+): ReadonlyMap<string, OffpageUnreadSummary> {
+  const result = new Map<string, OffpageUnreadSummary>();
+  if (!overview?.unreadTree.length) return result;
+  const byId = new Map(overview.unreadTree.map((entry) => [entry.id, entry]));
+  for (const entry of overview.unreadTree) {
+    if (isThreadRead(entry)) continue;
+    const isError = entry.status === "error";
+    let parentId = entry.parentThreadId;
+    const visited = new Set<string>();
+    while (parentId !== null && !visited.has(parentId)) {
+      visited.add(parentId);
+      const existing = result.get(parentId);
+      result.set(parentId, {
+        unread: true,
+        unreadError: (existing?.unreadError ?? false) || isError,
+      });
+      parentId = byId.get(parentId)?.parentThreadId ?? null;
+    }
+  }
+  return result;
 }
 
 const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
@@ -45,19 +77,34 @@ function flattenMobileRecentNodes({
   draftThreadIds,
   items,
   rows,
+  childCounts,
+  offpageUnreadByAncestor,
 }: {
   collapsedThreadIds: ReadonlySet<string>;
   draftThreadIds: ReadonlySet<string>;
   items: readonly ProjectThreadItem[];
   rows: MobileRecentThreadRow[];
+  childCounts?: Readonly<Record<string, number>>;
+  offpageUnreadByAncestor: ReadonlyMap<string, OffpageUnreadSummary>;
 }): void {
   for (const { node } of items) {
-    const hasChildren = node.children.length > 0;
+    const offpageChildCount = childCounts?.[node.thread.id] ?? 0;
+    const hasChildren = node.children.length > 0 || offpageChildCount > 0;
     const isCollapsed = hasChildren && collapsedThreadIds.has(node.thread.id);
+    const offpageUnread = offpageUnreadByAncestor.get(node.thread.id);
+    const childActivity =
+      offpageUnread !== undefined
+        ? {
+            ...node.stats.childActivity,
+            unread: node.stats.childActivity.unread || offpageUnread.unread,
+            unreadError:
+              node.stats.childActivity.unreadError || offpageUnread.unreadError,
+          }
+        : node.stats.childActivity;
     rows.push({
       thread: node.thread,
       depth: node.depth,
-      childActivity: node.stats.childActivity,
+      childActivity,
       hasUnsubmittedDraft: draftThreadIds.has(node.thread.id),
       hasChildren,
       isCollapsed,
@@ -68,6 +115,8 @@ function flattenMobileRecentNodes({
         draftThreadIds,
         items: node.children,
         rows,
+        childCounts,
+        offpageUnreadByAncestor,
       });
     }
   }
@@ -112,6 +161,7 @@ export function getMobileRecentThreads({
   draftThreadIds,
   threads,
   now,
+  overview,
 }: GetMobileRecentThreadsArgs): MobileRecentThreadRow[] {
   const rows: MobileRecentThreadRow[] = [];
   flattenMobileRecentNodes({
@@ -124,6 +174,8 @@ export function getMobileRecentThreads({
       now,
     ),
     rows,
+    childCounts: overview?.childCounts,
+    offpageUnreadByAncestor: buildOffpageUnreadByAncestor(overview),
   });
   return rows;
 }

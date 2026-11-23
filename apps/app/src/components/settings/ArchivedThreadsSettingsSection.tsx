@@ -21,7 +21,10 @@ import {
   useThreadSearch,
   type UseArchivedThreadsFilters,
 } from "@/hooks/queries/thread-queries";
-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPreview,
+} from "@/hooks/queries/sidebar-navigation-query";
 import type { ArchivedThreadsKindFilter } from "@/hooks/queries/query-keys";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { formatRelativeTime } from "@/lib/relative-time";
@@ -111,6 +114,7 @@ export function ArchivedThreadsSettingsSection() {
   const [kind, setKind] = useState<ArchivedThreadsKindFilter>("all");
   const [projectId, setProjectId] = useState(ALL_PROJECTS);
   const sidebarNavigation = useSidebarNavigation();
+  const sidebarNavigationPreview = useSidebarNavigationPreview();
   const searchIsActive = hasThreadSearchableQuery(search);
   const archivedThreadsQuery = useArchivedThreads(
     {
@@ -127,13 +131,13 @@ export function ArchivedThreadsSettingsSection() {
   const unarchiveThread = useUnarchiveThread();
   const resolveTitle = useResolveThreadTitle();
 
+  const navigationData = sidebarNavigation.isPlaceholderData
+    ? (sidebarNavigationPreview ?? sidebarNavigation.data)
+    : (sidebarNavigation.data ?? sidebarNavigationPreview);
   const projects = useMemo(() => {
-    if (!sidebarNavigation.data) return [];
-    return [
-      sidebarNavigation.data.personalProject,
-      ...sidebarNavigation.data.projects,
-    ];
-  }, [sidebarNavigation.data]);
+    if (!navigationData) return [];
+    return [navigationData.personalProject, ...navigationData.projects];
+  }, [navigationData]);
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects],

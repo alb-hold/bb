@@ -3,8 +3,8 @@ import { ThreadTitleMentions } from "@/components/thread/ThreadTitleMentions";
 import { useSidebarThreadEntry } from "@/lib/sidebar-thread-entries";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 
-export function PluginThreadTitle({ threadId }: PluginThreadTitleProps) {
+export function PluginThreadTitle({ threadId, experimental_fallbackTitle }: PluginThreadTitleProps) {
   const entry = useSidebarThreadEntry(threadId);
-  if (entry === null) return null;
+  if (entry === null) return experimental_fallbackTitle ?? null;
   return <ThreadTitleMentions title={getThreadDisplayTitle(entry)} />;
 }

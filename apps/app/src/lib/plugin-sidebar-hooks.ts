@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useStore } from "jotai";
 import {
   PERSONAL_PROJECT_ID,
@@ -46,8 +46,12 @@ import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
 import { useArchivedThreads } from "@/hooks/queries/thread-queries";
 import {
   useSidebarNavigation,
-  useSidebarNavigationPreview,
+  useSidebarNavigationPaging,
 } from "@/hooks/queries/sidebar-navigation-query";
+import {
+  useSelectedSidebarThreadId,
+  useSidebarNavigationPreviewWithSelected,
+} from "@/hooks/queries/sidebar-selected-thread-projection";
 import {
   usePinThread,
   useUnpinThread,
@@ -197,12 +201,39 @@ export function useSidebarThreads(
     ],
   );
   const query = useSidebarNavigation();
-  const preview = useSidebarNavigationPreview();
+  const selectedThreadId = useSelectedSidebarThreadId();
+  const preview = useSidebarNavigationPreviewWithSelected(selectedThreadId);
+  const previewRows = active && options?.experimental_previewRows === true;
+  const paging = useSidebarNavigationPaging({ enabled: active });
+  useEffect(() => {
+    if (active && !previewRows && paging.hasNextPage && !paging.isFetchingNextPage && !paging.isFetchNextPageError) {
+      void paging.fetchNextPage();
+    }
+  }, [active, paging, previewRows]);
   const complete = query.isPlaceholderData ? undefined : query.data;
-  const data =
-    active && options?.experimental_previewRows
-      ? (complete ?? preview ?? query.data)
-      : complete;
+  const data = previewRows || !active ? (complete ?? preview ?? query.data) : complete;
+  const overview = complete === undefined ? preview?.overview : undefined;
+  const activePages = useMemo<
+    PluginSidebarThreadsState["experimental_activePages"]
+  >(
+    () =>
+      previewRows
+        ? {
+            hasNextPage: paging.hasNextPage,
+            isFetchingNextPage: paging.isFetchingNextPage,
+            isFetchNextPageError: paging.isFetchNextPageError,
+            fetchNextPage: paging.fetchNextPage,
+            ...(overview
+              ? {
+                  projectCounts: overview.counts,
+                  childCounts: overview.childCounts,
+                  unreadTree: overview.unreadTree,
+                }
+              : {}),
+          }
+        : undefined,
+    [previewRows, paging, overview],
+  );
   const activityNow = useSecondTick(
     data?.projects.some((project) =>
       project.threads.some(
@@ -224,6 +255,9 @@ export function useSidebarThreads(
     if (data === undefined) {
       return {
         experimental_archived: archiveState,
+        ...(activePages !== undefined
+          ? { experimental_activePages: activePages }
+          : {}),
         status: query.isError ? "error" : "loading",
         threads: EMPTY_THREADS,
         experimental_hosts: hosts ?? [],
@@ -244,9 +278,19 @@ export function useSidebarThreads(
           if (thread.archivedAt === null) selected.set(thread.id, thread);
         }
       }
+      if (previewRows && complete === undefined && overview?.descendants) {
+        for (const thread of overview.descendants) {
+          if (thread.archivedAt === null && !selected.has(thread.id)) {
+            selected.set(thread.id, thread);
+          }
+        }
+      }
     }
     return {
       experimental_archived: archiveState,
+      ...(activePages !== undefined
+        ? { experimental_activePages: activePages }
+        : {}),
       status: !active && archiveState !== null ? archiveState.status : "ready",
       threads: [...selected.values()].map((thread) =>
         toPluginSidebarThreadCached(
@@ -277,6 +321,10 @@ export function useSidebarThreads(
     includeArchived,
     archived.data,
     archiveState,
+    activePages,
+    previewRows,
+    complete,
+    overview,
   ]);
 }
 

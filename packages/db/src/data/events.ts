@@ -3,6 +3,7 @@ import { isBeforeLatestThreadEvent } from "./event-pruning-guards.js";
 import { rewindResolvedItemPruning } from "./resolved-item-pruning.js";
 import { acquireProjectAttachmentOwnership } from "./project-attachments.js";
 import {
+  LEGACY_CODEX_GOAL_EXTENSION_KIND,
   storedAttachmentPaths,
   type ProjectAttachmentOwnershipMode,
 } from "@bb/domain";
@@ -24,7 +25,7 @@ import {
   placeholder,
   sql,
 } from "drizzle-orm";
-import type { Placeholder, SQL } from "drizzle-orm";
+import type { Placeholder, SQL, SQLWrapper } from "drizzle-orm";
 import type {
   ClientTurnRequestId,
   PromptInput,
@@ -67,6 +68,7 @@ import type { DbNotifier } from "../notifier.js";
 import {
   environments,
   events,
+  latestThreadGoals,
   promptHistoryEntries,
   threadDynamicContextFileStates,
   threadSearchSegments,
@@ -1946,10 +1948,43 @@ function listThreadStateRowsAtSequences(
   });
 }
 
+function latestGoalSequence(threadId: SQLWrapper) {
+  return sql<number | null>`(
+    SELECT candidate.sequence FROM events AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+    WHERE candidate.thread_id = ${threadId}
+      AND ${threadStateKindPredicate(sql`candidate`, LEGACY_CODEX_GOAL_EXTENSION_KIND)}
+    ORDER BY candidate.sequence DESC LIMIT 1
+  )`;
+}
+
+export function listPendingGoalBackfills(db: DbConnection) {
+  return db.select({ threadId: latestThreadGoals.threadId }).from(latestThreadGoals)
+    .where(isNull(latestThreadGoals.sequence)).limit(64).all();
+}
+
+export function backfillThreadGoal(db: DbConnection, threadId: string): void {
+  db.transaction((tx) => {
+    const pending = and(eq(latestThreadGoals.threadId, threadId), isNull(latestThreadGoals.sequence));
+    tx.update(latestThreadGoals).set({ sequence: latestGoalSequence(sql`${threadId}`) })
+      .where(pending).run();
+    tx.delete(latestThreadGoals).where(pending).run();
+  });
+}
+
 export function listLatestThreadStateEventRowsByScope(
   db: DbQueryConnection,
   args: { scope: ThreadListEnrichmentScope; kind: string },
 ): StoredEventRow[] {
+  if (args.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND) {
+    return db.select(storedEventRowFields)
+      .from(latestThreadGoals)
+      .innerJoin(events, and(
+        eq(events.threadId, latestThreadGoals.threadId),
+        eq(events.sequence, sql`coalesce(${latestThreadGoals.sequence}, ${latestGoalSequence(latestThreadGoals.threadId)})`),
+      ))
+      .where(threadListEnrichmentScopePredicate(latestThreadGoals.threadId, args.scope))
+      .all();
+  }
   const stateTypes = [
     "thread/goal/updated",
     "thread/goal/cleared",

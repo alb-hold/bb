@@ -719,7 +719,7 @@ function ProjectsStepContainer({
 }) {
   const reposQuery = useHostDiscoveredRepos(hostId);
   const quickCreateProject = useQuickCreateProjectController();
-  const navigationQuery = useSidebarNavigation();
+  const navigationQuery = useSidebarNavigation({ includePreview: true });
   const [selection, setSelection] = useState<ReadonlySet<string> | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [now] = useState(() => Date.now());
@@ -1246,7 +1246,7 @@ export function OnboardingFlow({
     exposedRef.current = true;
     recordTelemetryEvent({ name: "onboarding_exposed", properties: { entry } });
   }, [entry]);
-  const navigationProjects = useSidebarNavigation().data?.projects;
+  const navigationProjects = useSidebarNavigation({ includePreview: true }).data?.projects;
   const [projectIdsAtOpen, setProjectIdsAtOpen] =
     useState<ReadonlySet<string> | null>(null);
   if (projectIdsAtOpen === null && navigationProjects !== undefined) {

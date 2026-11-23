@@ -18,6 +18,7 @@ import {
   beginThreadEntityPrediction,
   findThreadEntityIds,
 } from "./thread-entity-store";
+import { sidebarNavigationPreviewQueryKey } from "./sidebar-preview-cache";
 
 type GroupMutation =
   | { kind: "project" | "section"; id: string; name: string | null }
@@ -80,8 +81,11 @@ export async function beginSidebarGroupTransaction({
     ),
   );
   const sidebarKey = sidebarNavigationQueryKey();
+  const previewKey = sidebarNavigationPreviewQueryKey();
   const sidebar =
-    queryClient.getQueryData<SidebarBootstrapResponse>(sidebarKey);
+    queryClient.getQueryData<SidebarBootstrapResponse>(sidebarKey) ??
+    queryClient.getQueryData<SidebarBootstrapResponse | null>(previewKey) ??
+    undefined;
   const projects = entryMutation(
     queryClient.getQueryData<ProjectResponse[]>(projectsQueryKey()),
     id,
@@ -119,7 +123,9 @@ export async function beginSidebarGroupTransaction({
         projectsQueryKey(),
         projects[operation],
       );
-    queryClient.setQueryData<SidebarBootstrapResponse>(sidebarKey, (current) =>
+    const applySidebar = (
+      current: SidebarBootstrapResponse | null | undefined,
+    ) =>
       current
         ? {
             ...current,
@@ -134,7 +140,14 @@ export async function beginSidebarGroupTransaction({
                     sections[operation](current.sections) ?? current.sections,
                 }),
           }
-        : current,
+        : current;
+    queryClient.setQueryData<SidebarBootstrapResponse>(
+      sidebarKey,
+      (current) => applySidebar(current) ?? undefined,
+    );
+    queryClient.setQueryData<SidebarBootstrapResponse | null>(
+      previewKey,
+      (current) => (current ? applySidebar(current) : current),
     );
   };
   updateGroup(false);
@@ -177,21 +190,26 @@ export function applySidebarSectionCreateResult({
   queryClient: QueryClient;
   section: ThreadSectionResponse;
 }): void {
+  const applySection = (sidebar: SidebarBootstrapResponse | null | undefined) =>
+    sidebar
+      ? {
+          ...sidebar,
+          sections: sidebar.sections.some(
+            (current) => current.id === section.id,
+          )
+            ? sidebar.sections.map((current) =>
+                current.id === section.id ? section : current,
+              )
+            : [...sidebar.sections, section],
+        }
+      : sidebar;
   queryClient.setQueryData<SidebarBootstrapResponse>(
     sidebarNavigationQueryKey(),
-    (sidebar) =>
-      sidebar
-        ? {
-            ...sidebar,
-            sections: sidebar.sections.some(
-              (current) => current.id === section.id,
-            )
-              ? sidebar.sections.map((current) =>
-                  current.id === section.id ? section : current,
-                )
-              : [...sidebar.sections, section],
-          }
-        : sidebar,
+    (sidebar) => applySection(sidebar) ?? undefined,
+  );
+  queryClient.setQueryData<SidebarBootstrapResponse | null>(
+    sidebarNavigationPreviewQueryKey(),
+    (sidebar) => (sidebar ? applySection(sidebar) : sidebar),
   );
   void queryClient.invalidateQueries({ queryKey: sidebarNavigationQueryKey() });
 }

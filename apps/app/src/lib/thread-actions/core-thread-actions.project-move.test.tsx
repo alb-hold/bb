@@ -5,6 +5,7 @@ import { cleanup, renderHook } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ThreadListEntry } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { useSidebarThreads } from "@/lib/plugin-sidebar-hooks";
 import { CORE_THREAD_ACTIONS } from "./core-thread-actions";
 
@@ -33,6 +34,12 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useSidebarNavigationPreview: () => undefined,
+  useSidebarNavigationPaging: () => ({
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isFetchNextPageError: false,
+    fetchNextPage: async () => undefined,
+  }),
   useSidebarNavigation: () => ({ data: state.data, isError: false }),
 }));
 
@@ -49,10 +56,6 @@ vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   }),
 }));
 
-function wrapper({ children }: { children: ReactNode }) {
-  return <MemoryRouter>{children}</MemoryRouter>;
-}
-
 function moveToProjectData() {
   const action = CORE_THREAD_ACTIONS.find(
     (candidate) => candidate.id === "moveToProject",
@@ -62,6 +65,10 @@ function moveToProjectData() {
 }
 
 function render() {
+  const { wrapper: QueryHarness } = createQueryClientTestHarness();
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryHarness><MemoryRouter>{children}</MemoryRouter></QueryHarness>
+  );
   const useMoveData = moveToProjectData();
   return renderHook(
     () => ({
