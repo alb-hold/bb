@@ -1,9 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -11,6 +14,7 @@ import path from "node:path";
 const BUNDLE_NAME = "bb-native-hold.app";
 const BUNDLE_ID = "dev.bb.native-hold";
 const HOLDER_CWD_ENV = "BB_NATIVE_HOLD_CWD";
+export const NATIVE_HOLDER_ENV_FILE_ENV = "BB_NATIVE_HOLD_ENV_FILE";
 const OPEN = "/usr/bin/open";
 const CODESIGN = "/usr/bin/codesign";
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -85,18 +89,63 @@ function ensureBundle(directory: string, deps: NativeHolderAppDeps): string {
 export function nativeHolderOpenArgs(
   bundle: string,
   request: NativeHolderLaunchRequest,
+  environmentFile: string,
 ): string[] {
-  const args = ["-n", "-g", "-j", bundle];
-  const environment: Record<string, string> = {};
+  return [
+    "-n",
+    "-g",
+    "-j",
+    bundle,
+    "--env",
+    `${NATIVE_HOLDER_ENV_FILE_ENV}=${environmentFile}`,
+    "--env",
+    `${HOLDER_CWD_ENV}=${request.cwd}`,
+    "--args",
+    ...request.argv,
+  ];
+}
+
+function writeEnvironmentFile(request: NativeHolderLaunchRequest): string {
+  const entries: Record<string, string> = {};
   for (const [key, value] of Object.entries(request.environment)) {
-    if (value !== undefined) environment[key] = value;
+    if (value !== undefined) entries[key] = value;
   }
-  environment[HOLDER_CWD_ENV] = request.cwd;
-  for (const [key, value] of Object.entries(environment)) {
-    args.push("--env", `${key}=${value}`);
+  const file = `${request.socketPath}.${randomUUID()}.env`;
+  writeFileSync(file, JSON.stringify(entries), { flag: "wx", mode: 0o600 });
+  return file;
+}
+
+export function loadNativeHolderEnvironment(
+  environment: NodeJS.ProcessEnv,
+): void {
+  const file = environment[NATIVE_HOLDER_ENV_FILE_ENV];
+  if (file === undefined) return;
+  let raw: string;
+  try {
+    const stat = statSync(file);
+    const uid = process.getuid?.();
+    if ((stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid)) {
+      throw new Error("environment file is not private to this user");
+    }
+    raw = readFileSync(file, "utf8");
+  } finally {
+    try {
+      unlinkSync(file);
+    } catch {}
   }
-  args.push("--args", ...request.argv);
-  return args;
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("environment file is not an object");
+  }
+  const loaded: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== "string") {
+      throw new Error("environment file has a non-string value");
+    }
+    loaded[key] = value;
+  }
+  delete environment[NATIVE_HOLDER_ENV_FILE_ENV];
+  Object.assign(environment, loaded);
 }
 
 export function startNativeHolderAsApp(
@@ -104,11 +153,18 @@ export function startNativeHolderAsApp(
   deps: NativeHolderAppDeps,
 ): boolean {
   if (deps.platform !== "darwin") return false;
+  let environmentFile: string | null = null;
   try {
     const bundle = ensureBundle(path.dirname(request.socketPath), deps);
-    deps.run(OPEN, nativeHolderOpenArgs(bundle, request));
+    environmentFile = writeEnvironmentFile(request);
+    deps.run(OPEN, nativeHolderOpenArgs(bundle, request, environmentFile));
     return true;
   } catch {
+    if (environmentFile !== null) {
+      try {
+        unlinkSync(environmentFile);
+      } catch {}
+    }
     return false;
   }
 }

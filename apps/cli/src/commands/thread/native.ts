@@ -51,6 +51,7 @@ import { runNativeMcpServer } from "../../native-mcp.js";
 import { checkNativeTerminal } from "../../native-terminal-check.js";
 import {
   defaultNativeHolderAppDeps,
+  loadNativeHolderEnvironment,
   startNativeHolderAsApp,
   type NativeHolderAppDeps,
 } from "../../native-holder-app.js";
@@ -205,6 +206,16 @@ export async function holdNativeHarness(
   socketPath: string,
   options: HoldNativeHarnessOptions = {},
 ): Promise<number> {
+  if (options.env === undefined) {
+    try {
+      loadNativeHolderEnvironment(process.env);
+    } catch (error) {
+      logNativeHolderEvent(socketPath, "environment-file-failed", {
+        name: error instanceof Error ? error.name : "unknown",
+      });
+      return 1;
+    }
+  }
   let ownsSocket = false;
   const restoreSignals = ignoreNativeHolderSignals(
     process,

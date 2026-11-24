@@ -1,9 +1,18 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnNativeHolder } from "../commands/thread/native.js";
 import {
+  loadNativeHolderEnvironment,
   startNativeHolderAsApp,
   type NativeHolderAppDeps,
 } from "../native-holder-app.js";
@@ -64,6 +73,97 @@ describe("native holder app launch", () => {
     const run = path.join(bundle, "Contents", "MacOS", "run");
     expect(readFileSync(run, "utf8")).toContain('exec "$@"');
     expect(statSync(run).mode & 0o111).not.toBe(0);
+  });
+
+  it("keeps every environment value out of open's argv and hands the holder a private file", () => {
+    const secret = "sk-sentinel-secret-value";
+    const socket = socketIn();
+    let mode = 0;
+    let filePath = "";
+    let argvSeen: string[] = [];
+    const deps: NativeHolderAppDeps = {
+      platform: "darwin",
+      run: (command, args) => {
+        if (command !== "/usr/bin/open") return;
+        argvSeen = args;
+        const entry = args.find((a) =>
+          a.startsWith("BB_NATIVE_HOLD_ENV_FILE="),
+        );
+        filePath = entry?.slice("BB_NATIVE_HOLD_ENV_FILE=".length) ?? "";
+        mode = statSync(filePath).mode & 0o777;
+      },
+    };
+    expect(
+      startNativeHolderAsApp(
+        {
+          argv: ["node", "x"],
+          cwd: "/work",
+          environment: { CLAUDE_CODE_OAUTH_TOKEN: secret, PLAIN: "v" },
+          socketPath: socket,
+        },
+        deps,
+      ),
+    ).toBe(true);
+    expect(argvSeen.some((a) => a.includes(secret))).toBe(false);
+    expect(argvSeen.some((a) => a.includes("CLAUDE_CODE_OAUTH_TOKEN"))).toBe(
+      false,
+    );
+    expect(mode).toBe(0o600);
+    expect(path.dirname(filePath)).toBe(path.dirname(socket));
+    const target: NodeJS.ProcessEnv = {
+      BB_NATIVE_HOLD_ENV_FILE: filePath,
+    };
+    loadNativeHolderEnvironment(target);
+    expect(target).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: secret,
+      PLAIN: "v",
+    });
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it("removes the environment file when open refuses", () => {
+    const socket = socketIn();
+    const deps: NativeHolderAppDeps = {
+      platform: "darwin",
+      run: (command) => {
+        if (command === "/usr/bin/open") throw new Error("refused");
+      },
+    };
+    startNativeHolderAsApp(
+      { argv: ["node"], cwd: "/", environment: { A: "1" }, socketPath: socket },
+      deps,
+    );
+    expect(
+      readdirSync(path.dirname(socket)).filter((n) => n.endsWith(".env")),
+    ).toEqual([]);
+  });
+
+  it("fails closed and deletes the file when it is group-readable, missing, or malformed", () => {
+    const dir = path.dirname(socketIn());
+    const open = path.join(dir, "open.env");
+    writeFileSync(open, JSON.stringify({ A: "1" }), { mode: 0o644 });
+    const target: NodeJS.ProcessEnv = { BB_NATIVE_HOLD_ENV_FILE: open };
+    expect(() => loadNativeHolderEnvironment(target)).toThrow();
+    expect(existsSync(open)).toBe(false);
+    expect(target.A).toBeUndefined();
+
+    const missing: NodeJS.ProcessEnv = {
+      BB_NATIVE_HOLD_ENV_FILE: path.join(dir, "gone.env"),
+    };
+    expect(() => loadNativeHolderEnvironment(missing)).toThrow();
+
+    const bad = path.join(dir, "bad.env");
+    writeFileSync(bad, JSON.stringify({ A: 1 }), { mode: 0o600 });
+    const partial: NodeJS.ProcessEnv = { BB_NATIVE_HOLD_ENV_FILE: bad };
+    expect(() => loadNativeHolderEnvironment(partial)).toThrow();
+    expect(partial.A).toBeUndefined();
+    expect(existsSync(bad)).toBe(false);
+  });
+
+  it("does nothing when the holder was not started through the app", () => {
+    const target: NodeJS.ProcessEnv = { A: "1" };
+    loadNativeHolderEnvironment(target);
+    expect(target).toEqual({ A: "1" });
   });
 
   it("uses no launchctl at all", () => {
