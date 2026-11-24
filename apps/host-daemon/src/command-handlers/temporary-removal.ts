@@ -39,6 +39,27 @@ async function hasGitEntry(directory: string): Promise<boolean | null> {
   }
 }
 
+async function mountInsideTarget(target: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await fs.readFile("/proc/self/mountinfo", "utf8");
+  } catch {
+    return true;
+  }
+  const lines = text.trim().split("\n");
+  if (lines[0] === "") return true;
+  for (const line of lines) {
+    const field = line.split(" ")[4];
+    if (field === undefined || !field.startsWith("/")) return true;
+    const point = field.replace(
+      /\\(040|011|012|134)/gu,
+      (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+    );
+    if (isPathWithinDirectory(target, point)) return true;
+  }
+  return false;
+}
+
 async function treeHasGitEntry(root: string): Promise<boolean> {
   const pending = [root];
   let visited = 0;
@@ -64,6 +85,7 @@ export async function processDoubtsIgnorableForRemoval(
   requested: string,
   context: TemporaryRemovalContext,
 ): Promise<boolean> {
+  if (process.platform !== "linux") return false;
   let target: string;
   let temporaryRoot: string;
   try {
@@ -94,5 +116,6 @@ export async function processDoubtsIgnorableForRemoval(
   ) {
     if ((await hasGitEntry(ancestor)) !== false) return false;
   }
+  if (await mountInsideTarget(target)) return false;
   return !(await treeHasGitEntry(target));
 }
