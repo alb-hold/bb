@@ -582,8 +582,29 @@ function faultLabel(
 
 const yes = (value: boolean) => (value ? "yes" : "no");
 
-const SAMPLED_CELLS = [1, 40, 80];
+const TOTAL_CELLS = 80;
+const PARTS = 4;
 const MAX_RETAINED_GROWTH_MB = 64;
+
+type Cell = { faults: Set<FaultClass>; point: ContentPoint };
+
+function allCells(): Cell[] {
+  const cells: Cell[] = [];
+  for (const faults of faultSubsets())
+    for (const point of faults.has("content")
+      ? CONTENT_POINTS
+      : (["open"] as const))
+      cells.push({ faults, point });
+  return cells;
+}
+
+function partCells(part: number): Cell[] {
+  return allCells().filter((_, index) => index % PARTS === part - 1);
+}
+
+function sampledCells(count: number): number[] {
+  return [1, Math.ceil(count / 2), count];
+}
 setFlagsFromString("--expose-gc");
 const collectGarbage: () => void = runInNewContext("gc");
 
@@ -1116,11 +1137,31 @@ async function deletionOutcome(
   }
 }
 
-export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
-  describe(`Account Pooler deletion matrix through bb's real delete route (${lifetime} credentials, ${files} credential file${files === 1 ? "" : "s"})`, () => {
+export function describeDeletionMatrix(
+  lifetime: Lifetime,
+  files: 1 | 2,
+  part: 1 | 2 | 3 | 4,
+): void {
+  describe(`Account Pooler deletion matrix through bb's real delete route (${lifetime} credentials, ${files} credential file${files === 1 ? "" : "s"}, part ${part} of ${PARTS})`, () => {
     beforeAll(observePlugin);
     afterAll(stopObserving);
+    it("splits the deletion matrix into parts that together cover every cell exactly once", () => {
+      const labels = Array.from({ length: PARTS }, (_, index) =>
+        partCells(index + 1).map(({ faults, point }) =>
+          faultLabel(faults, point),
+        ),
+      );
+      const everyLabel = allCells().map(({ faults, point }) =>
+        faultLabel(faults, point),
+      );
+      expect(everyLabel).toHaveLength(TOTAL_CELLS);
+      expect(new Set(everyLabel).size).toBe(TOTAL_CELLS);
+      expect(labels.flat().sort()).toEqual([...everyLabel].sort());
+      expect(labels.every((own) => own.length > 0)).toBe(true);
+    });
     it("refuses every old token, mint and env export for every subset of refused plugin kv, content, rename, rm and directory mutations, content refused at its open, write, file sync or directory sync, and every crash point of the delete, of the first start and of the next start, each one the injected EIO at exactly its mutation while the crashing operation still runs, with no mutation at or after it succeeding, losing every unsynced change at each restart, minting first on a start that has not swept yet, probing a fresh recovery instance before and after its sweep after every crash, with every lookup after the delete read by the real SDK from the thread row of a bb server restarted on its serialized database", async () => {
+      const cells = partCells(part);
+      const sampled = sampledCells(cells.length);
       const base = await createTestAppHarness();
       const rows: string[] = [];
       const runs: number[] = [];
@@ -1147,10 +1188,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       let explained = 0;
       try {
         const world = seedWorld(base);
-        for (const faults of faultSubsets())
-          for (const point of faults.has("content")
-            ? CONTENT_POINTS
-            : (["open"] as const)) {
+        for (const { faults, point } of cells) {
             const cell = `${lifetime} | ${files} file${files === 1 ? "" : "s"} | refused: ${faultLabel(faults, point)}`;
             const outcomes: Outcome[] = [];
             const note = (
@@ -1248,7 +1286,7 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
               `${cell} | durable record: ${yes(first.recorded)} | old token accepted: ${yes(outcomes.some((o) => o.token))} | mint succeeds: ${yes(outcomes.some((o) => o.mint))} | export carries a pool credential: ${yes(outcomes.some((o) => o.exported))} | runs: ${outcomes.length}`,
             );
             runs.push(outcomes.length);
-            if (SAMPLED_CELLS.includes(rows.length))
+            if (sampled.includes(rows.length))
               retained.push({ cell: rows.length, megabytes: retainedHeap() });
           }
       } finally {
@@ -1290,11 +1328,19 @@ export function describeDeletionMatrix(lifetime: Lifetime, files: 1 | 2): void {
       expect(failures).toEqual([]);
       expect(exercised.restart.reached).toBeGreaterThan(0);
       expect(exercised.delete.reached).toBeGreaterThan(0);
-      expect(rows).toHaveLength(80);
-      expect(retained.map(({ cell }) => cell)).toEqual(SAMPLED_CELLS);
+      expect(rows).toHaveLength(cells.length);
+      expect(rows.map((row) => row.split(" | durable record")[0])).toEqual(
+        cells.map(
+          ({ faults, point }) =>
+            `${lifetime} | ${files} file${files === 1 ? "" : "s"} | refused: ${faultLabel(faults, point)}`,
+        ),
+      );
+      expect(retained.map(({ cell }) => cell)).toEqual(sampled);
       const growth =
         (retained.at(-1)?.megabytes ?? 0) - (retained[0]?.megabytes ?? 0);
-      expect(growth).toBeLessThan(MAX_RETAINED_GROWTH_MB);
+      expect(growth).toBeLessThan(
+        (MAX_RETAINED_GROWTH_MB * (cells.length - 1)) / (TOTAL_CELLS - 1),
+      );
       expect(runs.every((count) => count > 1)).toBe(true);
     }, 1_800_000);
   });
