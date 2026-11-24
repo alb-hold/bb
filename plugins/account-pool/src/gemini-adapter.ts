@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  Account,
   AccountQuota,
   AccountSecret,
   ImportProbe,
@@ -12,8 +13,12 @@ import {
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
 import {
+  advertisedModels,
   codeAssistModel,
+  codeAssistModels,
   geminiGatewayCall,
+  isServedFamily,
+  servedFamilyVariant,
   geminiRuntimeRefusal,
   geminiUpstreamUserAgent,
   modelListResponse,
@@ -63,6 +68,7 @@ export function isGeminiRuntimeRefreshError(error: string): boolean {
   return error.startsWith(GEMINI_RUNTIME_REFRESH_ERROR_PREFIX);
 }
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
+const SERVED_MODELS_TTL_MS = 10 * 60 * 1_000;
 
 const refreshResponseSchema = z
   .object({
@@ -873,7 +879,8 @@ export function createGeminiAdapter(options: {
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
   now?: () => number;
-  onModels?: (accountId: string, ids: string[]) => void;
+  onModels?: (accountId: string, ids: string[], servedIds: string[]) => void;
+  savedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
   onboarding?: { pollMs: number; timeoutMs: number };
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
@@ -905,6 +912,67 @@ export function createGeminiAdapter(options: {
   const doFetch: typeof fetch = (input, init) =>
     (options.fetch ?? fetch)(input, init);
   const clock = () => (options.now ?? Date.now)();
+  const servedModels = new Map<
+    string,
+    { ids: ReadonlySet<string>; at: number }
+  >();
+  const servedRefreshes = new Map<string, Promise<void>>();
+  const rememberServed = (
+    accountId: string,
+    served: string[],
+    advertised: string[],
+  ) => {
+    if (served.length === 0) return;
+    servedModels.set(accountId, { ids: new Set(served), at: clock() });
+    options.onModels?.(accountId, advertised, served);
+  };
+  const isKnownFamily = (model: string) =>
+    [...servedModels.values()].some((entry) =>
+      isServedFamily(model, entry.ids),
+    ) ||
+    isServedFamily(
+      model,
+      new Set(Object.values(options.savedModels?.() ?? {}).flatMap((entry) => "served" in entry ? [...entry.served, ...entry.aliases] : entry)),
+    );
+  const savedServed = (accountId: string): ReadonlySet<string> | undefined => {
+    const saved = options.savedModels?.()[accountId];
+    if (saved === undefined || ("served" in saved ? saved.served.length === 0 : saved.length === 0)) return undefined;
+    if ("served" in saved) return new Set(saved.served);
+    return new Set(saved);
+  };
+  const refreshServed = (
+    account: Account,
+    secret: AccountSecret,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const running = servedRefreshes.get(account.id);
+    if (running !== undefined) return running;
+    const flight = (async () => {
+      if (secret.kind !== "oauth") return;
+      const served = codeAssistModels(
+        await codeAssistCall(
+          doFetch,
+          baseFor(account),
+          "fetchAvailableModels",
+          secret.accessToken,
+          { project: account.geminiProject },
+          await userAgent(),
+          signal,
+        ),
+      );
+      rememberServed(
+        account.id,
+        served.map((model) => model.id),
+        advertisedModels(served).map((model) => model.id),
+      );
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        servedRefreshes.delete(account.id);
+      });
+    servedRefreshes.set(account.id, flight);
+    return flight;
+  };
   const readCredentials = options.importCredentials ?? importGeminiCredentials;
   const signIn = async (importOptions?: { home?: string }) => {
     const imported = await readCredentials(importOptions?.home);
@@ -1106,8 +1174,25 @@ export function createGeminiAdapter(options: {
         family: "other",
         affinityId: typeof session === "string" && session !== "" ? session : null,
         parentAffinityId: null,
-        forAccount: (account) =>
-          encodeJson({ model, project: account.geminiProject, request }),
+        async prepare(account, secret, signal) {
+          if (!isKnownFamily(model)) return;
+          const cached = servedModels.get(account.id);
+          if (cached !== undefined && clock() - cached.at < SERVED_MODELS_TTL_MS)
+            return;
+          await refreshServed(account, secret, signal);
+        },
+        forAccount: (account) => {
+          const served =
+            servedModels.get(account.id)?.ids ?? savedServed(account.id);
+          return encodeJson({
+            model:
+              served === undefined
+                ? model
+                : (servedFamilyVariant(model, served) ?? model),
+            project: account.geminiProject,
+            request,
+          });
+        },
       };
     },
     refuseClient: geminiRuntimeRefusal,
@@ -1135,8 +1220,8 @@ export function createGeminiAdapter(options: {
       if (response.body === null) return response;
       const transform =
         call === null || call.kind === "models"
-          ? modelListResponse(call?.api ?? "v1beta", (ids) =>
-              options.onModels?.(context.account.id, ids),
+          ? modelListResponse(call?.api ?? "v1beta", (served, advertised) =>
+              rememberServed(context.account.id, served, advertised),
             )
           : call.method === "generateContent"
             ? unwrapUnary()

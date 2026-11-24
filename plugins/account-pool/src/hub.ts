@@ -1369,6 +1369,20 @@ export class AccountPoolHub {
           }
           continue;
         }
+        if (parsed.prepare !== undefined) {
+          try {
+            await abortable(
+              parsed.prepare(selected.account, secret, signal),
+              signal,
+            );
+          } catch (error) {
+            if (pacing !== null) {
+              this.releasePacing(selected.account.id, pacing);
+              pacing = null;
+            }
+            throw error;
+          }
+        }
         let authRetried = false;
         let transientRetries = 0;
         let paced = waited.has(selected.account.id);
@@ -2470,7 +2484,8 @@ export function createHub(options: {
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
-  onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
+  onGeminiModels?: (accountId: string, ids: readonly string[], servedIds: readonly string[]) => void;
+  geminiSavedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2501,6 +2516,7 @@ export function createHub(options: {
           options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
         importCredentials: options.importGeminiCredentials,
         onModels: options.onGeminiModels,
+        savedModels: options.geminiSavedModels,
         runtimeUserAgent:
           options.geminiRuntimeUserAgent ??
           (() =>
