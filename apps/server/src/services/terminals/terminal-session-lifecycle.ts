@@ -5382,7 +5382,10 @@ export class TerminalSessionLifecycle {
                 now: Date.now(),
               })
             )
-              this.options.hub.notifyThread(threadId, ["terminals-changed"]);
+              this.options.hub.notifyThread(threadId, [
+                "terminals-changed",
+                "status-changed",
+              ]);
           },
           Math.max(
             0,

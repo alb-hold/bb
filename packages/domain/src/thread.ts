@@ -74,6 +74,7 @@ export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend(
   {
     nativeActivity: nativeActivityDiagnosticSchema.optional(),
     nativeSessionExit: z.literal("clean").optional(),
+    nativeSetupWaiting: z.literal(true).optional(),
   },
 );
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;

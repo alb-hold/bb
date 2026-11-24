@@ -1,7 +1,4 @@
-import {
-  NATIVE_TERMINAL_SETUP_DELAY_MS,
-  nativeTerminalMayNeedSetup,
-} from "@bb/domain";
+import { effectiveDisplayStatus } from "@bb/domain";
 import { useQuery } from "@tanstack/react-query";
 import { sdk } from "@/lib/sdk";
 import { threadDefaultExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
@@ -136,31 +133,11 @@ export function NativeThreadTerminalMain({
     threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
   });
   const providerLabel = view.displayName;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (view.nativeSessionId !== null || session?.status !== "running") return;
-    const timer = window.setTimeout(
-      () => setNow(Date.now()),
-      Math.max(
-        0,
-        Math.max(session.createdAt, session.lastUserInputAt ?? 0) +
-          NATIVE_TERMINAL_SETUP_DELAY_MS -
-          Date.now(),
-      ),
-    );
-    return () => window.clearTimeout(timer);
-  }, [
-    view.nativeSessionId,
-    session?.id,
-    session?.status,
-    session?.createdAt,
-    session?.lastUserInputAt,
-  ]);
-  const setupWaiting = nativeTerminalMayNeedSetup({
-    nativeSessionId: view.nativeSessionId,
-    terminal: session,
-    now,
-  });
+  const setupWaiting = runtime.nativeSetupWaiting === true;
+  const effectiveStatus = effectiveDisplayStatus(
+    { status: runtime.displayStatus },
+    runtime,
+  );
   const waitingPrompts = nativeTerminalWaitingPrompts(
     interactionsQuery.data ?? [],
   );
@@ -201,6 +178,30 @@ export function NativeThreadTerminalMain({
     void refetch();
   }, [refetch, state.kind, terminalsUpdatedAt]);
 
+  const headerActivity = activityTarget
+    ? createPortal(
+        <NativeTerminalActivity
+          error={effectiveStatus === "error"}
+          indicator={
+            interactionsQuery.data?.some(
+              (interaction) => interaction.status === "pending",
+            )
+              ? "needs-input"
+              : session?.status === "running" && session.attention
+                ? "check-terminal"
+                : isRunningThreadRuntimeDisplayStatus(runtime.displayStatus)
+                  ? activityNotice.unconfirmed
+                    ? "activity-unreported"
+                    : "working"
+                  : setupWaiting
+                    ? "needs-input"
+                    : "none"
+          }
+        />,
+        activityTarget,
+      )
+    : null;
+
   if (state.kind === "live") {
     return (
       <div
@@ -229,30 +230,7 @@ export function NativeThreadTerminalMain({
           pendingPromptCount={waitingPrompts.length}
           threadId={threadId}
         />
-        {activityTarget
-          ? createPortal(
-              <NativeTerminalActivity
-                indicator={
-                  interactionsQuery.data?.some(
-                    (interaction) => interaction.status === "pending",
-                  )
-                    ? "needs-input"
-                    : session?.attention
-                      ? "check-terminal"
-                      : isRunningThreadRuntimeDisplayStatus(
-                            runtime.displayStatus,
-                          )
-                        ? activityNotice.unconfirmed
-                          ? "activity-unreported"
-                          : "working"
-                        : setupWaiting
-                          ? "needs-input"
-                          : "none"
-                }
-              />,
-              activityTarget,
-            )
-          : null}
+        {headerActivity}
         {!hasTerminalOutput ? (
           <NativeThreadMirrorSection
             prompt={prompt}
@@ -355,6 +333,7 @@ export function NativeThreadTerminalMain({
         data-native-terminal-thread={view.providerId}
         data-no-sidebar-swipe=""
       >
+        {headerActivity}
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2">
             <span className="font-medium">
@@ -407,6 +386,7 @@ export function NativeThreadTerminalMain({
         className="flex h-full min-h-0 min-w-0 flex-col bg-sidebar"
         data-native-terminal-thread={view.providerId}
       >
+        {headerActivity}
         <NativeThreadMirrorSection
           prompt={prompt}
           reply={reply}
@@ -443,6 +423,7 @@ export function NativeThreadTerminalMain({
       className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm"
       data-native-terminal-thread={view.providerId}
     >
+      {headerActivity}
       <p className="font-medium text-foreground">
         {endedLabel}
         {state.exitCode !== null

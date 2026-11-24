@@ -45,3 +45,7 @@ export {
   type TerminalAttentionContractCase,
   type TerminalAttentionContractSession,
 } from "./terminal-attention-contract.js";
+export {
+  NATIVE_STATUS_CONTRACT_CASES,
+  type NativeStatusContractCase,
+} from "./native-status-contract.js";

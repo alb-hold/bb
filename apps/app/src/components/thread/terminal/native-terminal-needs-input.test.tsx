@@ -7,6 +7,7 @@ import type {
   NativeTerminalThread,
   ThreadExecutionProfileResponse,
 } from "@bb/server-contract";
+import { NATIVE_STATUS_CONTRACT_CASES } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
@@ -95,33 +96,86 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("V5: native header reports Needs input when waiting on user setup/trust prompt", () => {
-  it("shows Needs input instead of Idle in the header while waiting for setup and clears on input or binding", () => {
+describe("V5 header: shared native terminal status contract", () => {
+  it.each(NATIVE_STATUS_CONTRACT_CASES)(
+    "renders $expectedHeaderLabel in the header from server runtime for $name without a client timer",
+    (contractCase) => {
+      const now = Date.now();
+      const terminal: NonNullable<NativeTerminalThread["terminal"]> = {
+        id: `term_${contractCase.name}`,
+        threadId: `thr_${contractCase.name}`,
+        environmentId: "env_contract",
+        hostId: "host_contract",
+        title: contractCase.displayName,
+        initialCwd: "/workspace",
+        cols: 120,
+        rows: 36,
+        status: contractCase.terminalStatus,
+        exitCode: contractCase.terminalExitCode,
+        closeReason: contractCase.terminalCloseReason,
+        createdAt: now,
+        updatedAt: now,
+        lastUserInputAt: null,
+        attention: null,
+      };
+      hooks.listTerminals.mockReturnValue({
+        data: { sessions: [terminal] },
+        dataUpdatedAt: 1,
+        isLoading: false,
+      });
+      const view: NativeTerminalThread = {
+        threadId: `thr_${contractCase.name}`,
+        providerId: contractCase.providerId,
+        displayName: contractCase.displayName,
+        nativeSessionId: contractCase.nativeSessionId,
+        model: null,
+        canReturnToChat: false,
+        terminal,
+      };
+
+      render(
+        <TerminalWithHeader
+          projectId="proj_contract"
+          runtime={contractCase.expectedRuntime}
+          threadId={`thr_${contractCase.name}`}
+          threadIsProvisioning={false}
+          view={view}
+        />,
+      );
+
+      const status = screen.getByRole("status", { name: "Terminal activity" });
+      expect(status.closest("header")).not.toBeNull();
+      expect(status.textContent).toBe(contractCase.expectedHeaderLabel);
+    },
+  );
+
+  it("follows server runtime.nativeSetupWaiting instead of a client-side timer", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const terminal = {
-      id: "term_trust",
-      threadId: "thr_trust",
-      environmentId: "env_trust",
-      hostId: "host_trust",
+    const terminal: NonNullable<NativeTerminalThread["terminal"]> = {
+      id: "term_no_client_timer",
+      threadId: "thr_no_client_timer",
+      environmentId: "env_contract",
+      hostId: "host_contract",
       title: "Codex",
       initialCwd: "/workspace",
       cols: 120,
       rows: 36,
-      status: "running" as const,
+      status: "running",
       exitCode: null,
       closeReason: null,
       createdAt: 1_000,
       updatedAt: 1_000,
-      lastUserInputAt: null as number | null,
+      lastUserInputAt: null,
       attention: null,
     };
     hooks.listTerminals.mockReturnValue({
       data: { sessions: [terminal] },
       dataUpdatedAt: 1,
+      isLoading: false,
     });
     const view: NativeTerminalThread = {
-      threadId: "thr_trust",
+      threadId: "thr_no_client_timer",
       providerId: "codex",
       displayName: "Codex",
       nativeSessionId: null,
@@ -132,9 +186,9 @@ describe("V5: native header reports Needs input when waiting on user setup/trust
 
     const { rerender } = render(
       <TerminalWithHeader
-        projectId="proj_trust"
+        projectId="proj_contract"
         runtime={{ displayStatus: "idle" }}
-        threadId="thr_trust"
+        threadId="thr_no_client_timer"
         threadIsProvisioning={false}
         view={view}
       />,
@@ -144,29 +198,25 @@ describe("V5: native header reports Needs input when waiting on user setup/trust
       screen.getByRole("status", { name: "Terminal activity" }).textContent;
     expect(status()).toBe("Idle");
 
-    act(() => vi.advanceTimersByTime(NATIVE_TERMINAL_SETUP_DELAY_MS));
-    expect(status()).toBe("Needs input");
+    act(() => vi.advanceTimersByTime(NATIVE_TERMINAL_SETUP_DELAY_MS + 1_000));
+    expect(status()).toBe("Idle");
 
-    terminal.lastUserInputAt = Date.now();
     rerender(
       <TerminalWithHeader
-        projectId="proj_trust"
-        runtime={{ displayStatus: "idle" }}
-        threadId="thr_trust"
+        projectId="proj_contract"
+        runtime={{ displayStatus: "idle", nativeSetupWaiting: true }}
+        threadId="thr_no_client_timer"
         threadIsProvisioning={false}
         view={view}
       />,
     );
-    expect(status()).toBe("Idle");
-
-    act(() => vi.advanceTimersByTime(NATIVE_TERMINAL_SETUP_DELAY_MS));
     expect(status()).toBe("Needs input");
 
     rerender(
       <TerminalWithHeader
-        projectId="proj_trust"
+        projectId="proj_contract"
         runtime={{ displayStatus: "idle" }}
-        threadId="thr_trust"
+        threadId="thr_no_client_timer"
         threadIsProvisioning={false}
         view={{ ...view, nativeSessionId: "bound-session" }}
       />,

@@ -6,6 +6,9 @@ export interface NativeTerminalThreadRecord {
   providerId: string;
   nativeSessionId: string | null;
   terminalSessionId: string | null;
+  terminalStatus: string | null;
+  terminalCreatedAt: number | null;
+  terminalLastUserInputAt: number | null;
   terminalCleanExit: boolean;
   lostIdleTerminalSessionId: string | null;
   lastEvidenceAt: number | null;
@@ -25,7 +28,7 @@ const CLEAN_EXIT_COLUMN = `CASE
 END AS terminalCleanExit`;
 
 const SELECT_COLUMNS = `n.thread_id AS threadId, n.provider_id AS providerId, n.native_session_id AS nativeSessionId,
-  n.terminal_session_id AS terminalSessionId, ${CLEAN_EXIT_COLUMN}, n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId, n.last_evidence_at AS lastEvidenceAt,
+  n.terminal_session_id AS terminalSessionId, t.status AS terminalStatus, t.created_at AS terminalCreatedAt, t.last_user_input_at AS terminalLastUserInputAt, ${CLEAN_EXIT_COLUMN}, n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId, n.last_evidence_at AS lastEvidenceAt,
   n.last_evidence_kind AS lastEvidenceKind,
   n.last_tool_call_at AS lastToolCallAt, n.last_tool_call_session_id AS lastToolCallSessionId,
   n.initial_prompt AS initialPrompt, n.prompt, n.model,
@@ -152,6 +155,9 @@ export function createNativeTerminalThread(
     providerId: args.providerId,
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
+    terminalStatus: null,
+    terminalCreatedAt: null,
+    terminalLastUserInputAt: null,
     terminalCleanExit: false,
     lostIdleTerminalSessionId: null,
     lastEvidenceAt: null,
@@ -240,6 +246,9 @@ export function listNativeTerminalThreadsByIds(
   | "threadId"
   | "providerId"
   | "terminalSessionId"
+  | "terminalStatus"
+  | "terminalCreatedAt"
+  | "terminalLastUserInputAt"
   | "terminalCleanExit"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
@@ -255,6 +264,9 @@ export function listNativeTerminalThreadsByIds(
     | "threadId"
     | "providerId"
     | "terminalSessionId"
+    | "terminalStatus"
+    | "terminalCreatedAt"
+    | "terminalLastUserInputAt"
     | "terminalCleanExit"
     | "lostIdleTerminalSessionId"
     | "lastEvidenceAt"
@@ -269,6 +281,9 @@ export function listNativeTerminalThreadsByIds(
       `SELECT n.thread_id AS threadId, n.provider_id AS providerId,
          n.native_session_id AS nativeSessionId,
          n.terminal_session_id AS terminalSessionId,
+         t.status AS terminalStatus,
+         t.created_at AS terminalCreatedAt,
+         t.last_user_input_at AS terminalLastUserInputAt,
          ${CLEAN_EXIT_COLUMN},
          n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId,
          n.last_evidence_at AS lastEvidenceAt,

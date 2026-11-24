@@ -592,7 +592,10 @@ async function openNativeTerminalOnce(
             now: Date.now(),
           })
         )
-          deps.hub.notifyThread(thread.id, ["terminals-changed"]);
+          deps.hub.notifyThread(thread.id, [
+            "terminals-changed",
+            "status-changed",
+          ]);
       } catch (error) {
         if (!isClosedDatabaseConnectionError(error)) {
           deps.logger.warn(
@@ -1273,7 +1276,7 @@ export async function requireNativeTerminalAgentToolCall(
 }
 
 export function recordNativeTerminalSession(
-  deps: NativeTerminalViewDeps,
+  deps: NativeTerminalViewDeps & { hub?: AppDeps["hub"] },
   args: {
     authorization?: string;
     threadId: string;
@@ -1290,6 +1293,11 @@ export function recordNativeTerminalSession(
   const result = recordNativeTerminalThreadSessionId(deps.db, args);
   switch (result.kind) {
     case "recorded":
+      deps.hub?.notifyThread(args.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
+      break;
     case "unchanged":
       break;
     case "already-bound": {

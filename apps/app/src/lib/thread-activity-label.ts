@@ -28,6 +28,7 @@ export function getThreadDetailActivityIndicator(
   );
   return resolveThreadListIndicator({
     hasPendingInteraction: thread.hasPendingInteraction,
+    isNativeSetupWaiting: thread.runtime.nativeSetupWaiting === true,
     isRuntimeActive: running && !unconfirmed,
     isActivityUnreported: running && unconfirmed,
     isBackgroundAgentActive: thread.activeBackgroundAgentCount > 0,
