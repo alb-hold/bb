@@ -100,6 +100,9 @@ describe("expanded project whose threads are on a later sidebar page", () => {
       ],
     });
     expect(screen.getByText("Late thread")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Load more threads" }).textContent,
+    ).toBe("Show more");
     expect(fetchNextPage).not.toHaveBeenCalled();
   });
 
