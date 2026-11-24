@@ -48,6 +48,12 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
     inventory.isLoading,
   );
 
+  const serverCanApply =
+    appUpdate !== undefined &&
+    appUpdate.available !== null &&
+    appUpdate.blocked === null &&
+    (appUpdate.support.kind === "supported" ||
+      appUpdate.desktopUpdateSupported === true);
   const bbNeedsAttention =
     inventory.appUpdateAvailable || inventory.desktopUpdateReady;
 
@@ -89,7 +95,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
   });
 
   const chips: UpdateChip[] = [];
-  if (bbNeedsAttention) {
+  if (bbNeedsAttention || serverCanApply) {
     chips.push({
       kind: "bb",
       label:

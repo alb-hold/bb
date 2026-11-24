@@ -463,6 +463,19 @@ describe("SidebarUpdatesBadge", () => {
     expect(bbChip.querySelector('[data-icon="Loading"]')).toBeTruthy();
   });
 
+  it("shows the bb chip when the server can apply an available update even if inventory flags are false", () => {
+    appUpdateState.status = appUpdateStatus();
+    renderBadge({
+      appUpdateAvailable: false,
+      desktopUpdateReady: false,
+    });
+
+    const bbChip = screen.getByTestId("sidebar-updates-badge-bb");
+    expect(bbChip.tagName).toBe("A");
+    expect(bbChip.getAttribute("href")).toBe("/settings/updates");
+    expect(bbChip.getAttribute("aria-label")).toBe("bb update available");
+  });
+
   it("ignores missing CLIs when deciding whether to render the provider chip", () => {
     renderBadge({
       appUpdateAvailable: true,
