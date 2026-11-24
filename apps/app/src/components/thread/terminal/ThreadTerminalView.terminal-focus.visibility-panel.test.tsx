@@ -1790,8 +1790,8 @@ it.each([
     width: 390,
     cols: 51,
     rows: 37,
-    renderCols: 80,
-    renderRows: 24,
+    renderCols: 51,
+    renderRows: 37,
     scale: "1",
   },
   {
@@ -1799,8 +1799,8 @@ it.each([
     width: 1280,
     cols: 76,
     rows: 40,
-    renderCols: 80,
-    renderRows: 24,
+    renderCols: 76,
+    renderRows: 40,
     scale: "1",
   },
 ])(

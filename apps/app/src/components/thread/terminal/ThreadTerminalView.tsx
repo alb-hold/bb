@@ -993,6 +993,15 @@ export async function writeRetainedTerminalOutput({
     await new Promise<void>((resolve) =>
       terminal.write(`${alternateFrame}\r\n${primaryFrame}\r\n`, resolve),
     );
+  } else if (
+    retainNativeOutput &&
+    terminal.buffer.active.type === "alternate"
+  ) {
+    const frame = readBuffer();
+    terminal.reset();
+    await new Promise<void>((resolve) =>
+      terminal.write(`${frame}\r\n`, resolve),
+    );
   }
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
@@ -1519,6 +1528,7 @@ export function ThreadTerminalView({
     });
   }, [session.id]);
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const invalidateFitRef = useRef<(() => void) | null>(null);
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
@@ -2307,9 +2317,8 @@ export function ThreadTerminalView({
           containerElement.style.opacity = "0";
         const scrollRetainedOutput =
           !needsFittedGrid() &&
-          (lifecycle.retainedOutputGrid !== null
-            ? getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
-            : presentation.panHorizontally);
+          lifecycle.retainedOutputGrid === null &&
+          presentation.panHorizontally;
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.touchAction = scrollRetainedOutput
@@ -2320,7 +2329,9 @@ export function ThreadTerminalView({
           applyTerminalSurfaceScale(
             lifecycle.terminal.element,
             scale,
-            !scrollRetainedOutput && !needsFittedGrid(),
+            !scrollRetainedOutput &&
+              !needsFittedGrid() &&
+              lifecycle.retainedOutputGrid === null,
           );
         }
         const rendererWidth =
@@ -2410,6 +2421,9 @@ export function ThreadTerminalView({
         },
       );
       lifecycle.terminalRenderSubscription = lifecycle.terminal.onRender(() => {
+        if (containerElement.style.opacity === "0") {
+          updateGridVisibility();
+        }
         if (
           document.visibilityState === "visible" &&
           lifecycle.containerHasSize &&
@@ -2941,11 +2955,16 @@ export function ThreadTerminalView({
               );
             if (retainNativeOutput && sessionStatusRef.current === "exited") {
               if (lifecycle.retainedOutputReplayed) {
-                lifecycle.retainedOutputGrid = lifecycle.latestPtyGrid;
-                activeTerminal.resize(
-                  lifecycle.retainedOutputGrid.cols,
-                  lifecycle.retainedOutputGrid.rows,
-                );
+                lifecycle.retainedOutputGrid = {
+                  cols: fitted.cols,
+                  rows: fitted.rows,
+                };
+                if (
+                  activeTerminal.cols !== fitted.cols ||
+                  activeTerminal.rows !== fitted.rows
+                ) {
+                  activeTerminal.resize(fitted.cols, fitted.rows);
+                }
               }
               updateGridVisibility();
               return true;
@@ -3049,6 +3068,7 @@ export function ThreadTerminalView({
         });
       }
       scheduleFitRef.current = scheduleFit;
+      invalidateFitRef.current = () => fitWork.invalidate();
       lifecycle.unobserveContainerResize = observeSharedResize(containerElement, {
         read: (entry) => {
           const entries = entry === undefined ? [] : [entry];
@@ -3223,6 +3243,10 @@ export function ThreadTerminalView({
           lifecycle.processExitedSeen = true;
           sessionStatusRef.current = "exited";
           activeTerminal.options.disableStdin = true;
+          if (retainNativeOutput) {
+            fitWork.invalidate();
+            scheduleFit();
+          }
         }
         if (message.type === "error") {
           if (
@@ -4174,6 +4198,7 @@ export function ThreadTerminalView({
       disposeTerminalWithRenderer(lifecycle.terminal, lifecycle.webglRenderer);
       terminalRef.current = null;
       scheduleFitRef.current = null;
+      invalidateFitRef.current = null;
       if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {
         terminalVisibilityReporterRef.current = null;
       }
@@ -4237,6 +4262,9 @@ export function ThreadTerminalView({
     if (!terminal) {
       return;
     }
+    if (session.status === "exited" && retainNativeOutput) {
+      invalidateFitRef.current?.();
+    }
     scheduleFitRef.current?.();
     if (session.status === "exited") {
       return;
@@ -4246,7 +4274,7 @@ export function ThreadTerminalView({
       session,
       terminal,
     });
-  }, [session]);
+  }, [retainNativeOutput, session]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -4528,7 +4556,7 @@ export function ThreadTerminalView({
           <TerminalAttentionPane
             attention={session.attention}
             bannerOnly={attentionShownAsBanner}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);
@@ -4664,15 +4692,11 @@ export function ThreadTerminalView({
           }}
         />
       </ContextMenu>
-      {isTouchDevice ? (
+      {isTouchDevice && session.status !== "exited" ? (
         <TerminalMobileControls
           className={attentionShownAsBanner ? "py-0" : undefined}
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
-          readOnlyDisabled={
-            !terminalReady ||
-            (session.status !== "running" && session.status !== "exited")
-          }
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();

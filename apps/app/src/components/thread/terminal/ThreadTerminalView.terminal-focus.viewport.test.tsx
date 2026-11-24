@@ -505,6 +505,17 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         "mobile status viewer was not ready",
       );
       rerender(view({ ...session, status }));
+      if (status === "exited") {
+        expect(
+          screen.queryByRole("group", {
+            name: "Terminal keyboard controls",
+          }),
+        ).toBeNull();
+        expect(
+          document.querySelector("[data-terminal-mobile-controls]"),
+        ).toBeNull();
+        return;
+      }
       const controls = screen.getByRole("group", {
         name: "Terminal keyboard controls",
       });
@@ -514,26 +525,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
           name: "Escape",
         }).disabled,
       ).toBe(true);
-      if (status === "exited") {
-        expect(controls.children).toHaveLength(4);
-        for (const name of [
-          "Previous prompt",
-          "Next prompt",
-          "Select terminal text",
-        ]) {
-          expect(
-            screen.getByRole<HTMLButtonElement>("button", { name }).disabled,
-          ).toBe(false);
-        }
-      } else {
-        expect(controls.children).toHaveLength(1);
-        for (const name of [
-          "Previous prompt",
-          "Next prompt",
-          "Select terminal text",
-        ]) {
-          expect(screen.queryByRole("button", { name })).toBeNull();
-        }
+      expect(controls.children).toHaveLength(1);
+      for (const name of [
+        "Previous prompt",
+        "Next prompt",
+        "Select terminal text",
+      ]) {
+        expect(screen.queryByRole("button", { name })).toBeNull();
       }
     },
   );
