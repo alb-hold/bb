@@ -312,7 +312,7 @@ export function advertisedModels(
 export function hasCodeAssistModelList(payload: unknown): boolean {
   const root = record(payload);
   if (root === null) return false;
-  return root.models == null || record(root.models) !== null;
+  return !("models" in root) || record(root.models) !== null;
 }
 
 export function modelListResponse(
