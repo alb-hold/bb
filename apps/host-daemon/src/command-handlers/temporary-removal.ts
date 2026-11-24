@@ -110,10 +110,11 @@ export async function processDoubtsIgnorableForRemoval(
     return false;
   for (
     let ancestor = path.dirname(target);
-    isPathWithinDirectory(temporaryRoot, ancestor);
+    ;
     ancestor = path.dirname(ancestor)
   ) {
     if ((await hasGitEntry(ancestor)) !== false) return false;
+    if (ancestor === path.dirname(ancestor)) break;
   }
   if (await mountInsideTarget(target)) return false;
   return !(await treeHasGitEntry(target));

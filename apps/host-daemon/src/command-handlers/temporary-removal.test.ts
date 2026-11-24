@@ -3,6 +3,8 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostProc,
@@ -122,6 +124,7 @@ describe.skipIf(process.platform !== "linux")(
       const unreadable = await startIdle(neighbor);
       fakeProc({ readable: [], unreadable: [unreadable] });
       await expectProcessDoubt(target, unreadable);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
       await expect(
         removeHostPath(
@@ -145,6 +148,7 @@ describe.skipIf(process.platform !== "linux")(
       "git tree below the target",
       "git tree above the target",
       "temporary directory that is a git checkout",
+      "temporary directory inside a git checkout",
       "outside the temporary directory",
     ] as const)(
       "still refuses the same doubt for a %s and names the requested path",
@@ -168,6 +172,8 @@ describe.skipIf(process.platform !== "linux")(
           await fs.writeFile(path.join(parent, ".git"), "gitdir: elsewhere\n");
         if (kind === "temporary directory that is a git checkout")
           await fs.mkdir(path.join(process.env.TMPDIR, ".git"));
+        if (kind === "temporary directory inside a git checkout")
+          await fs.writeFile(path.join(tmp, ".git"), "gitdir: elsewhere\n");
         const removal = context(
           kind === "loaded workspace"
             ? { workspaces: [root] }
