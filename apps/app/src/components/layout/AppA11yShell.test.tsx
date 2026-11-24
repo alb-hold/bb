@@ -200,7 +200,22 @@ describe("app shell landmarks and headings", () => {
     expect(panel?.getAttribute("aria-label")).toBe("Sidebar");
     const headings = view.container.querySelectorAll("h1");
     expect(headings).toHaveLength(1);
-    expect(headings[0]?.textContent).toBe("Start a new thread");
+    expect(headings[0]?.textContent).toBe("bb");
+    expect(headings[0]?.closest("main")).not.toBeNull();
+    expect(headings[0]?.classList.contains("sr-only")).toBe(true);
+    expect(screen.getByText("Start a new thread").tagName).toBe("P");
+  });
+
+  it("renders no h1 from the home compose view itself, so the shell owns the only heading", () => {
+    const view = renderReact(
+      <RootComposeHome
+        isCompact={false}
+        composer={<div>Composer</div>}
+        compactScrollContent={null}
+        homepageSections={null}
+      />,
+    );
+    expect(view.container.querySelectorAll("h1")).toHaveLength(0);
   });
 
   it("renders exactly one top-level main and one h1 on compact home", async () => {
@@ -221,6 +236,17 @@ describe("app shell landmarks and headings", () => {
     const heading = await screen.findByRole("heading", { level: 1 });
     expect(heading.textContent).toBe("Home");
     expect(view.container.querySelectorAll("h1")).toHaveLength(1);
+    expect(heading.closest("main")).not.toBeNull();
+    const outsideLandmarks = Array.from(
+      view.container.querySelectorAll("h1, button"),
+    ).filter(
+      (node) =>
+        node.textContent !== "Toggle Sidebar" &&
+        node.closest(
+          'main, [role="main"], aside, nav, header, footer, [role="complementary"], [role="navigation"], [role="banner"]',
+        ) === null,
+    );
+    expect(outsideLandmarks.map((node) => node.textContent)).toEqual([]);
   });
 
   it("renders exactly one top-level main and one h1 on settings", () => {
