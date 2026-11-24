@@ -107,12 +107,7 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
   }
 }
 
-export function spawnNativeHolder(
-  threadId: string,
-  socketPath: string,
-  app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
-): void {
-  mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+function nativeHolderArgv(threadId: string, socketPath: string): string[] {
   const script = process.argv[1];
   if (script === undefined) {
     throw new CliExitError(
@@ -120,7 +115,7 @@ export function spawnNativeHolder(
       1,
     );
   }
-  const argv = [
+  return [
     process.execPath,
     ...process.execArgv,
     script,
@@ -130,28 +125,60 @@ export function spawnNativeHolder(
     "--socket",
     socketPath,
   ];
-  const started = startNativeHolderAsApp(
-    { argv, cwd: process.cwd(), environment: process.env, socketPath },
-    app,
-  );
-  if (started.ok) return;
-  if (started.reason !== "not-darwin") {
-    logNativeHolderEvent(socketPath, "holder-app-fallback", {
-      reason: started.reason,
-      name: started.errorName,
-    });
-    process.stderr.write(
-      `native holder started without swap protection (${started.reason}); a bb restart will end this session
-`,
-    );
-  }
-  const holder = spawn(process.execPath, argv.slice(1), {
+}
+
+function spawnDetachedNativeHolder(argv: string[]): void {
+  spawn(process.execPath, argv.slice(1), {
     cwd: process.cwd(),
     detached: true,
     env: process.env,
     stdio: ["ignore", "ignore", "ignore"],
+  }).unref();
+}
+
+function warnNativeHolderUnprotected(
+  socketPath: string,
+  reason: string,
+  errorName: string | null,
+): void {
+  logNativeHolderEvent(socketPath, "holder-app-fallback", {
+    reason,
+    name: errorName,
   });
-  holder.unref();
+  process.stderr.write(
+    `native holder started without swap protection (${reason}); a bb restart will end this session\n`,
+  );
+}
+
+export function spawnNativeHolder(
+  threadId: string,
+  socketPath: string,
+  app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
+): string | null {
+  mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  const argv = nativeHolderArgv(threadId, socketPath);
+  const started = startNativeHolderAsApp(
+    { argv, cwd: process.cwd(), environment: process.env, socketPath },
+    app,
+  );
+  if (started.ok) return started.environmentFile;
+  if (started.reason !== "not-darwin") {
+    warnNativeHolderUnprotected(socketPath, started.reason, started.errorName);
+  }
+  spawnDetachedNativeHolder(argv);
+  return null;
+}
+
+export function startNativeHolderFallback(
+  threadId: string,
+  socketPath: string,
+  appEnvironmentFile: string,
+): void {
+  try {
+    unlinkSync(appEnvironmentFile);
+  } catch {}
+  warnNativeHolderUnprotected(socketPath, "app-not-ready", null);
+  spawnDetachedNativeHolder(nativeHolderArgv(threadId, socketPath));
 }
 
 async function runNativeHarness(
@@ -161,10 +188,17 @@ async function runNativeHarness(
 ): Promise<number> {
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
   const credential = takeNativeToolCredentialFromEnv(process.env);
+  let appEnvironmentFile: string | null = null;
   const connection = await openNativeHolderConnection({
     socketPath,
     reattachOnly,
-    startHolder: () => spawnNativeHolder(threadId, socketPath),
+    startHolder: () => {
+      appEnvironmentFile = spawnNativeHolder(threadId, socketPath);
+    },
+    startFallbackHolder: () => {
+      if (appEnvironmentFile === null) return;
+      startNativeHolderFallback(threadId, socketPath, appEnvironmentFile);
+    },
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
   if (connection.kind === "ended") {

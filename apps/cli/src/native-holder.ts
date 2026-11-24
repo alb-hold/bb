@@ -21,6 +21,7 @@ import { StringDecoder } from "node:string_decoder";
 
 export const NATIVE_HOLDER_REAP_AFTER_MS = 15 * 60_000;
 const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
+export const NATIVE_HOLDER_FALLBACK_WINDOW_MS = 8_000;
 const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
 const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
@@ -769,16 +770,28 @@ export async function openNativeHolderConnection(args: {
   socketPath: string;
   reattachOnly: boolean;
   startHolder(): void;
+  startFallbackHolder?(): void;
+  fallbackWindowMs?: number;
   startTimeoutMs: number;
 }): Promise<NativeHolderConnection> {
   const running = await connectNativeHolder(args.socketPath);
   if (running !== null) return { kind: "attached", socket: running };
   if (args.reattachOnly) return { kind: "ended" };
   args.startHolder();
-  const started = await waitForNativeHolder(
-    args.socketPath,
-    args.startTimeoutMs,
-  );
+  let remainingMs = args.startTimeoutMs;
+  if (args.startFallbackHolder !== undefined) {
+    const windowMs = Math.min(
+      args.fallbackWindowMs ?? NATIVE_HOLDER_FALLBACK_WINDOW_MS,
+      args.startTimeoutMs,
+    );
+    const early = await waitForNativeHolder(args.socketPath, windowMs);
+    if (early !== null) return { kind: "attached", socket: early };
+    const late = await connectNativeHolder(args.socketPath);
+    if (late !== null) return { kind: "attached", socket: late };
+    args.startFallbackHolder();
+    remainingMs = args.startTimeoutMs - windowMs;
+  }
+  const started = await waitForNativeHolder(args.socketPath, remainingMs);
   return started === null
     ? { kind: "did-not-start" }
     : { kind: "attached", socket: started };

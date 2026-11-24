@@ -11,7 +11,10 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { spawnNativeHolder } from "../commands/thread/native.js";
+import {
+  spawnNativeHolder,
+  startNativeHolderFallback,
+} from "../commands/thread/native.js";
 import {
   loadNativeHolderEnvironment,
   startNativeHolderAsApp,
@@ -118,7 +121,7 @@ describe("native holder app launch", () => {
         },
         deps,
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, environmentFile: filePath });
     expect(argvSeen.some((a) => a.includes(secret))).toBe(false);
     expect(argvSeen.some((a) => a.includes("CLAUDE_CODE_OAUTH_TOKEN"))).toBe(
       false,
@@ -303,5 +306,38 @@ describe("native holder app fallback", () => {
     expect(spawned).toHaveLength(1);
     expect(result.log).toBe("");
     expect(result.stderr).toEqual([]);
+  });
+
+  it("removes the app's environment file and starts one detached holder when the app never came up", () => {
+    const socket = socketIn();
+    const { deps } = recordingDeps("darwin");
+    const environmentFile = spawnNativeHolder("thr_abc", socket, deps);
+    expect(environmentFile).not.toBeNull();
+    expect(existsSync(environmentFile ?? "")).toBe(true);
+    expect(spawned).toHaveLength(0);
+    const stderr: string[] = [];
+    const write = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+    try {
+      startNativeHolderFallback("thr_abc", socket, environmentFile ?? "");
+    } finally {
+      write.mockRestore();
+    }
+    expect(existsSync(environmentFile ?? "")).toBe(false);
+    expect(
+      readdirSync(path.dirname(socket)).filter((n) => n.endsWith(".env")),
+    ).toEqual([]);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.args).toContain("native-hold");
+    const log = readFileSync(socket.replace(/\.sock$/u, ".log"), "utf8");
+    expect(log).toContain("holder-app-fallback");
+    expect(log).toContain("app-not-ready");
+    expect(stderr.join("")).toContain(
+      "native holder started without swap protection (app-not-ready)",
+    );
   });
 });

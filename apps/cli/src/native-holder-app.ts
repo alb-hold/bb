@@ -51,7 +51,7 @@ export type NativeHolderAppFallbackReason =
   | "open-failed";
 
 export type NativeHolderAppResult =
-  | { ok: true }
+  | { ok: true; environmentFile: string }
   | {
       ok: false;
       reason: NativeHolderAppFallbackReason;
@@ -203,7 +203,7 @@ export function startNativeHolderAsApp(
   try {
     environmentFile = writeEnvironmentFile(request);
     deps.run(OPEN, nativeHolderOpenArgs(bundle, request, environmentFile));
-    return { ok: true };
+    return { ok: true, environmentFile };
   } catch (error) {
     if (environmentFile !== null) {
       try {

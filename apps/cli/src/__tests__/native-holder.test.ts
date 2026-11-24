@@ -1120,6 +1120,94 @@ describe("opening a native holder connection", () => {
   });
 });
 
+describe("native holder app fallback window", () => {
+  it("starts the fallback once when no socket appears inside the first window", async () => {
+    const socketPath = socketIn();
+    let held: Promise<number> | null = null;
+    let fallbacks = 0;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: false,
+      startHolder: () => undefined,
+      startFallbackHolder: () => {
+        fallbacks += 1;
+        held = startHolder(socketPath, ECHO_LOOP);
+      },
+      fallbackWindowMs: 300,
+      startTimeoutMs: 6_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    expect(fallbacks).toBe(1);
+    const client = new Client(connection.socket);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("starts no fallback when the socket appears inside the first window", async () => {
+    const socketPath = socketIn();
+    let held: Promise<number> | null = null;
+    let fallbacks = 0;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: false,
+      startHolder: () => {
+        held = startHolder(socketPath, ECHO_LOOP);
+      },
+      startFallbackHolder: () => {
+        fallbacks += 1;
+      },
+      fallbackWindowMs: 5_000,
+      startTimeoutMs: 6_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    expect(fallbacks).toBe(0);
+    const client = new Client(connection.socket);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("reports did-not-start after the fallback also never listens", async () => {
+    let fallbacks = 0;
+    const connection = await openNativeHolderConnection({
+      socketPath: socketIn(),
+      reattachOnly: false,
+      startHolder: () => undefined,
+      startFallbackHolder: () => {
+        fallbacks += 1;
+      },
+      fallbackWindowMs: 100,
+      startTimeoutMs: 400,
+    });
+    expect(connection.kind).toBe("did-not-start");
+    expect(fallbacks).toBe(1);
+  });
+
+  it("does not let a late second holder replace a live socket", async () => {
+    const socketPath = socketIn();
+    const held = startHolder(socketPath, ECHO_LOOP);
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    await expect(startHolder(socketPath, ECHO_LOOP)).rejects.toThrow();
+    first.socket.destroy();
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: true,
+      startHolder: () => {
+        throw new Error("must not start a second holder");
+      },
+      startTimeoutMs: 1_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    const again = new Client(connection.socket);
+    again.type("still\r");
+    await again.waitFor(new RegExp(`got:still:${pid}`, "u"));
+    again.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+});
+
 describe("native holder signals", () => {
   it("keeps bash OSC command and cwd reports through the holder PTY", async () => {
     const socketPath = socketIn();
