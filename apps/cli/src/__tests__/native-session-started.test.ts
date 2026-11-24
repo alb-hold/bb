@@ -107,7 +107,8 @@ function createFakeClaudeExecutable(root: string): string {
   const scriptPath = path.join(root, "fake-claude.mjs");
   const wrapperPath = path.join(root, "fake-claude");
   const script = `import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 function readArg(flag) {
@@ -147,6 +148,36 @@ lines.on("line", (line) => {
       stdio: ["pipe", "ignore", "ignore"],
     });
     process.stdout.write("TRUSTED\\n");
+  } else if (command === "activity") {
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    if (configDir === undefined || sessionId === null) {
+      process.stdout.write("NO_TRANSCRIPT_DIR\\n");
+      return;
+    }
+    const projectDir = path.join(configDir, "projects", "demo");
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptPath = path.join(projectDir, \`\${sessionId}.jsonl\`);
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "user",
+          origin: { kind: "human" },
+          uuid: "u-1",
+          promptId: "turn-1",
+          timestamp: new Date().toISOString(),
+        }),
+        JSON.stringify({
+          type: "system",
+          subtype: "turn_duration",
+          isSidechain: false,
+          uuid: "s-1",
+          parentUuid: "u-1",
+          timestamp: new Date().toISOString(),
+        }),
+      ].join("\\n") + "\\n",
+    );
+    process.stdout.write("ACTIVITY_WRITTEN\\n");
   } else if (command === "exit") {
     lines.close();
     process.exit(0);
@@ -174,7 +205,12 @@ async function startFakeSdkServer(args: {
     authorization: string | undefined;
     body: Record<string, unknown>;
   }> = [];
-  const activityCalls: Array<Record<string, unknown>> = [];
+  const activityCalls: Array<{
+    authorization: string | undefined;
+    body: Record<string, unknown>;
+  }> = [];
+  let awaitedTerminalId: string | null = null;
+  let settleCount = 0;
   const cli: ProviderNativeTerminal = {
     ...claudeDeclaration(),
     executable: args.executable,
@@ -195,6 +231,15 @@ async function startFakeSdkServer(args: {
       createdAt: Date.now(),
     },
   };
+  const settleIfAwaiting = (authorization: string | undefined) => {
+    if (
+      authorization === "Bearer test-holder-credential" &&
+      awaitedTerminalId === threadView.terminal.id
+    ) {
+      awaitedTerminalId = null;
+      settleCount += 1;
+    }
+  };
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -213,6 +258,9 @@ async function startFakeSdkServer(args: {
         )
       ) {
         launchUrls.push(url);
+        if (url.includes("sessionStart=reported")) {
+          awaitedTerminalId = threadView.terminal.id;
+        }
         response.end(
           JSON.stringify({
             threadId: args.threadId,
@@ -233,6 +281,7 @@ async function startFakeSdkServer(args: {
           authorization: request.headers.authorization,
           body: parsedBody,
         });
+        settleIfAwaiting(request.headers.authorization);
         response.end(JSON.stringify(threadView));
         return;
       }
@@ -240,7 +289,13 @@ async function startFakeSdkServer(args: {
         request.method === "POST" &&
         url === `/api/v1/threads/${args.threadId}/native-terminal/activity`
       ) {
-        activityCalls.push(parsedBody);
+        activityCalls.push({
+          authorization: request.headers.authorization,
+          body: parsedBody,
+        });
+        if (parsedBody.confirms !== false) {
+          settleIfAwaiting(request.headers.authorization);
+        }
         response.end(JSON.stringify({ ok: true }));
         return;
       }
@@ -265,9 +320,15 @@ async function startFakeSdkServer(args: {
   }
   return {
     activityCalls,
+    get awaitedTerminalId() {
+      return awaitedTerminalId;
+    },
     baseUrl: `http://127.0.0.1:${address.port}`,
     launchUrls,
     recordSessionCalls,
+    get settleCount() {
+      return settleCount;
+    },
   };
 }
 
@@ -530,11 +591,12 @@ describe("holdNativeHarness preassigned start ordering", () => {
     expect(sdkServer.recordSessionCalls).toHaveLength(1);
   });
 
-  it("notes the preassigned session immediately at launch when hook capture is unavailable", async () => {
+  it("does not recordSession or settle before terminal-scoped proof of life when hook capture is unavailable, then settles once after proof of life", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "bb-hs-fb-"));
     roots.push(root);
     const blockedPath = path.join(root, "blocked-file");
     writeFileSync(blockedPath, "not-a-directory", { mode: 0o600 });
+    const claudeConfigDir = path.join(root, "claude-config");
     const socketPath = path.join(root, "t.sock");
     const executable = createFakeClaudeExecutable(root);
     const threadId = "thr_holder_hook_unavailable";
@@ -551,7 +613,10 @@ describe("holdNativeHarness preassigned start ordering", () => {
       {
         activityPollIntervalMs: 25,
         cwd: root,
-        env: cleanHolderEnv(blockedPath),
+        env: {
+          ...cleanHolderEnv(blockedPath),
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
+        },
         home: blockedPath,
         tmpDir: path.join(blockedPath, "tmp"),
       },
@@ -563,19 +628,38 @@ describe("holdNativeHarness preassigned start ordering", () => {
     client.attach("test-holder-credential");
     await client.waitFor(/READY hasHook=0/u);
 
-    await waitUntil(
-      () => sdkServer.recordSessionCalls.length === 1,
-      "immediate fallback recordSession",
-    );
-    expect(sdkServer.recordSessionCalls).toEqual([
-      {
-        authorization: "Bearer test-holder-credential",
-        body: { nativeSessionId: SESSION_ID },
-      },
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(sdkServer.launchUrls).toEqual([
+      `/api/v1/threads/${threadId}/native-terminal/launch?images=argv&sessionStart=reported`,
     ]);
+    expect(sdkServer.recordSessionCalls).toEqual([]);
+    expect(sdkServer.activityCalls).toEqual([]);
+    expect(sdkServer.awaitedTerminalId).toBe("term_holder");
+    expect(sdkServer.settleCount).toBe(0);
+
+    client.type("activity\n");
+    await client.waitFor(/ACTIVITY_WRITTEN/u);
+    await waitUntil(
+      () => sdkServer.activityCalls.length === 1,
+      "terminal-scoped activity proof of life",
+    );
+    expect(sdkServer.recordSessionCalls).toEqual([]);
+    expect(sdkServer.activityCalls).toHaveLength(1);
+    expect(sdkServer.activityCalls[0]?.authorization).toBe(
+      "Bearer test-holder-credential",
+    );
+    expect(sdkServer.activityCalls[0]?.body.state).toBe("idle");
+    expect(sdkServer.activityCalls[0]?.body.confirms).not.toBe(false);
+    expect(sdkServer.awaitedTerminalId).toBeNull();
+    expect(sdkServer.settleCount).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sdkServer.recordSessionCalls).toEqual([]);
+    expect(sdkServer.settleCount).toBe(1);
 
     client.type("exit\n");
     expect(await holderDone).toBe(0);
-    expect(sdkServer.recordSessionCalls).toHaveLength(1);
+    expect(sdkServer.recordSessionCalls).toEqual([]);
+    expect(sdkServer.settleCount).toBe(1);
   });
 });

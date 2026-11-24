@@ -382,11 +382,6 @@ export async function holdNativeHarness(
           mcpArgs,
           cwd,
         );
-        if (hooks?.started !== undefined && hookTarget === null) {
-          if (launch.session.kind !== "discover") {
-            sessionStarted.note(launch.session.id);
-          }
-        }
         discovery = { cli: spec.cli, launchedAtMs: Date.now() };
         discoverer.arm(launch.session.kind === "discover");
         reader = new NativeActivityReader(
