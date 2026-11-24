@@ -131,7 +131,6 @@ export function RootComposeSecondaryContent({
         compactScrollContent={compactScrollContent}
         homepageSections={<PluginHomepageSections />}
         wideContentClassName={contentClassName}
-        asHeading={paneContext === null}
       />
     </div>
   );

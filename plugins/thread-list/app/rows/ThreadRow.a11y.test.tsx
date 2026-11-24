@@ -223,6 +223,39 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const SPACING_PX = 4;
+
+function spacingToPx(token: string): number {
+  return Number(token) * SPACING_PX;
+}
+
+function readClassPx(
+  element: Element,
+  prefix: string,
+  defaultValue: number,
+): number {
+  const matches = Array.from(element.classList).flatMap((name) => {
+    const match = new RegExp(`^${prefix}(-?)(\\d+(?:\\.\\d+)?)$`).exec(name);
+    return match ? [(match[1] ? -1 : 1) * spacingToPx(match[2]!)] : [];
+  });
+  return matches.at(-1) ?? defaultValue;
+}
+
+function readNegativeMarginTop(element: Element): number {
+  const negative = Array.from(element.classList).find((name) =>
+    /^-mt-\d/.test(name),
+  );
+  if (negative) return -spacingToPx(negative.slice("-mt-".length));
+  return readClassPx(element, "mt-", 0);
+}
+
+function centreOffsetInLine(element: Element, boxPx: number): number {
+  if (!element.classList.contains("self-start")) {
+    throw new Error("expected a self-start element");
+  }
+  return readNegativeMarginTop(element) + boxPx / 2;
+}
+
 describe("sidebar and drawer row accessibility", () => {
   it("renders ThreadRow with drag bindings, PR chip, and child toggle without nested interactive controls", async () => {
     const onMouseDown = vi.fn();
@@ -566,6 +599,43 @@ describe("sidebar and drawer row accessibility", () => {
     expect(chevron.classList.contains("size-6")).toBe(true);
     expect(chevron.classList.contains("size-5")).toBe(false);
     expect(chevron.classList.contains("size-4")).toBe(false);
+  });
+
+  it("centres the child toggle chevron on the title line next to the provider icon", () => {
+    const thread = makeSidebarThread({
+      providerId: "claude",
+      environment: makeSidebarEnvironment({ id: "env_centre" }),
+    });
+    const slot = renderThreadRowA11y({
+      thread,
+      isCompactViewport: true,
+      options: {
+        kind: "parent",
+        depth: 0,
+        isCompact: true,
+        childCount: 1,
+        isCollapsed: false,
+        onToggleCollapsed: vi.fn(),
+      },
+    });
+
+    const title = slot.container.querySelector(".bb-thread-title");
+    const leading = slot.container.querySelector("[data-sidebar-thread-leading]");
+    const chevron = screen.getByRole("button", {
+      name: "Collapse Thread threads",
+    });
+    expect(title).not.toBeNull();
+    expect(leading).not.toBeNull();
+
+    const titleLinePx = readClassPx(title!, "leading-", 0);
+    expect(titleLinePx).toBe(20);
+    const titleCentre = titleLinePx / 2;
+    const chevronBoxPx = readClassPx(chevron, "size-", 0);
+    expect(chevronBoxPx).toBe(24);
+    const leadingBoxPx = readClassPx(leading!, "size-", 0);
+
+    expect(centreOffsetInLine(chevron, chevronBoxPx)).toBe(titleCentre);
+    expect(centreOffsetInLine(leading!, leadingBoxPx)).toBe(titleCentre);
   });
 
   it("uses the AA-contrast destructive-text token on closed PR badges", async () => {

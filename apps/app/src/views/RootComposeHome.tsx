@@ -15,7 +15,6 @@ interface RootComposeHomeProps {
   compactScrollContent: ReactNode;
   homepageSections: ReactNode;
   wideContentClassName?: string;
-  asHeading?: boolean;
 }
 
 function useCompactHomeMetrics(isCompact: boolean) {
@@ -93,7 +92,6 @@ export function RootComposeHome({
   compactScrollContent,
   homepageSections,
   wideContentClassName,
-  asHeading = true,
 }: RootComposeHomeProps) {
   const {
     regionRef,
@@ -163,15 +161,9 @@ export function RootComposeHome({
             }
           >
             {!isCompact ? (
-              asHeading ? (
-                <h1 className="mb-6 text-center text-xl font-medium text-foreground">
-                  Start a new thread
-                </h1>
-              ) : (
-                <p className="mb-6 text-center text-xl font-medium text-foreground">
-                  Start a new thread
-                </p>
-              )
+              <p className="mb-6 text-center text-xl font-medium text-foreground">
+                Start a new thread
+              </p>
             ) : null}
             <div
               className={

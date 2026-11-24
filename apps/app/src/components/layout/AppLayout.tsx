@@ -739,7 +739,11 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   const animationFrameRef = useRef<number | null>(null);
   const isPluginPanelView = pluginPanelRoute !== null;
   const showHeader = !isThreadView && !isRootView && !isPluginPanelView;
-  const showSrHeading = isThreadView || isArchivedView || isPluginPanelView;
+  const showSrHeading =
+    isThreadView ||
+    isArchivedView ||
+    isPluginPanelView ||
+    (isRootView && !isCompactViewport);
   const routeHasOwnHeading = Boolean(
     matchPath(SETTINGS_PROJECT_ROUTE_PATH, location.pathname) ||
       matchPath(SETTINGS_MACHINE_ROUTE_PATH, location.pathname) ||
@@ -988,11 +992,6 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     data-app-content-shell=""
                     className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
                   >
-                    {isRootView && isCompactViewport ? (
-                      <Suspense fallback={null}>
-                        <CompactHomeHeader title={project?.name ?? "Home"} />
-                      </Suspense>
-                    ) : null}
                     {showHeader ? (
                       <AppHeader
                         resourceSection={
@@ -1012,6 +1011,11 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                       />
                     ) : null}
                     <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+                      {isRootView && isCompactViewport ? (
+                        <Suspense fallback={null}>
+                          <CompactHomeHeader title={project?.name ?? "Home"} />
+                        </Suspense>
+                      ) : null}
                       {showSrHeading ? (
                         <h1 className="sr-only">{documentTitle}</h1>
                       ) : null}

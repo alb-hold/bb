@@ -1157,7 +1157,7 @@ function ThreadRowComponent({
             <SidebarChildToggleChevron
               disabled={isEditing}
               className={cn(
-                "self-start mt-0.5",
+                "self-start -mt-0.5",
                 isEditing && "hidden",
               )}
               isCollapsed={isParentCollapsed}
