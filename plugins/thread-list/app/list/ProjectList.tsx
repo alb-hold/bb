@@ -1466,11 +1466,7 @@ function ProjectListComponent({
     projectNamesById,
   } = useSidebarData(true);
   const requestNextActivePage = useCallback(() => {
-    if (
-      activePages?.hasNextPage &&
-      !activePages.isFetchingNextPage &&
-      !activePages.isFetchNextPageError
-    ) {
+    if (activePages?.hasNextPage && !activePages.isFetchingNextPage) {
       void activePages.fetchNextPage();
     }
   }, [activePages]);

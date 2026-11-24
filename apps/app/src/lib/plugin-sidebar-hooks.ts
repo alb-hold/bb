@@ -42,7 +42,7 @@ import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { useRetiredSidebarEnvironmentPullRequest } from "./retired-sidebar-pull-request";
 import { useHosts } from "@/hooks/queries/host-queries";
-import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
+import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
 import { useArchivedThreads } from "@/hooks/queries/thread-queries";
 import {
   useSidebarNavigation,
@@ -544,7 +544,7 @@ export function useSidebarThreadPullRequest(
 }
 
 export function useSidebarProjectActions(): PluginSidebarProjectActions {
-  const quickCreateProject = useQuickCreateProject();
+  const quickCreateProject = useQuickCreateProjectController();
 
   return useMemo<PluginSidebarProjectActions>(
     () => ({
