@@ -84,7 +84,9 @@ async function treeHasGitEntry(root: string): Promise<boolean> {
 export async function processDoubtsIgnorableForRemoval(
   requested: string,
   context: TemporaryRemovalContext,
+  serverProtectedPaths: readonly string[] | undefined,
 ): Promise<boolean> {
+  if (serverProtectedPaths === undefined) return false;
   if (process.platform !== "linux") return false;
   let target: string;
   let temporaryRoot: string;
@@ -104,6 +106,7 @@ export async function processDoubtsIgnorableForRemoval(
       context.dataDir,
       context.threadStorageRootPath,
       ...context.runtimeManager.listLoadedWorkspacePaths(),
+      ...serverProtectedPaths,
     ].map(canonical),
   );
   if (protectedPaths.some((protectedPath) => overlaps(protectedPath, target)))

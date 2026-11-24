@@ -105,17 +105,17 @@ suggested), a lowercase a to an or an to a (a capital A or An can be a label,
 so that change is only suggested), and accents on a lowercase nao, voce, tambem,
 entao or amanha (a capitalized Nao can be a name, so that accent is only suggested) apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor inside quoted text (a quotation can span lines, and one
-left open covers the rest of the text), nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --,
+left open covers the rest of the text), nor on a line containing = ; { } ( ) < > [ ] $ `| \ / # or --,
 nor on a line with a +, * or ^ between two operands (x + y, total * rate, n ^ k) or a line that is only an
 arithmetic expression (price - discount., count % size), in any script (α + β), nor on any other line the configuration docs
 treat as code, such as a key: value line, one starting with a shell command, or one with a short flag such as -la.
 Vocabulary terms are spelling hints for transcription and correction, not a
-guarantee. `vocabulary remove` changes nothing and fails when a term is
+guarantee.`vocabulary remove`changes nothing and fails when a term is
 not in the vocabulary. Everything else, including spelling, other punctuation, verb agreement such as
 is/are or don't/doesn't (the subject can be singular or plural, as in The fish
 are nearby), and tense or plural changes such as deploy/deployed, is offered as
-a suggestion. `correct` and `transcribe` run the
-same pipeline as the composer. `transcribe` accepts WebM or Ogg with Opus,
+a suggestion.`correct`and`transcribe`run the
+same pipeline as the composer.`transcribe` accepts WebM or Ogg with Opus,
 MP4 or M4A with AAC, MP3 and WAV; the server measures the clip, counting gaps
 between its timestamps as recorded time, and counts only that measured
 length against the daily minutes. Settings → General → Writing assistance has the
@@ -451,6 +451,19 @@ or exact root-relative paths using `/` separators. Use
 and `sdk.files.remove({ recursive: true, ... })` first stop processes whose
 working directory is inside the directory, including dev servers in nested
 checkouts (macOS and Linux only).
+
+On Linux, a directory removal is refused when some process on the machine can't
+be inspected, for example another user's processes. `bb file remove --temporary`
+(SDK `temporary: true`) marks the directory as disposable temporary data. It is
+then removed despite such a process, but only when all of these hold:
+
+- it sits strictly inside the machine's temporary directory;
+- it isn't, doesn't contain, and isn't inside any workspace or project source
+  that bb knows on that machine, the bb data directory, or thread storage;
+- it isn't inside or above a git checkout and has no mount inside it.
+
+A process that is using the directory still blocks the removal. Older servers
+reject `temporary`.
 
 Voice transcription uses the Voice input service chosen with
 `bb settings ai-services set voice <automatic|off|service-id>`. bb accepts

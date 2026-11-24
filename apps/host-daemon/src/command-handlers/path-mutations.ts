@@ -287,6 +287,7 @@ export async function removeHostPath(
       ignoreProcessDoubts: await processDoubtsIgnorableForRemoval(
         target,
         context,
+        command.temporaryRemoval?.protectedPaths,
       ),
     });
   } else {

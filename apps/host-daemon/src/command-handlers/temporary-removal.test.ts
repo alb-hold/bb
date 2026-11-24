@@ -20,6 +20,7 @@ import {
 const roots: string[] = [];
 const processes: ChildProcess[] = [];
 const originalTmpdir = process.env.TMPDIR;
+const noServerWorkspaces = { protectedPaths: [] };
 
 function context(
   overrides: Partial<TemporaryRemovalContext> & { workspaces?: string[] } = {},
@@ -128,7 +129,12 @@ describe.skipIf(process.platform !== "linux")(
 
       await expect(
         removeHostPath(
-          { type: "host.remove_path", path: target, recursive: true },
+          {
+            type: "host.remove_path",
+            path: target,
+            recursive: true,
+            temporaryRemoval: noServerWorkspaces,
+          },
           context(),
         ),
       ).resolves.toEqual({ ok: true });
@@ -141,6 +147,8 @@ describe.skipIf(process.platform !== "linux")(
 
     it.for([
       "loaded workspace",
+      "workspace the server knows",
+      "workspace inside the target that the server knows",
       "workspace inside the target",
       "data dir",
       "thread storage",
@@ -185,16 +193,33 @@ describe.skipIf(process.platform !== "linux")(
                   ? { threadStorageRootPath: root }
                   : {},
         );
+        const temporaryRemoval = {
+          protectedPaths:
+            kind === "workspace the server knows"
+              ? [target]
+              : kind === "workspace inside the target that the server knows"
+                ? [path.join(target, "checkout")]
+                : [],
+        };
         const neighbor = await bundle(tmp, "neighbor");
         const unreadable = await startIdle(neighbor);
         fakeProc({ readable: [], unreadable: [unreadable] });
         await expectProcessDoubt(target, unreadable);
         await expect(
-          processDoubtsIgnorableForRemoval(target, removal),
+          processDoubtsIgnorableForRemoval(
+            target,
+            removal,
+            temporaryRemoval.protectedPaths,
+          ),
         ).resolves.toBe(false);
 
         const refused = removeHostPath(
-          { type: "host.remove_path", path: target, recursive: true },
+          {
+            type: "host.remove_path",
+            path: target,
+            recursive: true,
+            temporaryRemoval,
+          },
           removal,
         );
         await expect(refused).rejects.toMatchObject({ code: "path_in_use" });
@@ -208,6 +233,36 @@ describe.skipIf(process.platform !== "linux")(
         await expect(leftovers(parent)).resolves.toEqual([]);
       },
     );
+
+    it("still refuses an unloaded workspace in the temporary directory when the server did not name the removal temporary", async () => {
+      const root = await makeRoot();
+      const workspace = await bundle(root, "unloaded-workspace");
+      await fs.writeFile(path.join(workspace, "notes.md"), "work");
+      const neighbor = await bundle(root, "neighbor");
+      const unreadable = await startIdle(neighbor);
+      fakeProc({ readable: [], unreadable: [unreadable] });
+      await expectProcessDoubt(workspace, unreadable);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      await expect(
+        processDoubtsIgnorableForRemoval(workspace, context(), undefined),
+      ).resolves.toBe(false);
+
+      const refused = removeHostPath(
+        { type: "host.remove_path", path: workspace, recursive: true },
+        context(),
+      );
+      await expect(refused).rejects.toMatchObject({ code: "path_in_use" });
+      expect(await refused.catch((error: Error) => error.message)).toContain(
+        `Refusing to remove ${workspace}:`,
+      );
+      await expect(
+        fs.readFile(path.join(workspace, "notes.md"), "utf8"),
+      ).resolves.toBe("work");
+      await expect(
+        fs.readFile(path.join(workspace, "evidence.txt"), "utf8"),
+      ).resolves.toBe("bundle");
+      await expect(leftovers(root)).resolves.toEqual([]);
+    });
 
     it("still refuses a link inside the temporary directory that resolves outside it", async () => {
       const tmp = await makeRoot();
@@ -224,10 +279,14 @@ describe.skipIf(process.platform !== "linux")(
       await expectProcessDoubt(target, unreadable);
 
       await expect(
-        processDoubtsIgnorableForRemoval(path.join(link, "bundle"), context()),
+        processDoubtsIgnorableForRemoval(
+          path.join(link, "bundle"),
+          context(),
+          [],
+        ),
       ).resolves.toBe(false);
       await expect(
-        processDoubtsIgnorableForRemoval(link, context()),
+        processDoubtsIgnorableForRemoval(link, context(), []),
       ).resolves.toBe(false);
       await expect(
         removeHostPath(
@@ -235,6 +294,7 @@ describe.skipIf(process.platform !== "linux")(
             type: "host.remove_path",
             path: path.join(link, "bundle"),
             recursive: true,
+            temporaryRemoval: noServerWorkspaces,
           },
           context(),
         ),
@@ -255,7 +315,12 @@ describe.skipIf(process.platform !== "linux")(
         status: "held",
       });
       const refused = removeHostPath(
-        { type: "host.remove_path", path: target, recursive: true },
+        {
+          type: "host.remove_path",
+          path: target,
+          recursive: true,
+          temporaryRemoval: noServerWorkspaces,
+        },
         context(),
       );
       await expect(refused).rejects.toMatchObject({ code: "path_in_use" });
@@ -269,7 +334,7 @@ describe.skipIf(process.platform !== "linux")(
       await expect(leftovers(root)).resolves.toEqual([]);
       expect(processes[1]?.exitCode).toBeNull();
       await expect(
-        processDoubtsIgnorableForRemoval(target, context()),
+        processDoubtsIgnorableForRemoval(target, context(), []),
       ).resolves.toBe(true);
     });
 
@@ -292,7 +357,12 @@ describe.skipIf(process.platform !== "linux")(
 
       await expect(
         removeHostPath(
-          { type: "host.remove_path", path: target, recursive: true },
+          {
+            type: "host.remove_path",
+            path: target,
+            recursive: true,
+            temporaryRemoval: noServerWorkspaces,
+          },
           context(),
         ),
       ).rejects.toMatchObject({ code: "path_in_use" });
@@ -303,7 +373,7 @@ describe.skipIf(process.platform !== "linux")(
 
     it("does not relax the temporary directory root itself", async () => {
       await expect(
-        processDoubtsIgnorableForRemoval(os.tmpdir(), context()),
+        processDoubtsIgnorableForRemoval(os.tmpdir(), context(), []),
       ).resolves.toBe(false);
     });
   },

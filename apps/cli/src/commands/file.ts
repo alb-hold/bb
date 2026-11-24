@@ -37,6 +37,7 @@ interface FileWriteOptions extends FileTargetOptions {
 
 interface FileRemoveOptions extends FileTargetOptions {
   recursive?: boolean;
+  temporary?: boolean;
   yes?: boolean;
 }
 
@@ -240,6 +241,10 @@ export function registerFileCommands(
     .command("remove <path>")
     .description("Remove a file or directory")
     .option("--recursive", "Remove a directory recursively")
+    .option(
+      "--temporary",
+      "Treat the directory as disposable temporary data: on Linux, an unreadable unrelated process no longer blocks the removal",
+    )
     .option("--yes", "Skip the confirmation prompt")
     .option("--host <id>", "Machine ID")
     .option("--root <path>", "Confining root path")
@@ -252,6 +257,7 @@ export function registerFileCommands(
           path,
           ...commonTarget(opts),
           recursive: opts.recursive,
+          ...(opts.temporary === true ? { temporary: true } : {}),
         });
         if (outputJson(opts, result)) return;
         console.log(`Removed ${path}`);
