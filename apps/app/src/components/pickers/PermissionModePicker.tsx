@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { PERMISSION_MODE_OPTIONS } from "@bb/client-core";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
@@ -7,6 +8,11 @@ import { Icon } from "@bb/shared-ui/icon";
 import { OptionPicker, type PickerOption } from "./OptionPicker";
 
 type PermissionModeOption = PickerOption<PermissionMode>;
+
+const PERMISSION_MODE_DESCRIPTIONS: Record<PermissionMode, string> =
+  Object.fromEntries(
+    PERMISSION_MODE_OPTIONS.map((option) => [option.value, option.description]),
+  ) as Record<PermissionMode, string>;
 
 export function getPermissionModeCompactLabel(value: PermissionMode): string {
   switch (value) {
@@ -19,12 +25,17 @@ export function getPermissionModeCompactLabel(value: PermissionMode): string {
   }
 }
 
+export function getPermissionModeDescription(value: PermissionMode): string {
+  return PERMISSION_MODE_DESCRIPTIONS[value];
+}
+
 function addPermissionModeCompactLabels(
   options: readonly PermissionModeOption[],
 ): PermissionModeOption[] {
   return options.map((option) => ({
     ...option,
     label: option.compactLabel ?? getPermissionModeCompactLabel(option.value),
+    description: option.description ?? getPermissionModeDescription(option.value),
     compactLabel: undefined,
   }));
 }
@@ -76,14 +87,19 @@ export function PermissionModePicker({
   if (!pending && value !== undefined && value !== lastValue) {
     setLastValue(value);
   }
-  const displayValue = pending
-    ? lastValue
-    : (value ?? lastValue);
+  const displayValue = pending ? lastValue : (value ?? lastValue);
   const modeLabel =
     compactOptions.find((option) => option.value === displayValue)?.label ??
     (displayValue === undefined
       ? "Permissions"
       : getPermissionModeCompactLabel(displayValue));
+  const modeDescription = displayOverride
+    ? displayOverride.description
+    : (compactOptions.find((option) => option.value === displayValue)
+        ?.description ??
+      (displayValue === undefined
+        ? undefined
+        : getPermissionModeDescription(displayValue)));
   const compactLabel =
     displayOverride?.compactLabel ?? displayOverride?.label ?? modeLabel;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
@@ -100,6 +116,7 @@ export function PermissionModePicker({
     <OptionPicker
       iconOnly={isCompactViewport}
       label="Permissions"
+      tooltip={modeDescription}
       value={displayValue}
       options={compactOptions}
       onChange={onChange}
@@ -142,6 +159,7 @@ export function PermissionModePicker({
         (pending
           ? {
               label: modeLabel,
+              description: modeDescription,
             }
           : undefined)
       }

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { focusWithKeyboard } from "@/test/keyboard-focus";
 import { PermissionModePicker } from "./PermissionModePicker";
 
 const options = [
@@ -298,6 +299,42 @@ it("keeps the phone permission name and menu while marking its collapsible label
   fireEvent.click(trigger);
   fireEvent.click(await screen.findByRole("menuitem", { name: /Ask first/ }));
   expect(onChange).toHaveBeenCalledWith("auto");
+});
+
+it("explains Full Access in a tooltip on keyboard focus and in its title", async () => {
+  render(
+    <PermissionModePicker
+      value="full"
+      options={options}
+      supported
+      onChange={vi.fn()}
+    />,
+  );
+  const trigger = screen.getByRole("button", { name: "Permissions" });
+  const expectedDescription =
+    "No sandbox and no approvals — the agent can run anything on your machine.";
+  expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
+    expectedDescription,
+  );
+  focusWithKeyboard(trigger);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    expectedDescription,
+  );
+});
+
+it("does not show the Full Access tooltip when a display override replaces the mode", () => {
+  render(
+    <PermissionModePicker
+      value="full"
+      options={options}
+      supported
+      displayOverride={{ label: "Plan Mode" }}
+      onChange={vi.fn()}
+    />,
+  );
+  const trigger = screen.getByRole("button", { name: "Permissions" });
+  focusWithKeyboard(trigger);
+  expect(screen.queryByRole("tooltip")).toBeNull();
 });
 
 it.each([
