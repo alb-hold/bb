@@ -19,9 +19,11 @@ import {
 } from "@bb/query-tags";
 import {
   threadWithRuntimeSchema,
+  type ThreadRuntimeState,
   type ThreadListEntry,
   type ThreadWithRuntime,
 } from "@bb/domain";
+import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import type { ThreadResponse } from "@bb/server-contract";
 import {
   ARCHIVED_THREADS_LIST_KIND,
@@ -298,12 +300,57 @@ function withFields<T extends object>(
   return base as T;
 }
 
-function mergeEntity(
+function nativeActivityEvidenceAt(runtime: unknown): number | undefined {
+  if (!isRecord(runtime) || !isRecord(runtime.nativeActivity)) return undefined;
+  const at = runtime.nativeActivity.lastEvidenceAt;
+  return typeof at === "number" ? at : undefined;
+}
+
+function keepNewestNativeActivity(
   current: ThreadEntity,
   threadFields: Fields,
+): Fields {
+  const incoming = threadFields.runtime;
+  const currentRuntime = current.thread.runtime;
+  const incomingAt = nativeActivityEvidenceAt(incoming);
+  const currentAt = nativeActivityEvidenceAt(currentRuntime);
+  if (
+    isRecord(incoming) &&
+    isRecord(currentRuntime) &&
+    incomingAt === undefined &&
+    currentAt !== undefined &&
+    typeof threadFields.updatedAt === "number" &&
+    typeof current.thread.updatedAt === "number" &&
+    threadFields.updatedAt <= current.thread.updatedAt &&
+    isRunningThreadRuntimeDisplayStatus(
+      incoming.displayStatus as ThreadRuntimeState["displayStatus"],
+    )
+  )
+    return {
+      ...threadFields,
+      runtime: { ...incoming, nativeActivity: currentRuntime.nativeActivity },
+    };
+  if (
+    !isRecord(incoming) ||
+    currentRuntime === undefined ||
+    incomingAt === undefined ||
+    currentAt === undefined ||
+    incomingAt >= currentAt
+  )
+    return threadFields;
+  return {
+    ...threadFields,
+    runtime: { ...incoming, nativeActivity: currentRuntime.nativeActivity },
+  };
+}
+
+function mergeEntity(
+  current: ThreadEntity,
+  incomingThreadFields: Fields,
   facet: Facet,
   facetFields: Fields,
 ): ThreadEntity {
+  const threadFields = keepNewestNativeActivity(current, incomingThreadFields);
   const thread = withFields(current.thread, threadFields) ?? current.thread;
   const facetValue = withFields(current[facet], facetFields);
   if (thread === current.thread && facetValue === current[facet])

@@ -525,6 +525,128 @@ describe("thread entity store", () => {
     s.queryClient.removeQueries({ queryKey: s.listKey });
     expect(getThreadEntity(s.queryClient, "t1")).toBeUndefined();
   });
+
+  it("keeps the newest native activity receipt when an older list read with the same updatedAt lands after it", async () => {
+    const receipt = (lastEvidenceAt: number) => ({
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt,
+        freshForMs: 90_000 as const,
+        confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
+      },
+    });
+    const server = [entry("t1", { status: "active", runtime: receipt(1_000) })];
+    const s = setup(server);
+    await s.fetchList(s.listKey, () => server);
+    updateCachedThreadListStatusState(s.queryClient, "t1", {
+      status: "active",
+      runtime: receipt(100_000),
+      activity: server[0]!.activity,
+      latestAttentionAt: 0,
+      updatedAt: 10,
+    });
+    await s.fetchList(s.listKey, () => server);
+    await s.fetchList(s.lateKey, () => server);
+
+    for (const rows of [s.sidebarRows(), s.listRows(), s.listRows(s.lateKey)])
+      expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
+  });
+
+  it("keeps the stored receipt when a delayed running row without one lands at the same updatedAt", async () => {
+    const withReceipt = entry("t1", {
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 100_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+          evidenceKind: "holder-report",
+        },
+      },
+    });
+    const delayed = entry("t1", {
+      status: "active",
+      runtime: { displayStatus: "active" },
+    });
+    const s = setup([withReceipt]);
+    await s.fetchList(s.listKey, () => [withReceipt]);
+    await s.fetchList(s.lateKey, () => [delayed]);
+
+    for (const rows of [s.sidebarRows(), s.listRows(), s.listRows(s.lateKey)])
+      expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
+  });
+
+  it("shows no receipt after error then a new active turn, each with a greater updatedAt", async () => {
+    const server = [
+      entry("t1", {
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: 100_000,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        },
+      }),
+    ];
+    const s = setup(server);
+    await s.fetchList(s.listKey, () => server);
+    for (const [status, updatedAt] of [
+      ["error", 11],
+      ["active", 12],
+    ] as const)
+      updateCachedThreadListStatusState(s.queryClient, "t1", {
+        status,
+        runtime: { displayStatus: status },
+        activity: server[0]!.activity,
+        latestAttentionAt: 0,
+        updatedAt,
+      });
+
+    for (const rows of [s.sidebarRows(), s.listRows()]) {
+      expect(rows[0]?.runtime.displayStatus).toBe("active");
+      expect(rows[0]?.runtime.nativeActivity).toBeUndefined();
+    }
+  });
+
+  it.each([
+    { updatedAt: 10, status: "error" as const },
+    { updatedAt: 11, status: "active" as const },
+  ])(
+    "clears the stored native activity receipt when a $status runtime without one arrives at updatedAt $updatedAt",
+    async ({ updatedAt, status }) => {
+      const server = [
+        entry("t1", {
+          status: "active",
+          runtime: {
+            displayStatus: "active",
+            nativeActivity: {
+              lastEvidenceAt: 100_000,
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+              evidenceKind: "holder-report",
+            },
+          },
+        }),
+      ];
+      const s = setup(server);
+      await s.fetchList(s.listKey, () => server);
+      updateCachedThreadListStatusState(s.queryClient, "t1", {
+        status,
+        runtime: { displayStatus: status },
+        activity: server[0]!.activity,
+        latestAttentionAt: 0,
+        updatedAt,
+      });
+
+      for (const rows of [s.sidebarRows(), s.listRows()])
+        expect(rows[0]?.runtime.nativeActivity).toBeUndefined();
+    },
+  );
 });
 
 function threadSubject(): KeyedStoreSubject {
