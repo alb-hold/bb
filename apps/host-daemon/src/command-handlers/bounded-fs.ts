@@ -1,7 +1,5 @@
 import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
-import path from "node:path";
-import { isPathWithinDirectory } from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
 export const FS_PROBE_DEADLINE_MS = 5000;
@@ -36,14 +34,6 @@ export function useFsProbesForTests(override: Partial<FsProbes> | null): void {
   pending.clear();
 }
 
-function sharesMountNeighbourhood(left: string, right: string): boolean {
-  return (
-    path.dirname(left) === path.dirname(right) ||
-    isPathWithinDirectory(left, right) ||
-    isPathWithinDirectory(right, left)
-  );
-}
-
 function strandedCount(): number {
   let count = 0;
   for (const entry of pending.values()) if (entry.stranded) count += 1;
@@ -69,14 +59,13 @@ function admissionRefusal(
         target,
         "an earlier check of this path is still waiting on the filesystem (a mount may be hung)",
       );
-  if (strandedCount() < probes.maxStranded) return null;
-  for (const entry of pending.values())
-    if (entry.stranded && sharesMountNeighbourhood(target, entry.target))
-      return refusal(
-        action,
-        target,
-        `${probes.maxStranded} filesystem checks nearby are already stuck (a mount may be hung)`,
-      );
+  const stuck = strandedCount();
+  if (stuck >= probes.maxStranded)
+    return refusal(
+      action,
+      target,
+      `${stuck} filesystem checks are already stuck (a mount may be hung) and new path checks wait until they settle`,
+    );
   return null;
 }
 

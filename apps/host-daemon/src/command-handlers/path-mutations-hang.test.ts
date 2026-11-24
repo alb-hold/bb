@@ -213,49 +213,45 @@ describe("host path checks against a filesystem that does not answer", () => {
     expect(calls).toBe(1);
   });
 
-  it("keeps an unrelated healthy removal working once the stranded-probe cap is reached", async () => {
+  it("refuses every new probe at the global stranded cap without starting a call, while plain fs work still runs", async () => {
     const root = await makeRoot();
-    const hungDirectoryA = path.join(root, "hung-a");
-    const hungDirectoryB = path.join(root, "hung-b");
+    const hung = ["a", "b"].map((name) => path.join(root, `hung-${name}`));
     const healthyDirectory = path.join(root, "healthy");
-    for (const directory of [
-      hungDirectoryA,
-      hungDirectoryB,
-      healthyDirectory,
-    ])
-      await fs.mkdir(directory);
-    const hungA = path.join(hungDirectoryA, "file.txt");
-    const hungB = path.join(hungDirectoryB, "file.txt");
-    const siblingOfA = path.join(hungDirectoryA, "other.txt");
+    await fs.mkdir(healthyDirectory);
+    for (const directory of hung) await fs.mkdir(directory);
+    const hungFiles = hung.map((directory) => path.join(directory, "f.txt"));
     const healthy = path.join(healthyDirectory, "file.txt");
-    for (const file of [hungA, hungB, siblingOfA, healthy])
+    for (const file of [...hungFiles, healthy])
       await fs.writeFile(file, "keep");
-    const started: string[] = [];
+    let calls = 0;
+    let releaseFirst: (() => void) | undefined;
     useFsProbesForTests({
       lstat: (target) => {
-        started.push(target);
-        return target === hungA || target === hungB
-          ? never()
-          : fs.lstat(target);
+        calls += 1;
+        if (target === hungFiles[0])
+          return new Promise((resolve) => {
+            releaseFirst = () => resolve(fs.lstat(target));
+          });
+        return hungFiles.includes(target) ? never() : fs.lstat(target);
       },
       deadlineMs: DEADLINE_MS,
       maxStranded: 2,
     });
-    await expect(remove(hungA, root)).rejects.toMatchObject({
+    for (const file of hungFiles)
+      await expect(remove(file)).rejects.toMatchObject({ code: "path_in_use" });
+    const before = calls;
+    const started = Date.now();
+    await expect(remove(healthy)).rejects.toMatchObject({
       code: "path_in_use",
     });
-    await expect(remove(hungB, root)).rejects.toMatchObject({
-      code: "path_in_use",
-    });
-    const before = started.length;
-    await expect(remove(siblingOfA, root)).rejects.toMatchObject({
-      code: "path_in_use",
-    });
-    expect(started.length).toBe(before);
+    expect(Date.now() - started).toBeLessThan(DEADLINE_MS);
+    expect(calls).toBe(before);
+    expect(await fs.readFile(healthy, "utf8")).toBe("keep");
+    releaseFirst?.();
+    await delay(20);
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(remove(healthy)).resolves.toEqual({ ok: true });
     await expect(fs.stat(healthy)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await fs.readFile(siblingOfA, "utf8")).toBe("keep");
   });
 
   it("starts a fresh probe once the stuck probe on a path finally settles", async () => {
