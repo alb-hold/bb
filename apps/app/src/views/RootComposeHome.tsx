@@ -124,7 +124,7 @@ export function RootComposeHome({
             isCompact
               ? "relative min-h-0 flex-1"
               : cn(
-                  "row-start-2 mx-auto flex w-full shrink-0 flex-col px-4 py-8",
+                  "row-start-2 mx-auto flex w-full min-w-0 shrink-0 flex-col px-4 pt-8",
                   ROOT_COMPOSE_MAX_WIDTH_CLASS,
                   wideContentClassName,
                 )
@@ -191,8 +191,19 @@ export function RootComposeHome({
               {compactScrollContent}
             </div>
           ) : null}
-          {isCompact ? null : homepageSections}
         </div>
+        {isCompact ? null : (
+          <div
+            data-testid="root-compose-desktop-homepage-sections"
+            className={cn(
+              "row-start-3 mx-auto flex w-full min-w-0 shrink-0 flex-col self-start px-4 pb-8",
+              ROOT_COMPOSE_MAX_WIDTH_CLASS,
+            )}
+            style={PAGE_SHELL_CONTENT_STYLE}
+          >
+            {homepageSections}
+          </div>
+        )}
       </div>
     </div>
   );
