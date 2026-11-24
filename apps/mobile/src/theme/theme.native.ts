@@ -2284,7 +2284,7 @@ default: {light: {
   cardForeground: "#c1c1c1",
   destructive: "#cc323d",
   destructiveForeground: "#ffffff",
-  destructiveText: "#e06062",
+  destructiveText: "#e76767",
   diffAdded: "#00d594",
   diffRemoved: "#ff696d",
   fileAccent: "#79a9db",

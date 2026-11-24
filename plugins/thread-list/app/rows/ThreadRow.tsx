@@ -120,6 +120,10 @@ import type {
   ThreadRowNestDrop,
 } from "./sidebarThreadRowDroppable.js";
 import type { SidebarSortableDragBindings } from "@/components/ui/sortable-motion";
+import {
+  SidebarSortHandle,
+  getSidebarPointerDragListeners,
+} from "../dnd/SidebarSortHandle.js";
 import { SidebarThreadDragChip } from "../dnd/sidebarThreadDragChip.js";
 import { SplitPaneMiniMap } from "@/components/ui/split-pane-mini-map";
 import { ThreadRowQuickActions } from "./ThreadRowQuickActions.js";
@@ -281,7 +285,7 @@ function ThreadRowContainer({
     "data-sidebar-nest-target": nestTargetState ?? undefined,
     "data-sidebar-reorder-placement": reorderPlacement ?? undefined,
     "data-sidebar-thread-selected": selected ? "" : undefined,
-    ...(dragBindings?.listeners ?? {}),
+    ...(getSidebarPointerDragListeners(dragBindings?.listeners) ?? {}),
     onClick,
     onClickCapture,
     onPointerDown: onSplitDragPointerDown,
@@ -834,7 +838,6 @@ function ThreadRowComponent({
   );
   const containerRef = useComposedRefs<HTMLDivElement>(
     setRowElementRef,
-    rowDragBindings?.setActivatorNodeRef,
     options.nestDrop?.setNodeRef,
   );
   const isActionsOpen = isDropdownActionsOpen || isContextActionsOpen;
@@ -972,6 +975,11 @@ function ThreadRowComponent({
 
   const rowContent = (
     <>
+      <SidebarSortHandle
+        dragBindings={rowDragBindings}
+        label={labelTitle}
+        className="group-data-[sidebar-touch-armed=true]/thread-row:hidden"
+      />
       {parentOptions?.stickyLevel !== undefined && parentGuideLeft !== null ? (
         <span
           aria-hidden="true"

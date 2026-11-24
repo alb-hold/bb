@@ -36,7 +36,8 @@ export class SidebarTouchSensor {
       event.target instanceof HTMLElement || event.target instanceof SVGElement
         ? event.target
         : this.document;
-    this.activator = props.activeNode.activatorNode.current ?? props.activeNode.node.current;
+    const rawActivator = props.activeNode.activatorNode.current ?? props.activeNode.node.current;
+    this.activator = rawActivator?.closest<HTMLElement>("[data-sidebar-rename-row]") ?? rawActivator;
     this.armedChip = this.activator?.querySelector("[data-sidebar-touch-armed-chip]") ?? null;
     this.touchTarget.addEventListener("touchmove", this.handleMove, { passive: false });
     this.touchTarget.addEventListener("touchend", this.handleEnd);

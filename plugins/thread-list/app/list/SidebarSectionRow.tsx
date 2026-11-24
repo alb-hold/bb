@@ -35,6 +35,10 @@ import {
 import { SidebarChildToggleChevron } from "../rows/SidebarChildToggleChevron.js";
 import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from "@get-bb/plugin-sdk/app";
 import type { SidebarSortableDragBindings } from "@/components/ui/sortable-motion";
+import {
+  SidebarSortHandle,
+  getSidebarPointerDragListeners,
+} from "../dnd/SidebarSortHandle.js";
 import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click-suppression";
 import {
   NO_HIDDEN_THREADS,
@@ -142,6 +146,10 @@ function SidebarSectionRowComponent({
   );
   const content = (
     <>
+      <SidebarSortHandle
+        dragBindings={labelEditor ? undefined : dragBindings}
+        label={`${label} section`}
+      />
       <button
         type="button"
         aria-hidden="true"
@@ -241,13 +249,12 @@ function SidebarSectionRowComponent({
   if (stickyLevel !== undefined) {
     return (
       <SidebarStickyTier
-        ref={dragBindings?.setActivatorNodeRef}
         data-sidebar-rename-row=""
         tier="parent"
         level={stickyLevel}
         className={className}
         style={style}
-        {...(dragBindings?.listeners ?? {})}
+        {...(getSidebarPointerDragListeners(dragBindings?.listeners) ?? {})}
         onClickCapture={
           consumeClickSuppression ? handleClickCapture : undefined
         }
@@ -259,11 +266,10 @@ function SidebarSectionRowComponent({
 
   return (
     <div
-      ref={dragBindings?.setActivatorNodeRef}
       data-sidebar-rename-row=""
       className={className}
       style={style}
-      {...(dragBindings?.listeners ?? {})}
+      {...(getSidebarPointerDragListeners(dragBindings?.listeners) ?? {})}
       onClickCapture={consumeClickSuppression ? handleClickCapture : undefined}
     >
       {content}

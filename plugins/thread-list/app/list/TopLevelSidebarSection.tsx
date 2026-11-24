@@ -31,6 +31,10 @@ import {
   useSectionDropTargetState,
 } from "../dnd/useSectionDropTargetState.js";
 import type { SidebarSortableDragBindings } from "@/components/ui/sortable-motion";
+import {
+  SidebarSortHandle,
+  getSidebarPointerDragListeners,
+} from "../dnd/SidebarSortHandle.js";
 import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import {
@@ -218,7 +222,6 @@ export function TopLevelSidebarSection({
         <SectionDropTargetOverlay state={threadDropState} />
       ) : null}
       <SidebarStickyTier
-        ref={dragBindings?.setActivatorNodeRef}
         tier="label"
         className={cn(
           SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
@@ -229,8 +232,12 @@ export function TopLevelSidebarSection({
           !stickyHeader && "relative top-auto",
           dragBindings && !dragBindings.disabled && "select-none",
         )}
-        {...(dragBindings?.listeners ?? {})}
+        {...(getSidebarPointerDragListeners(dragBindings?.listeners) ?? {})}
       >
+        <SidebarSortHandle
+          dragBindings={labelEditor ? undefined : dragBindings}
+          label={`${label} section`}
+        />
         <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1 text-left">
           {labelEditor ?? (
             <span

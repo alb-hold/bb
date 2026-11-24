@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { DndContext, type DragEndEvent } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   PluginProvidersState,
@@ -13,7 +20,12 @@ import {
 } from "@get-bb/plugin-sdk/testing/app";
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { SidebarSortableDragBindings } from "@/components/ui/sortable-motion";
+import {
+  useSidebarSortable,
+  type SidebarSortableDragBindings,
+} from "@/components/ui/sortable-motion";
+import { useSidebarReorderDnd } from "@/components/ui/use-sidebar-reorder-dnd";
+import { SidebarTouchSensor } from "../dnd/sidebarTouchSensor.js";
 import {
   makePluginProject,
   makeSidebarEnvironment,
@@ -84,6 +96,24 @@ function makeDragBindings(
     setActivatorNodeRef: vi.fn(),
     ...overrides,
   };
+}
+
+function stubVerticalRects(elements: readonly HTMLElement[], rowHeight = 32) {
+  elements.forEach((element, index) => {
+    const top = index * rowHeight;
+    const rect = {
+      x: 0,
+      y: top,
+      left: 0,
+      top,
+      right: 240,
+      bottom: top + rowHeight,
+      width: 240,
+      height: rowHeight,
+      toJSON: () => ({}),
+    } satisfies DOMRect;
+    vi.spyOn(element, "getBoundingClientRect").mockReturnValue(rect);
+  });
 }
 
 const DEFAULT_OPTIONS: ThreadRowOptions = {
@@ -271,6 +301,234 @@ describe("sidebar and drawer row accessibility", () => {
 
     const slot = renderSlot({ component: Harness }, {});
     expect(findNestedInteractivePairs(slot.container)).toEqual([]);
+  });
+
+  it("reorders sortable ThreadRow items with keyboard Space, ArrowDown, and Space without nested interactive controls", async () => {
+    const initialThreads = [
+      makeSidebarThread({ id: "thr_alpha", title: "Alpha", displayTitle: "Alpha" }),
+      makeSidebarThread({ id: "thr_beta", title: "Beta", displayTitle: "Beta" }),
+      makeSidebarThread({ id: "thr_gamma", title: "Gamma", displayTitle: "Gamma" }),
+    ];
+
+    function SortableThreadItem({ thread }: { thread: PluginSidebarThread }) {
+      const { dragBindings, setNodeRef, style } = useSidebarSortable({
+        id: thread.id,
+        disabled: false,
+      });
+      return (
+        <div ref={setNodeRef} style={style} data-sortable-thread-item={thread.id}>
+          <ThreadRow
+            thread={thread}
+            crossProjectId={null}
+            isActive={false}
+            options={{
+              ...DEFAULT_OPTIONS,
+              dragBindings,
+            }}
+          />
+        </div>
+      );
+    }
+
+    function Harness() {
+      const [threads, setThreads] = useState(initialThreads);
+      const handleDragEnd = (event: DragEndEvent) => {
+        if (!event.over || event.active.id === event.over.id) {
+          return;
+        }
+        setThreads((current) => {
+          const oldIndex = current.findIndex((item) => item.id === event.active.id);
+          const newIndex = current.findIndex((item) => item.id === event.over?.id);
+          if (oldIndex < 0 || newIndex < 0) {
+            return current;
+          }
+          return arrayMove(current, oldIndex, newIndex);
+        });
+      };
+      const { dndContextProps } = useSidebarReorderDnd({
+        onDragEnd: handleDragEnd,
+        touchSensor: SidebarTouchSensor,
+      });
+
+      return (
+        <CompactViewportOverrideProvider isCompactViewport={false}>
+          <SidebarRowMetadataExperiment>
+            <SidebarProjectNamesContext.Provider value={new Map()}>
+              <SidebarProvidersContext.Provider value={[TEST_PROVIDER]}>
+                <TooltipProvider>
+                  <SidebarDraftPresenceSync />
+                  <ThreadRowNavigationProvider>
+                    <ThreadSelectionProvider activeThreadId={null}>
+                      <SidebarRenameProvider>
+                        <CustomizeRowActionsContext.Provider value={null}>
+                          <ThreadRowActionsCustomizingContext.Provider value={null}>
+                            <DndContext {...dndContextProps}>
+                              <SortableContext
+                                items={threads.map((thread) => thread.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                {threads.map((thread) => (
+                                  <SortableThreadItem
+                                    key={thread.id}
+                                    thread={thread}
+                                  />
+                                ))}
+                              </SortableContext>
+                            </DndContext>
+                          </ThreadRowActionsCustomizingContext.Provider>
+                        </CustomizeRowActionsContext.Provider>
+                      </SidebarRenameProvider>
+                    </ThreadSelectionProvider>
+                  </ThreadRowNavigationProvider>
+                </TooltipProvider>
+              </SidebarProvidersContext.Provider>
+            </SidebarProjectNamesContext.Provider>
+          </SidebarRowMetadataExperiment>
+        </CompactViewportOverrideProvider>
+      );
+    }
+
+    const slot = renderSlot(
+      { component: Harness },
+      {},
+      {
+        sidebarThreads: { threads: initialThreads, projects: [] },
+        providers: { providers: [TEST_PROVIDER] },
+      },
+    );
+
+    expect(findNestedInteractivePairs(slot.container)).toEqual([]);
+
+    const sortableItems = Array.from(
+      slot.container.querySelectorAll<HTMLElement>("[data-sortable-thread-item]"),
+    );
+    stubVerticalRects(sortableItems, 32);
+
+    const handle = screen.getByRole("button", { name: "Move Alpha" });
+    expect(handle.getAttribute("role")).toBe("button");
+    expect(handle.tabIndex).toBe(0);
+    expect(handle.getAttribute("aria-roledescription")).toBe("sortable");
+
+    act(() => {
+      handle.focus();
+    });
+    expect(document.activeElement).toBe(handle);
+
+    fireEvent.keyDown(handle, { key: " ", code: "Space" });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.keyDown(document, { key: "ArrowDown", code: "ArrowDown" });
+    fireEvent.keyDown(document, { key: " ", code: "Space" });
+
+    const orderedLinks = screen
+      .getAllByRole("link", { name: /^Open / })
+      .map((element) => element.getAttribute("aria-label"));
+    expect(orderedLinks).toEqual(["Open Beta", "Open Alpha", "Open Gamma"]);
+  });
+
+  it("reorders sortable TopLevelSidebarSection headers with keyboard Space, ArrowDown, and Space", async () => {
+    const initialSections = [
+      { id: "pinned", label: "Pinned" },
+      { id: "recents", label: "Recents" },
+    ];
+
+    function SortableSectionItem({
+      id,
+      label,
+    }: {
+      id: string;
+      label: string;
+    }) {
+      const { dragBindings, setNodeRef, style } = useSidebarSortable({
+        id,
+        disabled: false,
+      });
+      return (
+        <div ref={setNodeRef} style={style} data-sortable-section-item={id}>
+          <TopLevelSidebarSection
+            label={label}
+            dragBindings={dragBindings}
+            collapseControl={{
+              isCollapsed: false,
+              onToggleCollapsed: vi.fn(),
+            }}
+          >
+            <div>{`${label} body`}</div>
+          </TopLevelSidebarSection>
+        </div>
+      );
+    }
+
+    function Harness() {
+      const [sections, setSections] = useState(initialSections);
+      const handleDragEnd = (event: DragEndEvent) => {
+        if (!event.over || event.active.id === event.over.id) {
+          return;
+        }
+        setSections((current) => {
+          const oldIndex = current.findIndex((item) => item.id === event.active.id);
+          const newIndex = current.findIndex((item) => item.id === event.over?.id);
+          if (oldIndex < 0 || newIndex < 0) {
+            return current;
+          }
+          return arrayMove(current, oldIndex, newIndex);
+        });
+      };
+      const { dndContextProps } = useSidebarReorderDnd({
+        onDragEnd: handleDragEnd,
+        touchSensor: SidebarTouchSensor,
+      });
+
+      return (
+        <TooltipProvider>
+          <DndContext {...dndContextProps}>
+            <SortableContext
+              items={sections.map((section) => section.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              {sections.map((section) => (
+                <SortableSectionItem
+                  key={section.id}
+                  id={section.id}
+                  label={section.label}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
+        </TooltipProvider>
+      );
+    }
+
+    const slot = renderSlot({ component: Harness }, {});
+    expect(findNestedInteractivePairs(slot.container)).toEqual([]);
+
+    const sortableItems = Array.from(
+      slot.container.querySelectorAll<HTMLElement>("[data-sortable-section-item]"),
+    );
+    stubVerticalRects(sortableItems, 48);
+
+    const handle = screen.getByRole("button", { name: "Move Pinned section" });
+    expect(handle.getAttribute("role")).toBe("button");
+    expect(handle.tabIndex).toBe(0);
+    expect(handle.getAttribute("aria-roledescription")).toBe("sortable");
+
+    act(() => {
+      handle.focus();
+    });
+    expect(document.activeElement).toBe(handle);
+
+    fireEvent.keyDown(handle, { key: " ", code: "Space" });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.keyDown(document, { key: "ArrowDown", code: "ArrowDown" });
+    fireEvent.keyDown(document, { key: " ", code: "Space" });
+
+    const orderedSections = Array.from(
+      slot.container.querySelectorAll<HTMLElement>("[data-sortable-section-item]"),
+    ).map((element) => element.dataset.sortableSectionItem);
+    expect(orderedSections).toEqual(["recents", "pinned"]);
   });
 
   it("keeps the PR badge and child toggle chevron at or above the 24px touch target floor", async () => {
