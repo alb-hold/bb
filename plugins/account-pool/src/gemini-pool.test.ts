@@ -2872,6 +2872,55 @@ describe("Gemini bare family ids through the pool", () => {
     ).toEqual(["gemini-4-neon"]);
   });
 
+  it.each([
+    {
+      name: "keeps a Google-served bare id when its legacy entry also has a suffixed sibling",
+      saved: ["gemini-4-neon", "gemini-4-neon-medium"],
+      expected: "gemini-4-neon",
+    },
+    {
+      name: "resolves a bare id from a legacy entry with only suffixed Google ids",
+      saved: ["gemini-4-neon-low", "gemini-4-neon-medium"],
+      expected: "gemini-4-neon-medium",
+    },
+  ])("$name after restart and failed list fetch", async ({ saved, expected }) => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: servedOnly(saved),
+      rejectUnservedModels: true,
+      modelListFails: () => true,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const first = await createGeminiFixture(google, { "/homes/a": creds("tok-a") });
+    const added = await addGemini(first.host, "/homes/a", 0);
+    const kept: Record<string, unknown> = {
+      "gemini-served-models:v1": { [added.id]: saved },
+    };
+    for (const key of ["accounts:v1", "accounts:gemini:v1"]) {
+      const value = await first.host.bb.storage.kv.get(key);
+      if (value !== undefined && value !== null) kept[key] = value;
+    }
+    await first.stop();
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { dataDir: first.dataDir, kv: kept },
+    );
+    const env = await geminiEnv(fixture.host);
+    const response = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    await response.text();
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual([expected]);
+  });
+
   it("sends the id unchanged, after one failed model list, when the account has no saved ids", async () => {
     const google = await startGoogle({
       projects: { "tok-a": "proj-a" },

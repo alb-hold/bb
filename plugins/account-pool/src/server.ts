@@ -1396,8 +1396,16 @@ export function createAccountPoolPlugin(
       );
     }
     for (const id of STATIC_GEMINI_MODEL_IDS) routeGeminiModel(id);
-    for (const entry of Object.values(geminiServedModels))
-      for (const id of "served" in entry ? [...entry.served, ...entry.aliases] : entry) routeGeminiModel(id);
+    for (const entry of Object.values(geminiServedModels)) {
+      const ids = "served" in entry ? [...entry.served, ...entry.aliases] : entry;
+      for (const id of ids) {
+        routeGeminiModel(id);
+        if (Array.isArray(entry)) {
+          const family = id.replace(/-(?:low|medium|high|xhigh)$/u, "");
+          if (family !== id) routeGeminiModel(family);
+        }
+      }
+    }
     bb.http.route(
       "GET",
       CLAUDE_MODELS_ROUTE,

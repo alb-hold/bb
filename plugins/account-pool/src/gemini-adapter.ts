@@ -932,8 +932,7 @@ export function createGeminiAdapter(options: {
     const saved = options.savedModels?.()[accountId];
     if (saved === undefined || ("served" in saved ? saved.served.length === 0 : saved.length === 0)) return undefined;
     if ("served" in saved) return new Set(saved.served);
-    const ids = new Set(saved);
-    return new Set(saved.filter((id) => !isServedFamily(id, ids)));
+    return new Set(saved);
   };
   const refreshServed = (
     account: Account,
