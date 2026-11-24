@@ -185,7 +185,7 @@ function SortableProjectRow({
               {needsSetup ? <SettingsBadge>needs setup</SettingsBadge> : null}
               {allOffline ? <SettingsBadge>offline</SettingsBadge> : null}
             </div>
-            <div className="min-w-0 space-y-0.5 text-xs text-subtle-foreground/75">
+            <div className="min-w-0 space-y-0.5 text-xs text-subtle-foreground">
               {remoteLabel === null ? (
                 <div className="italic">No git remote</div>
               ) : (

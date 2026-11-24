@@ -75,7 +75,7 @@ function PluginSettingsSectionList({
               </h3>
             )}
             {section.description === undefined ? null : (
-              <p className="text-xs leading-snug text-subtle-foreground/75">
+              <p className="text-xs leading-snug text-subtle-foreground">
                 {section.description}
               </p>
             )}

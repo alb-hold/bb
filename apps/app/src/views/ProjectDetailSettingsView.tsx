@@ -136,7 +136,7 @@ function CheckoutRow({
             <Pill variant="destructive">Path not found</Pill>
           ) : null}
         </div>
-        <div className="min-w-0 truncate font-mono text-xs text-subtle-foreground/75">
+        <div className="min-w-0 truncate font-mono text-xs text-subtle-foreground">
           {source === null ? (
             <span className="font-sans italic">Not set up on this machine</span>
           ) : (
@@ -386,7 +386,7 @@ export function ProjectDetailSettingsView() {
                   <SettingsBadge>needs setup</SettingsBadge>
                 ) : null}
               </div>
-              <p className="mt-1 min-w-0 truncate text-xs text-subtle-foreground/75">
+              <p className="mt-1 min-w-0 truncate text-xs text-subtle-foreground">
                 {remoteLabel ?? "No git remote"}
                 {" · "}
                 {hosts.length > 1
