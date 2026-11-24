@@ -1,5 +1,16 @@
-import { runInNewContext } from "node:vm";
 import { execFileSync } from "node:child_process";
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+import { build } from "vite";
 import { expect, it, vi } from "vitest";
 import { initialThreadPreload } from "../vite-initial-thread-preload";
 
@@ -48,6 +59,10 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
       ),
       "shared.js": chunk("shared.js", "/app/shared.ts"),
       "other.js": chunk("other.js", "/app/settings.ts"),
+      "assets/initial-terminal-connect-a1b2c3d4.js": chunk(
+        "assets/initial-terminal-connect-a1b2c3d4.js",
+        "/app/src/lib/initial-terminal-connect.ts",
+      ),
     },
   });
   const links: Array<{ href: string; rel: string; fetchPriority: string }> = [];
@@ -111,7 +126,7 @@ it.each(["/threads/thr_abc", "/projects/proj_a/threads/thr_abc/"])(
       injectTo: "head-prepend",
       attrs: { id: "bb-initial-terminal-connect" },
       children:
-        'if(globalThis.__bbInitialNativeTerminalRequest)import("/assets/initial-terminal-connect.js")',
+        'if(globalThis.__bbInitialNativeTerminalRequest)import("/assets/initial-terminal-connect-a1b2c3d4.js")',
     });
     expect(state.links.map((link) => link.href)).toEqual([
       "/workspace.js",
@@ -240,4 +255,67 @@ it("evaluates the concrete route and panel entries after HTML parsing without a 
     "terminal-head-thread-import-end",
     { detail: { elapsed: 0, lastResponseEnd: 10, resources: 3 } },
   ]);
+});
+
+it("emits a content-hashed initial-terminal-connect chunk and references that exact file in index.html", async () => {
+  const buildWithConnector = async (connectorSource: string) => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "bb-initial-thread-preload-")),
+    );
+    try {
+      await writeFile(
+        join(root, "index.html"),
+        '<html><head><script type="module" src="/main.js"></script></head></html>',
+      );
+      await writeFile(join(root, "main.js"), "window.boot = true;");
+      await build({
+        root,
+        base: "/app/",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [
+          {
+            name: "fixture-initial-terminal-connector",
+            load(id) {
+              if (id.endsWith("/src/lib/initial-terminal-connect.ts")) {
+                return connectorSource;
+              }
+            },
+          },
+          initialThreadPreload(),
+        ],
+        build: { minify: false },
+      });
+      const assets = await readdir(join(root, "dist/assets"));
+      const html = await readFile(join(root, "dist/index.html"), "utf8");
+      return { assets, html };
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+
+  const first = await buildWithConnector(
+    'window.initialTerminalConnector = "v1";',
+  );
+  const second = await buildWithConnector(
+    'window.initialTerminalConnector = "v2";',
+  );
+
+  const firstConnector = first.assets.find((file) =>
+    /^initial-terminal-connect-[\w-]+\.js$/u.test(file),
+  );
+  const secondConnector = second.assets.find((file) =>
+    /^initial-terminal-connect-[\w-]+\.js$/u.test(file),
+  );
+
+  expect(first.assets).not.toContain("initial-terminal-connect.js");
+  expect(firstConnector).toBeDefined();
+  expect(secondConnector).toBeDefined();
+  expect(firstConnector).not.toBe(secondConnector);
+  expect(first.html).toContain(
+    `<script id="bb-initial-terminal-connect">if(globalThis.__bbInitialNativeTerminalRequest)import("/app/assets/${firstConnector}")</script>`,
+  );
+  expect(second.html).toContain(
+    `<script id="bb-initial-terminal-connect">if(globalThis.__bbInitialNativeTerminalRequest)import("/app/assets/${secondConnector}")</script>`,
+  );
 });
