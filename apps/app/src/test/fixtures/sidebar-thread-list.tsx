@@ -28,6 +28,7 @@ import {
   SidebarContent,
   SidebarProvider,
 } from "@/components/ui/sidebar";
+import { QuickCreateProjectProvider } from "@/hooks/useQuickCreateProject";
 import { isPluginAppDefinition } from "@/lib/plugin-app-definition";
 import { installPluginRuntime } from "@/lib/plugin-frontend";
 import type { ResolvedReplacement } from "@/lib/plugin-slot-resolvers";
@@ -207,11 +208,13 @@ export function SidebarThreadListHarness({
       <JotaiProvider store={createStore()}>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <SidebarProvider defaultOpen={sidebarOpen}>
-              <Sidebar>
-                <SidebarContent>{children}</SidebarContent>
-              </Sidebar>
-            </SidebarProvider>
+            <QuickCreateProjectProvider>
+              <SidebarProvider defaultOpen={sidebarOpen}>
+                <Sidebar>
+                  <SidebarContent>{children}</SidebarContent>
+                </Sidebar>
+              </SidebarProvider>
+            </QuickCreateProjectProvider>
           </MemoryRouter>
         </QueryClientProvider>
       </JotaiProvider>
