@@ -79,10 +79,17 @@ export function createNativeActivityWiring(options: {
 }
 
 export function createNativeActivityPump(options: {
-  reader(): { read(): NativeActivityReport[] } | null;
+  reader(): {
+    read(): NativeActivityReport[];
+    takeSessionStarted?(): string | null;
+  } | null;
   report(next: NativeActivityReport): void;
+  sessionStarted?(sessionId: string): void;
 }): () => void {
   return () => {
-    for (const next of options.reader()?.read() ?? []) options.report(next);
+    const reader = options.reader();
+    for (const next of reader?.read() ?? []) options.report(next);
+    const started = reader?.takeSessionStarted?.() ?? null;
+    if (started !== null) options.sessionStarted?.(started);
   };
 }

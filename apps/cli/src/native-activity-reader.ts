@@ -120,6 +120,8 @@ export class NativeActivityReader {
   >();
   private readonly completedTurns = new Map<string, string>();
 
+  private sessionStartedAt: string | null = null;
+
   constructor(
     private readonly cli: ProviderNativeTerminal,
     private readonly env: NativeHarnessEnv,
@@ -154,6 +156,12 @@ export class NativeActivityReader {
       this.transcriptFile = this.findTranscript();
       this.transcriptTail = new JsonlTail(0);
     }
+  }
+
+  takeSessionStarted(): string | null {
+    const started = this.sessionStartedAt;
+    this.sessionStartedAt = null;
+    return started;
   }
 
   sessionDiscovered(sessionId: string): void {
@@ -264,6 +272,14 @@ export class NativeActivityReader {
             unconfirmedHookReasons.add(reason);
             continue;
           }
+        }
+        const hookEvent = readRecordField(record, "hook_event_name");
+        if (
+          typeof hookEvent === "string" &&
+          hooks.started?.includes(hookEvent) === true
+        ) {
+          this.sessionStartedAt = this.sessionId;
+          continue;
         }
         const signal = classifyHookRecord(hooks, record);
         const hookSequence = hookSequenceOf(record);

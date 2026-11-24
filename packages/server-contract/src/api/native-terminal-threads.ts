@@ -44,6 +44,7 @@ export type OpenNativeTerminalRequest = z.infer<
 
 export const nativeTerminalLaunchQuerySchema = z.object({
   images: z.literal("argv").optional(),
+  sessionStart: z.literal("reported").optional(),
 });
 export type NativeTerminalLaunchQuery = z.infer<
   typeof nativeTerminalLaunchQuerySchema
@@ -97,7 +98,8 @@ export const reportNativeTerminalActivityRequestSchema = z
   .object({
     state: nativeTerminalActivityStateSchema,
     lastAssistantText: z.preprocess(
-      (value) => typeof value === "string" ? truncateNativeAssistantText(value) : value,
+      (value) =>
+        typeof value === "string" ? truncateNativeAssistantText(value) : value,
       z.string().optional(),
     ),
     prompt: z.string().trim().min(1).max(4_000).optional(),

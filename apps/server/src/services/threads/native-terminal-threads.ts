@@ -19,6 +19,8 @@ import {
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
+  awaitNativeTerminalSessionStart,
+  settleNativeTerminalSessionStart,
   rebindNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
@@ -581,13 +583,14 @@ async function openNativeTerminalOnce(
         if (current?.terminalSessionId !== terminal.id) return;
         const currentTerminal = readRecordTerminal(deps, current);
         if (
-          current.nativeSessionId !== null ||
+          (current.nativeSessionId !== null && !current.awaitingSessionStart) ||
           currentTerminal?.status !== "running"
         )
           return;
         if (
           nativeTerminalMayNeedSetup({
             nativeSessionId: current.nativeSessionId,
+            awaitingSessionStart: current.awaitingSessionStart,
             terminal: currentTerminal,
             now: Date.now(),
           })
@@ -1093,11 +1096,25 @@ function launchInputWithImagesInPrompt(input: {
 
 export function takeNativeTerminalLaunchSpec(
   deps: Pick<AppDeps, "db" | "providerRegistry">,
-  args: { imagesAsArgv: boolean; threadId: string },
+  args: {
+    imagesAsArgv: boolean;
+    reportsSessionStart: boolean;
+    threadId: string;
+  },
 ): NativeTerminalLaunchSpec {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
   const provider = requireNativeTerminalProvider(deps, record.providerId);
   const input = consumeNativeTerminalThreadLaunchInput(deps.db, args.threadId);
+  if (
+    args.reportsSessionStart &&
+    record.terminalSessionId !== null &&
+    provider.cli.activity?.hooks?.started !== undefined
+  ) {
+    awaitNativeTerminalSessionStart(deps.db, {
+      terminalSessionId: record.terminalSessionId,
+      threadId: args.threadId,
+    });
+  }
   return {
     threadId: record.threadId,
     providerId: record.providerId,
@@ -1293,12 +1310,22 @@ export function recordNativeTerminalSession(
   const result = recordNativeTerminalThreadSessionId(deps.db, args);
   switch (result.kind) {
     case "recorded":
+      settleNativeTerminalSessionStart(deps.db, { threadId: args.threadId });
       deps.hub?.notifyThread(args.threadId, [
         "terminals-changed",
         "status-changed",
       ]);
       break;
     case "unchanged":
+      if (
+        settleNativeTerminalSessionStart(deps.db, { threadId: args.threadId })
+          .settled
+      ) {
+        deps.hub?.notifyThread(args.threadId, [
+          "terminals-changed",
+          "status-changed",
+        ]);
+      }
       break;
     case "already-bound": {
       if (args.replacesNativeSessionId === undefined) {

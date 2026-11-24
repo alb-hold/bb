@@ -1,6 +1,7 @@
 import {
   createNativeTerminalThread,
   createTerminalSession,
+  awaitNativeTerminalSessionStart,
   getThread,
   setNativeTerminalThreadTerminal,
   setNativeTerminalToolCredential,
@@ -17,7 +18,10 @@ import {
   type NativeStatusContractCase,
 } from "@bb/test-helpers";
 import { describe, expect, it, vi } from "vitest";
-import { recordNativeTerminalSession } from "../../../src/services/threads/native-terminal-threads.js";
+import {
+  recordNativeTerminalSession,
+  takeNativeTerminalLaunchSpec,
+} from "../../../src/services/threads/native-terminal-threads.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -86,6 +90,12 @@ function seedContractCase(
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
+  if (contractCase.awaitingSessionStart) {
+    awaitNativeTerminalSessionStart(harness.db, {
+      threadId: thread.id,
+      terminalSessionId: terminal.id,
+    });
+  }
   const createdAt = now - contractCase.terminalAgeMs;
   harness.db.$client
     .prepare(
@@ -150,6 +160,85 @@ describe("V5 server: shared native terminal status contract", () => {
       });
     },
   );
+
+  it("clears a pre-assigned session's Needs input when the started signal arrives, and only then", async () => {
+    await withHarness(async (harness) => {
+      const awaitingCase = NATIVE_STATUS_CONTRACT_CASES.find(
+        (entry) => entry.name === "preassigned-awaiting-start",
+      )!;
+      const { threadId, terminalId } = seedContractCase(harness, awaitingCase);
+      const read = async () =>
+        threadResponseSchema.parse(
+          await (
+            await harness.app.request(`/api/v1/threads/${threadId}`)
+          ).json(),
+        );
+      expect((await read()).runtime.nativeSetupWaiting).toBe(true);
+
+      const secret = "test-native-credential-token";
+      setNativeTerminalToolCredential(harness.db, {
+        threadId,
+        terminalSessionId: terminalId,
+        credentialHash: createHash("sha256").update(secret).digest("hex"),
+      });
+      const notifySpy = vi.spyOn(harness.deps.hub, "notifyThread");
+      recordNativeTerminalSession(harness.deps, {
+        authorization: `Bearer ${secret}`,
+        nativeSessionId: awaitingCase.nativeSessionId!,
+        threadId,
+      });
+      expect(notifySpy).toHaveBeenCalledWith(threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
+      expect((await read()).runtime.nativeSetupWaiting).toBeUndefined();
+    });
+  });
+
+  it.each([
+    { reportsSessionStart: true, expected: true },
+    { reportsSessionStart: false, expected: undefined },
+  ])(
+    "arms the started-signal wait from the launch request (reportsSessionStart=$reportsSessionStart)",
+    async ({ reportsSessionStart, expected }) => {
+      await withHarness(async (harness) => {
+        const awaitingCase = NATIVE_STATUS_CONTRACT_CASES.find(
+          (entry) => entry.name === "preassigned-awaiting-start",
+        )!;
+        const { threadId } = seedContractCase(harness, {
+          ...awaitingCase,
+          awaitingSessionStart: false,
+        });
+        takeNativeTerminalLaunchSpec(harness.deps, {
+          imagesAsArgv: true,
+          reportsSessionStart,
+          threadId,
+        });
+        const response = threadResponseSchema.parse(
+          await (
+            await harness.app.request(`/api/v1/threads/${threadId}`)
+          ).json(),
+        );
+        expect(response.runtime.nativeSetupWaiting).toBe(expected);
+      });
+    },
+  );
+
+  it("does not hold a holder that never asked for the started signal in Needs input", async () => {
+    await withHarness(async (harness) => {
+      const awaitingCase = NATIVE_STATUS_CONTRACT_CASES.find(
+        (entry) => entry.name === "preassigned-awaiting-start",
+      )!;
+      const { threadId } = seedContractCase(harness, {
+        ...awaitingCase,
+        awaitingSessionStart: false,
+      });
+      const response = threadResponseSchema.parse(
+        await (await harness.app.request(`/api/v1/threads/${threadId}`)).json(),
+      );
+      expect(response.runtime.nativeSetupWaiting).toBeUndefined();
+    });
+  });
 
   it("clears server nativeSetupWaiting on user input and session binding and notifies status-changed", async () => {
     await withHarness(async (harness) => {

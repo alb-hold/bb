@@ -19,6 +19,7 @@ import {
   createNativeActivityWiring,
 } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
+import { createNativeSessionStartedReporter } from "../../native-session-started.js";
 import {
   prepareNativeSettings,
   removePinnedNativeSettings,
@@ -246,9 +247,18 @@ async function holdNativeHarness(
     report,
     retryReport: reporter.retry,
   });
+  const sessionStarted = createNativeSessionStartedReporter({
+    currentCredential: () => currentCredential(),
+    log: (event, fields) => {
+      if (ownsSocket) logNativeHolderEvent(socketPath, event, fields);
+    },
+    recordSession: (args) =>
+      sdk.nativeTerminals.recordSession({ ...args, threadId }),
+  });
   const readActivity = createNativeActivityPump({
     reader: () => reader,
     report,
+    sessionStarted: sessionStarted.note,
   });
   const finishActivity = (): void => {
     report(reader?.finish() ?? null);
@@ -270,6 +280,7 @@ async function holdNativeHarness(
       currentCredential = readCredential;
       const spec = await sdk.nativeTerminals.launch({
         imagesAsArgv: true,
+        reportsSessionStart: true,
         threadId,
       });
       const activity = spec.cli.activity;
@@ -351,6 +362,11 @@ async function holdNativeHarness(
         mcpArgs,
         cwd,
       );
+      if (hooks?.started !== undefined && hookTarget === null) {
+        if (launch.session.kind !== "discover") {
+          sessionStarted.note(launch.session.id);
+        }
+      }
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
       discoverer.arm(launch.session.kind === "discover");
       reader = new NativeActivityReader(
@@ -391,7 +407,10 @@ async function holdNativeHarness(
       if (activity !== undefined) {
         activityTimers.push(
           setInterval(readActivity, ACTIVITY_POLL_INTERVAL_MS),
-          setInterval(wiring.onHeartbeatTick, ACTIVITY_HEARTBEAT_INTERVAL_MS),
+          setInterval(() => {
+            wiring.onHeartbeatTick();
+            sessionStarted.retry();
+          }, ACTIVITY_HEARTBEAT_INTERVAL_MS),
         );
       }
       return { command: launch.command, args: launch.args };
@@ -421,7 +440,11 @@ async function holdNativeHarness(
   readActivity();
   finishActivity();
   await Promise.race([
-    Promise.all([reporter.settled(), wiring.settled()]),
+    Promise.all([
+      reporter.settled(),
+      wiring.settled(),
+      sessionStarted.settled(),
+    ]),
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
   ]);
   if (hookSpoolDirectory !== null) removeHookSpool(hookSpoolDirectory);

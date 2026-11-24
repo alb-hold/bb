@@ -10,6 +10,7 @@ export interface NativeTerminalThreadRecord {
   terminalCreatedAt: number | null;
   terminalLastUserInputAt: number | null;
   terminalCleanExit: boolean;
+  awaitingSessionStart: boolean;
   lostIdleTerminalSessionId: string | null;
   lastEvidenceAt: number | null;
   lastEvidenceKind: "holder-report" | "transcript" | null;
@@ -27,23 +28,33 @@ const CLEAN_EXIT_COLUMN = `CASE
   THEN 1 ELSE 0
 END AS terminalCleanExit`;
 
+const AWAITING_SESSION_START_COLUMN = `CASE
+  WHEN n.session_start_awaited_terminal_id IS NOT NULL
+    AND n.session_start_awaited_terminal_id = n.terminal_session_id
+  THEN 1 ELSE 0
+END AS awaitingSessionStart`;
+
 const SELECT_COLUMNS = `n.thread_id AS threadId, n.provider_id AS providerId, n.native_session_id AS nativeSessionId,
-  n.terminal_session_id AS terminalSessionId, t.status AS terminalStatus, t.created_at AS terminalCreatedAt, t.last_user_input_at AS terminalLastUserInputAt, ${CLEAN_EXIT_COLUMN}, n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId, n.last_evidence_at AS lastEvidenceAt,
+  n.terminal_session_id AS terminalSessionId, t.status AS terminalStatus, t.created_at AS terminalCreatedAt, t.last_user_input_at AS terminalLastUserInputAt, ${CLEAN_EXIT_COLUMN}, ${AWAITING_SESSION_START_COLUMN}, n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId, n.last_evidence_at AS lastEvidenceAt,
   n.last_evidence_kind AS lastEvidenceKind,
   n.last_tool_call_at AS lastToolCallAt, n.last_tool_call_session_id AS lastToolCallSessionId,
   n.initial_prompt AS initialPrompt, n.prompt, n.model,
   n.created_at AS createdAt, n.updated_at AS updatedAt`;
 
-type RawNativeTerminalThreadRow<T extends { terminalCleanExit: boolean }> = Omit<T, "terminalCleanExit"> & {
+type RawNativeTerminalThreadRow<
+  T extends { terminalCleanExit: boolean; awaitingSessionStart: boolean },
+> = Omit<T, "terminalCleanExit" | "awaitingSessionStart"> & {
   terminalCleanExit: number;
+  awaitingSessionStart: number;
 };
 
-function mapTerminalCleanExit<T extends { terminalCleanExit: boolean }>(
-  row: RawNativeTerminalThreadRow<T>,
-): T {
+function mapTerminalCleanExit<
+  T extends { terminalCleanExit: boolean; awaitingSessionStart: boolean },
+>(row: RawNativeTerminalThreadRow<T>): T {
   return {
     ...row,
     terminalCleanExit: row.terminalCleanExit === 1,
+    awaitingSessionStart: row.awaitingSessionStart === 1,
   } as unknown as T;
 }
 
@@ -79,6 +90,15 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   ) {
     db.$client.exec(
       "ALTER TABLE fork_native_terminal_threads ADD COLUMN lost_idle_terminal_session_id TEXT",
+    );
+  }
+  if (
+    !columns.some(
+      (column) => column.name === "session_start_awaited_terminal_id",
+    )
+  ) {
+    db.$client.exec(
+      "ALTER TABLE fork_native_terminal_threads ADD COLUMN session_start_awaited_terminal_id TEXT",
     );
   }
   if (!columns.some((column) => column.name === "initial_images")) {
@@ -159,6 +179,7 @@ export function createNativeTerminalThread(
     terminalCreatedAt: null,
     terminalLastUserInputAt: null,
     terminalCleanExit: false,
+    awaitingSessionStart: false,
     lostIdleTerminalSessionId: null,
     lastEvidenceAt: null,
     lastEvidenceKind: null,
@@ -183,7 +204,8 @@ export function getNativeTerminalThread(
        LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
        WHERE n.thread_id = ?`,
     )
-    .get(threadId) as RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
+    .get(threadId) as
+    RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
   return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
@@ -199,8 +221,7 @@ export function findNativeTerminalThreadBySession(
        WHERE n.provider_id = ? AND n.native_session_id = ?`,
     )
     .get(args.providerId, args.nativeSessionId) as
-    | RawNativeTerminalThreadRow<NativeTerminalThreadRecord>
-    | undefined;
+    RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
   return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
@@ -250,6 +271,7 @@ export function listNativeTerminalThreadsByIds(
   | "terminalCreatedAt"
   | "terminalLastUserInputAt"
   | "terminalCleanExit"
+  | "awaitingSessionStart"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
@@ -268,6 +290,7 @@ export function listNativeTerminalThreadsByIds(
     | "terminalCreatedAt"
     | "terminalLastUserInputAt"
     | "terminalCleanExit"
+    | "awaitingSessionStart"
     | "lostIdleTerminalSessionId"
     | "lastEvidenceAt"
     | "lastEvidenceKind"
@@ -285,6 +308,7 @@ export function listNativeTerminalThreadsByIds(
          t.created_at AS terminalCreatedAt,
          t.last_user_input_at AS terminalLastUserInputAt,
          ${CLEAN_EXIT_COLUMN},
+         ${AWAITING_SESSION_START_COLUMN},
          n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId,
          n.last_evidence_at AS lastEvidenceAt,
          n.last_evidence_kind AS lastEvidenceKind,
@@ -295,7 +319,9 @@ export function listNativeTerminalThreadsByIds(
        LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
        WHERE n.thread_id IN (SELECT value FROM json_each(?))`,
     )
-    .all(JSON.stringify(threadIds)) as RawNativeTerminalThreadRow<ListedNativeTerminalThread>[];
+    .all(
+      JSON.stringify(threadIds),
+    ) as RawNativeTerminalThreadRow<ListedNativeTerminalThread>[];
   return rows.map(mapTerminalCleanExit);
 }
 
@@ -374,8 +400,7 @@ export function clearNativeTerminalThreadEvidence(
 }
 
 export type StampNativeTerminalActivityResult =
-  | { updated: false }
-  | { updated: true; previousLastEvidenceAt: number | null };
+  { updated: false } | { updated: true; previousLastEvidenceAt: number | null };
 
 export function stampNativeTerminalThreadActivity(
   db: DbConnection,
@@ -389,8 +414,7 @@ export function stampNativeTerminalThreadActivity(
          WHERE thread_id = ? AND terminal_session_id = ?`,
       )
       .get(args.threadId, args.terminalSessionId) as
-      | { lastEvidenceAt: number | null }
-      | undefined;
+      { lastEvidenceAt: number | null } | undefined;
     if (record === undefined) return { updated: false };
     const result = db.$client
       .prepare(
@@ -431,8 +455,7 @@ export function clearNativeTerminalThreadActivityEvidence(
 }
 
 export type StampNativeTerminalToolCallResult =
-  | { updated: false }
-  | { updated: true; previousLastToolCallAt: number | null };
+  { updated: false } | { updated: true; previousLastToolCallAt: number | null };
 
 export function stampNativeTerminalThreadToolCall(
   db: DbConnection,
@@ -447,8 +470,7 @@ export function stampNativeTerminalThreadToolCall(
            AND native_session_id IS NOT NULL`,
       )
       .get(args.threadId, args.terminalSessionId) as
-      | { lastToolCallAt: number | null }
-      | undefined;
+      { lastToolCallAt: number | null } | undefined;
     if (record === undefined) return { updated: false };
     const result = db.$client
       .prepare(
@@ -543,8 +565,7 @@ export function recordNativeTerminalThreadSessionId(
          WHERE provider_id = ? AND native_session_id = ?`,
       )
       .get(current.providerId, args.nativeSessionId) as
-      | { threadId: string }
-      | undefined;
+      { threadId: string } | undefined;
     if (owner !== undefined) {
       return { kind: "claimed-by-other-thread", threadId: owner.threadId };
     }
@@ -586,8 +607,7 @@ export function rebindNativeTerminalThreadSessionId(
          WHERE provider_id = ? AND native_session_id = ? AND thread_id != ?`,
       )
       .get(current.providerId, args.nativeSessionId, args.threadId) as
-      | { threadId: string }
-      | undefined;
+      { threadId: string } | undefined;
     if (owner !== undefined) {
       return { kind: "claimed-by-other-thread", threadId: owner.threadId };
     }
@@ -659,4 +679,32 @@ export function deleteNativeTerminalToolCredential(
       `DELETE FROM fork_native_terminal_tool_credentials WHERE thread_id = ?`,
     )
     .run(threadId);
+}
+
+export function awaitNativeTerminalSessionStart(
+  db: DbConnection,
+  args: { terminalSessionId: string; threadId: string },
+): void {
+  db.$client
+    .prepare(
+      `UPDATE fork_native_terminal_threads
+       SET session_start_awaited_terminal_id = ?
+       WHERE thread_id = ? AND terminal_session_id = ?`,
+    )
+    .run(args.terminalSessionId, args.threadId, args.terminalSessionId);
+}
+
+export function settleNativeTerminalSessionStart(
+  db: DbConnection,
+  args: { threadId: string },
+): { settled: boolean } {
+  const result = db.$client
+    .prepare(
+      `UPDATE fork_native_terminal_threads
+       SET session_start_awaited_terminal_id = NULL
+       WHERE thread_id = ? AND session_start_awaited_terminal_id IS NOT NULL
+         AND session_start_awaited_terminal_id = terminal_session_id`,
+    )
+    .run(args.threadId);
+  return { settled: result.changes === 1 };
 }

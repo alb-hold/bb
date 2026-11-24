@@ -29,9 +29,7 @@ import {
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
   nativeTerminalMayNeedSetup,
 } from "@bb/domain";
-import {
-  resolveParentNotificationsChoice,
-} from "@bb/domain/thread-parent-notifications-storage";
+import { resolveParentNotificationsChoice } from "@bb/domain/thread-parent-notifications-storage";
 import type {
   Thread,
   ThreadActivityState,
@@ -53,12 +51,8 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import type { NotificationHub } from "../../ws/hub.js";
 import { isHostDisconnectHidden } from "../hosts/host-disconnect-display.js";
-import {
-  resolveProviderPlanCommand,
-} from "../providers/provider-plan-command.js";
-import type {
-  ProviderRegistryService,
-} from "../providers/provider-registry.js";
+import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
+import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import {
   countUnmanagedWorkspaceThreads,
   listQueuedThreadMessageCountsByThreadIds,
@@ -107,6 +101,7 @@ type NativeActivityThreadRecord = Pick<
   | "terminalCreatedAt"
   | "terminalLastUserInputAt"
   | "terminalCleanExit"
+  | "awaitingSessionStart"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
@@ -394,6 +389,7 @@ export function nativeThreadSetupWaiting(
   }
   return nativeTerminalMayNeedSetup({
     nativeSessionId: nativeThread.nativeSessionId,
+    awaitingSessionStart: nativeThread.awaitingSessionStart,
     terminal: {
       status: nativeThread.terminalStatus,
       createdAt: nativeThread.terminalCreatedAt,
@@ -555,7 +551,10 @@ function toThreadResponseWithHost(
       ? addNativeActivityDiagnostic(
           args.thread,
           runtime,
-          supportsNativeActivity({ ...deps, providerRegistry: deps.providerRegistry }, args.thread)
+          supportsNativeActivity(
+            { ...deps, providerRegistry: deps.providerRegistry },
+            args.thread,
+          )
             ? args.native
             : null,
           args.now,
@@ -583,7 +582,10 @@ function buildThreadResponseFromThread(
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
   const native = getNativeTerminalThread(deps.db, args.thread.id);
-  const environmentRow = args.thread.environmentId === null ? null : getEnvironment(deps.db, args.thread.environmentId);
+  const environmentRow =
+    args.thread.environmentId === null
+      ? null
+      : getEnvironment(deps.db, args.thread.environmentId);
   const threadWithRuntime = toThreadResponseWithHost(deps, {
     ...args,
     environmentHostId: environmentRow?.hostId ?? null,

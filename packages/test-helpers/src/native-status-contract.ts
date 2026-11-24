@@ -5,11 +5,16 @@ import type {
 } from "@bb/domain";
 
 export interface NativeStatusContractCase {
-  name: "setup-wait" | "trusted-idle" | "active-session-lost";
+  name:
+    | "setup-wait"
+    | "preassigned-awaiting-start"
+    | "trusted-idle"
+    | "active-session-lost";
   providerId: string;
   displayName: string;
   initialThreadStatus: ThreadStatus;
   nativeSessionId: string | null;
+  awaitingSessionStart: boolean;
   terminalStatus: "running" | "exited";
   terminalAgeMs: number;
   terminalCloseReason: "process-exit" | null;
@@ -31,6 +36,29 @@ export const NATIVE_STATUS_CONTRACT_CASES: readonly NativeStatusContractCase[] =
       displayName: "Codex",
       initialThreadStatus: "idle",
       nativeSessionId: null,
+      awaitingSessionStart: false,
+      terminalStatus: "running",
+      terminalAgeMs: 13_000,
+      terminalCloseReason: null,
+      terminalExitCode: null,
+      expectedStatus: "idle",
+      expectedRuntime: {
+        displayStatus: "idle",
+        nativeSetupWaiting: true,
+      },
+      expectedListIndicator: "needs-input",
+      expectedShowStatus: "needs-input",
+      expectedListStatus: "needs-input",
+      expectedListNeedsYou: "Needs input",
+      expectedHeaderLabel: "Needs input",
+    },
+    {
+      name: "preassigned-awaiting-start",
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      initialThreadStatus: "idle",
+      nativeSessionId: "claude-preassigned-session",
+      awaitingSessionStart: true,
       terminalStatus: "running",
       terminalAgeMs: 13_000,
       terminalCloseReason: null,
@@ -52,6 +80,7 @@ export const NATIVE_STATUS_CONTRACT_CASES: readonly NativeStatusContractCase[] =
       displayName: "Codex",
       initialThreadStatus: "idle",
       nativeSessionId: "codex-session-trusted",
+      awaitingSessionStart: false,
       terminalStatus: "running",
       terminalAgeMs: 13_000,
       terminalCloseReason: null,
@@ -72,6 +101,7 @@ export const NATIVE_STATUS_CONTRACT_CASES: readonly NativeStatusContractCase[] =
       displayName: "Codex",
       initialThreadStatus: "active",
       nativeSessionId: "codex-session-lost",
+      awaitingSessionStart: false,
       terminalStatus: "exited",
       terminalAgeMs: 13_000,
       terminalCloseReason: "process-exit",

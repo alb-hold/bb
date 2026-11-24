@@ -101,6 +101,8 @@ export {
   type RetainedTerminalOutputAppendTimings,
 } from "./fork-terminal-output.js";
 export {
+  awaitNativeTerminalSessionStart,
+  settleNativeTerminalSessionStart,
   consumeNativeTerminalThreadLaunchInput,
   createNativeTerminalThread,
   deleteNativeTerminalThread,

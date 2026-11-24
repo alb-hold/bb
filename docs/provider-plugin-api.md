@@ -230,6 +230,13 @@ values, `startsWith` prefixes, dotted paths with numeric array indexes) for
 working, idle and prompt records. Equality values may be strings or booleans.
 Optional hook `pending` events are recorded without changing activity; a
 provisional Stop uses the transcript's final outcome to end the turn.
+Optional hook `started` events (for example `SessionStart`) mark that the CLI
+has begun its session; they never change activity. A provider whose session
+id is assigned before launch declares them when its CLI fires them only after
+setup prompts such as folder trust. The holder then reports the pre-assigned
+id to the server on the first `started` event, and until it does, a running
+terminal past the setup delay reads Needs input. Holders that do not request
+this (older builds) keep the previous rule, so they are never held there.
 `hooks.turnId` selects the current turn so delayed transcript records cannot
 replace a newer prompt. Optional transcript
 `identity` declares the `recordId`, `parentId` and `turnId` field paths. With
