@@ -164,6 +164,77 @@ describe("native activity realtime burst", () => {
     unmount();
   });
 
+  it("reads working for 100 seconds when the turn restarts after stopping and error with no receipt on the active runtime", async () => {
+    vi.useFakeTimers({ now: START_MS });
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const seeded: ThreadResponse = {
+      ...makeThreadResponse({ runtime: runtimeOf("active", START_MS - 10) }),
+      status: "active",
+      nativeTerminal: true,
+    };
+    const threadId = seeded.id;
+    const effects = createRealtimeCacheEffects({ queryClient });
+    const activity = makeThreadListEntry().activity;
+    const send = (status: ThreadResponse["status"], runtime: ThreadRuntimeState) =>
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: threadId,
+        changes: ["status-changed"],
+        metadata: {
+          statusChange: {
+            status,
+            runtime,
+            activity,
+            latestAttentionAt: seeded.latestAttentionAt,
+            updatedAt: seeded.updatedAt,
+          },
+        },
+      });
+
+    const log: string[] = [];
+    const { unmount } = renderHook(
+      () => {
+        const thread = useQuery<ThreadResponse>({
+          queryKey: threadQueryKey(threadId),
+          queryFn: () => Promise.reject(new Error("unexpected refetch")),
+          enabled: false,
+          initialData: seeded,
+          staleTime: Infinity,
+        }).data;
+        const notice = useNativeActivityNotice(thread.runtime);
+        const portal = isRunningThreadRuntimeDisplayStatus(
+          thread.runtime.displayStatus,
+        )
+          ? notice.unconfirmed
+            ? "activity-unreported"
+            : "working"
+          : "none";
+        log.push(portal);
+        return portal;
+      },
+      { wrapper },
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      send("stopping", runtimeOf("stopping"));
+      send("error", runtimeOf("error"));
+      send("active", runtimeOf("active"));
+    });
+    const perTick: string[] = [];
+    for (let elapsed = 1_000; elapsed <= 100_000; elapsed += 1_000) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      perTick.push(log.at(-1) ?? "none");
+    }
+
+    expect(perTick).toHaveLength(100);
+    expect(perTick.every((entry) => entry === "working")).toBe(true);
+    unmount();
+  });
+
   it("keeps the newest receipt when a list refetch returns an older copy at the same updatedAt", async () => {
     vi.useFakeTimers({ now: START_MS });
     const { queryClient, wrapper } = createQueryClientTestHarness();

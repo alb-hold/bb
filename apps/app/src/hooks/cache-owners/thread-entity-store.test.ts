@@ -552,6 +552,38 @@ describe("thread entity store", () => {
     for (const rows of [s.sidebarRows(), s.listRows(), s.listRows(s.lateKey)])
       expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
   });
+
+  it.each([10, 11])(
+    "clears the stored native activity receipt when a runtime without one arrives at updatedAt %i",
+    async (updatedAt) => {
+      const server = [
+        entry("t1", {
+          status: "active",
+          runtime: {
+            displayStatus: "active",
+            nativeActivity: {
+              lastEvidenceAt: 100_000,
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+              evidenceKind: "holder-report",
+            },
+          },
+        }),
+      ];
+      const s = setup(server);
+      await s.fetchList(s.listKey, () => server);
+      updateCachedThreadListStatusState(s.queryClient, "t1", {
+        status: "stopping",
+        runtime: { displayStatus: "stopping" },
+        activity: server[0]!.activity,
+        latestAttentionAt: 0,
+        updatedAt,
+      });
+
+      for (const rows of [s.sidebarRows(), s.listRows()])
+        expect(rows[0]?.runtime.nativeActivity).toBeUndefined();
+    },
+  );
 });
 
 function threadSubject(): KeyedStoreSubject {
