@@ -1639,6 +1639,54 @@ exec "${process.execPath}" "${FAKE_AGENT_PATH}"
     },
   );
 
+  it.each([undefined, "fake/strong"])(
+    "lists pooled Antigravity models through the pool gateway with no local Google sign-in, selected model %s",
+    async (selectedModel) => {
+      const geminiHome = join(workspaceDir, "pool-gemini-home");
+      const gatewayAgent = join(workspaceDir, "pooled-agy");
+      writeFileSync(
+        gatewayAgent,
+        `#!/bin/sh
+if [ "$AGY_ACP_ENABLE_GATEWAY_AUTH" = 1 ] && [ -n "$AGY_GATEWAY_API_KEY" ] && [ -n "$AGY_GATEWAY_URL" ] && [ "$GEMINI_HOME" = "${geminiHome}" ]; then
+  export FAKE_ACP_AUTH_OPTIONAL=1
+fi
+exec "${process.execPath}" "${FAKE_AGENT_PATH}"
+`,
+        { mode: 0o755 },
+      );
+      const response = await waitForResponse(
+        sendRequest("model/list", {
+          envVars: {
+            GEMINI_HOME: geminiHome,
+            AGY_ACP_FORCE_FILE_STORAGE: "1",
+            AGY_ACP_ENABLE_GATEWAY_AUTH: "1",
+            AGY_GATEWAY_URL: "http://127.0.0.1:1/pool/gemini",
+            AGY_GATEWAY_API_KEY: "test-pool",
+          },
+          providerOptions: {
+            acpAgentId: "acp-antigravity-acp",
+            acpLaunchSpec: acpLaunchSpec({
+              agent: { command: gatewayAgent, args: [] },
+              envVars: {
+                FAKE_ACP_AUTH_METHODS: "oauth-personal,gemini-api-key",
+                FAKE_ACP_AUTH_REQUIRED_DATA_MESSAGE:
+                  'No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key), or set "auth.type" in settings.json.',
+                FAKE_ACP_OAUTH_SIGNED_OUT: "1",
+                FAKE_ACP_MODEL_CONFIG: "1",
+              },
+            }),
+          },
+          ...(selectedModel === undefined ? {} : { selectedModel }),
+        }),
+      );
+
+      expect(response.error).toBeUndefined();
+      expect(response.result).toMatchObject({
+        models: [{ id: "fake/default" }, { id: "fake/strong" }],
+      });
+    },
+  );
+
   it("fails model/list with a clear error when the agent itself is missing", async () => {
     const response = await waitForResponse(
       sendModelList({

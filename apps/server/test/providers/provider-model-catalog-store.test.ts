@@ -990,6 +990,117 @@ describe("provider model catalog store", () => {
     });
   });
 
+  it("validates a model switch on a pooled Antigravity thread with the pool's catalog env when the host has no Google sign-in", async () => {
+    await withTestHarness(async (harness) => {
+      const providerId = "acp-antigravity-acp";
+      const host = setupCatalogHost(harness, { id: "host-pooled-gemini" });
+      const contexts: unknown[] = [];
+      setPluginAgentContributions({
+        listSkillRootContributions: () => [],
+        listAgentTools: () => [],
+        listInstructionContributions: () => [],
+        findAgentTool: () => undefined,
+        resolveMention: async () => ({ ok: false, error: "unused" }),
+        invokeAgentTool: async () => ({ success: false, contentItems: [] }),
+        resolveProviderEnv: async ({ providerId: requested, context }) => {
+          contexts.push(context);
+          return {
+            entries:
+              requested !== providerId
+                ? []
+                : [
+                    {
+                      name: "AGY_ACP_ENABLE_GATEWAY_AUTH",
+                      value: "1",
+                      source: { plugin: "account-pool" },
+                      reason: "pooled",
+                    },
+                    {
+                      name: "AGY_GATEWAY_URL",
+                      value: { serverPath: "/pool/gemini" },
+                      source: { plugin: "account-pool" },
+                      reason: "pooled",
+                    },
+                    {
+                      name: "AGY_GATEWAY_API_KEY",
+                      value: "catalog-token",
+                      internal_DO_NOT_USE_catalogIdentity: "pool-account",
+                      source: { plugin: "account-pool" },
+                      reason: "pooled",
+                    },
+                  ],
+          };
+        },
+      });
+      host.setAnswer((command) =>
+        command.contributedEnv.some(
+          (entry) =>
+            entry.name === "AGY_GATEWAY_API_KEY" &&
+            entry.value === "catalog-token",
+        )
+          ? catalogAnswer(
+              modelList("gemini-4-neon-medium", "gemini-4-neon-high"),
+            )
+          : errorAnswer("auth_required"),
+      );
+      try {
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.hostId,
+          path: "/tmp/pooled-gemini",
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.hostId,
+          projectId: project.id,
+          path: "/tmp/pooled-gemini",
+        });
+        const thread = seedThread(harness.deps, {
+          environmentId: environment.id,
+          projectId: project.id,
+          providerId,
+          status: "idle",
+        });
+
+        const listed = await host.read(providerId, environment.id);
+        expect(listed.modelLoadError).toBeNull();
+        expect(modelIds(listed)).toEqual([
+          "gemini-4-neon-medium",
+          "gemini-4-neon-high",
+        ]);
+        await expect(
+          applyThreadExecutionOverride(harness.deps, {
+            thread,
+            patch: { model: "gemini-4-neon-medium" },
+          }),
+        ).resolves.toBeDefined();
+        await expect(
+          applyThreadExecutionOverride(harness.deps, {
+            thread,
+            patch: { model: "gemini-unknown" },
+          }),
+        ).rejects.toMatchObject({
+          status: 400,
+          body: { code: "invalid_request" },
+        });
+        expect(contexts).toContainEqual({
+          threadId: null,
+          projectId: null,
+          hostId: host.hostId,
+        });
+        expect(
+          host
+            .listRequests(providerId)
+            .every((command) =>
+              command.contributedEnv.some(
+                (entry) => entry.name === "AGY_GATEWAY_API_KEY",
+              ),
+            ),
+        ).toBe(true);
+      } finally {
+        setPluginAgentContributions(undefined);
+      }
+    });
+  });
+
   it("serves a persisted catalog to a new store and treats a corrupt row as missing", async () => {
     await withTestHarness(async (harness) => {
       const host = setupCatalogHost(harness, {
