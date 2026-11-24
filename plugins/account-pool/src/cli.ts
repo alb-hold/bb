@@ -423,7 +423,7 @@ export function registerPoolCli(
     defineCli({
       name: "pool",
       summary:
-        "Manage Claude and Codex accounts and inspect the Account Pooler hub",
+        "Manage Claude, Codex and Antigravity (Gemini) accounts and inspect the Account Pooler hub",
       description: DESCRIPTION,
       commands: {
         "account add": cliCommand({
@@ -666,7 +666,7 @@ export function registerPoolCli(
           summary:
             "List this bb server host's own provider logins that are not in the pool",
           description:
-            "Add a Claude or Codex login to the pool with `{{BB_CLI}} pool account add --provider <claude|codex> --import`. Other providers can't be pooled.",
+            "Add a Claude, Codex or Gemini login to the pool with `{{BB_CLI}} pool account add --provider <claude|codex|gemini> --import`. Other providers can't be pooled.",
           options: { json: JSON_OPTION },
           run: (input) =>
             attempt(async () => {

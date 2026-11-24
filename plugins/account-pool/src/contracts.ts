@@ -55,7 +55,11 @@ export const accountPoolConfigSetInputSchema = z
   .strict();
 
 export const poolAvailabilitySchema = z
-  .object({ claude: z.boolean(), codex: z.boolean() })
+  .object({
+    claude: z.boolean(),
+    codex: z.boolean(),
+    gemini: z.boolean().default(false),
+  })
   .strict();
 
 export type PoolAvailability = z.infer<typeof poolAvailabilitySchema>;
@@ -63,6 +67,7 @@ export type PoolAvailability = z.infer<typeof poolAvailabilitySchema>;
 export const UNAVAILABLE_POOL: PoolAvailability = {
   claude: false,
   codex: false,
+  gemini: false,
 };
 
 export type AccountPoolConfigSetInput = z.infer<

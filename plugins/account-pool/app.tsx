@@ -166,11 +166,9 @@ function parentHost(baseUrl: string): string {
 function parentBannerBody(parent: NonNullable<PoolStatus["parent"]>): string {
   const host = parentHost(parent.baseUrl);
   if (parent.mode !== "proxy") {
-    return `This server was started from a thread on ${host}. Turn this on to send Claude and Codex requests to its pool instead of using the accounts below.`;
+    return `This server was started from a thread on ${host}. Turn this on to send Claude, Codex and Antigravity (Gemini) requests to its pool instead of using the accounts below.`;
   }
-  const relayed = PROVIDERS.flatMap((provider) =>
-    provider.id === "gemini" ? [] : [{ ...provider, id: provider.id }],
-  );
+  const relayed = PROVIDERS;
   const served = relayed.filter(
     (provider) => parent.availability[provider.id],
   ).map((provider) => provider.title);
