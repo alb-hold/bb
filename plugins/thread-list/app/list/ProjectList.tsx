@@ -661,6 +661,7 @@ function ProjectModeSections({
   const projectCounts = activePages?.projectCounts;
   const hasMoreActivePages = activePages?.hasNextPage === true;
   const isFetchingMoreActivePages = activePages?.isFetchingNextPage === true;
+  const isActivePagesError = activePages?.isFetchNextPageError === true;
   const projectRows = useMemo<ProjectListRowModel[]>(
     () =>
       projects
@@ -682,7 +683,7 @@ function ProjectModeSections({
             threadListState:
               hasUnloadedThreads &&
               (projectThreads?.length ?? 0) === 0 &&
-              isFetchingMoreActivePages
+              !isActivePagesError
                 ? EMPTY_PROJECT_THREAD_LIST_STATE
                 : getProjectThreadListState({
                     status,
@@ -693,7 +694,7 @@ function ProjectModeSections({
         }),
     [
       hasMoreActivePages,
-      isFetchingMoreActivePages,
+      isActivePagesError,
       projectCounts,
       projects,
       showEmptyProjects,
@@ -701,6 +702,26 @@ function ProjectModeSections({
       threadsByProject,
     ],
   );
+  const hasExpandedProjectAwaitingThreads = projectRows.some(
+    (row) =>
+      row.threadListState.status === "loading" &&
+      status === "ready" &&
+      !collapsedProjectIds.has(row.project.id),
+  );
+  useEffect(() => {
+    if (
+      hasExpandedProjectAwaitingThreads &&
+      !isFetchingMoreActivePages &&
+      !isActivePagesError
+    ) {
+      onRequestMoreThreads?.();
+    }
+  }, [
+    hasExpandedProjectAwaitingThreads,
+    isActivePagesError,
+    isFetchingMoreActivePages,
+    onRequestMoreThreads,
+  ]);
   const projectSectionIds = useMemo(
     () =>
       projectRows.map((row) =>
