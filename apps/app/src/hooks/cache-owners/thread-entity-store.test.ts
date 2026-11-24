@@ -578,6 +578,41 @@ describe("thread entity store", () => {
       expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
   });
 
+  it("shows no receipt after error then a new active turn, each with a greater updatedAt", async () => {
+    const server = [
+      entry("t1", {
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: 100_000,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        },
+      }),
+    ];
+    const s = setup(server);
+    await s.fetchList(s.listKey, () => server);
+    for (const [status, updatedAt] of [
+      ["error", 11],
+      ["active", 12],
+    ] as const)
+      updateCachedThreadListStatusState(s.queryClient, "t1", {
+        status,
+        runtime: { displayStatus: status },
+        activity: server[0]!.activity,
+        latestAttentionAt: 0,
+        updatedAt,
+      });
+
+    for (const rows of [s.sidebarRows(), s.listRows()]) {
+      expect(rows[0]?.runtime.displayStatus).toBe("active");
+      expect(rows[0]?.runtime.nativeActivity).toBeUndefined();
+    }
+  });
+
   it.each([
     { updatedAt: 10, status: "error" as const },
     { updatedAt: 11, status: "active" as const },
