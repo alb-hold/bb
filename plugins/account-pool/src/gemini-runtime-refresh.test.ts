@@ -98,7 +98,7 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "empty" = "normal";
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" = "normal";
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     calls.push(url);
@@ -112,7 +112,12 @@ async function createGeminiPool(
         return Response.json({ error: "synthetic failure" }, { status: 503 });
       if (quotaMode === "unreadable")
         return Response.json({ unexpected: true });
+      if (quotaMode === "missing") return Response.json({});
       if (quotaMode === "empty") return Response.json({ buckets: [] });
+      if (quotaMode === "unknown")
+        return Response.json({
+          buckets: [{ bucketId: "future-model", remainingFraction: 0.2 }],
+        });
       return Response.json({
         buckets: [
           {
@@ -383,7 +388,7 @@ describe("Gemini usage refresh results", () => {
     );
   });
 
-  it.each(["http", "unreadable", "empty"] as const)(
+  it.each(["http", "unreadable", "missing"] as const)(
     "reports a %s Gemini quota response as a failed refresh without replacing the cached reading",
     async (mode) => {
       const pool = await createGeminiPool(0);
@@ -417,6 +422,22 @@ describe("Gemini usage refresh results", () => {
       observedAt: pool.now(),
     });
   });
+
+  it.each(["empty", "unknown"] as const)(
+    "stamps an empty parsed reading for a forced %s quota response",
+    async (mode) => {
+      const pool = await createGeminiPool(0);
+      await pool.settled();
+      const oldObservedAt = setStaleUsage(pool);
+      pool.setQuotaMode(mode);
+
+      const account = await pool.operations.refreshUsage(pool.account.id);
+
+      expect(account?.observedAt).toBe(pool.now());
+      expect(account?.observedAt).not.toBe(oldObservedAt);
+      expect(account?.limitWindows).toEqual([]);
+    },
+  );
 });
 
 describe("scheduled Gemini usage refresh", () => {
@@ -438,4 +459,31 @@ describe("scheduled Gemini usage refresh", () => {
       observedAt: pool.now(),
     });
   });
+
+  it.each([
+    ["missing", false],
+    ["empty", true],
+    ["unknown", true],
+  ] as const)(
+    "handles a scheduled %s quota response as expected",
+    async (mode, succeeds) => {
+      const now = useFakeClock();
+      const pool = await createGeminiPool(0, null, { now });
+      await vi.advanceTimersByTimeAsync(0);
+      await pool.settled();
+      const oldObservedAt = setStaleUsage(pool);
+      pool.setQuotaMode(mode);
+
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      await pool.settled();
+
+      const reading = pool.quotas.get(pool.account.id);
+      expect(reading.observedAt).toBe(succeeds ? pool.now() : oldObservedAt);
+      expect(reading.limitWindows).toEqual(
+        succeeds
+          ? []
+          : [expect.objectContaining({ utilization: 0.54, observedAt: oldObservedAt })],
+      );
+    },
+  );
 });

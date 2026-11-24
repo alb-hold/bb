@@ -1341,21 +1341,29 @@ export function createGeminiAdapter(options: {
           info.tier,
           context.signal,
         );
+      const quotaSummary = await codeAssistCall(
+        context.fetch,
+        bases.daily,
+        "retrieveUserQuotaSummary",
+        secret.accessToken,
+        { project },
+        agent,
+        context.signal,
+      );
+      const parsedQuotaSummary = retrieveUserQuotaSummarySchema.safeParse(
+        quotaSummary,
+      );
+      if (
+        !parsedQuotaSummary.success ||
+        (!Array.isArray(parsedQuotaSummary.data.buckets) &&
+          !Array.isArray(parsedQuotaSummary.data.groups))
+      )
+        throw new Error("Usage refresh returned unreadable data.");
       const now = context.now();
       const windows = geminiWindowsFromQuota(
-        await codeAssistCall(
-          context.fetch,
-          bases.daily,
-          "retrieveUserQuotaSummary",
-          secret.accessToken,
-          { project },
-          agent,
-          context.signal,
-        ),
+        quotaSummary,
         now,
       );
-      if (windows.length === 0)
-        throw new Error("Usage refresh returned unreadable data.");
       context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");
