@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   installTestPluginRuntime,
@@ -542,5 +542,39 @@ describe("creating a sidebar section", () => {
       "threads",
       "section:sec_created",
     ]);
+  });
+});
+
+describe("loading more threads for a project", () => {
+  it("retries the page fetch when Show more is clicked after a failed fetch", async () => {
+    const fetchNextPage = vi.fn(async () => undefined);
+    const project = makePluginProject();
+    const store = createStore();
+    store.set(preferencesReadyAtom(), true);
+    store.set(sidebarOrganizationModeAtom, "project");
+    renderSlot(
+      { component: Harness },
+      { children: <ProjectList activeThreadId={null} />, store },
+      {
+        sidebarThreads: {
+          threads: [],
+          projects: [project],
+          experimental_activePages: {
+            hasNextPage: true,
+            isFetchingNextPage: false,
+            isFetchNextPageError: true,
+            fetchNextPage,
+            projectCounts: { [project.id]: 3 },
+          },
+        },
+      },
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Show more"));
+      await Promise.resolve();
+    });
+
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 });

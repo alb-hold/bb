@@ -3054,6 +3054,12 @@ export function renderSlot<
     experimental_hosts: options.sidebarThreads?.experimental_hosts ?? [],
     projects: options.sidebarThreads?.projects ?? [],
     sections: options.sidebarThreads?.sections ?? [],
+    ...(options.sidebarThreads?.experimental_activePages
+      ? {
+          experimental_activePages:
+            options.sidebarThreads.experimental_activePages,
+        }
+      : {}),
   };
   const providers: PluginProvidersState = {
     status: options.providers?.status ?? "ready",
