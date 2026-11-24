@@ -14,7 +14,12 @@ import {
 } from "@/lib/sidebar-bootstrap-cache";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { useSidebarNavigation } from "./sidebar-navigation-query";
+import { apiClient } from "@/lib/api-server";
+import { sidebarNavigationPagesQueryKey } from "./query-keys";
+import {
+  useSidebarNavigation,
+  useSidebarNavigationPaging,
+} from "./sidebar-navigation-query";
 import {
   makeProjectWithThreadsResponse,
   makeSidebarBootstrapResponse,
@@ -68,7 +73,83 @@ afterEach(() => {
   resetSidebarBootstrapCacheForTest();
 });
 
+function mockCursorChain(next: Record<string, string | undefined>): void {
+  vi.mocked(apiClient["sidebar-bootstrap"].$get).mockImplementation(
+    ((args: { query: { cursor?: string } }) => ({
+      cursor: args.query.cursor,
+    })) as never,
+  );
+  vi.mocked(request).mockImplementation((async (
+    pending: { cursor?: string },
+    onResponse?: (response: Response) => void,
+  ) => {
+    const cursor = next[pending.cursor ?? "start"];
+    onResponse?.(
+      new Response(null, {
+        headers: cursor ? { "X-BB-Next-Cursor": cursor } : {},
+      }),
+    );
+    return BOOTSTRAP;
+  }) as never);
+}
+
 describe("useSidebarNavigation", () => {
+  it("refetches a three-page chain without a repeated-continuation error", async () => {
+    mockCursorChain({ start: "c1", c1: "c2", c2: undefined });
+    const harness = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => ({
+        nav: useSidebarNavigation(),
+        paging: useSidebarNavigationPaging(),
+      }),
+      { wrapper: harness.wrapper },
+    );
+    await waitFor(() => expect(result.current.paging.hasNextPage).toBe(true));
+    await act(() => result.current.paging.fetchNextPage());
+    await waitFor(() => expect(result.current.paging.hasNextPage).toBe(true));
+    await act(() => result.current.paging.fetchNextPage());
+    await waitFor(() => expect(result.current.paging.hasNextPage).toBe(false));
+    await act(async () => {
+      await harness.queryClient.refetchQueries({
+        queryKey: sidebarNavigationPagesQueryKey(),
+      });
+    });
+    expect(result.current.nav.isError).toBe(false);
+    expect(
+      harness.queryClient.getQueryState(sidebarNavigationPagesQueryKey())
+        ?.status,
+    ).toBe("success");
+  });
+
+  it("still rejects a continuation loop", async () => {
+    mockCursorChain({ start: "c1", c1: "c2", c2: "c1" });
+    const harness = createQueryClientTestHarness();
+    const { result } = renderHook(() => useSidebarNavigationPaging(), {
+      wrapper: harness.wrapper,
+    });
+    await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+    await act(() => result.current.fetchNextPage());
+    await act(() => result.current.fetchNextPage());
+    await waitFor(() => expect(result.current.isFetchNextPageError).toBe(true));
+  });
+
+  it("recovers from a transient page failure through query retry", async () => {
+    let calls = 0;
+    vi.mocked(request).mockImplementation((async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("network timeout");
+      return BOOTSTRAP;
+    }) as never);
+    const harness = createQueryClientTestHarness({ queries: { retry: undefined } });
+    const { result } = renderHook(() => useSidebarNavigation(), {
+      wrapper: harness.wrapper,
+    });
+    await waitFor(() => expect(result.current.data).toEqual(BOOTSTRAP), {
+      timeout: 5_000,
+    });
+    expect(result.current.isError).toBe(false);
+  });
+
   it("replays the last bootstrap while the live one loads", async () => {
     sidebarBootstrapResponseSchema.parse(BOOTSTRAP);
 

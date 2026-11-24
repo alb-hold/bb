@@ -41,6 +41,7 @@ import {
 } from "@/lib/sidebar-bootstrap-cache";
 
 const SIDEBAR_PAGE_SIZE = 25;
+const SIDEBAR_PAGE_RETRY_COUNT = 3;
 
 interface SidebarNavigationPage {
   response: SidebarBootstrapResponse;
@@ -151,10 +152,14 @@ async function fetchSidebarNavigationPage({
     const existing = client.getQueryData<SidebarNavigationPagesData>(
       sidebarNavigationPagesQueryKey(),
     );
-    if (
-      nextCursor === pageParam ||
-      (pageParam !== undefined && existing?.pageParams.includes(nextCursor))
-    ) {
+    const currentIndex = existing?.pageParams.indexOf(pageParam) ?? -1;
+    const earlierParams =
+      existing === undefined
+        ? []
+        : currentIndex === -1
+          ? existing.pageParams
+          : existing.pageParams.slice(0, currentIndex);
+    if (nextCursor === pageParam || earlierParams.includes(nextCursor)) {
       throw new Error("Sidebar returned a repeated continuation");
     }
   }
@@ -180,6 +185,7 @@ function sidebarNavigationPagesQueryOptions(client: QueryClient, enabled: boolea
       return { pages: [{ response: snapshot, nextCursor: undefined }], pageParams: [undefined] };
     },
     enabled,
+    retry: SIDEBAR_PAGE_RETRY_COUNT,
     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
   });
 }
