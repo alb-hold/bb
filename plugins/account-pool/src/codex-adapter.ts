@@ -402,6 +402,7 @@ export function createCodexAdapter(options: {
   return {
     provider: "codex",
     upstreamName: "ChatGPT",
+    usageFromResponses: true,
     async localLogin() {
       const imported = await (
         options.importCredentials ?? importCodexCredentials
