@@ -2111,7 +2111,7 @@ describe("Gemini account pool", () => {
     ).text();
     await vi.waitFor(async () => {
       expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
-        [ids.a]: ["gemini-orchestrator", "gemini-4-carbon", "gemini-4-carbon-high", "gemini-3.8-flash"],
+        [ids.a]: { served: ["gemini-orchestrator", "gemini-4-carbon-high", "gemini-3.8-flash"], aliases: ["gemini-4-carbon"] },
       });
     });
 
@@ -2826,7 +2826,7 @@ describe("Gemini bare family ids through the pool", () => {
     const google = await startGoogle({
       projects: { "tok-a": "proj-a" },
       quotaFraction: {},
-      models: NEON_MODELS,
+      models: { models: { ...NEON_MODELS.models, "gemini-4-neon": { displayName: "Gemini 4 Neon" } } },
       rejectUnservedModels: true,
       modelListFails: () => failList,
       stream: () => ({ status: 200, body: OK_BODY }),
@@ -2841,7 +2841,7 @@ describe("Gemini bare family ids through the pool", () => {
     let saved: unknown;
     await vi.waitFor(async () => {
       saved = await first.host.bb.storage.kv.get("gemini-served-models:v1");
-      expect(saved).toEqual({ [added.id]: expect.arrayContaining(["gemini-4-neon", "gemini-4-neon-medium"]) });
+      expect(saved).toEqual({ [added.id]: { served: expect.arrayContaining(["gemini-4-neon", "gemini-4-neon-medium"]), aliases: expect.any(Array) } });
     });
     const kept: Record<string, unknown> = { "gemini-served-models:v1": saved };
     for (const key of ["accounts:v1", "accounts:gemini:v1"]) {
@@ -2869,7 +2869,7 @@ describe("Gemini bare family ids through the pool", () => {
       google.calls
         .filter((call) => call.method === "streamGenerateContent")
         .map((call) => (call.body as { model: string }).model),
-    ).toEqual(["gemini-4-neon-medium"]);
+    ).toEqual(["gemini-4-neon"]);
   });
 
   it("sends the id unchanged, after one failed model list, when the account has no saved ids", async () => {

@@ -2422,8 +2422,8 @@ export function createHub(options: {
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
-  onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
-  geminiSavedModels?: () => Readonly<Record<string, readonly string[]>>;
+  onGeminiModels?: (accountId: string, ids: readonly string[], servedIds: readonly string[]) => void;
+  geminiSavedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [

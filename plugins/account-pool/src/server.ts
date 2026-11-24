@@ -147,7 +147,7 @@ const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
 const GEMINI_HOME_HOSTS_KEY = "gemini-home-hosts";
 const GEMINI_SERVED_MODELS_KEY = "gemini-served-models:v1";
 const geminiServedModelsSchema = z
-  .record(z.string(), z.array(z.string()))
+  .record(z.string(), z.union([z.array(z.string()), z.object({ served: z.array(z.string()), aliases: z.array(z.string()) })]))
   .catch({});
 const GEMINI_HOME_UNAVAILABLE_MS = 60_000;
 const GEMINI_HOME_UNAVAILABLE_MESSAGE =
@@ -621,13 +621,12 @@ export function createAccountPoolPlugin(
         geminiRefusals.set(hostId, reason);
       },
       geminiSavedModels: () => geminiServedModels,
-      onGeminiModels: (accountId, ids) => {
+      onGeminiModels: (accountId, ids, servedIds) => {
         for (const id of ids) routeGeminiModel(id);
-        if (
-          JSON.stringify(geminiServedModels[accountId]) === JSON.stringify(ids)
-        )
+        const saved = geminiServedModels[accountId];
+        if (!Array.isArray(saved) && JSON.stringify(saved) === JSON.stringify({ served: servedIds, aliases: ids.filter((id) => !servedIds.includes(id)) }))
           return;
-        geminiServedModels = { ...geminiServedModels, [accountId]: [...ids] };
+        geminiServedModels = { ...geminiServedModels, [accountId]: { served: [...servedIds], aliases: ids.filter((id) => !servedIds.includes(id)) } };
         const snapshot = geminiServedModels;
         geminiServedModelsWrite = geminiServedModelsWrite
           .then(() => bb.storage.kv.set(GEMINI_SERVED_MODELS_KEY, snapshot))
@@ -1397,8 +1396,8 @@ export function createAccountPoolPlugin(
       );
     }
     for (const id of STATIC_GEMINI_MODEL_IDS) routeGeminiModel(id);
-    for (const ids of Object.values(geminiServedModels))
-      for (const id of ids) routeGeminiModel(id);
+    for (const entry of Object.values(geminiServedModels))
+      for (const id of "served" in entry ? [...entry.served, ...entry.aliases] : entry) routeGeminiModel(id);
     bb.http.route(
       "GET",
       CLAUDE_MODELS_ROUTE,
