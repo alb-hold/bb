@@ -662,6 +662,41 @@ it("gives subscription and routing switches a 44px coarse-pointer hit area", asy
 });
 
 describe("Account Pool settings", () => {
+  it("lists a pooled Gemini account in its own section with its usage", async () => {
+    const slot = render([
+      account({
+        provider: "gemini",
+        label: "gem@example.com",
+        email: "gem@example.com",
+        subscriptionType: "Google AI Ultra",
+        rateLimitTier: null,
+        limitWindows: [
+          claudeWindow("primary", 0.52, { windowMinutes: null }),
+          claudeWindow("secondary", 0.37, { windowMinutes: 1_440 }),
+        ],
+      }),
+    ]);
+
+    const group = await slot.findByRole("group", {
+      name: "Antigravity (Gemini) subscriptions",
+    });
+    expect(group.textContent).toContain("Antigravity (Gemini)");
+    expect(group.textContent).toContain("gem@example.com");
+    expect(group.textContent).toContain("Google AI Ultra");
+    expect(group.textContent).not.toMatch(/claude|chatgpt|5 hour|7 day/iu);
+
+    await openActions(slot, "gem@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("1 day")).toBeTruthy();
+    expect(slot.getByText(/^37% ·/)).toBeTruthy();
+    expect(slot.getByText("Usage limit")).toBeTruthy();
+    expect(slot.getByText(/^52% ·/)).toBeTruthy();
+    expect(slot.getByText("OAuth · Google")).toBeTruthy();
+    expect(slot.getByRole("dialog").textContent).not.toMatch(
+      /claude|chatgpt|5 hour|7 day/iu,
+    );
+  });
+
   it("keeps the resolved next account visible during a refresh", async () => {
     const firstId = "11111111-1111-4111-8111-111111111111";
     const secondId = "22222222-2222-4222-8222-222222222222";
