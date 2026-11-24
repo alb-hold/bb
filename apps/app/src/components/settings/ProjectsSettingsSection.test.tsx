@@ -12,6 +12,7 @@ import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
+import { sidebarNavigationPagesQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import {
@@ -215,6 +216,33 @@ it("counts only persistent checkouts and their connection status in project summ
   expect(all.textContent).toContain("2 of 2 machines");
   expect(offline.textContent).toContain("1 of 2 machines");
   expect(offline.textContent).toContain("offline");
+});
+
+it("keeps listing loaded projects when a later page fetch fails", async () => {
+  stubSidebarBootstrapFetch(projects);
+  const harness = createQueryClientTestHarness();
+  render(
+    <MemoryRouter>
+      <ProjectsSettingsSection />
+    </MemoryRouter>,
+    { wrapper: harness.wrapper },
+  );
+  await screen.findByRole("link", { name: "Open bb settings" });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("boom", { status: 500 })),
+  );
+  await harness.queryClient.refetchQueries({
+    queryKey: sidebarNavigationPagesQueryKey(),
+  });
+  await waitFor(() =>
+    expect(
+      harness.queryClient.getQueryState(sidebarNavigationPagesQueryKey())
+        ?.status,
+    ).toBe("error"),
+  );
+  expect(screen.queryByText("Couldn't load projects.")).toBeNull();
+  expect(screen.getByRole("link", { name: "Open bb settings" })).toBeTruthy();
 });
 
 describe("buildProjectReorderRequest", () => {

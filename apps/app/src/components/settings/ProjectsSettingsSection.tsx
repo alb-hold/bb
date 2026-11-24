@@ -305,12 +305,14 @@ export function ProjectsSettingsSection() {
           </Button>
         }
       >
-        {sidebarNavigationQuery.isError ? (
-          <p className="text-sm text-destructive" role="alert">
-            Couldn't load projects.
-          </p>
-        ) : projects === undefined ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+        {projects === undefined ? (
+          sidebarNavigationQuery.isError ? (
+            <p className="text-sm text-destructive" role="alert">
+              Couldn't load projects.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          )
         ) : projects.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
             No projects yet. Add a project to start running threads in a
