@@ -82,12 +82,8 @@ describe("thread-activity", () => {
       expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
       vi.setSystemTime(1_090_001);
       expect(isNativeActivityUnconfirmed(runtime, 1_090_001)).toBe(true);
-      vi.setSystemTime(997_999);
-      expect(isNativeActivityUnconfirmed(runtime, 997_999)).toBe(true);
-      vi.setSystemTime(998_000);
-      expect(isNativeActivityUnconfirmed(runtime, 998_000)).toBe(false);
-      vi.setSystemTime(999_500);
-      expect(isNativeActivityUnconfirmed(runtime, 999_500)).toBe(false);
+      vi.setSystemTime(999_999);
+      expect(isNativeActivityUnconfirmed(runtime, 999_999)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -589,24 +585,12 @@ describe("thread-activity", () => {
             ...toolCall,
             nativeActivity: {
               ...toolCall.nativeActivity,
-              lastToolCallAt: now + 2_001,
+              lastToolCallAt: now + 1,
             },
           },
           now,
         ),
       ).toBe("unknown");
-      expect(
-        nativeActivityEvidenceKind(
-          {
-            ...toolCall,
-            nativeActivity: {
-              ...toolCall.nativeActivity,
-              lastToolCallAt: now + 300,
-            },
-          },
-          now,
-        ),
-      ).toBe("tool-call");
     });
 
     it("lets only an explicit confirmed holder report enable working", () => {
