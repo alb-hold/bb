@@ -879,7 +879,6 @@ async function deletionOutcome(
     const operation = (async () => {
       const pool = await live.harness.lifecycle.reload(async (bb) => {
         restoreFaults();
-        bb.storage.database().pragma("synchronous = OFF");
         losePower(watch);
         watch.kv = bb.storage.kv;
         captured.threadTokens = null;
@@ -954,7 +953,6 @@ async function deletionOutcome(
   try {
     captured.threadTokens = null;
     captured.hostTokens = null;
-    pool0.bb.storage.database().pragma("synchronous = OFF");
     await plugin(pool0.bb);
     started = capture(pool0);
     world.current.pool = pool0;
