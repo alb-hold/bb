@@ -160,6 +160,36 @@ describe("live cursor position queries", () => {
       expected: ["\x1b[?2;1R", "\x1b[?3;4R", "\x1b[?1;1R"],
     },
     {
+      name: "nonzero DECSTBM plus DECOM xterm InputHandler relative and margin cursor moves",
+      cols: 10,
+      rows: 6,
+      input:
+        "\x1b[2;5r\x1b[?6h\x1b[2;3H\x1b[1A\x1b[6n" +
+        "\x1b[2;3H\x1b[1B\x1b[6n" +
+        "\x1b[2;3H\x1b[2C\x1b[6n" +
+        "\x1b[2;3H\x1b[1D\x1b[6n" +
+        "\x1b[2;3H\x1b[1E\x1b[6n" +
+        "\x1b[3;3H\x1b[1F\x1b[6n" +
+        "\x1b[2;3H\x1b[1e\x1b[6n" +
+        "\x1b[2;3H\x1b[2a\x1b[6n" +
+        "\x1b[1;3H\x1bM\x1b[6n" +
+        "\x1b[4;3H\x1bD\x1b[6n" +
+        "\x1b[2;10Ha\b\x1b[6n",
+      expected: [
+        "\x1b[3;3R",
+        "\x1b[5;3R",
+        "\x1b[4;5R",
+        "\x1b[4;2R",
+        "\x1b[5;1R",
+        "\x1b[4;1R",
+        "\x1b[5;3R",
+        "\x1b[4;5R",
+        "\x1b[2;3R",
+        "\x1b[5;3R",
+        "\x1b[3;9R",
+      ],
+    },
+    {
       name: "HT, HTS, TBC (0 and 3), CHT, and CBT including pending-wrap no-op",
       cols: 20,
       rows: 4,

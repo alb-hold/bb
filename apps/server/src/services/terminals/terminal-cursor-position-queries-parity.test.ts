@@ -7,6 +7,8 @@ const RANDOM_SEED = 0x538c0de1;
 const RANDOM_SEQUENCE_COUNT = 200;
 const EXTENDED_RANDOM_SEED = 0x538c0de2;
 const EXTENDED_RANDOM_SEQUENCE_COUNT = 300;
+const ORIGIN_MARGIN_RANDOM_SEED = 0x538c0de4;
+const ORIGIN_MARGIN_RANDOM_SEQUENCE_COUNT = 300;
 
 type ParityStep =
   | { kind: "write"; data: string }
@@ -70,6 +72,42 @@ async function runBoth(
     terminal.dispose();
   }
   return { xtermReplies, trackerReplies };
+}
+
+async function runAndVerifyAtEveryDsr(
+  cols: number,
+  rows: number,
+  segments: readonly { beforeQuery: string; privateQuery: boolean }[],
+): Promise<{
+  xtermReplies: string[];
+  trackerReplies: string[];
+  xtermPositions: string[];
+}> {
+  const terminal = createHeadlessTerminal(cols, rows);
+  const tracker = new TerminalCursorPositionQueries(cols, rows);
+  const xtermReplies: string[] = [];
+  const trackerReplies: string[] = [];
+  const xtermPositions: string[] = [];
+  terminal.onData((data) => {
+    xtermReplies.push(data);
+  });
+  try {
+    for (const segment of segments) {
+      const query = segment.privateQuery ? "\x1b[?6n" : "\x1b[6n";
+      const payload = segment.beforeQuery + query;
+      await writeHeadless(terminal, payload);
+      tracker.push(payload, (reply) => {
+        trackerReplies.push(reply);
+      });
+      const prefix = segment.privateQuery ? "\x1b[?" : "\x1b[";
+      const posRow = terminal.buffer.active.cursorY + 1;
+      const posCol = terminal.buffer.active.cursorX + 1;
+      xtermPositions.push(`${prefix}${posRow};${posCol}R`);
+    }
+  } finally {
+    terminal.dispose();
+  }
+  return { xtermReplies, trackerReplies, xtermPositions };
 }
 
 async function runPipelineAndReference(
@@ -457,6 +495,105 @@ function generateExtendedRandomCase(
   return { cols: initialCols, rows: initialRows, steps };
 }
 
+function generateOriginMarginRandomCase(rng: () => number): {
+  cols: number;
+  rows: number;
+  segments: { beforeQuery: string; privateQuery: boolean }[];
+} {
+  const cols = randInt(rng, 4, 18);
+  const rows = randInt(rng, 5, 12);
+  let top = randInt(rng, 2, rows - 1);
+  let bottom = randInt(rng, top + 1, rows);
+  const segments: { beforeQuery: string; privateQuery: boolean }[] = [];
+  let pending = `\x1b[${top};${bottom}r\x1b[?6h`;
+  const segmentCount = randInt(rng, 6, 10);
+  for (let s = 0; s < segmentCount; s += 1) {
+    const opCount = randInt(rng, 2, 5);
+    for (let j = 0; j < opCount; j += 1) {
+      const r = randInt(rng, 0, rows + 2);
+      const c = randInt(rng, 0, cols + 2);
+      const n = randInt(rng, 0, 6);
+      const kind = randInt(rng, 0, 21);
+      switch (kind) {
+        case 0:
+          pending += `\x1b[${r};${c}H`;
+          break;
+        case 1:
+          pending += `\x1b[${r};${c}f`;
+          break;
+        case 2:
+          pending += `\x1b[${n}A`;
+          break;
+        case 3:
+          pending += `\x1b[${n}B`;
+          break;
+        case 4:
+          pending += `\x1b[${n}C`;
+          break;
+        case 5:
+          pending += `\x1b[${n}D`;
+          break;
+        case 6:
+          pending += `\x1b[${n}E`;
+          break;
+        case 7:
+          pending += `\x1b[${n}F`;
+          break;
+        case 8:
+          pending += `\x1b[${c}G`;
+          break;
+        case 9:
+          pending += `\x1b[${c}\``;
+          break;
+        case 10:
+          pending += `\x1b[${n}a`;
+          break;
+        case 11:
+          pending += `\x1b[${r}d`;
+          break;
+        case 12:
+          pending += `\x1b[${n}e`;
+          break;
+        case 13:
+          pending += "\x1bD";
+          break;
+        case 14:
+          pending += "\x1bM";
+          break;
+        case 15:
+          pending += "\x1bE";
+          break;
+        case 16:
+          pending += "\n".repeat(randInt(rng, 1, 3));
+          break;
+        case 17:
+          pending += `\x1b[${randInt(rng, 1, 2)}S`;
+          break;
+        case 18:
+          pending += "a".repeat(cols) + "\b";
+          break;
+        case 19:
+          pending += "a".repeat(randInt(rng, 1, cols + 2));
+          break;
+        case 20:
+          pending += "漢\b";
+          break;
+        case 21:
+          top = randInt(rng, 2, rows - 1);
+          bottom = randInt(rng, top + 1, rows);
+          pending += `\x1b[${top};${bottom}r\x1b[?6h`;
+          break;
+      }
+    }
+    segments.push({
+      beforeQuery: pending,
+      privateQuery: rng() < 0.5,
+    });
+    pending = "";
+  }
+  return { cols, rows, segments };
+}
+
 describe("TerminalCursorPositionQueries xterm.js Unicode 11 parity", () => {
   it.each([
     {
@@ -575,6 +712,25 @@ describe("TerminalCursorPositionQueries xterm.js Unicode 11 parity", () => {
         "\x1b[2;5r\x1b[3;4H\x1b[4;2r\x1b[6n\x1b[3;3r\x1b[6n\x1b[?6h\x1b[2;3H\x1b[1A\x1b[6n\x1b[1B\x1b[6n\x1b[1E\x1b[6n\x1b[1F\x1b[6n\x1b[1e\x1b[6n",
     },
     {
+      name: "nonzero DECSTBM plus DECOM exact repro (ESC[2;5r ESC[?6h ESC[2;3H ESC[1A ESC[6n) and all relative/margin moves",
+      cols: 10,
+      rows: 6,
+      input:
+        "\x1b[2;5r\x1b[?6h\x1b[2;3H\x1b[1A\x1b[6n" +
+        "\x1b[2;3H\x1b[1B\x1b[6n" +
+        "\x1b[2;3H\x1b[2C\x1b[6n" +
+        "\x1b[2;3H\x1b[1D\x1b[6n" +
+        "\x1b[2;3H\x1b[1E\x1b[6n" +
+        "\x1b[3;3H\x1b[1F\x1b[6n" +
+        "\x1b[2;3H\x1b[1e\x1b[6n" +
+        "\x1b[2;3H\x1b[2a\x1b[6n" +
+        "\x1b[2;3H\x1b[5G\x1b[6n" +
+        "\x1b[2;3H\x1b[5`\x1b[6n" +
+        "\x1b[1;3H\x1bM\x1b[6n" +
+        "\x1b[4;3H\x1bD\x1b[6n" +
+        "\x1b[2;10Ha\b\x1b[6n",
+    },
+    {
       name: "DECAWM autowrap and pending-wrap with ED, EL, ICH, DCH, ECH, IND, NEL, and RI",
       cols: 6,
       rows: 4,
@@ -620,6 +776,19 @@ describe("TerminalCursorPositionQueries xterm.js Unicode 11 parity", () => {
     },
   );
 
+  it("matches @xterm/headless active cursor and DSR reply on ESC[2;5r ESC[?6h ESC[2;3H ESC[1A ESC[6n", async () => {
+    const result = await runAndVerifyAtEveryDsr(10, 6, [
+      {
+        beforeQuery: "\x1b[2;5r\x1b[?6h\x1b[2;3H\x1b[1A",
+        privateQuery: false,
+      },
+    ]);
+    expect(result.xtermPositions).toEqual(["\x1b[3;3R"]);
+    expect(result.xtermReplies).toEqual(["\x1b[3;3R"]);
+    expect(result.trackerReplies).toEqual(result.xtermReplies);
+    expect(result.trackerReplies).toEqual(result.xtermPositions);
+  });
+
   it(
     `matches live headless xterm.js across ${RANDOM_SEQUENCE_COUNT} seeded randomized sequences (seed=0x${RANDOM_SEED.toString(16)})`,
     async () => {
@@ -655,6 +824,35 @@ describe("TerminalCursorPositionQueries xterm.js Unicode 11 parity", () => {
           trackerReplies,
           `mismatch on extended randomized sequence #${index} (${testCase.cols}x${testCase.rows}): ${JSON.stringify(testCase.steps)}`,
         ).toEqual(xtermReplies);
+      }
+    },
+    30_000,
+  );
+
+  it(
+    `matches live headless xterm.js reply and active cursor at every DSR across ${ORIGIN_MARGIN_RANDOM_SEQUENCE_COUNT} nonzero-top DECSTBM + DECOM sequences (seed=0x${ORIGIN_MARGIN_RANDOM_SEED.toString(16)})`,
+    async () => {
+      const rng = createRng(ORIGIN_MARGIN_RANDOM_SEED);
+      for (
+        let index = 0;
+        index < ORIGIN_MARGIN_RANDOM_SEQUENCE_COUNT;
+        index += 1
+      ) {
+        const testCase = generateOriginMarginRandomCase(rng);
+        const { xtermReplies, trackerReplies, xtermPositions } =
+          await runAndVerifyAtEveryDsr(
+            testCase.cols,
+            testCase.rows,
+            testCase.segments,
+          );
+        expect(
+          trackerReplies,
+          `DSR reply mismatch on nonzero DECSTBM+DECOM sequence #${index} (${testCase.cols}x${testCase.rows}): ${JSON.stringify(testCase.segments)}`,
+        ).toEqual(xtermReplies);
+        expect(
+          trackerReplies,
+          `cursor position mismatch on nonzero DECSTBM+DECOM sequence #${index} (${testCase.cols}x${testCase.rows}): ${JSON.stringify(testCase.segments)}`,
+        ).toEqual(xtermPositions);
       }
     },
     30_000,

@@ -917,9 +917,9 @@ export class TerminalCursorPositionQueries {
     }
   }
 
-  private setCursor(
+  private setViewportCursor(
     x: number,
-    y: number,
+    viewportRow: number,
     setsCol: boolean,
     setsRow: boolean,
   ): void {
@@ -929,16 +929,29 @@ export class TerminalCursorPositionQueries {
       if (setsCol) buf.colKnown = true;
     }
     if (setsRow || buf.rowKnown) {
-      buf.y = this.originMode ? buf.scrollTop + y : y;
+      buf.y = viewportRow;
       if (setsRow) buf.rowKnown = true;
     }
     this.restrictCursor();
   }
 
-  private moveCursor(dx: number, dy: number): void {
+  private applyXtermOriginSetCursor(
+    x: number,
+    rowArgBeforeXtermOriginOffset: number,
+    setsCol: boolean,
+    setsRow: boolean,
+  ): void {
+    const buf = this.active();
+    const viewportRow = this.originMode
+      ? buf.scrollTop + rowArgBeforeXtermOriginOffset
+      : rowArgBeforeXtermOriginOffset;
+    this.setViewportCursor(x, viewportRow, setsCol, setsRow);
+  }
+
+  private applyXtermOriginMoveCursor(dx: number, dy: number): void {
     this.restrictCursor();
     const buf = this.active();
-    this.setCursor(buf.x + dx, buf.y + dy, false, false);
+    this.applyXtermOriginSetCursor(buf.x + dx, buf.y + dy, false, false);
   }
 
   private recordNormalScrolls(count: number): void {
@@ -1413,7 +1426,7 @@ export class TerminalCursorPositionQueries {
       if (!this.altScreen) {
         this.normal.maxPrintedCol = this.cols;
       }
-      this.setCursor(0, 0, true, true);
+      this.applyXtermOriginSetCursor(0, 0, true, true);
     }
   }
 
@@ -1425,7 +1438,7 @@ export class TerminalCursorPositionQueries {
     }
     const diffToTop = buf.y - buf.scrollTop;
     const delta = diffToTop >= 0 ? -Math.min(diffToTop, count) : -count;
-    this.moveCursor(0, delta);
+    this.applyXtermOriginMoveCursor(0, delta);
   }
 
   private cursorDown(count: number): void {
@@ -1436,7 +1449,7 @@ export class TerminalCursorPositionQueries {
     }
     const diffToBottom = buf.scrollBottom - buf.y;
     const delta = diffToBottom >= 0 ? Math.min(diffToBottom, count) : count;
-    this.moveCursor(0, delta);
+    this.applyXtermOriginMoveCursor(0, delta);
   }
 
   private applyCsi(finalByte: number): void {
@@ -1465,7 +1478,7 @@ export class TerminalCursorPositionQueries {
         switch (mode) {
           case 6:
             this.originMode = enable;
-            this.setCursor(0, 0, true, true);
+            this.applyXtermOriginSetCursor(0, 0, true, true);
             break;
           case 7:
             this.autowrap = enable;
@@ -1534,10 +1547,10 @@ export class TerminalCursorPositionQueries {
         return;
       case 0x43:
       case 0x61:
-        this.moveCursor(p0 || 1, 0);
+        this.applyXtermOriginMoveCursor(p0 || 1, 0);
         return;
       case 0x44:
-        this.moveCursor(-(p0 || 1), 0);
+        this.applyXtermOriginMoveCursor(-(p0 || 1), 0);
         return;
       case 0x45:
         this.cursorDown(p0 || 1);
@@ -1551,13 +1564,13 @@ export class TerminalCursorPositionQueries {
         return;
       case 0x47:
       case 0x60:
-        this.setCursor((p0 || 1) - 1, buf.y, true, false);
+        this.applyXtermOriginSetCursor((p0 || 1) - 1, buf.y, true, false);
         return;
       case 0x48:
       case 0x66: {
         const col = this.csiParamCount >= 2 ? (this.csiParams[1]! || 1) - 1 : 0;
         const row = (p0 || 1) - 1;
-        this.setCursor(col, row, true, true);
+        this.applyXtermOriginSetCursor(col, row, true, true);
         return;
       }
       case 0x49:
@@ -1592,10 +1605,10 @@ export class TerminalCursorPositionQueries {
         this.repeatPreceding(p0 || 1);
         return;
       case 0x64:
-        this.setCursor(buf.x, (p0 || 1) - 1, false, true);
+        this.applyXtermOriginSetCursor(buf.x, (p0 || 1) - 1, false, true);
         return;
       case 0x65:
-        this.moveCursor(0, p0 || 1);
+        this.applyXtermOriginMoveCursor(0, p0 || 1);
         return;
       case 0x67:
         if (p0 === 0) {
@@ -1630,7 +1643,7 @@ export class TerminalCursorPositionQueries {
         if (bottom > top) {
           buf.scrollTop = top - 1;
           buf.scrollBottom = bottom - 1;
-          this.setCursor(0, 0, true, true);
+          this.applyXtermOriginSetCursor(0, 0, true, true);
         }
         return;
       }
