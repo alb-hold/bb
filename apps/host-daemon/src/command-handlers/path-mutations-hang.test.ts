@@ -4,7 +4,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
+import { hostProc,useProcReaderForTests } from "@bb/process-utils";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useFsProbesForTests } from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
@@ -35,7 +37,16 @@ function never<T>(): Promise<T> {
   return new Promise<T>(() => {});
 }
 
+beforeEach(() => {
+  useProcReaderForTests({
+    ...hostProc,
+    readdir: async (name) =>
+      name === "/proc" ? [String(process.pid)] : hostProc.readdir(name),
+  });
+});
+
 afterEach(async () => {
+  useProcReaderForTests(null);
   useFsProbesForTests(null);
   await Promise.all(
     roots
@@ -51,6 +62,7 @@ describe("host path checks against a filesystem that does not answer", () => {
     const folder = path.join(root, "folder");
     await fs.writeFile(file, "x");
     await fs.mkdir(path.join(folder, "inner"), { recursive: true });
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(remove(file, root)).resolves.toEqual({ ok: true });
     await expect(remove(folder, root)).resolves.toEqual({ ok: true });
     await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
