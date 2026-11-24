@@ -553,6 +553,31 @@ describe("thread entity store", () => {
       expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
   });
 
+  it("keeps the stored receipt when a delayed running row without one lands at the same updatedAt", async () => {
+    const withReceipt = entry("t1", {
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 100_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+          evidenceKind: "holder-report",
+        },
+      },
+    });
+    const delayed = entry("t1", {
+      status: "active",
+      runtime: { displayStatus: "active" },
+    });
+    const s = setup([withReceipt]);
+    await s.fetchList(s.listKey, () => [withReceipt]);
+    await s.fetchList(s.lateKey, () => [delayed]);
+
+    for (const rows of [s.sidebarRows(), s.listRows(), s.listRows(s.lateKey)])
+      expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
+  });
+
   it.each([10, 11])(
     "clears the stored native activity receipt when a runtime without one arrives at updatedAt %i",
     async (updatedAt) => {

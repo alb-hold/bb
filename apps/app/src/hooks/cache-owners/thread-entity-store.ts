@@ -19,9 +19,11 @@ import {
 } from "@bb/query-tags";
 import {
   threadWithRuntimeSchema,
+  type ThreadRuntimeState,
   type ThreadListEntry,
   type ThreadWithRuntime,
 } from "@bb/domain";
+import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import type { ThreadResponse } from "@bb/server-contract";
 import {
   ARCHIVED_THREADS_LIST_KIND,
@@ -312,6 +314,22 @@ function keepNewestNativeActivity(
   const currentRuntime = current.thread.runtime;
   const incomingAt = nativeActivityEvidenceAt(incoming);
   const currentAt = nativeActivityEvidenceAt(currentRuntime);
+  if (
+    isRecord(incoming) &&
+    isRecord(currentRuntime) &&
+    incomingAt === undefined &&
+    currentAt !== undefined &&
+    typeof threadFields.updatedAt === "number" &&
+    typeof current.thread.updatedAt === "number" &&
+    threadFields.updatedAt <= current.thread.updatedAt &&
+    isRunningThreadRuntimeDisplayStatus(
+      incoming.displayStatus as ThreadRuntimeState["displayStatus"],
+    )
+  )
+    return {
+      ...threadFields,
+      runtime: { ...incoming, nativeActivity: currentRuntime.nativeActivity },
+    };
   if (
     !isRecord(incoming) ||
     currentRuntime === undefined ||
