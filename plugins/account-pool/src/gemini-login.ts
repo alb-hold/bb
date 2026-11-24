@@ -313,7 +313,12 @@ function offersOAuth(result: unknown): boolean {
 export async function checkedAntigravityRuntime(
   resolveRuntime: () => Promise<CommandSpec | null>,
 ): Promise<CommandSpec> {
-  const runtime = await resolveRuntime().catch(() => null);
+  const runtime = await resolveRuntime().catch((error: unknown) => {
+    throw new GeminiLoginError(
+      "runtime_missing",
+      `bb could not read provider-acp's customAgents setting to find the "${ANTIGRAVITY_AGENT_ID}" agent: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
   if (runtime === null)
     throw new GeminiLoginError(
       "runtime_missing",

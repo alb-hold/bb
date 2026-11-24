@@ -1095,6 +1095,7 @@ async function createGeminiFixture(
       system: { providerStates: async () => ({ providers: [] }) },
       plugins: {
         list: async () => ({ plugins: [{ id: "account-pool", enabled: true }] }),
+        getSettings: async () => ({ ok: true as const, schema: {}, values: {} }),
       },
     },
     experimental_callHostRpc: async (call) => {
