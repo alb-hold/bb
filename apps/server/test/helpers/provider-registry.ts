@@ -151,7 +151,8 @@ export async function registerFirstPartyProviders(
     ) {
       options.artifacts.set(pluginId, stubHostArtifact(pluginId));
     }
-    for (const { declaration, icon } of declarations) {
+    for (const cached of declarations) {
+      const { declaration, icon } = structuredClone(cached);
       registry.register({
         ...buildPluginProviderRegistration({
           available: !unavailable.has(pluginId),
