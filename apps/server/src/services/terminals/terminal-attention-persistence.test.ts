@@ -279,7 +279,10 @@ describe("terminal attention persistence", () => {
     vi.advanceTimersByTime(11999);
     expect(notify).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
+    expect(notify).toHaveBeenCalledWith(threadId, [
+      "terminals-changed",
+      "status-changed",
+    ]);
     harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
     recordNativeTerminalThreadSessionId(harness.db, {
       threadId,
