@@ -874,6 +874,7 @@ export function createGeminiAdapter(options: {
   fetch?: typeof fetch;
   now?: () => number;
   onModels?: (accountId: string, ids: string[]) => void;
+  knownModels?: () => Iterable<string>;
   onboarding?: { pollMs: number; timeoutMs: number };
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
@@ -922,7 +923,7 @@ export function createGeminiAdapter(options: {
   const isKnownFamily = (model: string) =>
     [...servedModels.values()].some((entry) =>
       isServedFamily(model, entry.ids),
-    );
+    ) || isServedFamily(model, new Set(options.knownModels?.() ?? []));
   const refreshServed = (
     account: Account,
     secret: AccountSecret,

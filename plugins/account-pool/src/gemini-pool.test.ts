@@ -2770,6 +2770,48 @@ describe("Gemini bare family ids through the pool", () => {
       "gemini-4-neon-medium",
     ]);
   });
+
+  it("resolves a bare family id after a restart from the saved ids, before any model list goes through the pool", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: NEON_MODELS,
+      rejectUnservedModels: true,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      {
+        kv: {
+          "gemini-served-models:v1": {
+            "00000000-0000-4000-8000-000000000001": [
+              "gemini-4-neon",
+              "gemini-4-neon-low",
+              "gemini-4-neon-medium",
+            ],
+          },
+        },
+      },
+    );
+    await addGemini(fixture.host, "/homes/a", 0);
+    const env = await geminiEnv(fixture.host);
+    const before = google.calls.filter((call) => call.method === "fetchAvailableModels").length;
+    const response = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(
+      google.calls.filter((call) => call.method === "fetchAvailableModels"),
+    ).toHaveLength(before + 1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual(["gemini-4-neon-medium"]);
+  });
 });
 
 describe("Gemini on a host whose bb predates Gemini homes", () => {
