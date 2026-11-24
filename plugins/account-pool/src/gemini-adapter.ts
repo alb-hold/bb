@@ -1306,7 +1306,8 @@ export function createGeminiAdapter(options: {
         context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
       context.signal?.throwIfAborted();
-      if (secret.kind !== "oauth") return;
+      if (secret.kind !== "oauth")
+        throw new Error("Gemini usage refresh requires OAuth credentials.");
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           context.fetch,
@@ -1340,19 +1341,37 @@ export function createGeminiAdapter(options: {
           info.tier,
           context.signal,
         );
+      const quotaSummary = await codeAssistCall(
+        context.fetch,
+        bases.daily,
+        "retrieveUserQuotaSummary",
+        secret.accessToken,
+        { project },
+        agent,
+        context.signal,
+      );
+      const parsedQuotaSummary = retrieveUserQuotaSummarySchema.safeParse(
+        quotaSummary,
+      );
+      if (
+        !parsedQuotaSummary.success ||
+        (!Array.isArray(parsedQuotaSummary.data.buckets) &&
+          !Array.isArray(parsedQuotaSummary.data.groups))
+      )
+        throw new Error("Usage refresh returned unreadable data.");
       const now = context.now();
       const windows = geminiWindowsFromQuota(
-        await codeAssistCall(
-          context.fetch,
-          bases.daily,
-          "retrieveUserQuotaSummary",
-          secret.accessToken,
-          { project },
-          agent,
-          context.signal,
-        ),
+        quotaSummary,
         now,
       );
+      const bucketCount =
+        (parsedQuotaSummary.data.buckets?.length ?? 0) +
+        (parsedQuotaSummary.data.groups?.reduce(
+          (count, group) => count + (group.buckets?.length ?? 0),
+          0,
+        ) ?? 0);
+      if (bucketCount > 0 && windows.length === 0)
+        throw new Error("Usage refresh returned no recognized quota buckets.");
       context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");

@@ -5,12 +5,14 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { accountPoolConfigSchema } from "./contracts.js";
 import { createHub, type AccountPoolHub } from "./hub.js";
+import { PoolOperations } from "./operations.js";
 import {
   AccountStore,
   HubTokenStore,
   PoolAffinityStore,
   QUOTA_MIGRATIONS,
   QuotaStore,
+  RoutingStore,
 } from "./store.js";
 import { ThreadTokenStore } from "./thread-tokens.js";
 
@@ -96,6 +98,7 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" = "normal";
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     calls.push(url);
@@ -104,7 +107,17 @@ async function createGeminiPool(
         cloudaicompanionProject: "synthetic-project",
         paidTier: { name: "Google AI Ultra" },
       });
-    if (url.endsWith("/v1internal:retrieveUserQuotaSummary"))
+    if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+      if (quotaMode === "http")
+        return Response.json({ error: "synthetic failure" }, { status: 503 });
+      if (quotaMode === "unreadable")
+        return Response.json({ unexpected: true });
+      if (quotaMode === "missing") return Response.json({});
+      if (quotaMode === "empty") return Response.json({ buckets: [] });
+      if (quotaMode === "unknown")
+        return Response.json({
+          buckets: [{ bucketId: "future-model", remainingFraction: 0.2 }],
+        });
       return Response.json({
         buckets: [
           {
@@ -114,6 +127,7 @@ async function createGeminiPool(
           },
         ],
       });
+    }
     throw new Error(`Unexpected network destination ${url}.`);
   };
   const hub: AccountPoolHub = createHub({
@@ -143,6 +157,16 @@ async function createGeminiPool(
   });
   const controller = new AbortController();
   const running = hub.start(controller.signal);
+  const operations = new PoolOperations(
+    accounts,
+    quotas,
+    hub,
+    hubTokens,
+    new RoutingStore(host.bb.storage.kv, now),
+    async () => [],
+    async () => [],
+    now,
+  );
   cleanups.push(async () => {
     controller.abort();
     await running;
@@ -157,7 +181,9 @@ async function createGeminiPool(
   };
   return {
     account,
+    accounts,
     hub,
+    operations,
     quotas,
     calls,
     lookups: () => lookups,
@@ -167,10 +193,33 @@ async function createGeminiPool(
       time += milliseconds;
     },
     now,
+    setQuotaMode: (mode: typeof quotaMode) => {
+      quotaMode = mode;
+    },
     summary,
     eligible: async () =>
       (await hub.nextAccountPreview("gemini")).nextAccountId === account.id,
   };
+}
+
+function setStaleUsage(pool: Awaited<ReturnType<typeof createGeminiPool>>) {
+  const observedAt = pool.now() - 64 * MINUTE;
+  pool.quotas.put({
+    ...pool.quotas.get(pool.account.id),
+    limitWindows: [
+      {
+        slot: "primary",
+        windowMinutes: null,
+        utilization: 0.54,
+        resetAt: null,
+        status: "allowed",
+        observedAt,
+        source: "usage",
+      },
+    ],
+    observedAt,
+  });
+  return observedAt;
 }
 
 describe("Gemini usage refresh after a failed antigravity-acp runtime lookup", () => {
@@ -295,4 +344,146 @@ describe("Gemini usage refresh after a failed antigravity-acp runtime lookup", (
     expect(summary.status).toBe("error");
     expect(await pool.eligible()).toBe(false);
   });
+});
+
+describe("Gemini usage refresh results", () => {
+  it("rejects a forced refresh for a non-OAuth account instead of reporting an unchanged reading as refreshed", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const account = await pool.accounts.add(
+      {
+        provider: "gemini",
+        kind: "api-key",
+        label: "synthetic-gemini-key",
+        email: null,
+        accountUuid: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        enabled: true,
+        priority: 1,
+      },
+      { kind: "api-key", apiKey: "synthetic-api-key" },
+    );
+
+    await expect(pool.operations.refreshUsage(account.id)).rejects.toThrow(
+      "Could not refresh account usage. Try again.",
+    );
+  });
+
+  it("rejects a forced refresh when its stored credential cannot answer and preserves the old reading", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const observedAt = setStaleUsage(pool);
+    await pool.accounts.writeSecret(pool.account.id, {
+      kind: "api-key",
+      apiKey: "synthetic-api-key",
+    });
+
+    await expect(pool.operations.refreshUsage(pool.account.id)).rejects.toThrow(
+      "Could not refresh account usage. Try again.",
+    );
+    expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
+    expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(
+      0.54,
+    );
+  });
+
+  it.each(["http", "unreadable", "missing", "unknown"] as const)(
+    "reports a %s Gemini quota response as a failed refresh without replacing the cached reading",
+    async (mode) => {
+      const pool = await createGeminiPool(0);
+      await pool.settled();
+      const observedAt = setStaleUsage(pool);
+      pool.setQuotaMode(mode);
+
+      await expect(pool.operations.refreshUsage(pool.account.id)).rejects.toThrow(
+        "Could not refresh account usage. Try again.",
+      );
+      expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
+      expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(
+        0.54,
+      );
+    },
+  );
+
+  it("stamps a fresh daily quota reading on a forced refresh", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const oldObservedAt = setStaleUsage(pool);
+
+    const account = await pool.operations.refreshUsage(pool.account.id);
+
+    expect(account?.observedAt).toBe(pool.now());
+    expect(account?.observedAt).not.toBe(oldObservedAt);
+    expect(account?.limitWindows).toHaveLength(1);
+    expect(account?.limitWindows[0]).toMatchObject({
+      slot: "primary",
+      utilization: 0.25,
+      observedAt: pool.now(),
+    });
+  });
+
+  it("stamps an empty parsed reading for a forced empty quota response", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const oldObservedAt = setStaleUsage(pool);
+    pool.setQuotaMode("empty");
+
+    const account = await pool.operations.refreshUsage(pool.account.id);
+
+    expect(account?.observedAt).toBe(pool.now());
+    expect(account?.observedAt).not.toBe(oldObservedAt);
+    expect(account?.limitWindows).toEqual([]);
+    expect(account?.usageRestriction).toBeNull();
+    expect(await pool.eligible()).toBe(true);
+    expect((await pool.summary()).limitWindows).toEqual([]);
+  });
+});
+
+describe("scheduled Gemini usage refresh", () => {
+  it("stamps a fresh daily quota reading after the refresh interval", async () => {
+    const now = useFakeClock();
+    const pool = await createGeminiPool(0, null, { now });
+    await vi.advanceTimersByTimeAsync(0);
+    await pool.settled();
+    const oldObservedAt = setStaleUsage(pool);
+
+    await vi.advanceTimersByTimeAsync(5 * MINUTE);
+    await pool.settled();
+
+    expect(pool.quotas.get(pool.account.id).observedAt).toBe(pool.now());
+    expect(pool.quotas.get(pool.account.id).observedAt).not.toBe(oldObservedAt);
+    expect(pool.quotas.get(pool.account.id).limitWindows[0]).toMatchObject({
+      slot: "primary",
+      utilization: 0.25,
+      observedAt: pool.now(),
+    });
+  });
+
+  it.each([
+    ["missing", false],
+    ["empty", true],
+    ["unknown", false],
+  ] as const)(
+    "handles a scheduled %s quota response as expected",
+    async (mode, succeeds) => {
+      const now = useFakeClock();
+      const pool = await createGeminiPool(0, null, { now });
+      await vi.advanceTimersByTimeAsync(0);
+      await pool.settled();
+      const oldObservedAt = setStaleUsage(pool);
+      pool.setQuotaMode(mode);
+
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      await pool.settled();
+
+      const reading = pool.quotas.get(pool.account.id);
+      expect(reading.observedAt).toBe(succeeds ? pool.now() : oldObservedAt);
+      expect(reading.limitWindows).toEqual(
+        succeeds
+          ? []
+          : [expect.objectContaining({ utilization: 0.54, observedAt: oldObservedAt })],
+      );
+    },
+  );
 });

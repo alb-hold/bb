@@ -880,6 +880,7 @@ async function startGoogle(args: {
   gcpTos?: string[];
   quotaFraction: Record<string, number>;
   extraBuckets?: unknown[];
+  quotaBuckets?: unknown[];
   groups?: unknown[];
   models?: unknown;
   rejectUnservedModels?: boolean;
@@ -970,14 +971,15 @@ async function startGoogle(args: {
           });
         else if (method === "retrieveUserQuotaSummary")
           send(200, {
-            buckets: [
-              ...(args.extraBuckets ?? []),
-              {
-                bucketId: "gemini-4-neon",
-                remainingFraction: args.quotaFraction[bearer] ?? 1,
-                resetTime: "2100-01-01T00:00:00Z",
-              },
-            ],
+            buckets:
+              args.quotaBuckets ?? [
+                ...(args.extraBuckets ?? []),
+                {
+                  bucketId: "gemini-4-neon",
+                  remainingFraction: args.quotaFraction[bearer] ?? 1,
+                  resetTime: "2100-01-01T00:00:00Z",
+                },
+              ],
             ...(args.groups === undefined ? {} : { groups: args.groups }),
           });
         else if (method === "fetchAvailableModels") {
@@ -1313,11 +1315,13 @@ describe("Gemini account pool", () => {
     stream: StreamBehavior,
     fractions: Record<string, number> = {},
     extraBuckets?: unknown[],
+    quotaBuckets?: unknown[],
   ) {
     const google = await startGoogle({
       projects: { "tok-a": "proj-a", "tok-b": "proj-b" },
       quotaFraction: fractions,
       ...(extraBuckets === undefined ? {} : { extraBuckets }),
+      ...(quotaBuckets === undefined ? {} : { quotaBuckets }),
       stream,
     });
     upstreams.push(google.close);
@@ -2244,15 +2248,61 @@ describe("Gemini account pool", () => {
       [7],
     );
     expect((await post()).status).toBe(200);
-    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
-      accountId: ids.a,
-    });
+    const before = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    ).accounts.find((account) => account.id === ids.a);
+    await expect(
+      fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: ids.a,
+      }),
+    ).rejects.toThrow("Could not refresh account usage. Try again.");
+    const cli = await fixture.host.harness.behavior.runCli([
+      "account",
+      "refresh",
+      ids.a,
+    ]);
+    expect(cli.exitCode).not.toBe(0);
+    expect(cli.stderr).toContain("Could not refresh account usage. Try again.");
+    expect(cli.stdout).not.toContain("Refreshed usage");
     const status = statusSchema.parse(
       await fixture.host.harness.behavior.callRpc("status.get", null),
     );
     const a = status.accounts.find((account) => account.id === ids.a);
     expect(a?.usageRestriction?.reason).toBe("quota_exhausted");
-    expect(a?.limitWindows).toEqual([]);
+    expect(a?.limitWindows).toEqual(before?.limitWindows);
+    expect(a?.observedAt).toBe(before?.observedAt);
+  });
+
+  it("reports unknown-only quota buckets as a failed refresh through RPC and CLI", async () => {
+    const { fixture, ids } = await twoAccounts(
+      () => ({ status: 200, body: OK_BODY }),
+      {},
+      undefined,
+      [{ bucketId: "future-model", remainingFraction: 0.2 }],
+    );
+    const before = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    ).accounts.find((account) => account.id === ids.a);
+
+    await expect(
+      fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: ids.a,
+      }),
+    ).rejects.toThrow("Could not refresh account usage. Try again.");
+    const cli = await fixture.host.harness.behavior.runCli([
+      "account",
+      "refresh",
+      ids.a,
+    ]);
+    expect(cli.exitCode).not.toBe(0);
+    expect(cli.stderr).toContain("Could not refresh account usage. Try again.");
+    expect(cli.stdout).not.toContain("Refreshed usage");
+
+    const after = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    ).accounts.find((account) => account.id === ids.a);
+    expect(after?.limitWindows).toEqual(before?.limitWindows);
+    expect(after?.observedAt).toBe(before?.observedAt);
   });
 
   it("serves from the first account with that account's project", async () => {
