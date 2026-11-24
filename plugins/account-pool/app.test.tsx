@@ -671,8 +671,8 @@ describe("Account Pool settings", () => {
         subscriptionType: "Google AI Ultra",
         rateLimitTier: null,
         limitWindows: [
-          claudeWindow("primary", 0.37, { windowMinutes: 1_440 }),
-          claudeWindow("secondary", 0.52, { windowMinutes: null }),
+          claudeWindow("primary", 0.52, { windowMinutes: null }),
+          claudeWindow("secondary", 0.37, { windowMinutes: 1_440 }),
         ],
       }),
     ]);
