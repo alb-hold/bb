@@ -39,25 +39,34 @@ async function hasGitEntry(directory: string): Promise<boolean | null> {
   }
 }
 
-async function mountInsideTarget(target: string): Promise<boolean> {
+async function readMountPoints(): Promise<string[] | null> {
   let text: string;
   try {
     text = await fs.readFile("/proc/self/mountinfo", "utf8");
   } catch {
-    return true;
+    return null;
   }
   const lines = text.trim().split("\n");
-  if (lines[0] === "") return true;
+  if (lines[0] === "") return null;
+  const points: string[] = [];
   for (const line of lines) {
     const field = line.split(" ")[4];
-    if (field === undefined || !field.startsWith("/")) return true;
-    const point = field.replace(
-      /\\(040|011|012|134)/gu,
-      (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+    if (field === undefined || !field.startsWith("/")) return null;
+    points.push(
+      field.replace(/\\(040|011|012|134)/gu, (_match, octal: string) =>
+        String.fromCharCode(Number.parseInt(octal, 8)),
+      ),
     );
-    if (isPathWithinDirectory(target, point)) return true;
   }
-  return false;
+  return points;
+}
+
+function containingMount(points: readonly string[], location: string): string {
+  let deepest = "";
+  for (const point of points)
+    if (isPathWithinDirectory(point, location) && point.length > deepest.length)
+      deepest = point;
+  return deepest;
 }
 
 async function treeHasGitEntry(root: string): Promise<boolean> {
@@ -88,18 +97,29 @@ export async function processDoubtsIgnorableForRemoval(
 ): Promise<boolean> {
   if (serverProtectedPaths === undefined) return false;
   if (process.platform !== "linux") return false;
-  let target: string;
+  const points = await readMountPoints();
+  if (points === null) return false;
   let temporaryRoot: string;
   try {
-    [target, temporaryRoot] = await Promise.all([
-      fs.realpath(requested),
-      fs.realpath(os.tmpdir()),
-    ]);
+    temporaryRoot = await fs.realpath(os.tmpdir());
+  } catch {
+    return false;
+  }
+  const temporaryMount = containingMount(points, temporaryRoot);
+  const lexical = path.resolve(requested);
+  if (!isPathWithinDirectory(temporaryRoot, lexical)) return false;
+  if (containingMount(points, lexical) !== temporaryMount) return false;
+  let target: string;
+  try {
+    target = await fs.realpath(requested);
   } catch {
     return false;
   }
   if (target === temporaryRoot) return false;
   if (!isPathWithinDirectory(temporaryRoot, target)) return false;
+  if (containingMount(points, target) !== temporaryMount) return false;
+  if (points.some((point) => isPathWithinDirectory(target, point)))
+    return false;
   if (target.split(path.sep).includes(".git")) return false;
   const protectedPaths = await Promise.all(
     [
@@ -119,6 +139,5 @@ export async function processDoubtsIgnorableForRemoval(
     if ((await hasGitEntry(ancestor)) !== false) return false;
     if (ancestor === path.dirname(ancestor)) break;
   }
-  if (await mountInsideTarget(target)) return false;
   return !(await treeHasGitEntry(target));
 }
