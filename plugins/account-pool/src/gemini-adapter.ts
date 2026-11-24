@@ -17,6 +17,7 @@ import {
   codeAssistModel,
   codeAssistModels,
   geminiGatewayCall,
+  hasCodeAssistModelList,
   isServedFamily,
   servedFamilyVariant,
   geminiRuntimeRefusal,
@@ -922,7 +923,6 @@ export function createGeminiAdapter(options: {
     served: string[],
     advertised: string[],
   ) => {
-    if (served.length === 0) return;
     servedModels.set(accountId, { ids: new Set(served), at: clock() });
     options.onModels?.(accountId, advertised, served);
   };
@@ -932,11 +932,20 @@ export function createGeminiAdapter(options: {
     ) ||
     isServedFamily(
       model,
-      new Set(Object.values(options.savedModels?.() ?? {}).flatMap((entry) => "served" in entry ? [...entry.served, ...entry.aliases] : entry)),
+      new Set(
+        Object.entries(options.savedModels?.() ?? {}).flatMap(
+          ([accountId, entry]) =>
+            servedModels.has(accountId)
+              ? []
+              : "served" in entry
+                ? [...entry.served, ...entry.aliases]
+                : entry,
+        ),
+      ),
     );
   const savedServed = (accountId: string): ReadonlySet<string> | undefined => {
     const saved = options.savedModels?.()[accountId];
-    if (saved === undefined || ("served" in saved ? saved.served.length === 0 : saved.length === 0)) return undefined;
+    if (saved === undefined) return undefined;
     if ("served" in saved) return new Set(saved.served);
     return new Set(saved);
   };
@@ -949,17 +958,17 @@ export function createGeminiAdapter(options: {
     if (running !== undefined) return running;
     const flight = (async () => {
       if (secret.kind !== "oauth") return;
-      const served = codeAssistModels(
-        await codeAssistCall(
-          doFetch,
-          baseFor(account),
-          "fetchAvailableModels",
-          secret.accessToken,
-          { project: account.geminiProject },
-          await userAgent(),
-          signal,
-        ),
+      const payload = await codeAssistCall(
+        doFetch,
+        baseFor(account),
+        "fetchAvailableModels",
+        secret.accessToken,
+        { project: account.geminiProject },
+        await userAgent(),
+        signal,
       );
+      if (!hasCodeAssistModelList(payload)) return;
+      const served = codeAssistModels(payload);
       rememberServed(
         account.id,
         served.map((model) => model.id),

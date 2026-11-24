@@ -2962,6 +2962,97 @@ describe("Gemini bare family ids through the pool", () => {
         .map((call) => (call.body as { model: string }).model),
     ).toEqual(["gemini-4-neon"]);
   });
+
+  it("replaces cached and saved suffixed variants when a refresh returns an empty list, sending the bare id unchanged", async () => {
+    let clock = Date.now();
+    const currentModels: { models: Record<string, unknown> } = {
+      models: { ...NEON_MODELS.models },
+    };
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: currentModels,
+      rejectUnservedModels: true,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const first = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { now: () => clock },
+    );
+    const added = await addGemini(first.host, "/homes/a", 0);
+    const firstEnv = await geminiEnv(first.host);
+    const listed = await runtimeCall(first.host, firstEnv.token, {
+      method: "GET",
+      path: "/gemini/v1beta/models",
+    });
+    expect(listed.status).toBe(200);
+    await listed.text();
+    const warmed = await runtimeCall(first.host, firstEnv.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(warmed.status).toBe(200);
+    await warmed.text();
+    await vi.waitFor(async () => {
+      expect(await first.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+        [added.id]: {
+          served: expect.arrayContaining(["gemini-4-neon-medium"]),
+          aliases: ["gemini-4-neon"],
+        },
+      });
+    });
+
+    clock += 11 * 60 * 1_000;
+    currentModels.models = {};
+    const beforeRefresh = google.calls.filter(
+      (call) => call.method === "fetchAvailableModels",
+    ).length;
+    const afterEmpty = await runtimeCall(first.host, firstEnv.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterEmpty.status).toBe(400);
+    const afterEmptyBody = await afterEmpty.text();
+    expect(
+      google.calls.filter((call) => call.method === "fetchAvailableModels"),
+    ).toHaveLength(beforeRefresh + 1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual(["gemini-4-neon-medium", "gemini-4-neon"]);
+    expect(afterEmptyBody).toContain(
+      "Model 'gemini-4-neon' is not available for the current authentication method.",
+    );
+
+    let saved: unknown;
+    await vi.waitFor(async () => {
+      saved = await first.host.bb.storage.kv.get("gemini-served-models:v1");
+      expect(saved).toEqual({
+        [added.id]: { served: [], aliases: [] },
+      });
+    });
+    const kept: Record<string, unknown> = { "gemini-served-models:v1": saved };
+    for (const key of ["accounts:v1", "accounts:gemini:v1"]) {
+      const value = await first.host.bb.storage.kv.get(key);
+      if (value !== undefined && value !== null) kept[key] = value;
+    }
+    await first.stop();
+    const restarted = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { dataDir: first.dataDir, kv: kept },
+    );
+    expect(await restarted.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+      [added.id]: { served: [], aliases: [] },
+    });
+    const restartedEnv = await geminiEnv(restarted.host);
+    await expect(
+      runtimeCall(restarted.host, restartedEnv.token, {
+        path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+      }),
+    ).rejects.toThrow(/no http route/u);
+  });
 });
 
 describe("Gemini on a host whose bb predates Gemini homes", () => {
