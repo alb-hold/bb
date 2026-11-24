@@ -117,6 +117,23 @@ async function loadFirstPartyProviderPlugin(
   };
 }
 
+function copyData<T>(value: T): T {
+  if (value instanceof Uint8Array) return value.slice() as T;
+  if (Array.isArray(value)) return value.map(copyData) as T;
+  if (value instanceof Map) {
+    return new Map(
+      [...value].map(([key, entry]) => [key, copyData(entry)]),
+    ) as T;
+  }
+  if (value instanceof Set) return new Set([...value].map(copyData)) as T;
+  if (typeof value !== "object" || value === null) return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, copyData(entry)]),
+  ) as T;
+}
+
 function firstPartyProviderPlugin(
   pluginId: string,
 ): Promise<FirstPartyProviderPlugin> {
@@ -152,7 +169,7 @@ export async function registerFirstPartyProviders(
       options.artifacts.set(pluginId, stubHostArtifact(pluginId));
     }
     for (const cached of declarations) {
-      const { declaration, icon } = structuredClone(cached);
+      const { declaration, icon } = copyData(cached);
       registry.register({
         ...buildPluginProviderRegistration({
           available: !unavailable.has(pluginId),
