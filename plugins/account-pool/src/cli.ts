@@ -284,6 +284,13 @@ function formatImportProbe(probe: ImportProbe): string {
     probe.quota.kind === "answered"
       ? `answered, ${probe.quota.windows} window${probe.quota.windows === 1 ? "" : "s"}`
       : probe.quota.kind;
+  const buckets =
+    probe.quota.kind === "answered"
+      ? probe.quota.buckets.map(
+          (bucket) =>
+            `quota bucket: group=${bucket.group ?? "none"}; id=${bucket.bucketId ?? "none"}; name=${bucket.displayName ?? "none"}; remaining=${bucket.remainingFraction ?? "unknown"}; resets=${bucket.resetTime ?? "unknown"}; disabled=${bucket.disabled ? "yes" : "no"}; slot=${bucket.slot}`,
+        )
+      : [];
   return `${[
     `credential: ${credential.source}`,
     `oauth client: ...${credential.clientIdSuffix} (${credential.clientSource === "own" ? "from the sign-in" : "Antigravity installed-app"})`,
@@ -293,6 +300,7 @@ function formatImportProbe(probe: ImportProbe): string {
     ...endpoints,
     `would import: ${wouldUse}`,
     `quota summary: ${quota}`,
+    ...buckets,
   ].join("\n")}\n`;
 }
 

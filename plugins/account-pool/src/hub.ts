@@ -1218,9 +1218,11 @@ export class AccountPoolHub {
           previousAccountId,
           routing,
           signal,
+          parsed.unmetered === true,
         );
         if (
           !usageRefreshed &&
+          parsed.unmetered !== true &&
           (selected === null ||
             isPastThreshold(
               selected.quota,
@@ -1668,6 +1670,7 @@ export class AccountPoolHub {
     previousAccountId: string | null,
     routing: RoutingAttempt,
     signal: AbortSignal,
+    unmetered: boolean,
   ): Promise<SelectedAccount | null> {
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
@@ -1677,10 +1680,27 @@ export class AccountPoolHub {
     const threshold = this.options.getSettings().switchThreshold;
     const available = accounts
       .filter((account) => account.provider === provider && account.enabled)
-      .map((account) => ({
-        account,
-        quota: this.options.quotas.get(account.id),
-      }))
+      .map((account) => {
+        const quota = this.options.quotas.get(account.id);
+        return {
+          account,
+          quota: unmetered
+            ? {
+                ...quota,
+                limitWindows: [],
+                familyWeekly: {
+                  fable: null,
+                  sonnet: null,
+                  opus: null,
+                  haiku: null,
+                  other: null,
+                },
+                usageRestriction: null,
+                heldUntil: null,
+              }
+            : quota,
+        };
+      })
       .filter(
         ({ quota }) => quota.error === null && !isUsageRestricted(quota, now),
       )

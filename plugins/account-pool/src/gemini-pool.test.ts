@@ -578,16 +578,16 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection("upstream connect error", 0)).toBeNull();
   });
 
-  it("maps retrieveUserQuotaSummary buckets to per-account windows", () => {
+  it("maps only the routed Neon bucket to the account's window", () => {
     const windows = geminiWindowsFromQuota(
       {
         buckets: [
           {
-            bucketId: "gemini-3-pro",
+            bucketId: "gemini-4-neon",
             remainingFraction: 0.25,
             resetTime: "2100-01-01T00:00:00Z",
           },
-          { bucketId: "gemini-3-flash", remainingFraction: 1 },
+          { bucketId: "gemini-3-flash", remainingFraction: 0 },
         ],
       },
       5,
@@ -599,17 +599,75 @@ describe("Gemini quota parsing", () => {
         status: "allowed",
         resetAt: Date.parse("2100-01-01T00:00:00Z"),
       }),
-      expect.objectContaining({ slot: "secondary", utilization: 0 }),
     ]);
     expect(
       geminiWindowsFromQuota(
-        { buckets: [{ bucketId: "gemini-3-pro", remainingFraction: 0 }] },
+        { buckets: [{ bucketId: "gemini-4-neon", remainingFraction: 0 }] },
         5,
       )[0],
     ).toMatchObject({ status: "rejected", utilization: 1 });
   });
 
-  it("reads grouped buckets, and skips disabled and third-party ones", () => {
+  it("does not exhaust the account when an unrelated bucket is at 0 and the routed one has 60% left", () => {
+    expect(
+      geminiWindowsFromQuota(
+        {
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0.6 }],
+            },
+            {
+              displayName: "Claude and GPT models",
+              buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0 }],
+            },
+          ],
+        },
+        5,
+      ),
+    ).toEqual([
+      {
+        slot: "primary",
+        utilization: 0.4,
+        resetAt: null,
+        windowMinutes: null,
+        status: "allowed",
+        observedAt: 5,
+        source: "usage",
+      },
+    ]);
+  });
+
+  it("exhausts the account when the routed bucket is at 0", () => {
+    expect(
+      geminiWindowsFromQuota(
+        {
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [
+                { bucketId: "gemini-3-flash", remainingFraction: 0.9 },
+                { bucketId: "gemini-4-neon", remainingFraction: 0 },
+              ],
+            },
+          ],
+        },
+        5,
+      ),
+    ).toEqual([
+      {
+        slot: "primary",
+        utilization: 1,
+        resetAt: null,
+        windowMinutes: null,
+        status: "rejected",
+        observedAt: 5,
+        source: "usage",
+      },
+    ]);
+  });
+
+  it("reads grouped buckets, and skips disabled, third-party and other-model ones", () => {
     const windows = geminiWindowsFromQuota(
       {
         buckets: [
@@ -621,9 +679,10 @@ describe("Gemini quota parsing", () => {
           {
             displayName: "Gemini",
             buckets: [
-              { bucketId: "carbon", remainingFraction: 0.6 },
-              { bucketId: "argon", remainingFraction: 0, disabled: true },
-              { bucketId: "gemini-3-flash", remainingFraction: 0.5 },
+              { bucketId: "weekly", remainingFraction: 0.6 },
+              { bucketId: "daily", remainingFraction: 0, disabled: true },
+              { bucketId: "carbon", remainingFraction: 0 },
+              { bucketId: "gemini-3-flash", remainingFraction: 0 },
             ],
           },
         ],
@@ -632,7 +691,6 @@ describe("Gemini quota parsing", () => {
     );
     expect(windows).toEqual([
       expect.objectContaining({ slot: "primary", utilization: 0.4, status: "allowed" }),
-      expect.objectContaining({ slot: "secondary", utilization: 0.5, status: "allowed" }),
     ]);
     expect(
       geminiWindowsFromQuota(
@@ -821,6 +879,7 @@ async function startGoogle(args: {
   gcpTos?: string[];
   quotaFraction: Record<string, number>;
   extraBuckets?: unknown[];
+  groups?: unknown[];
   models?: unknown;
   stream: StreamBehavior;
 }): Promise<{ url: string; calls: UpstreamCall[]; close: () => Promise<void> }> {
@@ -911,11 +970,12 @@ async function startGoogle(args: {
             buckets: [
               ...(args.extraBuckets ?? []),
               {
-                bucketId: "gemini-3-pro",
+                bucketId: "gemini-4-neon",
                 remainingFraction: args.quotaFraction[bearer] ?? 1,
                 resetTime: "2100-01-01T00:00:00Z",
               },
             ],
+            ...(args.groups === undefined ? {} : { groups: args.groups }),
           });
         else if (method === "fetchAvailableModels")
           send(200, args.models ?? MODELS_PAYLOAD);
@@ -1352,6 +1412,24 @@ describe("Gemini account pool", () => {
     const google = await startGoogle({
       projects: { "tok-c": "proj-c" },
       quotaFraction: {},
+      groups: [
+        {
+          displayName: "Claude and GPT models",
+          buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0 }],
+        },
+        {
+          displayName: "Gemini Models",
+          buckets: [
+            {
+              bucketId: "weekly",
+              displayName: "Weekly Limit Remaining",
+              remainingFraction: 0.6,
+              resetTime: "2100-01-02T00:00:00Z",
+            },
+            { bucketId: "daily", remainingFraction: 0, disabled: true },
+          ],
+        },
+      ],
       stream: () => ({ status: 200, body: OK_BODY }),
     });
     upstreams.push(google.close);
@@ -1380,6 +1458,10 @@ describe("Gemini account pool", () => {
       "prod: not-loaded",
       "would import: project from daily, serves on daily",
       "quota summary: answered, 1 window",
+      "quota bucket: group=none; id=gemini-4-neon; name=none; remaining=1; resets=2100-01-01T00:00:00Z; disabled=no; slot=primary",
+      "quota bucket: group=Claude and GPT models; id=none; name=Weekly Limit Remaining; remaining=0; resets=unknown; disabled=no; slot=skipped",
+      "quota bucket: group=Gemini Models; id=weekly; name=Weekly Limit Remaining; remaining=0.6; resets=2100-01-02T00:00:00Z; disabled=no; slot=primary",
+      "quota bucket: group=Gemini Models; id=daily; name=none; remaining=0; resets=unknown; disabled=yes; slot=skipped",
       "",
     ]);
     for (const secret of ["proj-c", "tok-c", "refresh-tok-c", CLIENT.clientId, CLIENT.clientSecret, "fakeagyclient"])
@@ -1425,6 +1507,21 @@ describe("Gemini account pool", () => {
     const google = await startGoogle({
       projects: { "tok-d": "proj-d" },
       quotaFraction: {},
+      groups: [
+        {
+          displayName: "Gemini Models",
+          leakGroupField: "leak-group-field-d",
+          buckets: [
+            {
+              bucketId: "weekly",
+              remainingFraction: 0.5,
+              description: "leak-bucket-description-d",
+              window: "leak-bucket-window-d",
+              remainingAmount: "leak-bucket-amount-d",
+            },
+          ],
+        },
+      ],
       stream: () => ({ status: 200, body: OK_BODY }),
     });
     upstreams.push(google.close);
@@ -1449,7 +1546,17 @@ describe("Gemini account pool", () => {
       }),
     );
     const text = `${printed.stdout}${printed.stderr}`;
-    for (const hiddenValue of ["d@example.com", "tok-d", "refresh-tok-d", "proj-d", ...hidden]) {
+    for (const hiddenValue of [
+      "d@example.com",
+      "tok-d",
+      "refresh-tok-d",
+      "proj-d",
+      "leak-group-field-d",
+      "leak-bucket-description-d",
+      "leak-bucket-window-d",
+      "leak-bucket-amount-d",
+      ...hidden,
+    ]) {
       expect(text).not.toContain(hiddenValue);
       expect(payload).not.toContain(hiddenValue);
     }
@@ -1484,8 +1591,35 @@ describe("Gemini account pool", () => {
         { endpoint: "prod", status: "not-loaded", ...unloaded, projectPresent: false },
       ],
       wouldUse: { kind: "project", loadedFrom: "daily", servesOn: "daily" },
-      quota: { kind: "answered", windows: 1 },
+      quota: {
+        kind: "answered",
+        windows: 1,
+        buckets: [
+          {
+            group: null,
+            bucketId: "gemini-4-neon",
+            displayName: null,
+            remainingFraction: 1,
+            resetTime: "2100-01-01T00:00:00Z",
+            disabled: false,
+            slot: "primary",
+          },
+          {
+            group: "Gemini Models",
+            bucketId: "weekly",
+            displayName: null,
+            remainingFraction: 0.5,
+            resetTime: null,
+            disabled: false,
+            slot: "primary",
+          },
+        ],
+      },
     });
+    expect(lines.filter((line) => line.startsWith("quota bucket: "))).toEqual([
+      "quota bucket: group=none; id=gemini-4-neon; name=none; remaining=1; resets=2100-01-01T00:00:00Z; disabled=no; slot=primary",
+      "quota bucket: group=Gemini Models; id=weekly; name=none; remaining=0.5; resets=unknown; disabled=no; slot=primary",
+    ]);
   });
 
   it("signs a Google account in with --login, adds it, and refuses the same email twice", async () => {
@@ -1776,6 +1910,45 @@ describe("Gemini account pool", () => {
       expect(call.bearer).not.toBe(env.token);
       expect(JSON.stringify(call.body ?? null)).not.toContain(env.token);
     }
+  });
+
+  it("still lists the account's models, gemini-4-neon included, once its quota is exhausted", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: { "tok-a": 0 },
+      models: {
+        models: {
+          "gemini-4-neon": { displayName: "Gemini 4 Neon" },
+          "gemini-3.1-pro-preview": { displayName: "Gemini 3.1 Pro" },
+        },
+      },
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, {
+      "/homes/a": creds("tok-a"),
+    });
+    const added = await addGemini(fixture.host, "/homes/a", 0);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: added.id,
+    });
+    const env = await geminiEnv(fixture.host);
+    for (const route of ["/gemini/v1beta/models", "/gemini/v1/models"]) {
+      const listed = await runtimeCall(fixture.host, env.token, {
+        method: "GET",
+        path: route,
+      });
+      expect(listed.status).toBe(200);
+      expect(await listed.text()).toContain("gemini-4-neon");
+    }
+    const turn = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "s-out" },
+    });
+    expect(turn.status).toBe(429);
+    await turn.text();
+    expect(
+      google.calls.filter((call) => call.method === "streamGenerateContent"),
+    ).toEqual([]);
   });
 
   it("sends a turn as the runtime's own Code Assist call and unwraps the stream", async () => {
@@ -2260,6 +2433,46 @@ describe("Gemini account pool", () => {
         accountId: account.id,
       });
     expect((await post("s-third-party")).status).toBe(200);
+    expect(
+      google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
+    ).toEqual(["tok-a"]);
+  });
+
+  it("shows 40% used and keeps serving when the Gemini group has 60% left and the Claude and GPT group is at 0", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: { "tok-a": 0.6 },
+      groups: [
+        {
+          displayName: "Claude and GPT models",
+          buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0 }],
+        },
+        {
+          displayName: "Gemini Models",
+          buckets: [{ displayName: "Weekly Limit Remaining", remainingFraction: 0.6 }],
+        },
+      ],
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, { "/homes/a": creds("tok-a") });
+    const added = await addGemini(fixture.host, "/homes/a", 0);
+    await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+      accountId: added.id,
+    });
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const account = status.accounts.find((entry) => entry.id === added.id);
+    expect(account?.limitWindows.map((window) => [window.slot, window.status])).toEqual([
+      ["primary", "allowed"],
+    ]);
+    expect(account?.limitWindows[0]?.utilization).toBeCloseTo(0.4);
+    const env = await geminiEnv(fixture.host);
+    const response = await runtimeCall(fixture.host, env.token, {
+      body: { contents: [], sessionId: "s-groups" },
+    });
+    expect(response.status).toBe(200);
     expect(
       google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
     ).toEqual(["tok-a"]);
