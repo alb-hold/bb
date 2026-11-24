@@ -4179,7 +4179,7 @@ async function handleRequest(
               request.params.providerOptions,
               request.params.envVars,
             ),
-            modelPicker,
+            { ...modelPicker, envVars: request.params.envVars },
           ),
           await resolveModelListWorkspace(request.params.cwd),
         ),
