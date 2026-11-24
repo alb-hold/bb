@@ -50,11 +50,10 @@ import {
 import { runNativeMcpServer } from "../../native-mcp.js";
 import { checkNativeTerminal } from "../../native-terminal-check.js";
 import {
-  defaultNativeHolderLaunchdDeps,
-  removeNativeHolderLaunchdJob,
-  startNativeHolderInOwnCoalition,
-  type NativeHolderLaunchdDeps,
-} from "../../native-holder-launchd.js";
+  defaultNativeHolderAppDeps,
+  startNativeHolderAsApp,
+  type NativeHolderAppDeps,
+} from "../../native-holder-app.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -110,7 +109,7 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
 export function spawnNativeHolder(
   threadId: string,
   socketPath: string,
-  launchd: NativeHolderLaunchdDeps = defaultNativeHolderLaunchdDeps(),
+  app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
 ): void {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   const script = process.argv[1];
@@ -131,9 +130,9 @@ export function spawnNativeHolder(
     socketPath,
   ];
   if (
-    startNativeHolderInOwnCoalition(
+    startNativeHolderAsApp(
       { argv, cwd: process.cwd(), environment: process.env, socketPath },
-      launchd,
+      app,
     )
   ) {
     return;
@@ -486,7 +485,6 @@ export async function holdNativeHarness(
   } finally {
     restoreSignals();
     process.off("uncaughtExceptionMonitor", onUncaughtException);
-    removeNativeHolderLaunchdJob(process.env, defaultNativeHolderLaunchdDeps());
   }
 }
 
