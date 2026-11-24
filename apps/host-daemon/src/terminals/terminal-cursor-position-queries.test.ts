@@ -208,7 +208,7 @@ describe("live cursor position queries", () => {
     expect(replies).toEqual(["\x1b[1;3R"]);
   });
 
-  it("forwards overflow standard and private DSR queries instead of silently dropping them", () => {
+  it("answers and strips bursts of 9+ mixed standard and private DSR queries in one chunk", () => {
     const tracker = new TerminalCursorPositionQueries(80, 24);
     const replies: string[] = [];
     const queries = [
@@ -236,10 +236,11 @@ describe("live cursor position queries", () => {
       "\x1b[?1;7R",
       "\x1b[1;7R",
       "\x1b[?1;7R",
+      "\x1b[1;7R",
+      "\x1b[?1;7R",
+      "\x1b[1;7R",
     ]);
-    expect(output).toBe("before\x1b[6n\x1b[?6n\x1b[6nafter");
-    const forwardedQueries = output.match(/\x1b\[\??6n/g) ?? [];
-    expect(replies.length + forwardedQueries.length).toBe(queries.length);
+    expect(output).toBe("beforeafter");
   });
 
   it("preserves non-query CSI sequences that share a prefix, aborting ESC, and flushes held prefixes on close", () => {

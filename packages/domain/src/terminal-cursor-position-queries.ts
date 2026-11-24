@@ -1,5 +1,4 @@
 const MAX_CSI_PARAMS_LENGTH = 64;
-const DEFAULT_MAX_REPLIES_PER_CHUNK = 8;
 
 type ParserState =
   | "ground"
@@ -227,18 +226,12 @@ export class TerminalCursorPositionQueries {
   private state: ParserState = "ground";
   private csiParams = "";
   private held = "";
-  private readonly maxRepliesPerChunk: number;
 
-  constructor(
-    cols: number,
-    rows: number,
-    maxRepliesPerChunk = DEFAULT_MAX_REPLIES_PER_CHUNK,
-  ) {
+  constructor(cols: number, rows: number) {
     this.cols = Math.max(1, Math.floor(cols));
     this.rows = Math.max(1, Math.floor(rows));
     this.scrollBottom = this.rows - 1;
     this.altScrollBottom = this.rows - 1;
-    this.maxRepliesPerChunk = maxRepliesPerChunk;
   }
 
   resize(cols: number, rows: number): void {
@@ -275,7 +268,6 @@ export class TerminalCursorPositionQueries {
     if (chunk.length === 0) return "";
     const parts: string[] = [];
     let sliceStart = 0;
-    let repliesThisChunk = 0;
     let mutated = false;
 
     const flushSlice = (end: number): void => {
@@ -417,12 +409,7 @@ export class TerminalCursorPositionQueries {
             this.state = "ground";
             mutated = true;
             sliceStart = index + 1;
-            if (repliesThisChunk < this.maxRepliesPerChunk) {
-              repliesThisChunk += 1;
-              reply(this.formatReport(isPrivate));
-            } else {
-              emitRaw(candidate);
-            }
+            reply(this.formatReport(isPrivate));
             index += 1;
             continue;
           }

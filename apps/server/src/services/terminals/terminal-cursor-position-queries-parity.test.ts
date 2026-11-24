@@ -32,7 +32,7 @@ async function runBoth(
   steps: readonly ParityStep[],
 ): Promise<{ xtermReplies: string[]; trackerReplies: string[] }> {
   const terminal = createHeadlessTerminal(cols, rows);
-  const tracker = new TerminalCursorPositionQueries(cols, rows, 64);
+  const tracker = new TerminalCursorPositionQueries(cols, rows);
   const xtermReplies: string[] = [];
   const trackerReplies: string[] = [];
   terminal.onData((data) => {

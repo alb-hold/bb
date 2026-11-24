@@ -2065,6 +2065,71 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("answers bursts of 9+ mixed cursor position queries in one chunk with no attached emulator", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      let receivedReplies = 0;
+      let timedOut = false;
+      const queries = [
+        "\x1b[6n",
+        "\x1b[?6n",
+        "\x1b[6n",
+        "\x1b[?6n",
+        "\x1b[6n",
+        "\x1b[?6n",
+        "\x1b[6n",
+        "\x1b[?6n",
+        "\x1b[6n",
+        "\x1b[?6n",
+        "\x1b[6n",
+      ];
+      const fallback = setTimeout(() => {
+        timedOut = true;
+      }, 2_000);
+      const originalWrite = pty.write.bind(pty);
+      pty.write = (data) => {
+        originalWrite(data);
+        const text = typeof data === "string" ? data : data.toString("utf8");
+        const matches = text.match(/\x1b\[\??\d+;\d+R/g) ?? [];
+        receivedReplies += matches.length;
+        if (receivedReplies >= queries.length) {
+          clearTimeout(fallback);
+          queueMicrotask(() => pty.emitData("BURST_DONE"));
+        }
+      };
+
+      pty.emitData(`before\x1b[2;4H${queries.join("")}after`);
+      await Promise.resolve();
+      vi.advanceTimersByTime(10);
+
+      expect(timedOut).toBe(false);
+      expect(receivedReplies).toBe(queries.length);
+      expect(pty.writeCalls.join("")).toBe(
+        [
+          "\x1b[2;4R",
+          "\x1b[?2;4R",
+          "\x1b[2;4R",
+          "\x1b[?2;4R",
+          "\x1b[2;4R",
+          "\x1b[?2;4R",
+          "\x1b[2;4R",
+          "\x1b[?2;4R",
+          "\x1b[2;4R",
+          "\x1b[?2;4R",
+          "\x1b[2;4R",
+        ].join(""),
+      );
+      expect(collectTerminalOutput(harness.messages)).toBe(
+        "before\x1b[2;4HafterBURST_DONE",
+      );
+      expect(collectTerminalOutput(harness.messages)).not.toMatch(/\x1b\[\??6n/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["generic", "native"])(
     "leaves %s color queries unchanged without a palette on initial open and reopen",
     async (kind) => {

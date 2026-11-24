@@ -1203,9 +1203,13 @@ export class TerminalManager {
     data =
       session.colorQueries?.push(data, (reply) => session.pty.write(reply)) ??
       data;
-    data = session.cursorPositionQueries.push(data, (reply) =>
-      session.pty.write(reply),
-    );
+    const cursorReplies: string[] = [];
+    data = session.cursorPositionQueries.push(data, (reply) => {
+      cursorReplies.push(reply);
+    });
+    if (cursorReplies.length > 0) {
+      session.pty.write(cursorReplies.join(""));
+    }
     const result = consumePrimaryDeviceAttributesQueries(
       session.pendingPrimaryDeviceAttributesQuery,
       data,
