@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   unlinkSync,
@@ -18,6 +19,7 @@ export const NATIVE_HOLDER_ENV_FILE_ENV = "BB_NATIVE_HOLD_ENV_FILE";
 const OPEN = "/usr/bin/open";
 const CODESIGN = "/usr/bin/codesign";
 const COMMAND_TIMEOUT_MS = 10_000;
+const STALE_ENV_FILE_MS = 60_000;
 
 const RUN_SCRIPT = `#!/bin/bash
 cd "\${${HOLDER_CWD_ENV}:-/}" 2>/dev/null
@@ -41,6 +43,40 @@ export interface NativeHolderLaunchRequest {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   socketPath: string;
+}
+
+export type NativeHolderAppFallbackReason =
+  | "not-darwin"
+  | "bundle-failed"
+  | "open-failed";
+
+export type NativeHolderAppResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: NativeHolderAppFallbackReason;
+      errorName: string | null;
+    };
+
+function errorNameOf(error: unknown): string {
+  return error instanceof Error ? error.name : "unknown";
+}
+
+function removeStaleEnvironmentFiles(directory: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - STALE_ENV_FILE_MS;
+  for (const name of names) {
+    if (!name.endsWith(".env")) continue;
+    const file = path.join(directory, name);
+    try {
+      if (statSync(file).mtimeMs < cutoff) unlinkSync(file);
+    } catch {}
+  }
 }
 
 export interface NativeHolderAppDeps {
@@ -151,20 +187,29 @@ export function loadNativeHolderEnvironment(
 export function startNativeHolderAsApp(
   request: NativeHolderLaunchRequest,
   deps: NativeHolderAppDeps,
-): boolean {
-  if (deps.platform !== "darwin") return false;
+): NativeHolderAppResult {
+  if (deps.platform !== "darwin") {
+    return { ok: false, reason: "not-darwin", errorName: null };
+  }
+  const directory = path.dirname(request.socketPath);
+  let bundle: string;
+  try {
+    bundle = ensureBundle(directory, deps);
+  } catch (error) {
+    return { ok: false, reason: "bundle-failed", errorName: errorNameOf(error) };
+  }
+  removeStaleEnvironmentFiles(directory);
   let environmentFile: string | null = null;
   try {
-    const bundle = ensureBundle(path.dirname(request.socketPath), deps);
     environmentFile = writeEnvironmentFile(request);
     deps.run(OPEN, nativeHolderOpenArgs(bundle, request, environmentFile));
-    return true;
-  } catch {
+    return { ok: true };
+  } catch (error) {
     if (environmentFile !== null) {
       try {
         unlinkSync(environmentFile);
       } catch {}
     }
-    return false;
+    return { ok: false, reason: "open-failed", errorName: errorNameOf(error) };
   }
 }

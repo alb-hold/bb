@@ -130,13 +130,20 @@ export function spawnNativeHolder(
     "--socket",
     socketPath,
   ];
-  if (
-    startNativeHolderAsApp(
-      { argv, cwd: process.cwd(), environment: process.env, socketPath },
-      app,
-    )
-  ) {
-    return;
+  const started = startNativeHolderAsApp(
+    { argv, cwd: process.cwd(), environment: process.env, socketPath },
+    app,
+  );
+  if (started.ok) return;
+  if (started.reason !== "not-darwin") {
+    logNativeHolderEvent(socketPath, "holder-app-fallback", {
+      reason: started.reason,
+      name: started.errorName,
+    });
+    process.stderr.write(
+      `native holder started without swap protection (${started.reason}); a bb restart will end this session
+`,
+    );
   }
   const holder = spawn(process.execPath, argv.slice(1), {
     cwd: process.cwd(),

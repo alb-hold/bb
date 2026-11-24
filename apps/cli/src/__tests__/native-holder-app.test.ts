@@ -5,11 +5,12 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnNativeHolder } from "../commands/thread/native.js";
 import {
   loadNativeHolderEnvironment,
@@ -17,9 +18,23 @@ import {
   type NativeHolderAppDeps,
 } from "../native-holder-app.js";
 
+const spawned = vi.hoisted(() => [] as { command: string; args: string[] }[]);
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: (command: string, args: string[]) => {
+      spawned.push({ command, args });
+      return { unref: () => {} };
+    },
+  };
+});
+
 const directories: string[] = [];
 
 afterEach(() => {
+  spawned.length = 0;
   for (const directory of directories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -103,7 +118,7 @@ describe("native holder app launch", () => {
         },
         deps,
       ),
-    ).toBe(true);
+    ).toEqual({ ok: true });
     expect(argvSeen.some((a) => a.includes(secret))).toBe(false);
     expect(argvSeen.some((a) => a.includes("CLAUDE_CODE_OAUTH_TOKEN"))).toBe(
       false,
@@ -182,11 +197,11 @@ describe("native holder app launch", () => {
         { argv: ["node"], cwd: "/", environment: {}, socketPath: socketIn() },
         deps,
       ),
-    ).toBe(false);
+    ).toEqual({ ok: false, reason: "not-darwin", errorName: null });
     expect(ran).toEqual([]);
   });
 
-  it("falls back to a direct spawn when open refuses", () => {
+  it("reports open-failed when open refuses", () => {
     const { deps } = recordingDeps("darwin");
     deps.run = (command) => {
       if (command === "/usr/bin/open") throw new Error("open failed");
@@ -196,6 +211,97 @@ describe("native holder app launch", () => {
         { argv: ["node"], cwd: "/", environment: {}, socketPath: socketIn() },
         deps,
       ),
-    ).toBe(false);
+    ).toEqual({ ok: false, reason: "open-failed", errorName: "Error" });
+  });
+
+  it("reports bundle-failed when codesign fails", () => {
+    const { deps } = recordingDeps("darwin");
+    deps.run = (command) => {
+      if (command === "/usr/bin/codesign") throw new Error("codesign failed");
+    };
+    expect(
+      startNativeHolderAsApp(
+        { argv: ["node"], cwd: "/", environment: {}, socketPath: socketIn() },
+        deps,
+      ),
+    ).toEqual({ ok: false, reason: "bundle-failed", errorName: "Error" });
+  });
+
+  it("deletes environment files older than 60 s before writing a new one", () => {
+    const socket = socketIn();
+    const dir = path.dirname(socket);
+    const stale = path.join(dir, "old.env");
+    const fresh = path.join(dir, "fresh.env");
+    writeFileSync(stale, "{}", { mode: 0o600 });
+    writeFileSync(fresh, "{}", { mode: 0o600 });
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(stale, old, old);
+    const { deps } = recordingDeps("darwin");
+    startNativeHolderAsApp(
+      { argv: ["node"], cwd: "/", environment: {}, socketPath: socket },
+      deps,
+    );
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+});
+
+describe("native holder app fallback", () => {
+  function spawnWith(
+    platform: NodeJS.Platform,
+    run: NativeHolderAppDeps["run"],
+  ): { socket: string; stderr: string[]; log: string } {
+    const socket = socketIn();
+    const stderr: string[] = [];
+    const write = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+    try {
+      spawnNativeHolder("thr_abc", socket, { platform, run });
+    } finally {
+      write.mockRestore();
+    }
+    const logPath = socket.replace(/\.sock$/u, ".log");
+    return {
+      socket,
+      stderr,
+      log: existsSync(logPath) ? readFileSync(logPath, "utf8") : "",
+    };
+  }
+
+  it("logs holder-app-fallback with open-failed, warns, and leaves no env file", () => {
+    const result = spawnWith("darwin", (command) => {
+      if (command === "/usr/bin/open") throw new Error("open failed");
+    });
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.args).toContain("native-hold");
+    expect(result.log).toContain("holder-app-fallback");
+    expect(result.log).toContain("open-failed");
+    expect(result.stderr.join("")).toContain(
+      "native holder started without swap protection (open-failed); a bb restart will end this session",
+    );
+    expect(
+      readdirSync(path.dirname(result.socket)).filter((n) =>
+        n.endsWith(".env"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("logs bundle-failed when codesign fails", () => {
+    const result = spawnWith("darwin", (command) => {
+      if (command === "/usr/bin/codesign") throw new Error("codesign failed");
+    });
+    expect(result.log).toContain("holder-app-fallback");
+    expect(result.log).toContain("bundle-failed");
+  });
+
+  it("logs nothing and stays quiet off darwin", () => {
+    const result = spawnWith("linux", () => {});
+    expect(spawned).toHaveLength(1);
+    expect(result.log).toBe("");
+    expect(result.stderr).toEqual([]);
   });
 });
