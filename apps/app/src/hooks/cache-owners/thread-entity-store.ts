@@ -298,12 +298,41 @@ function withFields<T extends object>(
   return base as T;
 }
 
-function mergeEntity(
+function nativeActivityEvidenceAt(runtime: unknown): number | undefined {
+  if (!isRecord(runtime) || !isRecord(runtime.nativeActivity)) return undefined;
+  const at = runtime.nativeActivity.lastEvidenceAt;
+  return typeof at === "number" ? at : undefined;
+}
+
+function keepNewestNativeActivity(
   current: ThreadEntity,
   threadFields: Fields,
+): Fields {
+  const incoming = threadFields.runtime;
+  const currentRuntime = current.thread.runtime;
+  const incomingAt = nativeActivityEvidenceAt(incoming);
+  const currentAt = nativeActivityEvidenceAt(currentRuntime);
+  if (
+    !isRecord(incoming) ||
+    currentRuntime === undefined ||
+    incomingAt === undefined ||
+    currentAt === undefined ||
+    incomingAt >= currentAt
+  )
+    return threadFields;
+  return {
+    ...threadFields,
+    runtime: { ...incoming, nativeActivity: currentRuntime.nativeActivity },
+  };
+}
+
+function mergeEntity(
+  current: ThreadEntity,
+  incomingThreadFields: Fields,
   facet: Facet,
   facetFields: Fields,
 ): ThreadEntity {
+  const threadFields = keepNewestNativeActivity(current, incomingThreadFields);
   const thread = withFields(current.thread, threadFields) ?? current.thread;
   const facetValue = withFields(current[facet], facetFields);
   if (thread === current.thread && facetValue === current[facet])

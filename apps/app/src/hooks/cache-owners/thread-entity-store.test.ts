@@ -525,6 +525,33 @@ describe("thread entity store", () => {
     s.queryClient.removeQueries({ queryKey: s.listKey });
     expect(getThreadEntity(s.queryClient, "t1")).toBeUndefined();
   });
+
+  it("keeps the newest native activity receipt when an older list read with the same updatedAt lands after it", async () => {
+    const receipt = (lastEvidenceAt: number) => ({
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt,
+        freshForMs: 90_000 as const,
+        confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
+      },
+    });
+    const server = [entry("t1", { status: "active", runtime: receipt(1_000) })];
+    const s = setup(server);
+    await s.fetchList(s.listKey, () => server);
+    updateCachedThreadListStatusState(s.queryClient, "t1", {
+      status: "active",
+      runtime: receipt(100_000),
+      activity: server[0]!.activity,
+      latestAttentionAt: null,
+      updatedAt: 10,
+    });
+    await s.fetchList(s.listKey, () => server);
+    await s.fetchList(s.lateKey, () => server);
+
+    for (const rows of [s.sidebarRows(), s.listRows(), s.listRows(s.lateKey)])
+      expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
+  });
 });
 
 function threadSubject(): KeyedStoreSubject {
