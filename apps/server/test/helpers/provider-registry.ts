@@ -88,6 +88,63 @@ function providerIconSnapshot(args: {
   return readPluginProviderIcon(firstPartyPluginRootDir(args.pluginId), asset);
 }
 
+interface FirstPartyProviderPlugin {
+  declarations: readonly {
+    declaration: NormalizedPluginProviderDeclaration;
+    icon: { bytes: Uint8Array; contentType: string; hash: string } | null;
+  }[];
+  icons: ReadonlyMap<string, string>;
+  hostEntry: boolean;
+}
+
+const firstPartyProviderPlugins = new Map<
+  string,
+  Promise<FirstPartyProviderPlugin>
+>();
+
+async function loadFirstPartyProviderPlugin(
+  pluginId: string,
+): Promise<FirstPartyProviderPlugin> {
+  const declarations = await captureFirstPartyProviderDeclarations(pluginId);
+  const icons = await declaredIcons(pluginId);
+  return {
+    declarations: declarations.map((declaration) => ({
+      declaration,
+      icon: providerIconSnapshot({ pluginId, icon: declaration.icon, icons }),
+    })),
+    icons,
+    hostEntry: await hasHostEntry(firstPartyPluginRootDir(pluginId)),
+  };
+}
+
+function copyData<T>(value: T): T {
+  if (value instanceof Uint8Array) return value.slice() as T;
+  if (Array.isArray(value)) return value.map(copyData) as T;
+  if (value instanceof Map) {
+    return new Map(
+      [...value].map(([key, entry]) => [key, copyData(entry)]),
+    ) as T;
+  }
+  if (value instanceof Set) return new Set([...value].map(copyData)) as T;
+  if (typeof value !== "object" || value === null) return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, copyData(entry)]),
+  ) as T;
+}
+
+function firstPartyProviderPlugin(
+  pluginId: string,
+): Promise<FirstPartyProviderPlugin> {
+  const cached = firstPartyProviderPlugins.get(pluginId);
+  if (cached !== undefined) return cached;
+  const pending = loadFirstPartyProviderPlugin(pluginId);
+  firstPartyProviderPlugins.set(pluginId, pending);
+  pending.catch(() => firstPartyProviderPlugins.delete(pluginId));
+  return pending;
+}
+
 export async function registerFirstPartyProviders(
   registry: ProviderRegistryService,
   options: {
@@ -102,21 +159,17 @@ export async function registerFirstPartyProviders(
     if (excluded.has(pluginId)) {
       continue;
     }
-    const declarations = await captureFirstPartyProviderDeclarations(pluginId);
-    const icons = await declaredIcons(pluginId);
+    const { declarations, icons, hostEntry } =
+      await firstPartyProviderPlugin(pluginId);
     if (
       options.artifacts !== undefined &&
       !unavailable.has(pluginId) &&
-      (await hasHostEntry(firstPartyPluginRootDir(pluginId)))
+      hostEntry
     ) {
       options.artifacts.set(pluginId, stubHostArtifact(pluginId));
     }
-    for (const declaration of declarations) {
-      const icon = providerIconSnapshot({
-        pluginId,
-        icon: declaration.icon,
-        icons,
-      });
+    for (const cached of declarations) {
+      const { declaration, icon } = copyData(cached);
       registry.register({
         ...buildPluginProviderRegistration({
           available: !unavailable.has(pluginId),
