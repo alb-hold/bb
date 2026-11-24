@@ -1554,6 +1554,7 @@ export const forkNativeTerminalThreads = sqliteTable(
     nativeSessionId: text("native_session_id"),
     terminalSessionId: text("terminal_session_id"),
     lostIdleTerminalSessionId: text("lost_idle_terminal_session_id"),
+    sessionStartAwaitedTerminalId: text("session_start_awaited_terminal_id"),
     lastEvidenceAt: integer("last_evidence_at"),
     lastEvidenceKind: text("last_evidence_kind"),
     lastToolCallAt: integer("last_tool_call_at"),

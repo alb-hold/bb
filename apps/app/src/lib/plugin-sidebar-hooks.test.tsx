@@ -14,6 +14,7 @@ import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
+  useSidebarProjectActions,
   useSidebarThreadActions,
   useSidebarThreadDraft,
   useSidebarThreadDraftIds,
@@ -101,6 +102,24 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
     fetchNextPage: async () => undefined,
   }),
   useSidebarNavigation: () => ({ data: state.data, isError: false }),
+}));
+
+const quickCreate = vi.hoisted(() => ({
+  sharedOpenCreateDialog: vi.fn(),
+  privateOpenCreateDialog: vi.fn(),
+}));
+
+vi.mock("@/hooks/useQuickCreateProject", () => ({
+  useQuickCreateProject: () => ({
+    isAvailable: true,
+    isCreating: false,
+    openCreateDialog: quickCreate.privateOpenCreateDialog,
+  }),
+  useQuickCreateProjectController: () => ({
+    isAvailable: true,
+    isCreating: false,
+    openCreateDialog: quickCreate.sharedOpenCreateDialog,
+  }),
 }));
 
 vi.mock("@/hooks/queries/host-queries", () => {
@@ -626,6 +645,19 @@ describe("useSidebarThreadActions", () => {
       result.current.open("thr_missing");
     });
     expect(actions.navigate).not.toHaveBeenCalled();
+  });
+});
+
+describe("useSidebarProjectActions", () => {
+  it("opens the create-project dialog the app layout renders", () => {
+    const { result } = renderHook(() => useSidebarProjectActions());
+
+    act(() => {
+      result.current.openCreateProject();
+    });
+
+    expect(quickCreate.sharedOpenCreateDialog).toHaveBeenCalledTimes(1);
+    expect(quickCreate.privateOpenCreateDialog).not.toHaveBeenCalled();
   });
 });
 

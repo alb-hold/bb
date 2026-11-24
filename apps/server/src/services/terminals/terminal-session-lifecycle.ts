@@ -5368,7 +5368,7 @@ export class TerminalSessionLifecycle {
       const native = getNativeTerminalThread(this.options.db, threadId);
       if (
         native?.terminalSessionId === session.id &&
-        native.nativeSessionId === null
+        (native.nativeSessionId === null || native.awaitingSessionStart)
       ) {
         const timer = setTimeout(
           () => {
@@ -5378,6 +5378,7 @@ export class TerminalSessionLifecycle {
             if (
               nativeTerminalMayNeedSetup({
                 nativeSessionId: current.nativeSessionId,
+                awaitingSessionStart: current.awaitingSessionStart,
                 terminal: getTerminalById(this.options.db, session.id),
                 now: Date.now(),
               })

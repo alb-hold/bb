@@ -47,6 +47,7 @@ export function registerNativeTerminalThreadRoutes(
     context.json(
       takeNativeTerminalLaunchSpec(deps, {
         imagesAsArgv: query.images === "argv",
+        reportsSessionStart: query.sessionStart === "reported",
         threadId: context.req.param("id"),
       }),
     ),

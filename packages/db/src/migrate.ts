@@ -8,7 +8,11 @@ import { bumpThreadEventOwnershipEpoch } from "./data/event-rewrite-generation.j
 import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js";
 import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
 import { ensureNativeParentNoticeTables } from "./fork-native-parent-notices.js";
-import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
+import {
+  ensureNativeTerminalThreadsTable,
+  recoverStagedSessionStartAwaitedTerminalIdColumn,
+  STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN,
+} from "./fork-native-terminal-threads.js";
 import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
 import { ensureTerminalHolderSessionsTable } from "./fork-terminal-holder-sessions.js";
 import { ensureTerminalPendingDaemonClosesTable } from "./fork-terminal-pending-daemon-closes.js";
@@ -1383,6 +1387,33 @@ function restoreStagedThreadStorageDeletedAtColumn(db: DbConnection): void {
   );
 }
 
+function stageExistingSessionStartAwaitedTerminalIdColumn(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  if (
+    !tableExists(db, "__drizzle_migrations") ||
+    !tableExists(db, "fork_native_terminal_threads") ||
+    !columnExists(
+      db,
+      "fork_native_terminal_threads",
+      "session_start_awaited_terminal_id",
+    )
+  ) {
+    return;
+  }
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0166_native_session_start_wait",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return;
+  }
+  db.$client.exec(
+    `ALTER TABLE fork_native_terminal_threads RENAME COLUMN session_start_awaited_terminal_id TO ${STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN}`,
+  );
+}
+
 function seedKeepAwakePluginConfiguration(db: DbConnection): void {
   if (
     !tableExists(db, "app_settings") ||
@@ -1638,12 +1669,15 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     );
     const stagedThreadStorageDeletedAt =
       stageExistingThreadStorageDeletedAtColumn(db, migrationsFolder);
+    recoverStagedSessionStartAwaitedTerminalIdColumn(db);
+    stageExistingSessionStartAwaitedTerminalIdColumn(db, migrationsFolder);
     try {
       drizzleMigrate(db, { migrationsFolder });
     } finally {
       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
       if (stagedThreadStorageDeletedAt)
         restoreStagedThreadStorageDeletedAtColumn(db);
+      recoverStagedSessionStartAwaitedTerminalIdColumn(db);
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     seedKeepAwakePluginConfiguration(db);
