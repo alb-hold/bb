@@ -946,8 +946,7 @@ export async function writeRetainedTerminalOutput({
   onOutputStart?: (sequence: number) => void;
   onOutputParsed?: (sequence: number) => void;
 }): Promise<void> {
-  const readBuffer = () => {
-    const buffer = terminal.buffer.active;
+  const readBuffer = (buffer = terminal.buffer.active) => {
     const lines = Array.from(
       { length: buffer.length },
       (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
@@ -987,20 +986,20 @@ export async function writeRetainedTerminalOutput({
     writeChunk(0);
   });
   alternateExit?.dispose();
-  if (alternateFrame !== null) {
-    const primaryFrame = readBuffer();
+  if (retainNativeOutput && terminal.buffer.active.type === "alternate") {
+    const primaryFrame = readBuffer(terminal.buffer.normal);
+    const frame = readBuffer(terminal.buffer.alternate);
+    terminal.reset();
+    const combined =
+      primaryFrame.length > 0
+        ? `${primaryFrame}\r\n${frame}\r\n`
+        : `${frame}\r\n`;
+    await new Promise<void>((resolve) => terminal.write(combined, resolve));
+  } else if (alternateFrame !== null) {
+    const primaryFrame = readBuffer(terminal.buffer.normal);
     terminal.reset();
     await new Promise<void>((resolve) =>
       terminal.write(`${alternateFrame}\r\n${primaryFrame}\r\n`, resolve),
-    );
-  } else if (
-    retainNativeOutput &&
-    terminal.buffer.active.type === "alternate"
-  ) {
-    const frame = readBuffer();
-    terminal.reset();
-    await new Promise<void>((resolve) =>
-      terminal.write(`${frame}\r\n`, resolve),
     );
   }
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
@@ -4692,11 +4691,16 @@ export function ThreadTerminalView({
           }}
         />
       </ContextMenu>
-      {isTouchDevice && session.status !== "exited" ? (
+      {isTouchDevice ? (
         <TerminalMobileControls
           className={attentionShownAsBanner ? "py-0" : undefined}
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
+          readOnlyDisabled={
+            !terminalReady ||
+            (session.status !== "running" && session.status !== "exited")
+          }
+          typingKeys={session.status !== "exited"}
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();

@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  screen,
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
@@ -4548,7 +4549,15 @@ describe("terminal first paint", () => {
       expect(host.parentElement?.classList.contains("touch-pan-y")).toBe(true);
       expect(
         document.querySelector("[data-terminal-mobile-controls]"),
+      ).not.toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Escape" }),
       ).toBeNull();
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", {
+          name: "Previous prompt",
+        }).disabled,
+      ).toBe(false);
       const buffer = actualTerminal!.buffer.active;
       const renderedLines = Array.from(
         { length: buffer.length },

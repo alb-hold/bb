@@ -307,12 +307,33 @@ describe("ended native terminal transcript rendering", () => {
     expect(host.style.touchAction).toBe("");
     expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(false);
     expect(host.parentElement?.classList.contains("touch-pan-y")).toBe(true);
-    expect(
-      view.container.querySelector("[data-terminal-mobile-controls]"),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("group", { name: "Terminal keyboard controls" }),
-    ).toBeNull();
+    const controls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    expect(controls.children).toHaveLength(1);
+    for (const label of [
+      "Interrupt (Control C)",
+      "Escape",
+      "Tab",
+      "Enter",
+      "Control for next key",
+      "Arrow left",
+      "Arrow right",
+      "Arrow up",
+      "Arrow down",
+      "More terminal keys",
+    ]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+    for (const label of [
+      "Previous prompt",
+      "Next prompt",
+      "Select terminal text",
+    ]) {
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", { name: label }).disabled,
+      ).toBe(false);
+    }
 
     const buffer = activeTerminal!.buffer.active;
     const lines = Array.from(
@@ -323,7 +344,7 @@ describe("ended native terminal transcript rendering", () => {
     expect(lines.join("")).toContain(longLine);
   });
 
-  it("renders no terminal key rows on an ended terminal at 390px phone width", async () => {
+  it("keeps read-only controls enabled and renders no typing-key rows on an ended terminal at 390px phone width", async () => {
     let activeTerminal: Terminal | null = null;
     const open = Terminal.prototype.open;
     vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
@@ -373,14 +394,32 @@ describe("ended native terminal transcript rendering", () => {
       expect(host?.style.opacity).toBe("");
     });
 
-    expect(
-      view.container.querySelector("[data-terminal-mobile-controls]"),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("group", { name: "Terminal keyboard controls" }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "More terminal keys" }),
-    ).toBeNull();
+    const controls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    expect(controls.children).toHaveLength(1);
+    for (const label of [
+      "Interrupt (Control C)",
+      "Escape",
+      "Tab",
+      "Enter",
+      "Control for next key",
+      "Arrow left",
+      "Arrow right",
+      "Arrow up",
+      "Arrow down",
+      "More terminal keys",
+    ]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+    for (const label of [
+      "Previous prompt",
+      "Next prompt",
+      "Select terminal text",
+    ]) {
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", { name: label }).disabled,
+      ).toBe(false);
+    }
   });
 });

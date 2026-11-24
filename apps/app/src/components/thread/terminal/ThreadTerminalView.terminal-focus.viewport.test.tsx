@@ -505,33 +505,47 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         "mobile status viewer was not ready",
       );
       rerender(view({ ...session, status }));
-      if (status === "exited") {
-        expect(
-          screen.queryByRole("group", {
-            name: "Terminal keyboard controls",
-          }),
-        ).toBeNull();
-        expect(
-          document.querySelector("[data-terminal-mobile-controls]"),
-        ).toBeNull();
-        return;
-      }
       const controls = screen.getByRole("group", {
         name: "Terminal keyboard controls",
       });
       expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
-      expect(
-        screen.getByRole<HTMLButtonElement>("button", {
-          name: "Escape",
-        }).disabled,
-      ).toBe(true);
       expect(controls.children).toHaveLength(1);
-      for (const name of [
-        "Previous prompt",
-        "Next prompt",
-        "Select terminal text",
-      ]) {
-        expect(screen.queryByRole("button", { name })).toBeNull();
+      if (status === "exited") {
+        for (const name of [
+          "Interrupt (Control C)",
+          "Escape",
+          "Tab",
+          "Enter",
+          "Control for next key",
+          "Arrow left",
+          "Arrow right",
+          "Arrow up",
+          "More terminal keys",
+        ]) {
+          expect(screen.queryByRole("button", { name })).toBeNull();
+        }
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", { name }).disabled,
+          ).toBe(false);
+        }
+      } else {
+        expect(
+          screen.getByRole<HTMLButtonElement>("button", {
+            name: "Escape",
+          }).disabled,
+        ).toBe(true);
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(screen.queryByRole("button", { name })).toBeNull();
+        }
       }
     },
   );
