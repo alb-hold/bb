@@ -1,3 +1,3 @@
 import { describeDeletionMatrix } from "../helpers/account-pool-delete-matrix.js";
 
-describeDeletionMatrix("process", 1);
+describeDeletionMatrix("process", 1, 1);
