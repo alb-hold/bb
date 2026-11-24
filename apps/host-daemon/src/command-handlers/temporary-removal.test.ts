@@ -144,6 +144,7 @@ describe.skipIf(process.platform !== "linux")(
       "git checkout",
       "git tree below the target",
       "git tree above the target",
+      "temporary directory that is a git checkout",
       "outside the temporary directory",
     ] as const)(
       "still refuses the same doubt for a %s and names the requested path",
@@ -165,6 +166,8 @@ describe.skipIf(process.platform !== "linux")(
           });
         if (kind === "git tree above the target")
           await fs.writeFile(path.join(parent, ".git"), "gitdir: elsewhere\n");
+        if (kind === "temporary directory that is a git checkout")
+          await fs.mkdir(path.join(process.env.TMPDIR, ".git"));
         const removal = context(
           kind === "loaded workspace"
             ? { workspaces: [root] }

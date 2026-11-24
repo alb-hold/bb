@@ -110,7 +110,6 @@ export async function processDoubtsIgnorableForRemoval(
     return false;
   for (
     let ancestor = path.dirname(target);
-    ancestor !== temporaryRoot &&
     isPathWithinDirectory(temporaryRoot, ancestor);
     ancestor = path.dirname(ancestor)
   ) {
