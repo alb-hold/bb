@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  screen,
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
@@ -4537,21 +4538,34 @@ describe("terminal first paint", () => {
         "[data-terminal-renderer]",
       )!;
       const surface = host.querySelector<HTMLElement>(".xterm")!;
-      expect(host.dataset.renderGridCols).toBe(String(cols));
+      expect(host.dataset.renderGridCols).toBe("49");
       expect(host.style.opacity).toBe("");
       expect(surface.dataset.surfaceScale).toBe("1");
       expect(surface.style.transform).toBe("scale(1)");
-      expect(host.style.overflowX).toBe("auto");
-      expect(host.style.overflowY).toBe("auto");
-      expect(host.style.touchAction).toBe("pan-x pan-y");
-      expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(true);
+      expect(host.style.overflowX).toBe("");
+      expect(host.style.overflowY).toBe("");
+      expect(host.style.touchAction).toBe("");
+      expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(false);
       expect(host.parentElement?.classList.contains("touch-pan-y")).toBe(true);
       expect(
-        actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
-      ).toBe(prompt);
+        document.querySelector("[data-terminal-mobile-controls]"),
+      ).not.toBeNull();
       expect(
-        actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
-      ).toBe("AFTER-BAND");
+        screen.queryByRole("button", { name: "Escape" }),
+      ).toBeNull();
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", {
+          name: "Previous prompt",
+        }).disabled,
+      ).toBe(false);
+      const buffer = actualTerminal!.buffer.active;
+      const renderedLines = Array.from(
+        { length: buffer.length },
+        (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+      );
+      expect(renderedLines.every((line) => line.length <= 49)).toBe(true);
+      expect(renderedLines.join("")).toContain(prompt);
+      expect(renderedLines).toContain("AFTER-BAND");
     },
   );
 
@@ -4581,8 +4595,8 @@ describe("terminal first paint", () => {
       const host = document.querySelector<HTMLElement>(
         "[data-terminal-renderer]",
       )!;
-      expect(host.style.touchAction).toBe(compact ? "pan-x pan-y" : "");
-      expect(host.style.overflowX).toBe(compact ? "auto" : "");
+      expect(host.style.touchAction).toBe("");
+      expect(host.style.overflowX).toBe("");
       const documentTouch = vi.fn();
       document.addEventListener("touchcancel", documentTouch);
       try {
@@ -4703,7 +4717,7 @@ describe("terminal first paint", () => {
       });
     });
     await waitForReadinessCondition(() => {
-      expect(surface.dataset.renderGridCols).toBe("135");
+      expect(surface.dataset.renderGridCols).toBe(surface.dataset.fitGridCols);
       expect(surface.style.opacity).toBe("");
     }, "fitted retained output was not revealed");
     expect(document.body.textContent).toContain("Earlier output was truncated.");
@@ -4715,6 +4729,10 @@ describe("terminal first paint", () => {
     "disables stdin and ignores input while keeping retained output after a running terminal exits via %s",
     async (transition) => {
       prepareMobileTerminal();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 80,
+        rows: 24,
+      });
       stubVisibleIntersectionObserver();
       let activeTerminal: Terminal | null = null;
       const open = Terminal.prototype.open;
@@ -4860,17 +4878,19 @@ describe("terminal first paint", () => {
     )!;
     expect(surface.style.opacity).toBe("");
     expect(surface.dataset.fitGridCols).toBe("49");
-    expect(surface.dataset.renderGridCols).toBe("51");
+    expect(surface.dataset.renderGridCols).toBe("49");
     expect(surface.style.paddingLeft).toBe("");
     expect(
       surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
     ).toBe("1");
-    expect(
-      actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
-    ).toBe(prompt);
-    expect(
-      actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
-    ).toBe("AFTER-BAND");
+    const buffer = actualTerminal!.buffer.active;
+    const renderedLines = Array.from(
+      { length: buffer.length },
+      (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+    );
+    expect(renderedLines.every((line) => line.length <= 49)).toBe(true);
+    expect(renderedLines.join("")).toContain(prompt);
+    expect(renderedLines).toContain("AFTER-BAND");
   });
 
   it("keeps the terminal hidden when its first fit has no dimensions", async () => {
@@ -5091,7 +5111,7 @@ describe("terminal first paint recovery", () => {
         "[data-terminal-renderer]",
       )!;
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("135");
+      expect(surface.dataset.renderGridCols).toBe(surface.dataset.fitGridCols);
       expect(pageText()).toContain("Terminal history unavailable");
       expect(pageText()).toContain("Terminal exited with code 7");
     }, "failed retained output left no visible exit state");
@@ -5128,7 +5148,7 @@ describe("terminal first paint recovery", () => {
         );
       });
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("135");
+      expect(surface.dataset.renderGridCols).toBe(surface.dataset.fitGridCols);
       expect(pageText()).toContain("Terminal history unavailable");
       expect(pageText()).toContain("Terminal exited with code 7");
     } finally {
@@ -5211,7 +5231,7 @@ describe("terminal first paint recovery", () => {
     });
     await waitForReadinessCondition(() => {
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("80");
+      expect(surface.dataset.renderGridCols).toBe("51");
     }, "newly exited terminal was not fitted and revealed");
     expect(
       open.mock.calls.filter(([container]) => container === surface),

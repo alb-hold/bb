@@ -3186,6 +3186,33 @@ describe("exited native retained output", () => {
       terminal.dispose();
     },
   );
+
+  it("preserves primary scrollback and the last alternate frame when exiting inside the alternate buffer", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const bytes = new TextEncoder().encode(
+      "PRIMARY-SCROLLBACK-LINE\r\n\x1b[?1049h\x1b[2J\x1b[HTUI-LAST-FRAME\r\n",
+    );
+    await writeRetainedTerminalOutput({
+      chunks: [{ seq: 1, data: bytes }],
+      session: makeTerminalSession({ status: "exited", exitCode: 0 }),
+      terminal,
+      lastNotice: { current: null },
+      retainNativeOutput: true,
+    });
+    expect(terminal.buffer.active.type).toBe("normal");
+    const text = Array.from(
+      { length: terminal.buffer.active.length },
+      (_, i) =>
+        terminal.buffer.active.getLine(i)?.translateToString(true) ?? "",
+    ).join("\n");
+    expect(text).toContain("PRIMARY-SCROLLBACK-LINE");
+    expect(text).toContain("TUI-LAST-FRAME");
+    expect(text.indexOf("PRIMARY-SCROLLBACK-LINE")).toBeLessThan(
+      text.indexOf("TUI-LAST-FRAME"),
+    );
+    expect(text).toContain("Terminal exited with code 0");
+    terminal.dispose();
+  });
 });
 
 describe("terminal output write barriers", () => {
