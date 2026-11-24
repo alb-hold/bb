@@ -17,7 +17,11 @@ import {
   makeSidebarBootstrapResponse,
 } from "@/test/fixtures/projects";
 import { createRealtimeCacheEffects } from "@/hooks/realtime-cache-effects";
-import { sidebarNavigationPagesQueryKey } from "./query-keys";
+import { hashKey } from "@tanstack/react-query";
+import {
+  sidebarNavigationPagesQueryKey,
+  sidebarNavigationQueryKey,
+} from "./query-keys";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -189,16 +193,49 @@ describe("sidebar row status across the complete-query reset", () => {
     });
     await waitFor(() => expect(result.current?.runtimeStatus).toBe("active"));
 
+    const completeKey = sidebarNavigationQueryKey();
+    const pagesKey = sidebarNavigationPagesQueryKey();
+    expect(harness.queryClient.getQueryData(completeKey)).toBeDefined();
+    expect(harness.queryClient.getQueryData(pagesKey)).toBeDefined();
+    const completeEvents: string[] = [];
+    const unsubscribe = harness.queryClient
+      .getQueryCache()
+      .subscribe((event) => {
+        if (
+          event.type === "updated" &&
+          event.query.queryHash === hashKey(completeKey)
+        ) {
+          completeEvents.push(
+            `${event.action.type}:${event.query.state.data === undefined ? "empty" : "data"}`,
+          );
+        }
+      });
+
     phase = "partial";
     observed.length = 0;
+    const requestsBefore = vi.mocked(request).mock.calls.length;
+    await act(async () => {
+      await harness.queryClient.refetchQueries({ queryKey: pagesKey });
+    });
+    expect(vi.mocked(request).mock.calls.length).toBeGreaterThan(
+      requestsBefore,
+    );
+    const pagesAfter = harness.queryClient.getQueryData<{
+      pages: Array<{ nextCursor?: string }>;
+    }>(pagesKey);
+    expect(pagesAfter?.pages.at(-1)?.nextCursor).toBe("c1");
+    await waitFor(() =>
+      expect(completeEvents.some((entry) => entry.endsWith(":empty"))).toBe(
+        true,
+      ),
+    );
     await act(async () => {
       await harness.queryClient.refetchQueries({
-        queryKey: sidebarNavigationPagesQueryKey(),
+        queryKey: completeKey,
+        exact: true,
       });
     });
-    await act(async () => {
-      await Promise.resolve();
-    });
+    unsubscribe();
 
     expect(observed.length).toBeGreaterThan(0);
     expect(new Set(observed)).toEqual(new Set(["active"]));
