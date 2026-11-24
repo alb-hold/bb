@@ -2843,12 +2843,17 @@ describe("Gemini bare family ids through the pool", () => {
       saved = await first.host.bb.storage.kv.get("gemini-served-models:v1");
       expect(saved).toEqual({ [added.id]: expect.arrayContaining(["gemini-4-neon", "gemini-4-neon-medium"]) });
     });
+    const kept: Record<string, unknown> = { "gemini-served-models:v1": saved };
+    for (const key of ["accounts:v1", "accounts:gemini:v1"]) {
+      const value = await first.host.bb.storage.kv.get(key);
+      if (value !== undefined && value !== null) kept[key] = value;
+    }
     await first.stop();
     failList = true;
     const restarted = await createGeminiFixture(
       google,
       { "/homes/a": creds("tok-a") },
-      { dataDir: first.dataDir, kv: { "gemini-served-models:v1": saved } },
+      { dataDir: first.dataDir, kv: kept },
     );
     const env = await geminiEnv(restarted.host);
     const before = google.calls.filter((call) => call.method === "fetchAvailableModels").length;
