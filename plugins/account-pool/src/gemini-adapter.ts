@@ -1306,7 +1306,8 @@ export function createGeminiAdapter(options: {
         context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
       context.signal?.throwIfAborted();
-      if (secret.kind !== "oauth") return;
+      if (secret.kind !== "oauth")
+        throw new Error("Gemini usage refresh requires OAuth credentials.");
       const info = parseLoadCodeAssist(
         await codeAssistCall(
           context.fetch,
@@ -1353,6 +1354,8 @@ export function createGeminiAdapter(options: {
         ),
         now,
       );
+      if (windows.length === 0)
+        throw new Error("Usage refresh returned unreadable data.");
       context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");

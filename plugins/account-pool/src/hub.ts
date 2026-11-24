@@ -761,7 +761,18 @@ export class AccountPoolHub {
     signal?: AbortSignal,
   ): Promise<boolean> {
     signal?.throwIfAborted();
-    const accounts = (await this.options.accounts.list(signal)).filter(
+    const listedAccounts = await this.options.accounts.list(signal);
+    const requested =
+      accountId === undefined
+        ? undefined
+        : listedAccounts.find((account) => account.id === accountId);
+    if (
+      accountId !== undefined &&
+      requested?.provider === "gemini" &&
+      (!requested.enabled || requested.kind !== "oauth")
+    )
+      return false;
+    const accounts = listedAccounts.filter(
       (account) =>
         account.enabled &&
         account.kind === "oauth" &&
