@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { createRealtimeCacheEffects } from "./realtime-cache-effects";
+import { registerThreadEntityViews } from "./cache-owners/thread-entity-store";
 import { threadListQueryKey, threadQueryKey } from "./queries/query-keys";
 import { useNativeActivityNotice } from "./useNativeActivityUnconfirmed";
 
@@ -173,6 +174,8 @@ describe("native activity realtime burst", () => {
       nativeTerminal: true,
     };
     const threadId = seeded.id;
+    queryClient.setQueryData(threadQueryKey(threadId), seeded);
+    registerThreadEntityViews(queryClient);
     const effects = createRealtimeCacheEffects({ queryClient });
     const activity = makeThreadListEntry().activity;
     const send = (status: ThreadResponse["status"], runtime: ThreadRuntimeState) =>
@@ -193,15 +196,17 @@ describe("native activity realtime burst", () => {
       });
 
     const log: string[] = [];
+    let lastRuntime: ThreadRuntimeState | undefined;
     const { unmount } = renderHook(
       () => {
         const thread = useQuery<ThreadResponse>({
           queryKey: threadQueryKey(threadId),
           queryFn: () => Promise.reject(new Error("unexpected refetch")),
           enabled: false,
-          initialData: seeded,
           staleTime: Infinity,
         }).data;
+        if (thread === undefined) throw new Error("thread missing");
+        lastRuntime = thread.runtime;
         const notice = useNativeActivityNotice(thread.runtime);
         const portal = isRunningThreadRuntimeDisplayStatus(
           thread.runtime.displayStatus,
@@ -230,8 +235,8 @@ describe("native activity realtime burst", () => {
       perTick.push(log.at(-1) ?? "none");
     }
 
-    expect(perTick).toHaveLength(100);
-    expect(perTick.every((entry) => entry === "working")).toBe(true);
+    expect(lastRuntime?.nativeActivity).toBeUndefined();
+    expect(perTick).toEqual(Array(100).fill("working"));
     unmount();
   });
 
