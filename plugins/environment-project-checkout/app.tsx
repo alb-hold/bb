@@ -452,6 +452,7 @@ function CheckoutInputsControl({
           aria-label="Branch"
           role="combobox"
           aria-expanded={open}
+          data-promptbox-shrinkable-control=""
           className={cn(
             LIST_HOVER_TRANSITION,
             OPTION_BASE_CLASS_NAME,

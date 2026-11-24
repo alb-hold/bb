@@ -228,7 +228,7 @@ export function recentThreadRowIndicatorState(
 }
 
 export const RECENT_THREAD_COLLAPSE_CLASS =
-  "group relative -ml-6 flex h-11 w-13 shrink-0 cursor-pointer items-center rounded-md pl-6 outline-none";
+  "group relative -ml-6 -mr-1 flex h-11 w-11 shrink-0 cursor-pointer items-center rounded-md pl-6 outline-none";
 export function RecentThreadCollapseMark({
   depth,
   isCollapsed,

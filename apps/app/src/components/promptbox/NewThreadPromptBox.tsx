@@ -13,6 +13,7 @@ import {
   type Host,
   type ProjectSource,
 } from "@bb/domain";
+import { cn } from "@bb/shared-ui/lib/utils";
 import type {
   SystemEnvironmentProvider,
   SystemMachineProvider,
@@ -283,6 +284,10 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
     : execution.model.isLoading
       ? "Loading models..."
       : "Submit (Enter)";
+  const reservesFooterActionsRow =
+    Boolean(modeConfig.sessionOptionsControl) ||
+    Boolean(modeConfig.permission.pending) ||
+    modeConfig.permission.supported;
 
   return (
     <div
@@ -354,7 +359,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         data-new-thread-footer=""
         className="mt-1 flex select-none items-center justify-between gap-2 px-3.5 max-md:mt-0 max-md:flex-wrap max-md:gap-1 max-md:px-1"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1 max-md:basis-full max-md:flex-wrap">
+        <div className="flex min-w-0 flex-1 items-center gap-1 max-md:h-8 max-md:basis-full max-md:flex-nowrap max-md:pointer-coarse:h-11">
           {project ? (
             <ProjectSelector
               projects={project.projects}
@@ -378,7 +383,13 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
             machineProviderInputsSlot={modeConfig.machineProviderInputsSlot}
           />
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-2",
+            reservesFooterActionsRow &&
+              "max-md:min-h-8 max-md:pointer-coarse:min-h-11",
+          )}
+        >
           {modeConfig.sessionOptionsControl}
           <PermissionModePicker
             pending={modeConfig.permission.pending}
