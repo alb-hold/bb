@@ -82,12 +82,14 @@ async function runAndVerifyAtEveryDsr(
   xtermReplies: string[];
   trackerReplies: string[];
   xtermPositions: string[];
+  xtermCursors: Array<{ cursorY: number; cursorX: number }>;
 }> {
   const terminal = createHeadlessTerminal(cols, rows);
   const tracker = new TerminalCursorPositionQueries(cols, rows);
   const xtermReplies: string[] = [];
   const trackerReplies: string[] = [];
   const xtermPositions: string[] = [];
+  const xtermCursors: Array<{ cursorY: number; cursorX: number }> = [];
   terminal.onData((data) => {
     xtermReplies.push(data);
   });
@@ -99,15 +101,16 @@ async function runAndVerifyAtEveryDsr(
       tracker.push(payload, (reply) => {
         trackerReplies.push(reply);
       });
+      const cursorY = terminal.buffer.active.cursorY;
+      const cursorX = terminal.buffer.active.cursorX;
+      xtermCursors.push({ cursorY, cursorX });
       const prefix = segment.privateQuery ? "\x1b[?" : "\x1b[";
-      const posRow = terminal.buffer.active.cursorY + 1;
-      const posCol = terminal.buffer.active.cursorX + 1;
-      xtermPositions.push(`${prefix}${posRow};${posCol}R`);
+      xtermPositions.push(`${prefix}${cursorY + 1};${cursorX + 1}R`);
     }
   } finally {
     terminal.dispose();
   }
-  return { xtermReplies, trackerReplies, xtermPositions };
+  return { xtermReplies, trackerReplies, xtermPositions, xtermCursors };
 }
 
 async function runPipelineAndReference(
@@ -788,6 +791,49 @@ describe("TerminalCursorPositionQueries xterm.js Unicode 11 parity", () => {
     expect(result.trackerReplies).toEqual(result.xtermReplies);
     expect(result.trackerReplies).toEqual(result.xtermPositions);
   });
+
+  it.each([
+    {
+      label: "ESC[2;5r ESC[?6h ESC[1;1H ESC[1A ESC[6n",
+      beforeQuery: "\x1b[2;5r\x1b[?6h\x1b[1;1H\x1b[1A",
+      privateQuery: false,
+      expectedCursor: { cursorY: 2, cursorX: 0 },
+      expectedReply: "\x1b[3;1R",
+    },
+    {
+      label: "ESC[2;5r ESC[?6h ESC[1;1H ESC[3A ESC[6n",
+      beforeQuery: "\x1b[2;5r\x1b[?6h\x1b[1;1H\x1b[3A",
+      privateQuery: false,
+      expectedCursor: { cursorY: 2, cursorX: 0 },
+      expectedReply: "\x1b[3;1R",
+    },
+    {
+      label: "ESC[2;5r ESC[?6h ESC[4;1H ESC[9B ESC[6n",
+      beforeQuery: "\x1b[2;5r\x1b[?6h\x1b[4;1H\x1b[9B",
+      privateQuery: false,
+      expectedCursor: { cursorY: 4, cursorX: 0 },
+      expectedReply: "\x1b[5;1R",
+    },
+    {
+      label: "ESC[2;5r ESC[?6h ESC[1;1H ESC[1A ESC[?6n",
+      beforeQuery: "\x1b[2;5r\x1b[?6h\x1b[1;1H\x1b[1A",
+      privateQuery: true,
+      expectedCursor: { cursorY: 2, cursorX: 0 },
+      expectedReply: "\x1b[?3;1R",
+    },
+  ])(
+    "matches @xterm/headless active cursor and DSR reply at origin-mode margin clamp: $label",
+    async ({ beforeQuery, privateQuery, expectedCursor, expectedReply }) => {
+      const result = await runAndVerifyAtEveryDsr(10, 6, [
+        { beforeQuery, privateQuery },
+      ]);
+      expect(result.xtermCursors).toEqual([expectedCursor]);
+      expect(result.xtermPositions).toEqual([expectedReply]);
+      expect(result.xtermReplies).toEqual([expectedReply]);
+      expect(result.trackerReplies).toEqual(result.xtermReplies);
+      expect(result.trackerReplies).toEqual(result.xtermPositions);
+    },
+  );
 
   it(
     `matches live headless xterm.js across ${RANDOM_SEQUENCE_COUNT} seeded randomized sequences (seed=0x${RANDOM_SEED.toString(16)})`,
