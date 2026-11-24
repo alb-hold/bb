@@ -19,12 +19,18 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DialogTrigger,
 } from "@bb/shared-ui/dialog";
-import { Popover, PopoverContent } from "@bb/shared-ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@bb/shared-ui/popover";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
 import { ActionMenuItem } from "@bb/shared-ui/action-menu-items";
 import {
@@ -1207,4 +1213,64 @@ describe("drawer software keyboard inset", () => {
       viewport.restore();
     }
   });
+});
+
+describe("compact overlay trigger focus return", () => {
+  it.each([
+    [
+      "DropdownMenu",
+      <DropdownMenu>
+        <DropdownMenuTrigger>Open overlay</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem>Action</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    ],
+    [
+      "Popover",
+      <Popover>
+        <PopoverTrigger>Open overlay</PopoverTrigger>
+        <PopoverContent>
+          <button type="button">Action</button>
+        </PopoverContent>
+      </Popover>,
+    ],
+    [
+      "Dialog",
+      <Dialog>
+        <DialogTrigger>Open overlay</DialogTrigger>
+        <DialogContent>
+          <DialogTitle>Title</DialogTitle>
+          <DialogDescription>Description</DialogDescription>
+        </DialogContent>
+      </Dialog>,
+    ],
+  ])(
+    "returns focus to the %s trigger after a tap-style open and Escape",
+    (_, overlay) => {
+      mockPointerCoarse(true);
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+        (callback) => {
+          callback(performance.now());
+          return 1;
+        },
+      );
+      render(
+        <CompactViewportOverrideProvider isCompactViewport>
+          <button type="button">Outer</button>
+          {overlay}
+        </CompactViewportOverrideProvider>,
+      );
+      const outer = screen.getByRole("button", { name: "Outer" });
+      const trigger = screen.getByRole("button", { name: "Open overlay" });
+      outer.focus();
+      expect(document.activeElement).toBe(outer);
+
+      fireEvent.mouseDown(trigger);
+      fireEvent.click(trigger);
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      expect(document.activeElement).toBe(trigger);
+    },
+  );
 });

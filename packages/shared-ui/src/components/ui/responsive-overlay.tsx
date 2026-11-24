@@ -190,6 +190,7 @@ export const MobileTrigger = React.forwardRef<
       if (!e.defaultPrevented) {
         if (!open) {
           blurActiveKeyboardInputBeforeOverlayOpen();
+          e.currentTarget.focus({ preventScroll: true });
         }
         onOpenChange(!open);
       }
