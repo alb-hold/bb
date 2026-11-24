@@ -126,6 +126,11 @@ const PROVIDERS: Array<{
     title: "Codex",
     description: "Codex threads route through these ChatGPT accounts.",
   },
+  {
+    id: "gemini",
+    title: "Antigravity (Gemini)",
+    description: "Antigravity threads route through these Google AI accounts.",
+  },
 ];
 
 function errorText(error: unknown): string {
@@ -365,7 +370,7 @@ function SettingsBadge({ children }: { children: ReactNode }) {
 function displayWindows(
   account: AccountSummary,
 ): { key: string; long: string; quota: FamilyQuota | null }[] {
-  if (account.provider === "codex")
+  if (account.provider !== "claude")
     return account.limitWindows.map((window) => ({
       key: window.slot,
       long: windowLongLabel(window),
@@ -386,7 +391,11 @@ function displayWindows(
 }
 
 function providerTitle(provider: PoolProvider): string {
-  return provider === "claude" ? "Claude" : "Codex";
+  return provider === "claude"
+    ? "Claude"
+    : provider === "gemini"
+      ? "Gemini"
+      : "Codex";
 }
 
 function removeCopy(account: AccountSummary): string {
@@ -448,7 +457,9 @@ function SubscriptionRow({
   const [draft, setDraft] = useState(account.label);
   const plan = planBadge(account, displayName);
   const email = secondaryEmail(account);
-  const signInAgain = account.signInExpired && account.kind === "oauth";
+  const canSignInAgain =
+    account.kind === "oauth" && account.provider !== "gemini";
+  const signInAgain = account.signInExpired && canSignInAgain;
   const {
     attributes,
     isDragging,
@@ -655,7 +666,7 @@ function SubscriptionRow({
             <Icon name="ListView" />
             Set priority…
           </DropdownMenuItem>
-          {account.kind === "oauth" ? (
+          {canSignInAgain ? (
             <DropdownMenuItem
               disabled={pending}
               onSelect={() => onAction("sign-in")}
@@ -2322,7 +2333,7 @@ function AccountDialog({
         <dt className="text-muted-foreground">Kind</dt>
         <dd>
           {account.kind === "oauth"
-            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : "ChatGPT"}`
+            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : account.provider === "gemini" ? "Google" : "ChatGPT"}`
             : "API key"}
         </dd>
         <dt className="text-muted-foreground">Priority</dt>
