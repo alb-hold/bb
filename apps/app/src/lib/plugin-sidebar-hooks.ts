@@ -211,7 +211,10 @@ export function useSidebarThreads(
     }
   }, [active, paging, previewRows]);
   const complete = query.isPlaceholderData ? undefined : query.data;
-  const data = previewRows || !active ? (complete ?? preview ?? query.data) : complete;
+  const data =
+    previewRows || !active
+      ? (complete ?? preview ?? query.data)
+      : (complete ?? (query.isPlaceholderData ? (preview ?? undefined) : undefined));
   const overview = complete === undefined ? preview?.overview : undefined;
   const activePages = useMemo<
     PluginSidebarThreadsState["experimental_activePages"]
