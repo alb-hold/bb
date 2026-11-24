@@ -60,7 +60,7 @@ describe("buildAcpModelListParams", () => {
     });
   });
 
-  it("gives every discovery command the contributed env over the launch env, as thread launches do", () => {
+  it("limits contributed env to discovery agents that receive it during thread launches", () => {
     const launchSpec = launchSpecFor({
       displayName: "Pooled ACP",
       command: "pooled-agent",
@@ -74,10 +74,7 @@ describe("buildAcpModelListParams", () => {
       envVars,
     });
 
-    expect(params.agent?.envVars).toEqual(merged);
-    expect(params.optionsAgent?.envVars).toEqual(merged);
-    expect(
-      buildAcpSessionParams({
+    const sessionParams = buildAcpSessionParams({
         additionalWorkspaceWriteRoots: [],
         cwd: "/work",
         launchSpec,
@@ -85,17 +82,26 @@ describe("buildAcpModelListParams", () => {
         providerLabel: "Pooled ACP",
         threadId: "thread-1",
         parameterizedModelPicker: false,
-      }).envVars,
-    ).toEqual(merged);
-    expect(
-      buildAcpModelListParams(
-        launchSpecFor({
-          ...launchSpec,
-          modelCli: { listArgs: ["models"], primaryModels: [] },
-        }),
-        { parameterizedModelPicker: false, envVars },
-      ).listCommand?.envVars,
-    ).toEqual(merged);
+      });
+    const paramsWithListCommand = buildAcpModelListParams(
+      launchSpecFor({
+        ...launchSpec,
+        modelCli: { listArgs: ["models"], primaryModels: [] },
+      }),
+      { parameterizedModelPicker: false, envVars },
+    );
+
+    expect({
+      session: sessionParams.envVars,
+      discoveryAgent: params.agent?.envVars,
+      optionsAgent: params.optionsAgent?.envVars,
+      listCommand: paramsWithListCommand.listCommand?.envVars,
+    }).toEqual({
+      session: merged,
+      discoveryAgent: merged,
+      optionsAgent: merged,
+      listCommand: { SHARED: "launch", LAUNCH_ONLY: "1" },
+    });
   });
 
   it("passes launch-time reasoning CLI config through to discovery", () => {

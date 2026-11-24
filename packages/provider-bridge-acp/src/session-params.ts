@@ -194,7 +194,7 @@ export function buildAcpModelListParams(
       parameterizedModelPicker: options.parameterizedModelPicker,
     };
   }
-  const listCommand = buildAcpModelListCommand(launchSpec, options.envVars);
+  const listCommand = buildAcpModelListCommand(launchSpec);
   const agent = buildAcpModelDiscoveryAgentCommand(
     launchSpec,
     options.envVars,
