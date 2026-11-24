@@ -58,6 +58,44 @@ function mapTerminalCleanExit<
   } as unknown as T;
 }
 
+export const STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN =
+  "_bb_session_start_awaited_terminal_id_pending";
+
+export function recoverStagedSessionStartAwaitedTerminalIdColumn(
+  db: DbConnection,
+): void {
+  const columns = db.$client
+    .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
+    .all() as Array<{ name: string }>;
+  if (
+    !columns.some(
+      (column) =>
+        column.name === STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN,
+    )
+  ) {
+    return;
+  }
+  if (
+    !columns.some(
+      (column) => column.name === "session_start_awaited_terminal_id",
+    )
+  ) {
+    db.$client.exec(
+      `ALTER TABLE fork_native_terminal_threads RENAME COLUMN ${STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN} TO session_start_awaited_terminal_id`,
+    );
+    return;
+  }
+  db.$client.transaction(() => {
+    db.$client.exec(
+      `UPDATE fork_native_terminal_threads
+       SET session_start_awaited_terminal_id = ${STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN}
+       WHERE session_start_awaited_terminal_id IS NULL
+         AND ${STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN} IS NOT NULL;
+       ALTER TABLE fork_native_terminal_threads DROP COLUMN ${STAGED_SESSION_START_AWAITED_TERMINAL_ID_COLUMN};`,
+    );
+  })();
+}
+
 export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   db.$client.exec(`
     CREATE TABLE IF NOT EXISTS fork_native_terminal_threads (
@@ -82,6 +120,7 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       created_at INTEGER NOT NULL
     );
   `);
+  recoverStagedSessionStartAwaitedTerminalIdColumn(db);
   const columns = db.$client
     .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
     .all() as Array<{ name: string }>;
