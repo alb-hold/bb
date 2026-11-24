@@ -493,6 +493,9 @@ describe("usage refresh while requests are in flight", () => {
     const counts = Reflect.get(pool.hub, "inFlightByAccount");
     if (!(counts instanceof Map)) throw new Error("Missing in-flight map.");
     counts.set(id, 2);
+    cleanups.push(async () => {
+      counts.delete(id);
+    });
   }
 
   it("refreshes a busy Gemini account on a forced refresh and stamps a new reading", async () => {
@@ -534,8 +537,6 @@ describe("usage refresh while requests are in flight", () => {
         label: "synthetic-claude",
         email: null,
         accountUuid: null,
-        geminiProject: null,
-        geminiEndpoint: null,
         subscriptionType: null,
         rateLimitTier: null,
         enabled: true,
