@@ -6,7 +6,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { hostProc,useProcReaderForTests } from "@bb/process-utils";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useFsProbesForTests } from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
@@ -37,6 +37,13 @@ function never<T>(): Promise<T> {
   return new Promise<T>(() => {});
 }
 
+function hangFsCall(name: "lstat" | "realpath", hungPath: string): void {
+  useFsProbesForTests({ deadlineMs: DEADLINE_MS });
+  const original: (target: string) => Promise<unknown> = fs[name].bind(fs);
+  vi.spyOn(fs, name).mockImplementation(((target: string) =>
+    target === hungPath ? never() : original(target)) as never);
+}
+
 beforeEach(() => {
   useProcReaderForTests({
     ...hostProc,
@@ -46,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   useProcReaderForTests(null);
   useFsProbesForTests(null);
   await Promise.all(
@@ -89,7 +97,7 @@ describe("host path checks against a filesystem that does not answer", () => {
     const folder = path.join(root, "folder");
     await fs.mkdir(folder);
     await fs.writeFile(path.join(folder, "keep.txt"), "keep");
-    useFsProbesForTests({ realpath: () => never(), deadlineMs: DEADLINE_MS });
+    hangFsCall("realpath", folder);
     await expect(remove(folder, root)).rejects.toMatchObject({
       code: "path_in_use",
     });
@@ -99,18 +107,23 @@ describe("host path checks against a filesystem that does not answer", () => {
     );
   });
 
-  it("refuses a removal whose declared root never answers", async () => {
+  it("refuses a removal whose declared root lstat never answers", async () => {
     const root = await makeRoot();
     const file = path.join(root, "file.txt");
     await fs.writeFile(file, "keep");
-    let calls = 0;
-    useFsProbesForTests({
-      lstat: (target) => {
-        calls += 1;
-        return calls === 1 ? fs.lstat(target) : never();
-      },
-      deadlineMs: DEADLINE_MS,
+    hangFsCall("lstat", root);
+    await expect(remove(file, root)).rejects.toMatchObject({
+      code: "path_in_use",
     });
+    useFsProbesForTests(null);
+    expect(await fs.readFile(file, "utf8")).toBe("keep");
+  });
+
+  it("refuses a removal whose declared root realpath never answers", async () => {
+    const root = await makeRoot();
+    const file = path.join(root, "file.txt");
+    await fs.writeFile(file, "keep");
+    hangFsCall("realpath", root);
     await expect(remove(file, root)).rejects.toMatchObject({
       code: "path_in_use",
     });
