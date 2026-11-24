@@ -1310,7 +1310,6 @@ export function recordNativeTerminalSession(
   const result = recordNativeTerminalThreadSessionId(deps.db, args);
   switch (result.kind) {
     case "recorded":
-      settleNativeTerminalSessionStart(deps.db, { threadId: args.threadId });
       deps.hub?.notifyThread(args.threadId, [
         "terminals-changed",
         "status-changed",
@@ -1354,6 +1353,10 @@ export function recordNativeTerminalSession(
           "The thread's native session changed since this move was requested",
         );
       }
+      deps.hub?.notifyThread(args.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
       break;
     }
     case "claimed-by-other-thread":

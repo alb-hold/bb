@@ -92,15 +92,6 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       "ALTER TABLE fork_native_terminal_threads ADD COLUMN lost_idle_terminal_session_id TEXT",
     );
   }
-  if (
-    !columns.some(
-      (column) => column.name === "session_start_awaited_terminal_id",
-    )
-  ) {
-    db.$client.exec(
-      "ALTER TABLE fork_native_terminal_threads ADD COLUMN session_start_awaited_terminal_id TEXT",
-    );
-  }
   if (!columns.some((column) => column.name === "initial_images")) {
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN initial_images TEXT`,
@@ -137,6 +128,15 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   db.$client.exec(
     `UPDATE fork_native_terminal_threads SET prompt = initial_prompt WHERE prompt IS NULL AND initial_prompt IS NOT NULL`,
   );
+  if (
+    !columns.some(
+      (column) => column.name === "session_start_awaited_terminal_id",
+    )
+  ) {
+    db.$client.exec(
+      "ALTER TABLE fork_native_terminal_threads ADD COLUMN session_start_awaited_terminal_id TEXT",
+    );
+  }
 }
 
 export function createNativeTerminalThread(
@@ -205,7 +205,8 @@ export function getNativeTerminalThread(
        WHERE n.thread_id = ?`,
     )
     .get(threadId) as
-    RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
+    | RawNativeTerminalThreadRow<NativeTerminalThreadRecord>
+    | undefined;
   return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
@@ -221,7 +222,8 @@ export function findNativeTerminalThreadBySession(
        WHERE n.provider_id = ? AND n.native_session_id = ?`,
     )
     .get(args.providerId, args.nativeSessionId) as
-    RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
+    | RawNativeTerminalThreadRow<NativeTerminalThreadRecord>
+    | undefined;
   return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
@@ -383,7 +385,7 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, lost_idle_terminal_session_id = NULL, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, session_start_awaited_terminal_id = NULL, lost_idle_terminal_session_id = NULL, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
@@ -400,7 +402,8 @@ export function clearNativeTerminalThreadEvidence(
 }
 
 export type StampNativeTerminalActivityResult =
-  { updated: false } | { updated: true; previousLastEvidenceAt: number | null };
+  | { updated: false }
+  | { updated: true; previousLastEvidenceAt: number | null };
 
 export function stampNativeTerminalThreadActivity(
   db: DbConnection,
@@ -414,12 +417,13 @@ export function stampNativeTerminalThreadActivity(
          WHERE thread_id = ? AND terminal_session_id = ?`,
       )
       .get(args.threadId, args.terminalSessionId) as
-      { lastEvidenceAt: number | null } | undefined;
+      | { lastEvidenceAt: number | null }
+      | undefined;
     if (record === undefined) return { updated: false };
     const result = db.$client
       .prepare(
         `UPDATE fork_native_terminal_threads
-         SET last_evidence_at = ?, last_evidence_kind = 'holder-report'
+         SET last_evidence_at = ?, last_evidence_kind = 'holder-report', session_start_awaited_terminal_id = NULL
          WHERE thread_id = ? AND terminal_session_id = ?`,
       )
       .run(args.at, args.threadId, args.terminalSessionId);
@@ -455,7 +459,8 @@ export function clearNativeTerminalThreadActivityEvidence(
 }
 
 export type StampNativeTerminalToolCallResult =
-  { updated: false } | { updated: true; previousLastToolCallAt: number | null };
+  | { updated: false }
+  | { updated: true; previousLastToolCallAt: number | null };
 
 export function stampNativeTerminalThreadToolCall(
   db: DbConnection,
@@ -470,12 +475,13 @@ export function stampNativeTerminalThreadToolCall(
            AND native_session_id IS NOT NULL`,
       )
       .get(args.threadId, args.terminalSessionId) as
-      { lastToolCallAt: number | null } | undefined;
+      | { lastToolCallAt: number | null }
+      | undefined;
     if (record === undefined) return { updated: false };
     const result = db.$client
       .prepare(
         `UPDATE fork_native_terminal_threads
-         SET last_tool_call_at = ?, last_tool_call_session_id = native_session_id
+         SET last_tool_call_at = ?, last_tool_call_session_id = native_session_id, session_start_awaited_terminal_id = NULL
          WHERE thread_id = ? AND terminal_session_id = ?
            AND native_session_id IS NOT NULL`,
       )
@@ -565,13 +571,14 @@ export function recordNativeTerminalThreadSessionId(
          WHERE provider_id = ? AND native_session_id = ?`,
       )
       .get(current.providerId, args.nativeSessionId) as
-      { threadId: string } | undefined;
+      | { threadId: string }
+      | undefined;
     if (owner !== undefined) {
       return { kind: "claimed-by-other-thread", threadId: owner.threadId };
     }
     db.$client
       .prepare(
-        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+        `UPDATE fork_native_terminal_threads SET native_session_id = ?, session_start_awaited_terminal_id = NULL, updated_at = ? WHERE thread_id = ?`,
       )
       .run(args.nativeSessionId, Date.now(), args.threadId);
     return { kind: "recorded" };
@@ -607,13 +614,14 @@ export function rebindNativeTerminalThreadSessionId(
          WHERE provider_id = ? AND native_session_id = ? AND thread_id != ?`,
       )
       .get(current.providerId, args.nativeSessionId, args.threadId) as
-      { threadId: string } | undefined;
+      | { threadId: string }
+      | undefined;
     if (owner !== undefined) {
       return { kind: "claimed-by-other-thread", threadId: owner.threadId };
     }
     const result = db.$client
       .prepare(
-        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ?
+        `UPDATE fork_native_terminal_threads SET native_session_id = ?, session_start_awaited_terminal_id = NULL, updated_at = ?
          WHERE thread_id = ? AND native_session_id = ?`,
       )
       .run(

@@ -1,0 +1,1 @@
+ALTER TABLE `fork_native_terminal_threads` ADD `session_start_awaited_terminal_id` text;

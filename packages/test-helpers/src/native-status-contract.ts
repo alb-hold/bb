@@ -8,6 +8,8 @@ export interface NativeStatusContractCase {
   name:
     | "setup-wait"
     | "preassigned-awaiting-start"
+    | "preassigned-awaiting-start-exited"
+    | "preassigned-started-idle"
     | "trusted-idle"
     | "active-session-lost";
   providerId: string;
@@ -73,6 +75,49 @@ export const NATIVE_STATUS_CONTRACT_CASES: readonly NativeStatusContractCase[] =
       expectedListStatus: "needs-input",
       expectedListNeedsYou: "Needs input",
       expectedHeaderLabel: "Needs input",
+    },
+    {
+      name: "preassigned-awaiting-start-exited",
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      initialThreadStatus: "idle",
+      nativeSessionId: "claude-preassigned-exited",
+      awaitingSessionStart: true,
+      terminalStatus: "exited",
+      terminalAgeMs: 13_000,
+      terminalCloseReason: "process-exit",
+      terminalExitCode: 0,
+      expectedStatus: "idle",
+      expectedRuntime: {
+        displayStatus: "idle",
+        nativeSessionExit: "clean",
+      },
+      expectedListIndicator: "none",
+      expectedShowStatus: "idle",
+      expectedListStatus: "idle",
+      expectedListNeedsYou: "-",
+      expectedHeaderLabel: "Idle",
+    },
+    {
+      name: "preassigned-started-idle",
+      providerId: "claude-code",
+      displayName: "Claude Code",
+      initialThreadStatus: "idle",
+      nativeSessionId: "claude-preassigned-started",
+      awaitingSessionStart: false,
+      terminalStatus: "running",
+      terminalAgeMs: 13_000,
+      terminalCloseReason: null,
+      terminalExitCode: null,
+      expectedStatus: "idle",
+      expectedRuntime: {
+        displayStatus: "idle",
+      },
+      expectedListIndicator: "none",
+      expectedShowStatus: "idle",
+      expectedListStatus: "idle",
+      expectedListNeedsYou: "-",
+      expectedHeaderLabel: "Idle",
     },
     {
       name: "trusted-idle",
