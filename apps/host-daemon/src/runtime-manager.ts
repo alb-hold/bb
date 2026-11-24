@@ -585,6 +585,10 @@ export class RuntimeManager {
     return false;
   }
 
+  listLoadedWorkspacePaths(): string[] {
+    return [...this.entries.values()].map((entry) => entry.path);
+  }
+
   listLoadedEnvironments(): HostDaemonLoadedEnvironment[] {
     return [...this.entries.keys()].map((environmentId) => ({
       environmentId,
