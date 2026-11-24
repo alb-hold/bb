@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { hostProc,useProcReaderForTests } from "@bb/process-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useFsProbesForTests } from "./bounded-fs.js";
+import { boundedLstat, useFsProbesForTests } from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
 const removalContext = {
@@ -168,6 +168,126 @@ describe("host path checks against a filesystem that does not answer", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("starts one underlying probe for repeated removals of a path whose probe never settles and refuses the rest at once", async () => {
+    const root = await makeRoot();
+    const file = path.join(root, "file.txt");
+    await fs.writeFile(file, "keep");
+    let calls = 0;
+    useFsProbesForTests({
+      lstat: () => {
+        calls += 1;
+        return never();
+      },
+      deadlineMs: DEADLINE_MS,
+    });
+    await expect(remove(file, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    const started = Date.now();
+    for (let attempt = 0; attempt < 9; attempt += 1)
+      await expect(remove(file, root)).rejects.toMatchObject({
+        code: "path_in_use",
+      });
+    expect(Date.now() - started).toBeLessThan(DEADLINE_MS);
+    expect(calls).toBe(1);
+    useFsProbesForTests(null);
+    expect(await fs.readFile(file, "utf8")).toBe("keep");
+  });
+
+  it("joins concurrent probes of one path into a single underlying call", async () => {
+    const root = await makeRoot();
+    const file = path.join(root, "file.txt");
+    await fs.writeFile(file, "keep");
+    let calls = 0;
+    useFsProbesForTests({
+      lstat: (target) => {
+        calls += 1;
+        return delay(DEADLINE_MS / 4).then(() => fs.lstat(target));
+      },
+      deadlineMs: DEADLINE_MS * 10,
+    });
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => boundedLstat(file)),
+    );
+    expect(results.every((info) => info.isFile())).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  it("keeps an unrelated healthy removal working once the stranded-probe cap is reached", async () => {
+    const root = await makeRoot();
+    const hungDirectoryA = path.join(root, "hung-a");
+    const hungDirectoryB = path.join(root, "hung-b");
+    const healthyDirectory = path.join(root, "healthy");
+    for (const directory of [
+      hungDirectoryA,
+      hungDirectoryB,
+      healthyDirectory,
+    ])
+      await fs.mkdir(directory);
+    const hungA = path.join(hungDirectoryA, "file.txt");
+    const hungB = path.join(hungDirectoryB, "file.txt");
+    const siblingOfA = path.join(hungDirectoryA, "other.txt");
+    const healthy = path.join(healthyDirectory, "file.txt");
+    for (const file of [hungA, hungB, siblingOfA, healthy])
+      await fs.writeFile(file, "keep");
+    const started: string[] = [];
+    useFsProbesForTests({
+      lstat: (target) => {
+        started.push(target);
+        return target === hungA || target === hungB
+          ? never()
+          : fs.lstat(target);
+      },
+      deadlineMs: DEADLINE_MS,
+      maxStranded: 2,
+    });
+    await expect(remove(hungA, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    await expect(remove(hungB, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    const before = started.length;
+    await expect(remove(siblingOfA, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    expect(started.length).toBe(before);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await expect(remove(healthy)).resolves.toEqual({ ok: true });
+    await expect(fs.stat(healthy)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(siblingOfA, "utf8")).toBe("keep");
+  });
+
+  it("starts a fresh probe once the stuck probe on a path finally settles", async () => {
+    const root = await makeRoot();
+    const file = path.join(root, "file.txt");
+    await fs.writeFile(file, "keep");
+    let calls = 0;
+    let release: (() => void) | undefined;
+    useFsProbesForTests({
+      lstat: (target) => {
+        calls += 1;
+        if (calls > 1) return fs.lstat(target);
+        return new Promise((resolve) => {
+          release = () => resolve(fs.lstat(target));
+        });
+      },
+      deadlineMs: DEADLINE_MS,
+    });
+    await expect(remove(file, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    await expect(remove(file, root)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    expect(calls).toBe(1);
+    release?.();
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await expect(remove(file, root)).resolves.toEqual({ ok: true });
+    expect(calls).toBeGreaterThan(1);
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("swallows a probe that settles after its deadline instead of raising an unhandled rejection", async () => {
     const root = await makeRoot();
     const file = path.join(root, "file.txt");
@@ -254,6 +374,19 @@ describe("removal beneath a real stopped FUSE mount", () => {
           remove(path.join(merged, "file.txt"), merged),
         ).rejects.toMatchObject({ code: "path_in_use" });
         expect(Date.now() - started).toBeLessThan(5000);
+        for (let attempt = 0; attempt < 6; attempt += 1)
+          await expect(
+            remove(path.join(merged, "file.txt"), merged),
+          ).rejects.toMatchObject({ code: "path_in_use" });
+        const healthyDirectory = path.join(root, "healthy");
+        await fs.mkdir(healthyDirectory);
+        const healthy = path.join(healthyDirectory, "file.txt");
+        await fs.writeFile(healthy, "gone");
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
+        await expect(remove(healthy, root)).resolves.toEqual({ ok: true });
+        await expect(fs.stat(healthy)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
         daemon.kill("SIGCONT");
         expect(
           await fs.readFile(path.join(merged, "file.txt"), "utf8"),
