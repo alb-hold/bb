@@ -110,14 +110,6 @@ Use `--selected-model <model-id>` to discover its reasoning choices and include 
 - `bb machine provider-cli status`
 - `bb machine provider-cli install`
 
-## manager
-
-- `bb manager`
-- `bb manager hire`
-- `bb manager list`
-- `bb manager status`
-- `bb manager delete`
-
 ## server
 
 - `bb server`

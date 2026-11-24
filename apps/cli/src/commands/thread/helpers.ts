@@ -27,7 +27,7 @@ export const DEFAULT_THREAD_WAIT_TIMEOUT_SECONDS =
 export const SERVICE_TIER_HELP =
   "Service tier id the provider lists for the model, such as default or fast (see `bb provider models`)";
 export const PERMISSION_MODE_HELP =
-  "Permission mode: accept-edits, auto, or full";
+  "Permission mode (default: auto): accept-edits (workspace edits, ask user to escalate), auto (workspace edits, automatic escalation review), or full (unrestricted, no approvals)";
 export const PARENT_NOTIFICATIONS_HELP =
   "Which turn outcomes wake the parent thread: auto (every outcome), inbox (finished turns wait for the parent's next turn; failures and blockers notify at once), stuck (failed, interrupted, or blocked on an approval or question), or off";
 export const PLAN_HELP =

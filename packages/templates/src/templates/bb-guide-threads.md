@@ -48,8 +48,9 @@ Spawning:
 
   bb thread spawn --project <id> --prompt "..." [options]
   bb thread spawn --project <id> --prompt-file <path> [options]
+  bb thread spawn --project <id> --provider codex --native [options]
 
-    --prompt <prompt>              Initial prompt (one of --prompt or --prompt-file is required)
+    --prompt <prompt>              Initial prompt (required unless --prompt-file or --native is given)
     --prompt-file <path>           Read the prompt from a file; `-` reads stdin. Use this for
                                    multi-line or Markdown prompts: inside double quotes the shell
                                    runs `backticks` and $(...) before bb sees them
@@ -96,7 +97,7 @@ Spawning:
     --option <option=value>        Choose a value for an option the provider's model lists, applied
                                    before the first message; true or false for an on/off option
                                    (repeatable; see `bb provider models`)
-    --permission-mode <mode>       Permission mode: accept-edits, auto, or full
+    --permission-mode <mode>       Permission mode (default: auto): accept-edits (workspace edits, ask user to escalate), auto (workspace edits, automatic escalation review), or full (unrestricted, no approvals)
     --plan                         Send the prompt as the provider's /plan action (plan first, execute after approval)
     --section <id>                 Create the thread in a section
     --pinned                       Create the thread in Pinned (combines with --section;

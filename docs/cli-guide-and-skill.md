@@ -35,8 +35,10 @@ rule (SDK `threads.open({ threadId, file, callerThreadId?, all? })`): it reaches
 only app clients viewing the calling thread, including when it opens a different
 thread, and `--all` sends to every open app client.
 
-`bb terminal attach <id>` forwards typed and pasted input. Press Ctrl-B, then
-lowercase d, to detach and leave the session running. If both keys arrive in one input chunk, bb forwards them. Attach takes size control
+`bb terminal attach <id>` forwards typed and pasted input. Press Ctrl-B then
+lowercase d (default; override with `--detach-key <chord>` or
+`BB_TERMINAL_DETACH_KEY`) to detach and leave the session running, including when
+both keys arrive in one input chunk. Attach takes size control
 on connection and when your window resizes. With `--json`, it prints session
 metadata without attaching.
 

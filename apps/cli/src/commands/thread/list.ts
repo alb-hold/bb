@@ -36,6 +36,8 @@ interface ThreadListCommandOptions {
   all?: boolean;
   section?: string;
   unsectioned?: boolean;
+  limit?: string;
+  cursor?: string;
   json?: boolean;
   includeHidden?: boolean;
 }
@@ -69,6 +71,14 @@ export function registerListCommand(
     .option("--include-archived", "Include archived threads")
     .option("--all", "Include archived and non-archived threads")
     .option("--include-hidden", "Include hidden threads")
+    .option(
+      "--limit <n>",
+      "Return a single page of up to N threads (server default is 100, max 500; omit to walk all pages)",
+    )
+    .option(
+      "--cursor <cursor>",
+      "Continue from a server X-BB-Next-Cursor pagination token (returns a single page)",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (opts: ThreadListCommandOptions) => {
@@ -115,6 +125,14 @@ export function registerListCommand(
           flagName: "--section",
           value: opts.section,
         });
+        const limit =
+          opts.limit === undefined ? undefined : Number.parseInt(opts.limit, 10);
+        if (
+          opts.limit !== undefined &&
+          (!/^\d+$/u.test(opts.limit) || limit === undefined || limit <= 0)
+        ) {
+          throw new Error("--limit must be a positive integer.");
+        }
         const archived = opts.archived
           ? true
           : opts.all || opts.includeArchived || threadIds.length > 0
@@ -130,6 +148,8 @@ export function registerListCommand(
           ...(sectionId ? { sectionId } : {}),
           ...(opts.unsectioned ? { unsectioned: true } : {}),
           ...(opts.includeHidden ? { includeHidden: true } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          ...(opts.cursor ? { cursor: opts.cursor } : {}),
         };
         const threads = opts.json
           ? await sdk.threads.list(input)

@@ -110,6 +110,7 @@ export const DEFAULT_THREAD_WAIT_POLL_INTERVAL_MS = 250;
 
 export interface ThreadListArgs {
   archived?: boolean;
+  cursor?: string;
   environmentId?: string;
   hostId?: string;
   sectionId?: string;
@@ -764,6 +765,7 @@ function listQuery(args: ThreadListArgs | undefined): ThreadListQuery {
       ? {}
       : { includeHidden: args.includeHidden ? "true" : "false" }),
     ...(args?.limit === undefined ? {} : { limit: String(args.limit) }),
+    ...(args?.cursor === undefined ? {} : { cursor: args.cursor }),
     ...(args?.offset === undefined ? {} : { offset: String(args.offset) }),
     ...(args?.hasParent === undefined
       ? {}
@@ -778,7 +780,7 @@ export function fullThreadListRows(
   return body;
 }
 
-async function readThreadListPages<T extends ThreadListSummary>(
+export async function readThreadListPages<T extends ThreadListSummary>(
   { transport }: CreateSdkAreaArgs,
   input: ThreadListArgs | undefined,
   fields: ThreadListQuery["fields"],
@@ -790,7 +792,11 @@ async function readThreadListPages<T extends ThreadListSummary>(
       { query: params },
       ...signalRequestArgs(input?.signal),
     );
-  if (input?.limit !== undefined || input?.threadIds !== undefined) {
+  if (
+    input?.limit !== undefined ||
+    input?.cursor !== undefined ||
+    input?.threadIds !== undefined
+  ) {
     return rowsOf(await transport.readJson(read(query))).map(
       withEffectiveDisplayStatus,
     );

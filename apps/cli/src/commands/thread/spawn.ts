@@ -335,7 +335,7 @@ export function registerSpawnCommand(
     )
     .option(
       "--prompt <prompt>",
-      "Initial prompt for the thread (required unless --prompt-file is given)",
+      "Initial prompt for the thread (required unless --prompt-file or --native is given)",
     )
     .option(
       "--prompt-file <path>",
@@ -433,6 +433,15 @@ export function registerSpawnCommand(
     .option(
       "--source-seq-end <seq>",
       "Fork after the source turn containing this event sequence",
+    )
+    .addHelpText(
+      "after",
+      [
+        "",
+        "Examples:",
+        '  bb thread spawn --project <id> --provider codex --prompt "Fix the failing test"',
+        "  bb thread spawn --project <id> --provider codex --native",
+      ].join("\n"),
     )
     .action(
       action(async (opts: ThreadSpawnCommandOptions) => {

@@ -23,6 +23,8 @@ Listing:
     --section <id>                         Filter by section
     --unsectioned                          Show only threads outside sections
     --include-hidden                       Include hidden threads
+    --limit <n>                            Return a single page of up to N threads (server default is 100, max 500; omit to walk all pages)
+    --cursor <cursor>                      Continue from a server X-BB-Next-Cursor pagination token (returns a single page)
 
   The table prints ID, Title, Project, Status, and Needs you. Needs you shows
   Needs input, Working, automation Woke, or unread Done when applicable. Woke
