@@ -910,7 +910,10 @@ function printThreadStatus(
 ): void {
   const { thread } = payload;
   console.log(`Thread: ${thread.id}`);
-  const status = thread.hasPendingInteraction ? "needs-input" : thread.status;
+  const status =
+    thread.hasPendingInteraction || thread.runtime?.nativeSetupWaiting === true
+      ? "needs-input"
+      : thread.status;
   console.log(
     thread.archivedAt === null
       ? `  Status: ${status}`

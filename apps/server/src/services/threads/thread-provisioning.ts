@@ -261,12 +261,12 @@ async function startThreadIfEnvironmentReady(
     args.context.request.seedWithoutRun &&
     args.context.request.fork === null
   ) {
+    await openNativeTerminalAfterProvisioning(deps, args.thread.id);
     settleSeededThreadProvisioning(deps, {
       context: args.context,
       environmentId: args.environment.id,
       threadId: args.thread.id,
     });
-    await openNativeTerminalAfterProvisioning(deps, args.thread.id);
     requestQueuedMessageDispatch(deps, {
       kind: "workspace-ready",
       threadId: args.thread.id,

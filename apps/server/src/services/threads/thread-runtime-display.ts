@@ -27,6 +27,7 @@ import {
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   threadTimelineGoalStatusSchema,
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+  nativeTerminalMayNeedSetup,
 } from "@bb/domain";
 import {
   resolveParentNotificationsChoice,
@@ -102,6 +103,10 @@ type NativeActivityThreadRecord = Pick<
   NativeTerminalThreadRecord,
   | "providerId"
   | "terminalSessionId"
+  | "terminalStatus"
+  | "terminalCreatedAt"
+  | "terminalLastUserInputAt"
+  | "terminalCleanExit"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
@@ -306,6 +311,7 @@ function supportsNativeActivity(
 ): boolean {
   return (
     thread.status === "error" ||
+    thread.status === "idle" ||
     (thread.status === "active" &&
       deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
         undefined)
@@ -357,15 +363,44 @@ export function nativeThreadExitRuntime(
   thread: Thread,
   nativeThread: NativeActivityThreadRecord | null,
 ): Pick<ThreadRuntimeState, "nativeSessionExit"> | undefined {
+  if (nativeThread?.providerId !== thread.providerId) {
+    return undefined;
+  }
+  if (thread.status === "idle" && nativeThread.terminalCleanExit) {
+    return { nativeSessionExit: "clean" };
+  }
   if (
     thread.status === "error" &&
-    nativeThread?.providerId === thread.providerId &&
     nativeThread.lostIdleTerminalSessionId !== null &&
     nativeThread.lostIdleTerminalSessionId === nativeThread.terminalSessionId
   ) {
     return { nativeSessionExit: "clean" };
   }
   return undefined;
+}
+
+export function nativeThreadSetupWaiting(
+  thread: Thread,
+  nativeThread: NativeActivityThreadRecord | null,
+  now = Date.now(),
+): boolean {
+  if (
+    thread.status !== "idle" ||
+    nativeThread?.providerId !== thread.providerId ||
+    nativeThread.terminalStatus === null ||
+    nativeThread.terminalCreatedAt === null
+  ) {
+    return false;
+  }
+  return nativeTerminalMayNeedSetup({
+    nativeSessionId: nativeThread.nativeSessionId,
+    terminal: {
+      status: nativeThread.terminalStatus,
+      createdAt: nativeThread.terminalCreatedAt,
+      lastUserInputAt: nativeThread.terminalLastUserInputAt,
+    },
+    now,
+  });
 }
 
 function addNativeActivityDiagnostic(
@@ -376,6 +411,9 @@ function addNativeActivityDiagnostic(
 ): ThreadRuntimeState {
   const exitRuntime = nativeThreadExitRuntime(thread, nativeThread);
   if (exitRuntime !== undefined) return { ...runtime, ...exitRuntime };
+  if (nativeThreadSetupWaiting(thread, nativeThread, now)) {
+    return { ...runtime, nativeSetupWaiting: true };
+  }
   if (
     thread.status !== "active" ||
     nativeThread?.providerId !== thread.providerId

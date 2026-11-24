@@ -343,9 +343,7 @@ describe("NativeThreadTerminalMain", () => {
     expect(screen.queryByText(/GPT|Full Access/)).toBeNull();
   });
 
-  it("cues silent setup after twelve seconds, clearing on first input and binding", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1000);
+  it("cues silent setup from server runtime, clearing when setup wait ends", () => {
     const terminal = {
       id: "term-live",
       status: "running",
@@ -365,27 +363,25 @@ describe("NativeThreadTerminalMain", () => {
     };
     const { rerender } = render(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(12000));
+    rerender(
+      <NativeThreadTerminalMain
+        {...props}
+        runtime={{ displayStatus: "idle", nativeSetupWaiting: true }}
+      />,
+    );
     expect(
       screen.getByText("Claude Code hasn't started a session yet"),
     ).toBeTruthy();
     expect(screen.getByTestId("execution-defaults").textContent).toMatch(
       /^Default:/,
     );
-    terminal.lastUserInputAt = Date.now();
-    rerender(<NativeThreadTerminalMain {...props} />);
-    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(11999));
-    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
-    expect(screen.queryByText(/hasn't started a session yet/)).toBeTruthy();
     rerender(
       <NativeThreadTerminalMain
         {...props}
+        runtime={{ displayStatus: "idle" }}
         view={{ ...props.view, nativeSessionId: "bound" }}
       />,
     );
-    act(() => vi.advanceTimersByTime(12000));
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
   });
 
@@ -407,7 +403,7 @@ describe("NativeThreadTerminalMain", () => {
       render(
         <NativeThreadTerminalMain
           projectId="proj_native"
-          runtime={{ displayStatus: "active" }}
+          runtime={{ displayStatus: "active", nativeSetupWaiting: true }}
           threadId="thr_native"
           threadIsProvisioning={false}
           view={{ ...nativeView, nativeSessionId: null, terminal }}

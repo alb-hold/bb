@@ -12,6 +12,7 @@ interface ThreadTerminalPanelProps {
   initialSession?: TerminalSession;
   retainNativeOutput?: boolean;
   attentionShownAsBanner?: boolean;
+  starting?: boolean;
   isPanelOpen: boolean;
   isPanelPersistedOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -47,6 +48,7 @@ function InteractiveTerminalPanel({
   initialSession,
   retainNativeOutput = false,
   attentionShownAsBanner = false,
+  starting = false,
   isPanelOpen,
   isPanelPersistedOpen,
   onAutoFocusHandled,
@@ -75,6 +77,7 @@ function InteractiveTerminalPanel({
         <ThreadTerminalContent
           retainNativeOutput={retainNativeOutput}
           attentionShownAsBanner={attentionShownAsBanner}
+          starting={starting}
           autoFocus={autoFocus}
           controller={terminalController}
           onAutoFocusHandled={onAutoFocusHandled}

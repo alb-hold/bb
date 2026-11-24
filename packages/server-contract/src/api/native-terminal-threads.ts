@@ -27,6 +27,7 @@ export const nativeTerminalThreadSchema = z.object({
   terminal: terminalSessionSchema.nullable(),
   prompt: z.string().nullable().optional(),
   hasOutput: z.boolean().optional(),
+  starting: z.boolean().optional(),
   reply: nativeTerminalThreadReplySchema.nullable().optional(),
 });
 export type NativeTerminalThread = z.infer<typeof nativeTerminalThreadSchema>;

@@ -632,6 +632,7 @@ export interface ThreadTerminalViewProps {
   onSurfaceVisible?: () => void;
   retainNativeOutput?: boolean;
   attentionShownAsBanner?: boolean;
+  starting?: boolean;
   autoFocus: boolean;
   isPanelOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -1373,6 +1374,7 @@ export function handleTerminalServerMessage({
 export function ThreadTerminalView({
   retainNativeOutput = false,
   attentionShownAsBanner = false,
+  starting = false,
   autoFocus,
   isPanelOpen: panelOpen,
   parked = false,
@@ -4446,7 +4448,7 @@ export function ThreadTerminalView({
             ? "Reconnecting…"
             : replayNotice === "unavailable"
               ? "Terminal output unavailable"
-              : restoringSession
+              : restoringSession && !starting
                 ? "Restoring session…"
                 : null;
   useEffect(() => {

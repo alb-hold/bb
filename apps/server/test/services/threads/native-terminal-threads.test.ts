@@ -145,7 +145,10 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         vi.spyOn(Date, "now").mockReturnValue(terminal.createdAt + 13000);
         notify.mockClear();
         callback();
-        expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
+        expect(notify).toHaveBeenCalledWith(threadId, [
+          "terminals-changed",
+          "status-changed",
+        ]);
         h.db.$client
           .prepare(
             "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",

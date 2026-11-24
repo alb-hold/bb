@@ -106,6 +106,7 @@ function isBusyThread(
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
   hasTerminalAttention?: boolean;
+  isNativeSetupWaiting?: boolean;
   isActivityUnreported: boolean;
   queuedFailedCount: number;
   hasUnsubmittedDraft: boolean;
@@ -197,6 +198,9 @@ export function threadListIndicatorStateForThread(
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
     hasTerminalAttention: thread.listIndicator === "check-terminal",
+    ...(thread.runtime.nativeSetupWaiting === true
+      ? { isNativeSetupWaiting: true }
+      : {}),
     isActivityUnreported:
       thread.runtime.nativeActivity !== undefined &&
       activityUnconfirmed &&
@@ -229,6 +233,7 @@ export function resolveThreadListIndicator(
   if (state.hasTerminalAttention) return "check-terminal";
   const hasActiveWork = hasThreadListWorkingActivity(state);
   if (hasActiveWork) return "working";
+  if (state.isNativeSetupWaiting) return "needs-input";
   if (state.isAutomationWoken) return "woke";
   if (state.hasUnreadError || state.hasUnreadSuccess) return "done-unread";
   if (state.queuedWork === "failed") return "queued-failed";
@@ -288,7 +293,10 @@ export function getCollapsedChildActivity(
       unread = true;
     }
 
-    if (thread.hasPendingInteraction) {
+    if (
+      thread.hasPendingInteraction ||
+      thread.runtime.nativeSetupWaiting === true
+    ) {
       pending = true;
     }
     if (isBusyThread(thread, now)) working = true;

@@ -80,7 +80,7 @@ function settleThreadWithDeadTerminal(
   });
 }
 
-function terminalExitedOnItsOwn(
+function terminalExitedUnsuccessfully(
   deps: NativeThreadStatusDeps,
   native: NativeTerminalThreadRecord,
 ): boolean {
@@ -88,7 +88,8 @@ function terminalExitedOnItsOwn(
   return (
     terminal !== null &&
     terminal.status === "exited" &&
-    terminal.closeReason === "process-exit"
+    terminal.closeReason === "process-exit" &&
+    terminal.exitCode !== 0
   );
 }
 
@@ -117,7 +118,7 @@ export async function reconcileNativeThreadStatus(
   if (liveness === "dead") {
     if (
       !isNativeTerminalRebindInFlight(threadId) &&
-      (thread.status === "active" || terminalExitedOnItsOwn(deps, native))
+      (thread.status === "active" || terminalExitedUnsuccessfully(deps, native))
     ) {
       settleThreadWithDeadTerminal(deps, threadId);
     }

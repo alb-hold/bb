@@ -30,7 +30,10 @@ Listing:
   thread with no recent authenticated terminal activity report shows
   `activity not reported` in Status and does not show runtime-only Working.
   This reports holder activity, not model or tool progress. JSON rows include
-  `listIndicator` and optional runtime `nativeActivity` diagnostics. Title uses
+  `listIndicator` and optional runtime `nativeActivity` diagnostics. A native
+  thread waiting for initial terminal setup shows `needs-input` in Status,
+  `Needs input` in Needs you, and `runtime.nativeSetupWaiting: true` in
+  `--json`. Title uses
   the thread title, then the fallback title from the first prompt, then "-". Long
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
@@ -81,7 +84,9 @@ Inspecting:
   Shows pull request status for the attached environment branch when available.
   An archived thread's status line names the archive time, as in `Status: idle
   (archived 11/6/2026, 4:18:02 PM)`; status alone is the run state, so check
-  `thread.archivedAt` in `--json`.
+  `thread.archivedAt` in `--json`. Status prints `needs-input` when a thread
+  has a pending interaction or a native terminal waiting for setup
+  (`runtime.nativeSetupWaiting: true`).
   Read the thread's git status and diff with `bb git status|diff
   <environment-id>`; `--json` prints the environment ID as `environment.id`.
   The deprecated `--work-status`, `--git-diff`, `--diff-target`, `--diff-sha`

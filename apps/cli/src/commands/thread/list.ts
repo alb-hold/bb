@@ -218,10 +218,13 @@ function formatThreadListStatus(
   if (thread.pinnedAt !== null) {
     flags.push("pinned");
   }
+  const status = thread.runtime?.nativeSetupWaiting
+    ? "needs-input"
+    : thread.status;
   if (flags.length === 0) {
-    return thread.status;
+    return status;
   }
-  return `${thread.status} (${flags.join(", ")})`;
+  return `${status} (${flags.join(", ")})`;
 }
 
 function hasIndependentWorkingActivity(
@@ -241,7 +244,11 @@ function activityAwareListIndicator(
     Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
   wokeThreadIds: ReadonlySet<string>,
 ): ThreadListEntry["listIndicator"] {
-  if (thread.listIndicator === "needs-input") return thread.listIndicator;
+  if (
+    thread.listIndicator === "needs-input" ||
+    thread.runtime?.nativeSetupWaiting
+  )
+    return "needs-input";
   if (thread.listIndicator === "check-terminal") return thread.listIndicator;
   if (thread.listIndicator === "working") {
     return thread.runtime !== undefined &&
@@ -299,7 +306,11 @@ export function formatThreadListIndicator(
     Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
   wokeThreadIds: ReadonlySet<string>,
 ): string {
-  if (thread.listIndicator === "needs-input") return "Needs input";
+  if (
+    thread.listIndicator === "needs-input" ||
+    thread.runtime?.nativeSetupWaiting
+  )
+    return "Needs input";
   if (thread.listIndicator === "check-terminal") return "Check terminal";
   if (thread.listIndicator === "working") {
     const hasIndependentActivity = thread.activity
