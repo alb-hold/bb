@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   hostProc,
   scanWorktreeHolders,
@@ -14,6 +14,7 @@ import {
 import { removeHostPath } from "./path-mutations.js";
 import {
   processDoubtsIgnorableForRemoval,
+  temporaryTargetOnAnotherMount,
   type TemporaryRemovalContext,
 } from "./temporary-removal.js";
 
@@ -97,6 +98,7 @@ async function leftovers(root: string): Promise<string[]> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   useProcReaderForTests(null);
   if (originalTmpdir === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = originalTmpdir;
@@ -369,6 +371,69 @@ describe.skipIf(process.platform !== "linux")(
       await expect(
         fs.readFile(path.join(target, "evidence.txt"), "utf8"),
       ).resolves.toBe("bundle");
+    });
+
+    it("refuses temporary removal before touching the target when mountinfo is unreadable", async () => {
+      const root = await makeRoot();
+      const target = await bundle(root, "fleet-evidence-mount-state-unknown");
+      const readFile = fs.readFile.bind(fs);
+      vi.spyOn(fs, "readFile").mockImplementation(async (file, options) => {
+        if (file === "/proc/self/mountinfo")
+          throw new Error("mountinfo unavailable");
+        return readFile(file, options);
+      });
+      const lstat = vi.spyOn(fs, "lstat");
+      const realpath = vi.spyOn(fs, "realpath");
+      const started = performance.now();
+      const outcome = await Promise.race([
+        removeHostPath(
+          {
+            type: "host.remove_path",
+            path: target,
+            recursive: true,
+            temporaryRemoval: noServerWorkspaces,
+          },
+          context(),
+        ).then(
+          () => ({ removed: true as const }),
+          (error: unknown) => ({ removed: false as const, error }),
+        ),
+        delay(1_000).then(() => "still waiting" as const),
+      ]);
+
+      expect(outcome).not.toBe("still waiting");
+      expect(outcome).toMatchObject({ removed: false });
+      if (outcome === "still waiting" || outcome.removed) return;
+      expect(outcome.error).toMatchObject({ code: "path_in_use" });
+      expect((outcome.error as Error).message).toContain(
+        `Refusing to remove ${target}:`,
+      );
+      expect((outcome.error as Error).message).toContain(
+        "filesystem mount state could not be established",
+      );
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(lstat).not.toHaveBeenCalledWith(target);
+      expect(realpath).not.toHaveBeenCalledWith(target);
+      await expect(
+        fs.readFile(path.join(target, "evidence.txt"), "utf8"),
+      ).resolves.toBe("bundle");
+    });
+
+    it.each([
+      ["unparseable mountinfo", "not mountinfo"],
+      ["missing temporary directory mount", "1 0 0:1 / /unrelated rw - tmpfs tmpfs rw"],
+    ] as const)("treats %s as unknown mount state", async (_name, mountInfo) => {
+      const target = await makeRoot();
+      const readFile = fs.readFile.bind(fs);
+      vi.spyOn(fs, "readFile").mockImplementation(async (file, options) =>
+        file === "/proc/self/mountinfo"
+          ? mountInfo
+          : readFile(file, options),
+      );
+
+      await expect(
+        temporaryTargetOnAnotherMount(target),
+      ).resolves.toBe(null);
     });
 
     it("does not relax the temporary directory root itself", async () => {

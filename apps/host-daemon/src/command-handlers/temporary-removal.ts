@@ -92,21 +92,23 @@ async function treeHasGitEntry(root: string): Promise<boolean> {
 
 export async function temporaryTargetOnAnotherMount(
   requested: string,
-): Promise<boolean> {
+): Promise<boolean | null> {
   if (process.platform !== "linux") return false;
   const points = await readMountPoints();
-  if (points === null) return false;
+  if (points === null) return null;
   let temporaryRoot: string;
   try {
     temporaryRoot = await fs.realpath(os.tmpdir());
   } catch {
-    return false;
+    return null;
   }
+  const temporaryMount = containingMount(points, temporaryRoot);
+  if (temporaryMount === "") return null;
   const lexical = path.resolve(requested);
   if (!isPathWithinDirectory(temporaryRoot, lexical)) return false;
-  return (
-    containingMount(points, lexical) !== containingMount(points, temporaryRoot)
-  );
+  const targetMount = containingMount(points, lexical);
+  if (targetMount === "") return null;
+  return targetMount !== temporaryMount;
 }
 
 export async function processDoubtsIgnorableForRemoval(

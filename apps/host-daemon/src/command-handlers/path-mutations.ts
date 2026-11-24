@@ -269,15 +269,20 @@ export async function removeHostPath(
   context: TemporaryRemovalContext,
 ): Promise<HostDaemonOnlineRpcResult<"host.remove_path">> {
   refuseOnWindows(`remove ${command.path}`);
-  if (
-    command.temporaryRemoval !== undefined &&
-    path.isAbsolute(command.path) &&
-    (await temporaryTargetOnAnotherMount(command.path))
-  ) {
-    throw new CommandDispatchError(
-      "path_in_use",
-      `Refusing to remove ${command.path}: it is on a different filesystem mount than the temporary directory, so it was not touched.`,
-    );
+  if (command.temporaryRemoval !== undefined && path.isAbsolute(command.path)) {
+    const mountCheck = await temporaryTargetOnAnotherMount(command.path);
+    if (mountCheck === null) {
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to remove ${command.path}: filesystem mount state could not be established, so it was not touched.`,
+      );
+    }
+    if (mountCheck) {
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to remove ${command.path}: it is on a different filesystem mount than the temporary directory, so it was not touched.`,
+      );
+    }
   }
   const { target, root } = await requireExistingWithin(
     command.path,
