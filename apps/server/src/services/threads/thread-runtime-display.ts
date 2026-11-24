@@ -102,6 +102,7 @@ type NativeActivityThreadRecord = Pick<
   NativeTerminalThreadRecord,
   | "providerId"
   | "terminalSessionId"
+  | "terminalCleanExit"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
@@ -306,6 +307,7 @@ function supportsNativeActivity(
 ): boolean {
   return (
     thread.status === "error" ||
+    thread.status === "idle" ||
     (thread.status === "active" &&
       deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
         undefined)
@@ -357,9 +359,14 @@ export function nativeThreadExitRuntime(
   thread: Thread,
   nativeThread: NativeActivityThreadRecord | null,
 ): Pick<ThreadRuntimeState, "nativeSessionExit"> | undefined {
+  if (nativeThread?.providerId !== thread.providerId) {
+    return undefined;
+  }
+  if (thread.status === "idle" && nativeThread.terminalCleanExit) {
+    return { nativeSessionExit: "clean" };
+  }
   if (
     thread.status === "error" &&
-    nativeThread?.providerId === thread.providerId &&
     nativeThread.lostIdleTerminalSessionId !== null &&
     nativeThread.lostIdleTerminalSessionId === nativeThread.terminalSessionId
   ) {

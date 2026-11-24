@@ -110,8 +110,28 @@ export function NativeThreadTerminalMain({
     view,
     viewUpdatedAt: nativeQuery.dataUpdatedAt,
   });
+  const [prevProvisioning, setPrevProvisioning] = useState(threadIsProvisioning);
+  const [
+    awaitingTerminalAfterProvisioning,
+    setAwaitingTerminalAfterProvisioning,
+  ] = useState(false);
+  if (prevProvisioning !== threadIsProvisioning) {
+    setPrevProvisioning(threadIsProvisioning);
+    if (prevProvisioning && !threadIsProvisioning && session === null) {
+      setAwaitingTerminalAfterProvisioning(true);
+    } else if (threadIsProvisioning) {
+      setAwaitingTerminalAfterProvisioning(false);
+    }
+  }
+  if (awaitingTerminalAfterProvisioning && session !== null) {
+    setAwaitingTerminalAfterProvisioning(false);
+  }
   const state = resolveNativeTerminalState({
     session,
+    terminalIsStarting:
+      Boolean(view.starting) ||
+      openNative.isPending ||
+      awaitingTerminalAfterProvisioning,
     threadIsProvisioning,
     threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
   });
@@ -166,6 +186,17 @@ export function NativeThreadTerminalMain({
   };
 
   useEffect(() => {
+    if (!awaitingTerminalAfterProvisioning) return;
+    let active = true;
+    void Promise.resolve(refetch()).finally(() => {
+      if (active) setAwaitingTerminalAfterProvisioning(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [awaitingTerminalAfterProvisioning, refetch]);
+
+  useEffect(() => {
     if (state.kind === "live") return;
     void refetch();
   }, [refetch, state.kind, terminalsUpdatedAt]);
@@ -214,7 +245,9 @@ export function NativeThreadTerminalMain({
                         ? activityNotice.unconfirmed
                           ? "activity-unreported"
                           : "working"
-                        : "none"
+                        : setupWaiting
+                          ? "needs-input"
+                          : "none"
                 }
               />,
               activityTarget,
@@ -230,6 +263,7 @@ export function NativeThreadTerminalMain({
         <NativeTerminalPanel
           initialSession={session ?? undefined}
           attentionShownAsBanner
+          starting={!hasTerminalOutput}
           autoFocus={paneIsFocused && !isTouchDevice && !isComposerEngaged}
           isPanelOpen
           isPanelPersistedOpen
@@ -251,10 +285,10 @@ export function NativeThreadTerminalMain({
   }
 
   if (state.kind === "preparing" || state.kind === "reconnecting") {
-    const label =
-      state.kind === "preparing"
-        ? `Preparing the workspace for ${providerLabel}…`
-        : `Reconnecting to ${providerLabel}…`;
+    const isPreparing = state.kind === "preparing";
+    const label = isPreparing
+      ? "Starting terminal…"
+      : `Reconnecting to ${providerLabel}…`;
     if (prompt !== null || reply !== null) {
       return (
         <div
@@ -264,11 +298,13 @@ export function NativeThreadTerminalMain({
           <NativeThreadMirrorSection
             prompt={prompt}
             reply={reply}
-            starting={false}
+            starting={isPreparing}
           />
-          <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
-            {label}
-          </div>
+          {isPreparing ? null : (
+            <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
+              {label}
+            </div>
+          )}
         </div>
       );
     }
@@ -276,6 +312,8 @@ export function NativeThreadTerminalMain({
       <div
         className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
         data-native-terminal-thread={view.providerId}
+        data-native-terminal-starting={isPreparing ? "" : undefined}
+        role="status"
       >
         {label}
       </div>

@@ -276,12 +276,12 @@ describe("native thread status liveness", () => {
         vi.useRealTimers();
       }
 
-      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(getThread(harness.db, threadId)?.status).toBe("idle");
       expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
     });
   });
 
-  it("settles an idle thread whose CLI exited cleanly as error instead of showing it idle", async () => {
+  it("keeps an idle thread idle when its CLI exited cleanly without reading the transcript", async () => {
     await withHarness(async (harness) => {
       const { threadId } = seedNativeThread(harness, {
         initialStatus: "idle",
@@ -289,7 +289,7 @@ describe("native thread status liveness", () => {
       });
 
       expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
-        "error",
+        "idle",
       );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
@@ -297,14 +297,27 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("reports an error display status in the thread list for an idle thread whose CLI exited cleanly", async () => {
+  it("keeps an idle display status in the thread list for an idle thread whose CLI exited cleanly and reports error on non-zero exit", async () => {
     await withHarness(async (harness) => {
-      const { threadId } = seedNativeThread(harness, {
-        initialStatus: "idle",
-        terminal: "exited-process-exit",
-      });
+      const context = seedNativeContext(harness);
+      const clean = seedNativeThread(
+        harness,
+        {
+          initialStatus: "idle",
+          terminal: "exited-process-exit",
+        },
+        context,
+      );
+      const failed = seedNativeThread(
+        harness,
+        {
+          initialStatus: "idle",
+          terminal: "exited-process-exit-code-1",
+        },
+        context,
+      );
 
-      const listDisplayStatus = async () => {
+      const listDisplayStatus = async (threadId: string) => {
         const response = await harness.app.request(
           `/api/v1/threads?threadIds=${threadId}`,
         );
@@ -316,14 +329,16 @@ describe("native thread status liveness", () => {
         return body.find((thread) => thread.id === threadId)?.runtime
           .displayStatus;
       };
-      await listDisplayStatus();
+      expect(await listDisplayStatus(clean.threadId)).toBe("idle");
+      await listDisplayStatus(failed.threadId);
       await vi.waitFor(async () =>
-        expect(await listDisplayStatus()).toBe("error"),
+        expect(await listDisplayStatus(failed.threadId)).toBe("error"),
       );
+      expect(await listDisplayStatus(clean.threadId)).toBe("idle");
     });
   });
 
-  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
+  it("settles an idle thread with a non-zero exit straight to error without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);
       const parent = seedThread(harness.deps, {
@@ -342,7 +357,7 @@ describe("native thread status liveness", () => {
         {
           initialStatus: "idle",
           parentThreadId: parent.id,
-          terminal: "exited-process-exit",
+          terminal: "exited-process-exit-code-1",
         },
         context,
       );
@@ -474,12 +489,17 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("settles every idle thread whose CLI exited in the periodic sweep", async () => {
+  it("settles idle threads with non-zero exits while keeping clean exits idle in the periodic sweep", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);
-      const exited = seedNativeThread(
+      const cleanExited = seedNativeThread(
         harness,
         { initialStatus: "idle", terminal: "exited-process-exit" },
+        context,
+      );
+      const failedExited = seedNativeThread(
+        harness,
+        { initialStatus: "idle", terminal: "exited-process-exit-code-1" },
         context,
       );
       const reconnecting = seedNativeThread(
@@ -494,7 +514,10 @@ describe("native thread status liveness", () => {
         plugins: harness.pluginService,
       });
 
-      expect(getThread(harness.db, exited.threadId)?.status).toBe("error");
+      expect(getThread(harness.db, cleanExited.threadId)?.status).toBe("idle");
+      expect(getThread(harness.db, failedExited.threadId)?.status).toBe(
+        "error",
+      );
       expect(getThread(harness.db, reconnecting.threadId)?.status).toBe("idle");
     });
   });

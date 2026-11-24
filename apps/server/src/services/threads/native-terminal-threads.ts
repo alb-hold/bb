@@ -404,6 +404,7 @@ function toNativeTerminalThread(
     terminal,
     prompt: record.prompt ?? record.initialPrompt,
     hasOutput,
+    ...(pendingOpens.has(record.threadId) ? { starting: true } : {}),
     reply,
   };
 }

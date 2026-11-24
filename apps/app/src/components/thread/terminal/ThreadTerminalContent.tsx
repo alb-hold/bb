@@ -16,6 +16,7 @@ interface ThreadTerminalContentProps {
   autoFocus?: boolean;
   retainNativeOutput?: boolean;
   attentionShownAsBanner?: boolean;
+  starting?: boolean;
   controller: ThreadTerminalController;
   onAutoFocusHandled?: () => void;
   onCloseStart: () => void;
@@ -28,6 +29,7 @@ export function ThreadTerminalContent({
   autoFocus = false,
   retainNativeOutput = false,
   attentionShownAsBanner = false,
+  starting = false,
   controller,
   onAutoFocusHandled,
   onCloseStart,
@@ -117,6 +119,7 @@ export function ThreadTerminalContent({
       View={ThreadTerminalView}
       retainNativeOutput={retainNativeOutput}
       attentionShownAsBanner={attentionShownAsBanner}
+      starting={starting}
       autoFocus={autoFocus}
       isPanelOpen={controller.isPanelOpen}
       onAutoFocusHandled={onAutoFocusHandled}

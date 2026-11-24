@@ -27,11 +27,12 @@ export function resolveNativeTerminalSession(args: {
 
 export function resolveNativeTerminalState(args: {
   session: TerminalSession | null;
+  terminalIsStarting?: boolean;
   threadIsProvisioning: boolean;
   threadIsRunning: boolean;
 }): NativeTerminalState {
   if (args.session === null) {
-    return args.threadIsProvisioning
+    return args.threadIsProvisioning || args.terminalIsStarting
       ? { kind: "preparing" }
       : { kind: "ended", exitCode: null };
   }

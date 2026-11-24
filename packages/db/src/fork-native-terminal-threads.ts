@@ -6,6 +6,7 @@ export interface NativeTerminalThreadRecord {
   providerId: string;
   nativeSessionId: string | null;
   terminalSessionId: string | null;
+  terminalCleanExit: boolean;
   lostIdleTerminalSessionId: string | null;
   lastEvidenceAt: number | null;
   lastEvidenceKind: "holder-report" | "transcript" | null;
@@ -18,12 +19,30 @@ export interface NativeTerminalThreadRecord {
   updatedAt: number;
 }
 
-const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
-  terminal_session_id AS terminalSessionId, lost_idle_terminal_session_id AS lostIdleTerminalSessionId, last_evidence_at AS lastEvidenceAt,
-  last_evidence_kind AS lastEvidenceKind,
-  last_tool_call_at AS lastToolCallAt, last_tool_call_session_id AS lastToolCallSessionId,
-  initial_prompt AS initialPrompt, prompt, model,
-  created_at AS createdAt, updated_at AS updatedAt`;
+const CLEAN_EXIT_COLUMN = `CASE
+  WHEN t.status = 'exited' AND t.close_reason = 'process-exit' AND t.exit_code = 0
+  THEN 1 ELSE 0
+END AS terminalCleanExit`;
+
+const SELECT_COLUMNS = `n.thread_id AS threadId, n.provider_id AS providerId, n.native_session_id AS nativeSessionId,
+  n.terminal_session_id AS terminalSessionId, ${CLEAN_EXIT_COLUMN}, n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId, n.last_evidence_at AS lastEvidenceAt,
+  n.last_evidence_kind AS lastEvidenceKind,
+  n.last_tool_call_at AS lastToolCallAt, n.last_tool_call_session_id AS lastToolCallSessionId,
+  n.initial_prompt AS initialPrompt, n.prompt, n.model,
+  n.created_at AS createdAt, n.updated_at AS updatedAt`;
+
+type RawNativeTerminalThreadRow<T extends { terminalCleanExit: boolean }> = Omit<T, "terminalCleanExit"> & {
+  terminalCleanExit: number;
+};
+
+function mapTerminalCleanExit<T extends { terminalCleanExit: boolean }>(
+  row: RawNativeTerminalThreadRow<T>,
+): T {
+  return {
+    ...row,
+    terminalCleanExit: row.terminalCleanExit === 1,
+  } as unknown as T;
+}
 
 export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   db.$client.exec(`
@@ -133,6 +152,7 @@ export function createNativeTerminalThread(
     providerId: args.providerId,
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
+    terminalCleanExit: false,
     lostIdleTerminalSessionId: null,
     lastEvidenceAt: null,
     lastEvidenceKind: null,
@@ -152,10 +172,13 @@ export function getNativeTerminalThread(
 ): NativeTerminalThreadRecord | null {
   const row = db.$client
     .prepare(
-      `SELECT ${SELECT_COLUMNS} FROM fork_native_terminal_threads WHERE thread_id = ?`,
+      `SELECT ${SELECT_COLUMNS}
+       FROM fork_native_terminal_threads n
+       LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       WHERE n.thread_id = ?`,
     )
-    .get(threadId) as NativeTerminalThreadRecord | undefined;
-  return row ?? null;
+    .get(threadId) as RawNativeTerminalThreadRow<NativeTerminalThreadRecord> | undefined;
+  return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
 export function findNativeTerminalThreadBySession(
@@ -164,13 +187,15 @@ export function findNativeTerminalThreadBySession(
 ): NativeTerminalThreadRecord | null {
   const row = db.$client
     .prepare(
-      `SELECT ${SELECT_COLUMNS} FROM fork_native_terminal_threads
-       WHERE provider_id = ? AND native_session_id = ?`,
+      `SELECT ${SELECT_COLUMNS}
+       FROM fork_native_terminal_threads n
+       LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       WHERE n.provider_id = ? AND n.native_session_id = ?`,
     )
     .get(args.providerId, args.nativeSessionId) as
-    | NativeTerminalThreadRecord
+    | RawNativeTerminalThreadRow<NativeTerminalThreadRecord>
     | undefined;
-  return row ?? null;
+  return row === undefined ? null : mapTerminalCleanExit(row);
 }
 
 export function deleteNativeTerminalThread(
@@ -215,6 +240,7 @@ export function listNativeTerminalThreadsByIds(
   | "threadId"
   | "providerId"
   | "terminalSessionId"
+  | "terminalCleanExit"
   | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
@@ -224,25 +250,12 @@ export function listNativeTerminalThreadsByIds(
   | "updatedAt"
 >[] {
   if (threadIds.length === 0) return [];
-  const rows = db.$client
-    .prepare(
-      `SELECT thread_id AS threadId, provider_id AS providerId,
-         native_session_id AS nativeSessionId,
-         terminal_session_id AS terminalSessionId,
-         lost_idle_terminal_session_id AS lostIdleTerminalSessionId,
-         last_evidence_at AS lastEvidenceAt,
-         last_evidence_kind AS lastEvidenceKind,
-         last_tool_call_at AS lastToolCallAt,
-         last_tool_call_session_id AS lastToolCallSessionId,
-         updated_at AS updatedAt
-       FROM fork_native_terminal_threads
-       WHERE thread_id IN (SELECT value FROM json_each(?))`,
-    )
-    .all(JSON.stringify(threadIds)) as Pick<
+  type ListedNativeTerminalThread = Pick<
     NativeTerminalThreadRecord,
     | "threadId"
     | "providerId"
     | "terminalSessionId"
+    | "terminalCleanExit"
     | "lostIdleTerminalSessionId"
     | "lastEvidenceAt"
     | "lastEvidenceKind"
@@ -250,8 +263,25 @@ export function listNativeTerminalThreadsByIds(
     | "lastToolCallSessionId"
     | "nativeSessionId"
     | "updatedAt"
-  >[];
-  return rows;
+  >;
+  const rows = db.$client
+    .prepare(
+      `SELECT n.thread_id AS threadId, n.provider_id AS providerId,
+         n.native_session_id AS nativeSessionId,
+         n.terminal_session_id AS terminalSessionId,
+         ${CLEAN_EXIT_COLUMN},
+         n.lost_idle_terminal_session_id AS lostIdleTerminalSessionId,
+         n.last_evidence_at AS lastEvidenceAt,
+         n.last_evidence_kind AS lastEvidenceKind,
+         n.last_tool_call_at AS lastToolCallAt,
+         n.last_tool_call_session_id AS lastToolCallSessionId,
+         n.updated_at AS updatedAt
+       FROM fork_native_terminal_threads n
+       LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       WHERE n.thread_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(threadIds)) as RawNativeTerminalThreadRow<ListedNativeTerminalThread>[];
+  return rows.map(mapTerminalCleanExit);
 }
 
 export function listNativeTerminalThreadsWithDisconnectedTerminal(
@@ -294,7 +324,10 @@ export function listNativeTerminalThreadsNeedingStatusCheck(
          AND NOT (
            th.status = 'idle'
            AND COALESCE(t.status, '') = 'exited'
-           AND COALESCE(t.close_reason, '') NOT IN ('daemon-disconnect', 'thread-archived', 'process-exit')
+           AND (
+             COALESCE(t.close_reason, '') NOT IN ('daemon-disconnect', 'thread-archived', 'process-exit')
+             OR (t.close_reason = 'process-exit' AND t.exit_code = 0)
+           )
          )
        ORDER BY n.last_evidence_at IS NOT NULL, n.last_evidence_at, n.thread_id
        LIMIT ?`,

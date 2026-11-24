@@ -404,8 +404,10 @@ describe("archiving an exited native Codex thread", () => {
         return threadResponseSchema.parse(await readJson(response));
       };
       const clean = outcome === "completed" && exitCode === 0;
+      const expectedStatus = clean ? "idle" : "error";
       const beforeArchive = await readThread();
-      expect(beforeArchive.status).toBe("error");
+      expect(beforeArchive.status).toBe(expectedStatus);
+      expect(beforeArchive.runtime.displayStatus).toBe(expectedStatus);
       expect(beforeArchive.runtime.nativeSessionExit).toBe(
         clean ? "clean" : undefined,
       );
@@ -433,42 +435,17 @@ describe("archiving an exited native Codex thread", () => {
         );
         expect(response.status).toBe(200);
         const restored = await readThread();
-        expect(restored.status).toBe("error");
+        expect(restored.status).toBe(expectedStatus);
+        expect(restored.runtime.displayStatus).toBe(expectedStatus);
         expect(restored.runtime.nativeSessionExit).toBe(
           clean ? "clean" : undefined,
         );
       }
-      if (clean) {
-        expect(
-          getNativeTerminalThread(fixture.harness.db, thread.id)
-            ?.lostIdleTerminalSessionId,
-        ).toBe(open.terminalId);
-        if (unarchive) {
-          setNativeTerminalThreadTerminal(fixture.harness.db, {
-            threadId: thread.id,
-            terminalSessionId: open.terminalId,
-          });
-        } else {
-          const notify = vi.spyOn(fixture.harness.deps.hub, "notifyThread");
-          applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
-            threadId: thread.id,
-            event: { type: "run.failed" },
-          });
-          expect(notify).toHaveBeenCalledWith(
-            thread.id,
-            ["status-changed"],
-            expect.objectContaining({
-              statusChange: expect.objectContaining({
-                runtime: { displayStatus: "error" },
-              }),
-            }),
-          );
-          notify.mockRestore();
-        }
-        expect(
-          getNativeTerminalThread(fixture.harness.db, thread.id)
-            ?.lostIdleTerminalSessionId,
-        ).toBeNull();
+      if (clean && unarchive) {
+        setNativeTerminalThreadTerminal(fixture.harness.db, {
+          threadId: thread.id,
+          terminalSessionId: "term-reopened",
+        });
         expect((await readThread()).runtime.nativeSessionExit).toBeUndefined();
       }
     },
