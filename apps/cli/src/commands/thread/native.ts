@@ -49,6 +49,12 @@ import {
 } from "../../native-holder.js";
 import { runNativeMcpServer } from "../../native-mcp.js";
 import { checkNativeTerminal } from "../../native-terminal-check.js";
+import {
+  defaultNativeHolderLaunchdDeps,
+  removeNativeHolderLaunchdJob,
+  startNativeHolderInOwnCoalition,
+  type NativeHolderLaunchdDeps,
+} from "../../native-holder-launchd.js";
 import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
@@ -101,7 +107,11 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
   }
 }
 
-function spawnNativeHolder(threadId: string, socketPath: string): void {
+export function spawnNativeHolder(
+  threadId: string,
+  socketPath: string,
+  launchd: NativeHolderLaunchdDeps = defaultNativeHolderLaunchdDeps(),
+): void {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   const script = process.argv[1];
   if (script === undefined) {
@@ -110,24 +120,30 @@ function spawnNativeHolder(threadId: string, socketPath: string): void {
       1,
     );
   }
-  const holder = spawn(
+  const argv = [
     process.execPath,
-    [
-      ...process.execArgv,
-      script,
-      "thread",
-      "native-hold",
-      threadId,
-      "--socket",
-      socketPath,
-    ],
-    {
-      cwd: process.cwd(),
-      detached: true,
-      env: process.env,
-      stdio: ["ignore", "ignore", "ignore"],
-    },
-  );
+    ...process.execArgv,
+    script,
+    "thread",
+    "native-hold",
+    threadId,
+    "--socket",
+    socketPath,
+  ];
+  if (
+    startNativeHolderInOwnCoalition(
+      { argv, cwd: process.cwd(), environment: process.env, socketPath },
+      launchd,
+    )
+  ) {
+    return;
+  }
+  const holder = spawn(process.execPath, argv.slice(1), {
+    cwd: process.cwd(),
+    detached: true,
+    env: process.env,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
   holder.unref();
 }
 
@@ -470,6 +486,7 @@ export async function holdNativeHarness(
   } finally {
     restoreSignals();
     process.off("uncaughtExceptionMonitor", onUncaughtException);
+    removeNativeHolderLaunchdJob(process.env, defaultNativeHolderLaunchdDeps());
   }
 }
 
