@@ -25,9 +25,24 @@ const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
+  vi.useRealTimers();
 });
 
-async function createGeminiPool(failedLookups: number, storedError: string | null = null) {
+const START = 1_800_000_000_000;
+
+function useFakeClock() {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "Date"],
+    now: START,
+  });
+  return () => Date.now();
+}
+
+async function createGeminiPool(
+  failedLookups: number,
+  storedError: string | null = null,
+  clock: { now?: () => number; lookupFails?: () => boolean } = {},
+) {
   const dataDir = await fs.mkdtemp(
     path.join(tmpdir(), "bb-account-pool-gemini-runtime-"),
   );
@@ -36,7 +51,7 @@ async function createGeminiPool(failedLookups: number, storedError: string | nul
   host.bb.storage.migrate(database, QUOTA_MIGRATIONS);
   const secretsDir = path.join(dataDir, "secrets");
   let time = 1_800_000_000_000;
-  const now = () => time;
+  const now = clock.now ?? (() => time);
   const hubTokens = new HubTokenStore(secretsDir, now);
   const accounts = new AccountStore(host.bb.storage.kv, secretsDir);
   const quotas = new QuotaStore(database);
@@ -62,15 +77,18 @@ async function createGeminiPool(failedLookups: number, storedError: string | nul
       kind: "oauth",
       accessToken: "access-synthetic",
       refreshToken: "refresh-synthetic",
-      expiresAt: time + 24 * 60 * MINUTE,
+      expiresAt: now() + 24 * 60 * MINUTE,
     },
   );
   if (storedError !== null)
     quotas.put({ ...quotas.get(account.id), error: storedError });
   let lookups = 0;
   let remainingFailures = failedLookups;
+  const lookupTimes: number[] = [];
   const runtimeUserAgent = async () => {
     lookups += 1;
+    lookupTimes.push(now());
+    if (clock.lookupFails?.() === true) throw new Error(LOOKUP_ERROR);
     if (remainingFailures > 0) {
       remainingFailures -= 1;
       throw new Error(LOOKUP_ERROR);
@@ -143,6 +161,7 @@ async function createGeminiPool(failedLookups: number, storedError: string | nul
     quotas,
     calls,
     lookups: () => lookups,
+    lookupTimes,
     settled: () => hub.refreshUsage(),
     advance: (milliseconds: number) => {
       time += milliseconds;
@@ -178,6 +197,69 @@ describe("Gemini usage refresh after a failed antigravity-acp runtime lookup", (
     expect(
       pool.calls.filter((url) => url.endsWith(":retrieveUserQuotaSummary")),
     ).toHaveLength(1);
+  });
+
+  it("retries a failed startup lookup within seconds, not on the five-minute cadence", async () => {
+    const now = useFakeClock();
+    const pool = await createGeminiPool(0, null, {
+      now,
+      lookupFails: () => now() < START + 20_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(async () => {
+      expect((await pool.summary()).error).toBe(
+        `Gemini usage refresh stopped (runtime_version): ${LOOKUP_ERROR}`,
+      );
+    });
+    expect(await pool.eligible()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(50_000);
+    await pool.settled();
+
+    const recovered = await pool.summary();
+    expect(recovered.error).toBeNull();
+    expect(recovered.status).toBe("ready");
+    expect(await pool.eligible()).toBe(true);
+    expect(pool.lookupTimes.map((at) => at - START)).toEqual([
+      0, 15_000, 45_000,
+    ]);
+  });
+
+  it("backs off to the five-minute cadence while the lookup keeps failing", async () => {
+    const now = useFakeClock();
+    const pool = await createGeminiPool(0, null, {
+      now,
+      lookupFails: () => true,
+    });
+    for (let elapsed = 0; elapsed < 40 * MINUTE; elapsed += 5_000)
+      await vi.advanceTimersByTimeAsync(5_000);
+
+    const gaps = pool.lookupTimes
+      .slice(1)
+      .map((at, index) => at - (pool.lookupTimes[index] ?? at));
+    expect(gaps.slice(0, 5)).toEqual([
+      15_000,
+      30_000,
+      60_000,
+      120_000,
+      5 * MINUTE,
+    ]);
+    expect(gaps.every((gap) => gap >= 15_000 && gap <= 5 * MINUTE)).toBe(true);
+    expect(gaps.slice(4).every((gap) => gap === 5 * MINUTE)).toBe(true);
+    expect((await pool.summary()).status).toBe("error");
+  });
+
+  it("does not fast-retry a real auth failure", async () => {
+    const now = useFakeClock();
+    const pool = await createGeminiPool(0, AUTH_ERROR, {
+      now,
+      lookupFails: () => true,
+    });
+    for (let elapsed = 0; elapsed < 6 * MINUTE; elapsed += 5_000)
+      await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(pool.lookupTimes.map((at) => at - START)).toEqual([0, 5 * MINUTE]);
+    expect((await pool.summary()).error).toBe(AUTH_ERROR);
   });
 
   it("keeps a real auth failure in error when the runtime lookup works", async () => {

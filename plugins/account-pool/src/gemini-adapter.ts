@@ -1195,6 +1195,7 @@ export function createGeminiAdapter(options: {
       );
       return { secret: refreshed, refreshed: true };
     },
+    isTransientUsageError: isGeminiRuntimeRefreshError,
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const agent = await userAgent().catch((error: unknown) => {
