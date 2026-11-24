@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type {
+  Account,
   AccountQuota,
   AccountSecret,
   ImportProbe,
   ImportProbeEndpoint,
   LimitWindow,
-  LimitWindowSlot,
 } from "./contracts.js";
 import {
   importGeminiCredentials,
@@ -13,8 +13,13 @@ import {
   type ImportedGeminiCredentials,
 } from "./gemini-credentials.js";
 import {
+  advertisedModels,
   codeAssistModel,
+  codeAssistModels,
   geminiGatewayCall,
+  hasCodeAssistModelList,
+  isServedFamily,
+  servedFamilyVariant,
   geminiRuntimeRefusal,
   geminiUpstreamUserAgent,
   modelListResponse,
@@ -57,7 +62,14 @@ export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
 const USER_AGENT_TTL_MS = 10 * 60 * 1_000;
+export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX =
+  "Gemini usage refresh stopped (runtime_version): ";
+
+export function isGeminiRuntimeRefreshError(error: string): boolean {
+  return error.startsWith(GEMINI_RUNTIME_REFRESH_ERROR_PREFIX);
+}
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
+const SERVED_MODELS_TTL_MS = 10 * 60 * 1_000;
 
 const refreshResponseSchema = z
   .object({
@@ -137,15 +149,74 @@ const retrieveUserQuotaSummarySchema = z
     groups: z
       .array(
         z
-          .object({ buckets: z.array(quotaBucketSchema).nullish() })
+          .object({
+            displayName: z.string().nullish(),
+            buckets: z.array(quotaBucketSchema).nullish(),
+          })
           .passthrough(),
       )
       .nullish(),
   })
   .passthrough();
 
-const NON_GEMINI_BUCKET = /claude|gpt-oss|image/iu;
-const PRIMARY_BUCKET = /pro|carbon|argon|hydrogen|neon|orchestrator/iu;
+const NON_GEMINI_QUOTA = /claude|gpt|image/iu;
+const ROUTED_GEMINI_MODEL = /neon/iu;
+const OTHER_GEMINI_MODEL =
+  /(?:^|[^a-z])(?:pro|flash|lite|carbon|argon|hydrogen|orchestrator)(?:[^a-z]|$)/iu;
+const GEMINI_QUOTA = /gemini/iu;
+
+export interface GeminiQuotaBucket {
+  group: string | null;
+  bucketId: string | null;
+  displayName: string | null;
+  remainingFraction: number | null;
+  resetTime: string | null;
+  disabled: boolean;
+  slot: "primary" | "skipped";
+}
+
+function routesGeminiModel(name: string, group: string | null): boolean {
+  if (NON_GEMINI_QUOTA.test(name)) return false;
+  if (ROUTED_GEMINI_MODEL.test(name)) return true;
+  if (OTHER_GEMINI_MODEL.test(name)) return false;
+  if (GEMINI_QUOTA.test(name)) return true;
+  return (
+    group !== null && GEMINI_QUOTA.test(group) && !NON_GEMINI_QUOTA.test(group)
+  );
+}
+
+export function geminiQuotaBuckets(payload: unknown): GeminiQuotaBucket[] | null {
+  const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
+  if (!parsed.success) return null;
+  return [
+    ...(parsed.data.buckets ?? []).map((bucket) => ({ group: null, bucket })),
+    ...(parsed.data.groups ?? []).flatMap((group) =>
+      (group.buckets ?? []).map((bucket) => ({
+        group: group.displayName ?? null,
+        bucket,
+      })),
+    ),
+  ].map(({ group, bucket }) => {
+    const disabled = bucket.disabled === true;
+    const remainingFraction = bucket.remainingFraction ?? null;
+    const routed =
+      !disabled &&
+      remainingFraction !== null &&
+      routesGeminiModel(
+        `${bucket.bucketId ?? ""} ${bucket.displayName ?? ""}`,
+        group,
+      );
+    return {
+      group,
+      bucketId: bucket.bucketId ?? null,
+      displayName: bucket.displayName ?? null,
+      remainingFraction,
+      resetTime: bucket.resetTime ?? null,
+      disabled,
+      slot: routed ? "primary" : "skipped",
+    };
+  });
+}
 
 export interface GeminiProjectInfo {
   project: string | null;
@@ -243,7 +314,7 @@ export function geminiQuotaRejection(
   }
   if (status !== "RESOURCE_EXHAUSTED") return null;
   if (reason === null || !ACCOUNT_QUOTA_REASONS.has(reason)) return null;
-  if (model !== null && NON_GEMINI_BUCKET.test(model)) return null;
+  if (model !== null && NON_GEMINI_QUOTA.test(model)) return null;
   return {
     reason: reason.toLowerCase(),
     resetAt: now + (delayMs ?? DEFAULT_QUOTA_HOLD_MS),
@@ -255,25 +326,16 @@ export function geminiWindowsFromQuota(
   payload: unknown,
   now: number,
 ): LimitWindow[] {
-  const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
-  if (!parsed.success) return [];
-  const slots = new Map<LimitWindowSlot, LimitWindow>();
-  const buckets = [
-    ...(parsed.data.buckets ?? []),
-    ...(parsed.data.groups ?? []).flatMap((group) => group.buckets ?? []),
-  ];
-  for (const bucket of buckets) {
-    const name = bucket.bucketId ?? bucket.displayName ?? "";
-    if (NON_GEMINI_BUCKET.test(name)) continue;
-    if (bucket.disabled === true || bucket.remainingFraction == null) continue;
-    const slot: LimitWindowSlot = PRIMARY_BUCKET.test(name)
-      ? "primary"
-      : "secondary";
+  let routed: LimitWindow | null = null;
+  for (const bucket of geminiQuotaBuckets(payload) ?? []) {
+    if (bucket.slot === "skipped" || bucket.remainingFraction === null)
+      continue;
     const utilization = Math.max(0, Math.min(1, 1 - bucket.remainingFraction));
+    if (routed !== null && (routed.utilization ?? 0) >= utilization) continue;
     const reset =
-      bucket.resetTime == null ? Number.NaN : Date.parse(bucket.resetTime);
-    const next: LimitWindow = {
-      slot,
+      bucket.resetTime === null ? Number.NaN : Date.parse(bucket.resetTime);
+    routed = {
+      slot: bucket.slot,
       windowMinutes: null,
       utilization,
       resetAt: Number.isNaN(reset) ? null : reset,
@@ -281,14 +343,8 @@ export function geminiWindowsFromQuota(
       observedAt: now,
       source: "usage",
     };
-    const prior = slots.get(slot);
-    if (prior === undefined || (prior.utilization ?? 0) < utilization)
-      slots.set(slot, next);
   }
-  return (["primary", "secondary"] as const).flatMap((slot) => {
-    const window = slots.get(slot);
-    return window === undefined ? [] : [window];
-  });
+  return routed === null ? [] : [routed];
 }
 
 function googleStatusName(status: number): string {
@@ -824,7 +880,8 @@ export function createGeminiAdapter(options: {
   importCredentials?: (home?: string) => Promise<ImportedGeminiCredentials>;
   fetch?: typeof fetch;
   now?: () => number;
-  onModels?: (accountId: string, ids: string[]) => void;
+  onModels?: (accountId: string, ids: string[], servedIds: string[]) => void;
+  savedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
   onboarding?: { pollMs: number; timeoutMs: number };
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
@@ -856,6 +913,75 @@ export function createGeminiAdapter(options: {
   const doFetch: typeof fetch = (input, init) =>
     (options.fetch ?? fetch)(input, init);
   const clock = () => (options.now ?? Date.now)();
+  const servedModels = new Map<
+    string,
+    { ids: ReadonlySet<string>; at: number }
+  >();
+  const servedRefreshes = new Map<string, Promise<void>>();
+  const rememberServed = (
+    accountId: string,
+    served: string[],
+    advertised: string[],
+  ) => {
+    servedModels.set(accountId, { ids: new Set(served), at: clock() });
+    options.onModels?.(accountId, advertised, served);
+  };
+  const isKnownFamily = (model: string) =>
+    [...servedModels.values()].some((entry) =>
+      isServedFamily(model, entry.ids),
+    ) ||
+    isServedFamily(
+      model,
+      new Set(
+        Object.entries(options.savedModels?.() ?? {}).flatMap(
+          ([accountId, entry]) =>
+            servedModels.has(accountId)
+              ? []
+              : "served" in entry
+                ? [...entry.served, ...entry.aliases]
+                : entry,
+        ),
+      ),
+    );
+  const savedServed = (accountId: string): ReadonlySet<string> | undefined => {
+    const saved = options.savedModels?.()[accountId];
+    if (saved === undefined) return undefined;
+    if ("served" in saved) return new Set(saved.served);
+    return new Set(saved);
+  };
+  const refreshServed = (
+    account: Account,
+    secret: AccountSecret,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const running = servedRefreshes.get(account.id);
+    if (running !== undefined) return running;
+    const flight = (async () => {
+      if (secret.kind !== "oauth") return;
+      const payload = await codeAssistCall(
+        doFetch,
+        baseFor(account),
+        "fetchAvailableModels",
+        secret.accessToken,
+        { project: account.geminiProject },
+        await userAgent(),
+        signal,
+      );
+      if (!hasCodeAssistModelList(payload)) return;
+      const served = codeAssistModels(payload);
+      rememberServed(
+        account.id,
+        served.map((model) => model.id),
+        advertisedModels(served).map((model) => model.id),
+      );
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        servedRefreshes.delete(account.id);
+      });
+    servedRefreshes.set(account.id, flight);
+    return flight;
+  };
   const readCredentials = options.importCredentials ?? importGeminiCredentials;
   const signIn = async (importOptions?: { home?: string }) => {
     const imported = await readCredentials(importOptions?.home);
@@ -997,18 +1123,19 @@ export function createGeminiAdapter(options: {
       let quota: ImportProbe["quota"] = { kind: "not-checked" };
       if (plan.kind === "project") {
         try {
-          const windows = geminiWindowsFromQuota(
-            await codeAssistCall(
-              doFetch,
-              bases.daily,
-              "retrieveUserQuotaSummary",
-              accessToken,
-              { project: plan.project },
-              await userAgent(),
-            ),
-            clock(),
+          const summary = await codeAssistCall(
+            doFetch,
+            bases.daily,
+            "retrieveUserQuotaSummary",
+            accessToken,
+            { project: plan.project },
+            await userAgent(),
           );
-          quota = { kind: "answered", windows: windows.length };
+          quota = {
+            kind: "answered",
+            windows: geminiWindowsFromQuota(summary, clock()).length,
+            buckets: geminiQuotaBuckets(summary) ?? [],
+          };
         } catch {
           quota = { kind: "failed" };
         }
@@ -1042,6 +1169,7 @@ export function createGeminiAdapter(options: {
           affinityId: null,
           parentAffinityId: null,
           upstreamMethod: "POST",
+          unmetered: call?.kind === "models",
           forAccount: (account) => encodeJson({ project: account.geminiProject }),
         };
       }
@@ -1055,8 +1183,25 @@ export function createGeminiAdapter(options: {
         family: "other",
         affinityId: typeof session === "string" && session !== "" ? session : null,
         parentAffinityId: null,
-        forAccount: (account) =>
-          encodeJson({ model, project: account.geminiProject, request }),
+        async prepare(account, secret, signal) {
+          if (!isKnownFamily(model)) return;
+          const cached = servedModels.get(account.id);
+          if (cached !== undefined && clock() - cached.at < SERVED_MODELS_TTL_MS)
+            return;
+          await refreshServed(account, secret, signal);
+        },
+        forAccount: (account) => {
+          const served =
+            servedModels.get(account.id)?.ids ?? savedServed(account.id);
+          return encodeJson({
+            model:
+              served === undefined
+                ? model
+                : (servedFamilyVariant(model, served) ?? model),
+            project: account.geminiProject,
+            request,
+          });
+        },
       };
     },
     refuseClient: geminiRuntimeRefusal,
@@ -1084,8 +1229,8 @@ export function createGeminiAdapter(options: {
       if (response.body === null) return response;
       const transform =
         call === null || call.kind === "models"
-          ? modelListResponse(call?.api ?? "v1beta", (ids) =>
-              options.onModels?.(context.account.id, ids),
+          ? modelListResponse(call?.api ?? "v1beta", (served, advertised) =>
+              rememberServed(context.account.id, served, advertised),
             )
           : call.method === "generateContent"
             ? unwrapUnary()
@@ -1144,15 +1289,21 @@ export function createGeminiAdapter(options: {
       );
       return { secret: refreshed, refreshed: true };
     },
+    isTransientUsageError: isGeminiRuntimeRefreshError,
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const agent = await userAgent().catch((error: unknown) => {
-        context.quotas.put({
-          ...context.quotas.get(context.account.id),
-          error: `Gemini usage refresh stopped (runtime_version): ${errorMessage(error)}`,
-        });
+        const previous = context.quotas.get(context.account.id);
+        if (previous.error === null || isGeminiRuntimeRefreshError(previous.error))
+          context.quotas.put({
+            ...previous,
+            error: `${GEMINI_RUNTIME_REFRESH_ERROR_PREFIX}${errorMessage(error)}`,
+          });
         throw error;
       });
+      const stale = context.quotas.get(context.account.id);
+      if (stale.error !== null && isGeminiRuntimeRefreshError(stale.error))
+        context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
       context.signal?.throwIfAborted();
       if (secret.kind !== "oauth") return;

@@ -221,6 +221,49 @@ describe("TerminalMobileControls", () => {
     expect(buttonDisabled("Enter")).toBe(true);
     expect(buttonDisabled("More terminal keys")).toBe(true);
   });
+
+  it("renders only enabled read-only controls in one row when typingKeys is false", () => {
+    render(
+      <TerminalMobileControls
+        controlActive={false}
+        disabled
+        readOnlyDisabled={false}
+        typingKeys={false}
+        onArrow={vi.fn()}
+        onControlChange={vi.fn()}
+        onInput={vi.fn()}
+        onKeyboardToggle={vi.fn()}
+        onPaste={vi.fn()}
+        onPreviousPrompt={vi.fn()}
+        onNextPrompt={vi.fn()}
+        onSearch={vi.fn()}
+        onSelectText={vi.fn()}
+      />,
+    );
+
+    const controls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    expect(controls.children).toHaveLength(1);
+    expect(buttonDisabled("Search terminal output")).toBe(false);
+    expect(buttonDisabled("Previous prompt")).toBe(false);
+    expect(buttonDisabled("Next prompt")).toBe(false);
+    expect(buttonDisabled("Select terminal text")).toBe(false);
+    for (const label of [
+      "Interrupt (Control C)",
+      "Escape",
+      "Tab",
+      "Enter",
+      "Control for next key",
+      "Arrow left",
+      "Arrow right",
+      "Arrow up",
+      "Arrow down",
+      "More terminal keys",
+    ]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
 });
 
 it("keeps the overflowed vertical arrow reachable through Keys", () => {

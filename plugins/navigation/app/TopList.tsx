@@ -167,7 +167,7 @@ function NavigationListRow({
                 size="icon"
                 aria-label={sidebarNavigationItemMenuLabel(item)}
                 className={cn(
-                  "m-1 size-5 rounded-md p-0 max-md:pointer-coarse:m-0 max-md:pointer-coarse:size-9",
+                  "m-0.5 size-6 rounded-md p-0 max-md:pointer-coarse:m-0 max-md:pointer-coarse:size-9",
                   SIDEBAR_CONTROL_STATE_CLASS,
                   isContextMenuOpen && "bg-state-active",
                 )}

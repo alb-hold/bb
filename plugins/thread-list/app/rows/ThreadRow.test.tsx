@@ -1523,7 +1523,7 @@ describe("ThreadRow", () => {
     ["open", "text-success-foreground"],
     ["draft", "text-muted-foreground"],
     ["merged", "text-accent-foreground"],
-    ["closed", "text-destructive"],
+    ["closed", "text-destructive-text"],
   ] as const)(
     "shows a %s pull request chip with its state color",
     async (state, tone) => {

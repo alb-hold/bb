@@ -123,6 +123,9 @@ import {
   getRootComposeRoutePath,
   getThreadRoutePath,
   isProjectlessProjectId,
+  SETTINGS_MACHINE_ROUTE_PATH,
+  SETTINGS_PLUGIN_ROUTE_PATH,
+  SETTINGS_PROJECT_ROUTE_PATH,
   SETTINGS_ROUTE_PATH,
 } from "@/lib/route-paths";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
@@ -409,6 +412,7 @@ function resolveRouteTitle(pathname: string): { title: string } | undefined {
 
 interface AppHeaderProps {
   resourceSection: ToolsSectionId | null;
+  routeHasOwnHeading: boolean;
   usesProjectChromeStyle: boolean;
   usesDesktopChrome: boolean;
   projectId?: string;
@@ -424,6 +428,7 @@ interface AppHeaderProps {
 
 function AppHeader({
   resourceSection,
+  routeHasOwnHeading,
   usesProjectChromeStyle,
   usesDesktopChrome,
   projectId,
@@ -471,7 +476,11 @@ function AppHeader({
   ) : hasCenterContent ? (
     <div className="min-w-0 flex-1">
       {headerTitle ? (
-        <p className="truncate text-sm font-semibold">{headerTitle}</p>
+        routeHasOwnHeading ? (
+          <p className="truncate text-sm font-semibold">{headerTitle}</p>
+        ) : (
+          <h1 className="truncate text-sm font-semibold">{headerTitle}</h1>
+        )
       ) : null}
     </div>
   ) : null;
@@ -728,7 +737,14 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   const startWidthRef = useRef(0);
   const liveWidthRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
-  const showHeader = !isThreadView && !isRootView && pluginPanelRoute === null;
+  const isPluginPanelView = pluginPanelRoute !== null;
+  const showHeader = !isThreadView && !isRootView && !isPluginPanelView;
+  const showSrHeading = isThreadView || isArchivedView || isPluginPanelView;
+  const routeHasOwnHeading = Boolean(
+    matchPath(SETTINGS_PROJECT_ROUTE_PATH, location.pathname) ||
+      matchPath(SETTINGS_MACHINE_ROUTE_PATH, location.pathname) ||
+      matchPath(SETTINGS_PLUGIN_ROUTE_PATH, location.pathname),
+  );
   const [desktopInfo] = useState(getBbDesktopInfo);
   const desktopWindowState = useDesktopWindowState();
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
@@ -984,6 +1000,7 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                             ? resolveToolsSection(location.pathname)
                             : null
                         }
+                        routeHasOwnHeading={routeHasOwnHeading}
                         usesDesktopChrome={usesDesktopChrome}
                         usesProjectChromeStyle={isRootView || isArchivedView}
                         projectId={projectId}
@@ -995,6 +1012,9 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                       />
                     ) : null}
                     <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+                      {showSrHeading ? (
+                        <h1 className="sr-only">{documentTitle}</h1>
+                      ) : null}
                       <RetainedTerminalViewsProvider
                         projectId={resolvedThreadProjectId ?? projectId}
                       >

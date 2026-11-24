@@ -472,6 +472,19 @@ export const importProbeSchema = z
         .object({
           kind: z.literal("answered"),
           windows: z.number().int().nonnegative(),
+          buckets: z.array(
+            z
+              .object({
+                group: z.string().nullable(),
+                bucketId: z.string().nullable(),
+                displayName: z.string().nullable(),
+                remainingFraction: z.number().nullable(),
+                resetTime: z.string().nullable(),
+                disabled: z.boolean(),
+                slot: z.enum(["primary", "skipped"]),
+              })
+              .strict(),
+          ),
         })
         .strict(),
       z.object({ kind: z.literal("failed") }).strict(),

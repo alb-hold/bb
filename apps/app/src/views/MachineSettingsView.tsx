@@ -157,7 +157,7 @@ function PermissionLimitCards({
                     {option.label}
                   </span>
                   {option.description ? (
-                    <span className="mt-0.5 block text-xs leading-snug text-subtle-foreground/75">
+                    <span className="mt-0.5 block text-xs leading-snug text-subtle-foreground">
                       {option.description}
                     </span>
                   ) : null}
@@ -228,7 +228,7 @@ export function MachineSettingsHeader({
           </div>
           <div className="flex min-w-0 items-center gap-2">
             <MachineStatusDot tone={machineStatusTone(host)} />
-            <p className="min-w-0 text-xs text-subtle-foreground/75">
+            <p className="min-w-0 text-xs text-subtle-foreground">
               {headerMeta({ host, platformLabel, now })}
             </p>
           </div>

@@ -187,6 +187,10 @@ import {
 } from "./BuiltInSidebarSection.js";
 import { SectionThreadDndProvider } from "../dnd/SectionThreadDndContext.js";
 import {
+  SidebarSortHandle,
+  getSidebarPointerDragListeners,
+} from "../dnd/SidebarSortHandle.js";
+import {
   useSidebarThreadDragOverlayModifiers,
   SidebarThreadDragChip,
 } from "../dnd/sidebarThreadDragChip.js";
@@ -895,6 +899,10 @@ function EnvironmentThreadGroupHeader({
   };
   const content = (
     <>
+      <SidebarSortHandle
+        dragBindings={rename.isEditing ? undefined : dragBindings}
+        label={displayName}
+      />
       {parentLineDepth === undefined ? null : (
         <ThreadTreeLineContinuation parentRowDepth={parentLineDepth} />
       )}
@@ -984,12 +992,14 @@ function EnvironmentThreadGroupHeader({
     </>
   );
 
+  const pointerDragListeners = getSidebarPointerDragListeners(
+    dragBindings?.listeners,
+  );
+
   if (stickyLevel !== undefined) {
     return (
       <SidebarStickyTier
-        {...dragBindings?.attributes}
-        {...dragBindings?.listeners}
-        ref={dragBindings?.setActivatorNodeRef}
+        {...pointerDragListeners}
         tier="parent"
         data-sidebar-rename-row=""
         level={stickyLevel}
@@ -1003,9 +1013,7 @@ function EnvironmentThreadGroupHeader({
 
   return (
     <div
-      {...dragBindings?.attributes}
-      {...dragBindings?.listeners}
-      ref={dragBindings?.setActivatorNodeRef}
+      {...pointerDragListeners}
       data-sidebar-rename-row=""
       className={className}
       style={style}

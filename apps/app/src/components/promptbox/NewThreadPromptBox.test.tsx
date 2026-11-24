@@ -2,14 +2,21 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import type { Host } from "@bb/domain";
+import type { PromptDraftState } from "@bb/client-core";
 import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   SystemEnvironmentProvider,
   SystemMachineProvider,
 } from "@bb/server-contract";
-import { EnvironmentSlot, ProjectlessMachineSlot } from "./NewThreadPromptBox";
+import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
+import {
+  EnvironmentSlot,
+  NewThreadPromptBoxUI,
+  ProjectlessMachineSlot,
+} from "./NewThreadPromptBox";
 
 const host = makeHost({
   id: "host_test",
@@ -430,5 +437,107 @@ describe("EnvironmentSlot", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("button", { name: "Environment" })).toBeNull();
     expect(screen.getByRole("button", { name: "Machine" })).toBeTruthy();
+  });
+});
+
+describe("NewThreadPromptBoxUI mobile footer layout stability", () => {
+  function makeDraftStore() {
+    let draft: PromptDraftState = { text: "", mentions: [], attachments: [] };
+    return {
+      getCurrent: () => draft,
+      subscribeDraft: () => () => {},
+      setDraft: (next: PromptDraftState) => {
+        draft = next;
+      },
+    };
+  }
+
+  function renderPromptBox(permission: {
+    pending?: boolean;
+    supported: boolean;
+  }) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <NewThreadPromptBoxUI
+            draft={makeDraftStore()}
+            onSubmit={vi.fn()}
+            isSubmitting={false}
+            disabled={false}
+            history={{ entries: [], onSelectEntry: vi.fn() }}
+            typeahead={testTypeaheadConfig()}
+            attachments={{}}
+            mentionMenuPlacement="top"
+            modeConfig={{
+              environment: {
+                value: "host:host_test:local",
+                sources: [],
+                host,
+                isLocal: true,
+              },
+              worktree: { options: [], value: null, onChange: vi.fn() },
+              permission: {
+                pending: permission.pending,
+                value: "full",
+                options: [],
+                onChange: vi.fn(),
+                supported: permission.supported,
+              },
+            }}
+            execution={{
+              provider: { selectedId: "codex" },
+              model: {
+                selected: "gpt-5",
+                options: [],
+                moreOptions: [],
+                isLoading: false,
+                loadFailed: false,
+                onChange: vi.fn(),
+              },
+              reasoning: {
+                value: "medium",
+                options: [],
+                isLoading: false,
+                onChange: vi.fn(),
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("keeps the compact context row single-line and reserves the permission row height while loading", () => {
+    const { container } = renderPromptBox({ pending: true, supported: true });
+    const footer = container.querySelector("[data-new-thread-footer]");
+    expect(footer).not.toBeNull();
+    const contextRow = footer!.firstElementChild!;
+    const actionsRow = footer!.lastElementChild!;
+
+    expect(contextRow.classList.contains("max-md:flex-nowrap")).toBe(true);
+    expect(contextRow.classList.contains("max-md:flex-wrap")).toBe(false);
+    expect(contextRow.classList.contains("max-md:h-8")).toBe(true);
+    expect(contextRow.classList.contains("max-md:pointer-coarse:h-11")).toBe(
+      true,
+    );
+
+    expect(actionsRow.classList.contains("max-md:min-h-8")).toBe(true);
+    expect(
+      actionsRow.classList.contains("max-md:pointer-coarse:min-h-11"),
+    ).toBe(true);
+  });
+
+  it("does not reserve an empty mobile actions row when neither session options nor permissions apply", () => {
+    const { container } = renderPromptBox({ pending: false, supported: false });
+    const footer = container.querySelector("[data-new-thread-footer]")!;
+    const actionsRow = footer.lastElementChild!;
+
+    expect(actionsRow.classList.contains("max-md:min-h-8")).toBe(false);
+    expect(
+      actionsRow.classList.contains("max-md:pointer-coarse:min-h-11"),
+    ).toBe(false);
   });
 });

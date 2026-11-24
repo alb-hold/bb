@@ -1,22 +1,36 @@
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 
+const INITIAL_TERMINAL_CONNECT_SUFFIX = "/src/lib/initial-terminal-connect.ts";
+
+function matchesModuleSuffix(id: string, suffix: string): boolean {
+  return id.replaceAll("\\", "/").endsWith(suffix);
+}
+
 export function initialThreadPreload(): Plugin {
   let base = "/";
+  let connectorRefId: string | undefined;
+  let connectorFileName: string | undefined;
   return {
     name: "bb:initial-thread-preload",
     apply: "build",
     buildStart() {
-      this.emitFile({
+      connectorFileName = undefined;
+      connectorRefId = this.emitFile({
         type: "chunk",
         id: fileURLToPath(
           new URL("./src/lib/initial-terminal-connect.ts", import.meta.url),
         ),
-        fileName: "assets/initial-terminal-connect.js",
+        name: "initial-terminal-connect",
       });
     },
     configResolved(config) {
       base = config.base;
+    },
+    generateBundle() {
+      if (connectorRefId !== undefined) {
+        connectorFileName = this.getFileName(connectorRefId);
+      }
     },
     transformIndexHtml: {
       order: "post",
@@ -33,9 +47,27 @@ export function initialThreadPreload(): Plugin {
           if (chunk?.type === "chunk")
             chunk.imports.forEach((dep) => visit(dep, files));
         };
+        let connectorFacadeFile: string | undefined;
+        let connectorModuleFile: string | undefined;
         for (const chunk of Object.values(bundle)) {
           if (chunk.type !== "chunk") continue;
           const modules = Object.keys(chunk.modules);
+          if (
+            chunk.facadeModuleId &&
+            matchesModuleSuffix(
+              chunk.facadeModuleId,
+              INITIAL_TERMINAL_CONNECT_SUFFIX,
+            )
+          ) {
+            connectorFacadeFile = chunk.fileName;
+          } else if (
+            connectorModuleFile === undefined &&
+            modules.some((id) =>
+              matchesModuleSuffix(id, INITIAL_TERMINAL_CONNECT_SUFFIX),
+            )
+          ) {
+            connectorModuleFile = chunk.fileName;
+          }
           if (
             modules.some((id) =>
               id.endsWith("/src/views/SplitWorkspaceRoute.tsx"),
@@ -70,6 +102,11 @@ export function initialThreadPreload(): Plugin {
             visit(chunk.fileName, panel);
           }
         }
+        const resolvedConnectorFile =
+          connectorFileName ?? connectorFacadeFile ?? connectorModuleFile;
+        if (resolvedConnectorFile === undefined) {
+          throw new Error("Missing initial terminal connector chunk");
+        }
         const assets = JSON.stringify({
           entries,
           route: [...route].map((file) => `${base}${file}`),
@@ -88,7 +125,7 @@ export function initialThreadPreload(): Plugin {
             attrs: {
               id: "bb-initial-terminal-connect",
             },
-            children: `if(globalThis.__bbInitialNativeTerminalRequest)import(${JSON.stringify(`${base}assets/initial-terminal-connect.js`)})`,
+            children: `if(globalThis.__bbInitialNativeTerminalRequest)import(${JSON.stringify(`${base}${resolvedConnectorFile}`)})`,
             injectTo: "head-prepend",
           },
         ];

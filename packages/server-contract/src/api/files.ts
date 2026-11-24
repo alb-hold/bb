@@ -14,10 +14,13 @@ export const hostFileReadRequestSchema = z
     ref: z.string().min(1).optional(),
   })
   .strict()
-  .refine((request) => request.ref === undefined || request.rootPath !== undefined, {
-    message: "rootPath is required when ref is set",
-    path: ["rootPath"],
-  });
+  .refine(
+    (request) => request.ref === undefined || request.rootPath !== undefined,
+    {
+      message: "rootPath is required when ref is set",
+      path: ["rootPath"],
+    },
+  );
 export type HostFileReadRequest = z.infer<typeof hostFileReadRequestSchema>;
 
 export const hostFileWriteRequestSchema = z
@@ -91,6 +94,7 @@ export const hostRemovePathRequestSchema = z
     path: z.string().min(1),
     rootPath: z.string().min(1).optional(),
     recursive: z.boolean().optional(),
+    temporary: z.boolean().optional(),
   })
   .strict();
 export type HostRemovePathRequest = z.infer<typeof hostRemovePathRequestSchema>;

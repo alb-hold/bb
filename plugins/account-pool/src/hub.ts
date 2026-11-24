@@ -76,6 +76,8 @@ const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
+const TRANSIENT_USAGE_RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000];
+const MIN_USAGE_LOOP_DELAY_MS = 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
 const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000];
 const MAX_REFRESH_BACKOFF_MS = 60_000;
@@ -267,6 +269,10 @@ export class AccountPoolHub {
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
   private readonly usageRefreshes = new Map<string, Promise<boolean>>();
   private readonly lastUsageRefreshAt = new Map<string, number>();
+  private readonly transientUsageRetries = new Map<
+    string,
+    { attempts: number; delayMs: number }
+  >();
   private readonly drainWaiters = new Set<() => void>();
 
   constructor(private readonly options: HubOptions) {}
@@ -290,16 +296,21 @@ export class AccountPoolHub {
     void this.backfillPlanNames();
     try {
       while (!lifecycle.signal.aborted) {
-        await abortable(this.refreshUsage(), lifecycle.signal).catch(
-          (error: unknown) => {
-            if (!lifecycle.signal.aborted) throw error;
-          },
-        );
-        await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, lifecycle.signal);
+        const delayMs = await abortable(
+          this.refreshScheduledUsage(),
+          lifecycle.signal,
+        ).catch((error: unknown) => {
+          if (!lifecycle.signal.aborted) throw error;
+          return DEFAULT_USAGE_REFRESH_INTERVAL_MS;
+        });
+        await waitForDelay(delayMs, lifecycle.signal);
       }
     } finally {
       signal.removeEventListener("abort", stop);
-      if (this.stopped === lifecycle) await this.stop();
+      if (this.stopped === lifecycle) {
+        this.transientUsageRetries.clear();
+        await this.stop();
+      }
     }
   }
 
@@ -770,6 +781,57 @@ export class AccountPoolHub {
     return refreshed.every(Boolean);
   }
 
+  private async refreshScheduledUsage(): Promise<number> {
+    const accounts = (await this.options.accounts.list()).filter(
+      (account) => account.enabled && account.kind === "oauth",
+    );
+    const listed = new Set(accounts.map((account) => account.id));
+    for (const id of [...this.transientUsageRetries.keys()])
+      if (!listed.has(id)) this.transientUsageRetries.delete(id);
+    const before = new Map(
+      accounts.map((account) => [
+        account.id,
+        this.lastUsageRefreshAt.get(account.id),
+      ]),
+    );
+    await Promise.all(
+      accounts.map((account) =>
+        this.refreshAccountUsage(
+          account,
+          this.transientUsageRetries.get(account.id)?.delayMs ??
+            DEFAULT_USAGE_REFRESH_INTERVAL_MS,
+        ),
+      ),
+    );
+    const now = this.options.now();
+    let next = DEFAULT_USAGE_REFRESH_INTERVAL_MS;
+    for (const account of accounts) {
+      const error = this.options.quotas.get(account.id).error;
+      if (
+        error === null ||
+        this.adapter(account.provider).isTransientUsageError?.(error) !== true
+      ) {
+        this.transientUsageRetries.delete(account.id);
+        continue;
+      }
+      const last = this.lastUsageRefreshAt.get(account.id);
+      let retry = this.transientUsageRetries.get(account.id);
+      if (retry === undefined || last !== before.get(account.id)) {
+        const attempts = retry?.attempts ?? 0;
+        retry = {
+          attempts: attempts + 1,
+          delayMs:
+            TRANSIENT_USAGE_RETRY_DELAYS_MS[attempts] ??
+            DEFAULT_USAGE_REFRESH_INTERVAL_MS,
+        };
+        this.transientUsageRetries.set(account.id, retry);
+      }
+      const due = (last ?? now) + retry.delayMs - now;
+      next = Math.min(next, Math.max(MIN_USAGE_LOOP_DELAY_MS, due));
+    }
+    return next;
+  }
+
   private async refreshExhaustedUsage(
     candidateIds: ReadonlySet<string>,
     attempted: ReadonlySet<string>,
@@ -1218,9 +1280,11 @@ export class AccountPoolHub {
           previousAccountId,
           routing,
           signal,
+          parsed.unmetered === true,
         );
         if (
           !usageRefreshed &&
+          parsed.unmetered !== true &&
           (selected === null ||
             isPastThreshold(
               selected.quota,
@@ -1304,6 +1368,20 @@ export class AccountPoolHub {
             this.setError(selected.account.id, errorMessage(error));
           }
           continue;
+        }
+        if (parsed.prepare !== undefined) {
+          try {
+            await abortable(
+              parsed.prepare(selected.account, secret, signal),
+              signal,
+            );
+          } catch (error) {
+            if (pacing !== null) {
+              this.releasePacing(selected.account.id, pacing);
+              pacing = null;
+            }
+            throw error;
+          }
         }
         let authRetried = false;
         let transientRetries = 0;
@@ -1668,6 +1746,7 @@ export class AccountPoolHub {
     previousAccountId: string | null,
     routing: RoutingAttempt,
     signal: AbortSignal,
+    unmetered: boolean,
   ): Promise<SelectedAccount | null> {
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
@@ -1677,10 +1756,27 @@ export class AccountPoolHub {
     const threshold = this.options.getSettings().switchThreshold;
     const available = accounts
       .filter((account) => account.provider === provider && account.enabled)
-      .map((account) => ({
-        account,
-        quota: this.options.quotas.get(account.id),
-      }))
+      .map((account) => {
+        const quota = this.options.quotas.get(account.id);
+        return {
+          account,
+          quota: unmetered
+            ? {
+                ...quota,
+                limitWindows: [],
+                familyWeekly: {
+                  fable: null,
+                  sonnet: null,
+                  opus: null,
+                  haiku: null,
+                  other: null,
+                },
+                usageRestriction: null,
+                heldUntil: null,
+              }
+            : quota,
+        };
+      })
       .filter(
         ({ quota }) => quota.error === null && !isUsageRestricted(quota, now),
       )
@@ -2388,7 +2484,8 @@ export function createHub(options: {
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
-  onGeminiModels?: (accountId: string, ids: readonly string[]) => void;
+  onGeminiModels?: (accountId: string, ids: readonly string[], servedIds: readonly string[]) => void;
+  geminiSavedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2419,6 +2516,7 @@ export function createHub(options: {
           options.geminiUpstreamBaseUrls ?? DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
         importCredentials: options.importGeminiCredentials,
         onModels: options.onGeminiModels,
+        savedModels: options.geminiSavedModels,
         runtimeUserAgent:
           options.geminiRuntimeUserAgent ??
           (() =>

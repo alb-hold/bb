@@ -364,7 +364,7 @@ function MachineAccessStatus({
             className={
               setup
                 ? "shrink-0"
-                : "h-7 shrink-0 px-3 font-normal text-subtle-foreground/75 no-underline hover:text-subtle-foreground hover:no-underline"
+                : "h-7 shrink-0 px-3 font-normal text-subtle-foreground no-underline hover:text-subtle-foreground hover:no-underline"
             }
             asChild
           >

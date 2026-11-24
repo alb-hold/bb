@@ -46,7 +46,7 @@ export function SidebarChildToggleChevron({
       }}
       className={cn(
         revealOnHover ? SIDEBAR_HOVER_ACTIONS_CLASS : "pointer-events-auto",
-        "relative z-10 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none ring-sidebar-ring focus-visible:ring-2",
+        "relative z-10 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none ring-sidebar-ring focus-visible:ring-2",
         COARSE_POINTER_CHILD_TOGGLE_HIT_AREA_CLASS,
         SIDEBAR_CONTROL_STATE_CLASS,
         LIST_HOVER_TRANSITION,

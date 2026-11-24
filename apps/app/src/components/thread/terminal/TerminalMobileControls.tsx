@@ -16,6 +16,7 @@ interface TerminalMobileControlsProps {
   controlActive: boolean;
   disabled: boolean;
   readOnlyDisabled?: boolean;
+  typingKeys?: boolean;
   onArrow: (key: TerminalNavigationKey) => void;
   onControlChange: (active: boolean) => void;
   onInput: (data: string) => void;
@@ -75,6 +76,7 @@ export function TerminalMobileControls({
   controlActive,
   disabled,
   readOnlyDisabled = disabled,
+  typingKeys = true,
   onArrow,
   onControlChange,
   onInput,
@@ -104,6 +106,7 @@ export function TerminalMobileControls({
     setSecondaryKeysInline(width >= (searchAvailable ? 588 : 540));
   }, [searchAvailable]);
   useLayoutEffect(() => {
+    if (!typingKeys) return;
     updateOverflow();
     const scroller = scrollerRef.current;
     if (!scroller) return;
@@ -112,7 +115,7 @@ export function TerminalMobileControls({
       controls ? [scroller, controls] : [scroller],
       { read: () => undefined, write: updateOverflow },
     );
-  }, [updateOverflow]);
+  }, [typingKeys, updateOverflow]);
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };
   const readOnlyExited = disabled && !readOnlyDisabled;
@@ -219,6 +222,57 @@ export function TerminalMobileControls({
       />
     </Key>
   );
+  if (!typingKeys) {
+    return (
+      <div
+        role="group"
+        aria-label="Terminal keyboard controls"
+        data-terminal-mobile-controls=""
+        ref={controlsRef}
+        className={cn(
+          "shrink-0 border-t border-border/50 bg-sidebar px-2 pt-0 pb-1",
+          className,
+        )}
+      >
+        <div className="flex flex-wrap gap-1 pt-1.5">
+          {searchAvailable ? (
+            <Key
+              {...readOnlyKeyProps}
+              label="Search terminal output"
+              onPress={onSearch}
+            >
+              <Icon name="Search" className="size-4" />
+            </Key>
+          ) : null}
+          {onPreviousPrompt ? (
+            <Key
+              {...readOnlyKeyProps}
+              label="Previous prompt"
+              onPress={onPreviousPrompt}
+            >
+              ↑ Prompt
+            </Key>
+          ) : null}
+          {onNextPrompt ? (
+            <Key
+              {...readOnlyKeyProps}
+              label="Next prompt"
+              onPress={onNextPrompt}
+            >
+              ↓ Prompt
+            </Key>
+          ) : null}
+          <Key
+            {...readOnlyKeyProps}
+            label="Select terminal text"
+            onPress={onSelectText}
+          >
+            Select
+          </Key>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       role="group"

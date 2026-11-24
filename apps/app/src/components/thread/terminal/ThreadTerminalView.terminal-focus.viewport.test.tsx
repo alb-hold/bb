@@ -509,13 +509,21 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         name: "Terminal keyboard controls",
       });
       expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
-      expect(
-        screen.getByRole<HTMLButtonElement>("button", {
-          name: "Escape",
-        }).disabled,
-      ).toBe(true);
+      expect(controls.children).toHaveLength(1);
       if (status === "exited") {
-        expect(controls.children).toHaveLength(4);
+        for (const name of [
+          "Interrupt (Control C)",
+          "Escape",
+          "Tab",
+          "Enter",
+          "Control for next key",
+          "Arrow left",
+          "Arrow right",
+          "Arrow up",
+          "More terminal keys",
+        ]) {
+          expect(screen.queryByRole("button", { name })).toBeNull();
+        }
         for (const name of [
           "Previous prompt",
           "Next prompt",
@@ -526,7 +534,11 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
           ).toBe(false);
         }
       } else {
-        expect(controls.children).toHaveLength(1);
+        expect(
+          screen.getByRole<HTMLButtonElement>("button", {
+            name: "Escape",
+          }).disabled,
+        ).toBe(true);
         for (const name of [
           "Previous prompt",
           "Next prompt",

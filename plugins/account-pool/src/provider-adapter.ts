@@ -111,7 +111,13 @@ export interface ProviderAdapter {
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
+    prepare?: (
+      account: Account,
+      secret: AccountSecret,
+      signal: AbortSignal,
+    ) => Promise<void>;
     upstreamMethod?: string;
+    unmetered?: boolean;
   };
   refuseClient?(headers: Headers): string | null;
   transformResponse?(
@@ -148,6 +154,7 @@ export interface ProviderAdapter {
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
   refreshUsage(context: AdapterUsageContext): Promise<void>;
+  isTransientUsageError?(error: string): boolean;
   refreshProfile?(context: AdapterUsageContext): Promise<void>;
   errorResponse(
     status: number,
