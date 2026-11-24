@@ -111,6 +111,11 @@ export interface ProviderAdapter {
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;
+    prepare?: (
+      account: Account,
+      secret: AccountSecret,
+      signal: AbortSignal,
+    ) => Promise<void>;
     upstreamMethod?: string;
     unmetered?: boolean;
   };

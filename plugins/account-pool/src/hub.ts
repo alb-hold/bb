@@ -1307,6 +1307,20 @@ export class AccountPoolHub {
           }
           continue;
         }
+        if (parsed.prepare !== undefined) {
+          try {
+            await abortable(
+              parsed.prepare(selected.account, secret, signal),
+              signal,
+            );
+          } catch (error) {
+            if (pacing !== null) {
+              this.releasePacing(selected.account.id, pacing);
+              pacing = null;
+            }
+            throw error;
+          }
+        }
         let authRetried = false;
         let transientRetries = 0;
         let paced = waited.has(selected.account.id);

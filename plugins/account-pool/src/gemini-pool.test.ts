@@ -881,6 +881,8 @@ async function startGoogle(args: {
   extraBuckets?: unknown[];
   groups?: unknown[];
   models?: unknown;
+  rejectUnservedModels?: boolean;
+  modelListFails?: () => boolean;
   stream: StreamBehavior;
 }): Promise<{ url: string; calls: UpstreamCall[]; close: () => Promise<void> }> {
   const calls: UpstreamCall[] = [];
@@ -977,9 +979,28 @@ async function startGoogle(args: {
             ],
             ...(args.groups === undefined ? {} : { groups: args.groups }),
           });
-        else if (method === "fetchAvailableModels")
-          send(200, args.models ?? MODELS_PAYLOAD);
-        else if (method === "streamGenerateContent" || method === "generateContent") {
+        else if (method === "fetchAvailableModels") {
+          if (args.modelListFails?.() === true)
+            send(503, { error: { code: 503, status: "UNAVAILABLE" } });
+          else send(200, args.models ?? MODELS_PAYLOAD);
+        } else if (method === "streamGenerateContent" || method === "generateContent") {
+          const served = Object.keys(
+            ((args.models ?? MODELS_PAYLOAD) as { models: Record<string, unknown> })
+              .models,
+          );
+          if (
+            args.rejectUnservedModels === true &&
+            !served.includes(String(body.model))
+          ) {
+            send(400, {
+              error: {
+                code: 400,
+                message: `Model '${String(body.model)}' is not available for the current authentication method.`,
+                status: "INVALID_ARGUMENT",
+              },
+            });
+            return;
+          }
           const outcome = args.stream(bearer);
           if (outcome.status !== 200 || method === "generateContent") {
             send(outcome.status, outcome.body, outcome.headers);
@@ -1077,6 +1098,7 @@ async function createGeminiFixture(
     loginTimeoutMs?: number;
     loginStartupTimeoutMs?: number;
     runtimeGate?: Promise<void>;
+    now?: () => number;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
@@ -1124,6 +1146,7 @@ async function createGeminiFixture(
   for (const [key, value] of Object.entries(options.kv ?? {}))
     await host.bb.storage.kv.set(key, value);
   await createAccountPoolPlugin({
+    ...(options.now === undefined ? {} : { now: options.now }),
     usageUrl: "data:application/json,{}",
     codexRefreshUrl: `${google.url}/oauth`,
     codexUsageUrl: `${google.url}/usage`,
@@ -2030,6 +2053,12 @@ describe("Gemini account pool", () => {
           supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
         },
         {
+          name: "models/gemini-4-carbon",
+          displayName: "Gemini 4 Carbon",
+          inputTokenLimit: 1048576,
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
           name: "models/gemini-4-carbon-high",
           displayName: "Gemini 4 Carbon (High)",
           inputTokenLimit: 1048576,
@@ -2050,6 +2079,7 @@ describe("Gemini account pool", () => {
       object: "list",
       data: [
         { id: "gemini-orchestrator", object: "model" },
+        { id: "gemini-4-carbon", object: "model" },
         { id: "gemini-4-carbon-high", object: "model" },
         { id: "gemini-3.8-flash", object: "model" },
       ],
@@ -2073,7 +2103,7 @@ describe("Gemini account pool", () => {
     ).text();
     await vi.waitFor(async () => {
       expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
-        [ids.a]: ["gemini-orchestrator", "gemini-4-carbon-high", "gemini-3.8-flash"],
+        [ids.a]: ["gemini-orchestrator", "gemini-4-carbon", "gemini-4-carbon-high", "gemini-3.8-flash"],
       });
     });
 
@@ -2507,6 +2537,238 @@ describe("Gemini account pool", () => {
       ).toEqual(["catalog", THREAD].sort());
     });
     await expect(fs.stat(env.home)).resolves.toBeTruthy();
+  });
+});
+
+describe("Gemini bare family ids through the pool", () => {
+  const NEON_MODELS = {
+    models: {
+      "gemini-4-neon-low": { displayName: "Gemini 4 Neon (Low)", maxTokens: 1000 },
+      "gemini-4-neon-medium": { displayName: "Gemini 4 Neon (Medium)", maxTokens: 2000 },
+      "gemini-4-neon-high": { displayName: "Gemini 4 Neon (High)", maxTokens: 3000 },
+      "gemini-4-neon-xhigh": { displayName: "Gemini 4 Neon (XHigh)", maxTokens: 4000 },
+      "gemini-3.8-flash": { displayName: "Gemini 3.8 Flash" },
+      "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)" },
+    },
+  };
+
+  function servedOnly(ids: string[]) {
+    return {
+      models: Object.fromEntries(ids.map((id) => [id, { displayName: id }])),
+    };
+  }
+
+  async function pooled(
+    models: unknown,
+    options: {
+      accounts?: string[];
+      exhausted?: string[];
+      modelListFails?: () => boolean;
+      now?: () => number;
+    } = {},
+  ) {
+    const tokens = options.accounts ?? ["tok-a"];
+    const google = await startGoogle({
+      projects: Object.fromEntries(
+        tokens.map((token) => [token, `proj-${token.slice(4)}`]),
+      ),
+      quotaFraction: Object.fromEntries(
+        (options.exhausted ?? []).map((token) => [token, 0]),
+      ),
+      models,
+      rejectUnservedModels: true,
+      ...(options.modelListFails === undefined
+        ? {}
+        : { modelListFails: options.modelListFails }),
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      Object.fromEntries(tokens.map((token) => [`/homes/${token}`, creds(token)])),
+      options.now === undefined ? {} : { now: options.now },
+    );
+    const ids: string[] = [];
+    for (const [index, token] of tokens.entries())
+      ids.push((await addGemini(fixture.host, `/homes/${token}`, index * 100)).id);
+    for (const [index, token] of tokens.entries())
+      if ((options.exhausted ?? []).includes(token))
+        await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+          accountId: ids[index],
+        });
+    const env = await geminiEnv(fixture.host);
+    const list = async (route = "/gemini/v1beta/models") => {
+      const response = await runtimeCall(fixture.host, env.token, {
+        method: "GET",
+        path: route,
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as unknown;
+    };
+    const turn = (model: string, body: unknown = { contents: [], sessionId: "s" }) =>
+      runtimeCall(fixture.host, env.token, {
+        path: `/gemini/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+        body,
+      });
+    const sent = () =>
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => call.body as { model: string; project: string; request: unknown });
+    const modelLists = () =>
+      google.calls
+        .filter((call) => call.method === "fetchAvailableModels")
+        .map((call) => call.bearer);
+    return { google, fixture, env, list, turn, sent, modelLists };
+  }
+
+  it("advertises each bare family id the account serves only with effort suffixes, in both shapes", async () => {
+    const { list } = await pooled(NEON_MODELS);
+    expect(await list()).toEqual({
+      models: [
+        {
+          name: "models/gemini-4-neon",
+          displayName: "Gemini 4 Neon",
+          inputTokenLimit: 2000,
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        ...[
+          ["gemini-4-neon-low", "Gemini 4 Neon (Low)", 1000],
+          ["gemini-4-neon-medium", "Gemini 4 Neon (Medium)", 2000],
+          ["gemini-4-neon-high", "Gemini 4 Neon (High)", 3000],
+          ["gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)", 4000],
+        ].map(([id, displayName, limit]) => ({
+          name: `models/${id}`,
+          displayName,
+          inputTokenLimit: limit,
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        })),
+        {
+          name: "models/gemini-3.8-flash",
+          displayName: "Gemini 3.8 Flash",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
+          name: "models/gemini-3.8-flash-high",
+          displayName: "Gemini 3.8 Flash (High)",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+      ],
+    });
+    expect(await list("/gemini/v1/models")).toEqual({
+      object: "list",
+      data: [
+        "gemini-4-neon",
+        "gemini-4-neon-low",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-high",
+        "gemini-4-neon-xhigh",
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-high",
+      ].map((id) => ({ id, object: "model" })),
+    });
+  });
+
+  it("runs a bare gemini-4-neon turn on an account that serves only suffixed ids, as gemini-4-neon-medium", async () => {
+    const { list, turn, sent } = await pooled(NEON_MODELS);
+    await list();
+    const body = {
+      contents: [],
+      sessionId: "s-neon",
+      generationConfig: { thinkingConfig: { thinkingLevel: "high" } },
+    };
+    const response = await turn("gemini-4-neon", body);
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(sent()).toEqual([
+      { model: "gemini-4-neon-medium", project: "proj-a", request: body },
+    ]);
+  });
+
+  it("falls back to the first served variant in the order medium, high, low, xhigh", async () => {
+    for (const [served, expected] of [
+      [["gemini-4-neon-low", "gemini-4-neon-high", "gemini-4-neon-xhigh"], "gemini-4-neon-high"],
+      [["gemini-4-neon-xhigh", "gemini-4-neon-low"], "gemini-4-neon-low"],
+      [["gemini-4-neon-xhigh"], "gemini-4-neon-xhigh"],
+    ] as const) {
+      const { list, turn, sent } = await pooled(servedOnly([...served]));
+      await list();
+      const response = await turn("gemini-4-neon");
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(sent().map((call) => call.model)).toEqual([expected]);
+    }
+  });
+
+  it("passes an id the account serves through unchanged, bare or suffixed", async () => {
+    const { list, turn, sent } = await pooled(NEON_MODELS);
+    await list();
+    for (const model of ["gemini-4-neon-low", "gemini-3.8-flash", "gemini-3.8-flash-high"]) {
+      const response = await turn(model);
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(sent().map((call) => call.model)).toEqual([
+      "gemini-4-neon-low",
+      "gemini-3.8-flash",
+      "gemini-3.8-flash-high",
+    ]);
+  });
+
+  it("still returns Google's not-available error for a family the account does not serve", async () => {
+    const { list, turn, sent, modelLists } = await pooled(NEON_MODELS);
+    await list();
+    const listed = modelLists().length;
+    const response = await turn("gemini-3.1-pro-preview");
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain(
+      "Model 'gemini-3.1-pro-preview' is not available for the current authentication method.",
+    );
+    expect(sent().map((call) => call.model)).toEqual(["gemini-3.1-pro-preview"]);
+    expect(modelLists()).toHaveLength(listed);
+  });
+
+  it("reads the served ids of an account that never answered a model list before resolving on it", async () => {
+    const { list, turn, sent, modelLists } = await pooled(NEON_MODELS, {
+      accounts: ["tok-a", "tok-b"],
+      exhausted: ["tok-a"],
+    });
+    await list();
+    expect(modelLists()).toEqual(["tok-a"]);
+    const response = await turn("gemini-4-neon");
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(modelLists()).toEqual(["tok-a", "tok-b"]);
+    expect(sent()).toEqual([
+      {
+        model: "gemini-4-neon-medium",
+        project: "proj-b",
+        request: { contents: [], sessionId: "s" },
+      },
+    ]);
+  });
+
+  it("refreshes a served-id set past its ten minutes, and keeps resolving on the old set when that refresh fails", async () => {
+    let clock = Date.now();
+    let failList = false;
+    const { list, turn, sent, modelLists } = await pooled(NEON_MODELS, {
+      now: () => clock,
+      modelListFails: () => failList,
+    });
+    await list();
+    const first = await turn("gemini-4-neon");
+    expect(first.status).toBe(200);
+    await first.text();
+    expect(modelLists()).toHaveLength(1);
+    clock += 11 * 60 * 1_000;
+    failList = true;
+    const second = await turn("gemini-4-neon");
+    expect(second.status).toBe(200);
+    await second.text();
+    expect(modelLists()).toHaveLength(2);
+    expect(sent().map((call) => call.model)).toEqual([
+      "gemini-4-neon-medium",
+      "gemini-4-neon-medium",
+    ]);
   });
 });
 
