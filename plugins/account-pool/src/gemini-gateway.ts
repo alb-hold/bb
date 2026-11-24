@@ -220,7 +220,7 @@ export function unwrapSse(
   });
 }
 
-interface CodeAssistModel {
+export interface CodeAssistModel {
   id: string;
   displayName: string;
   maxTokens: number | null;
@@ -261,13 +261,72 @@ export function codeAssistModels(payload: unknown): CodeAssistModel[] {
   });
 }
 
+const EFFORT_ORDER = ["medium", "high", "low", "xhigh"] as const;
+const EFFORT_SUFFIX = /-(?:low|medium|high|xhigh)$/u;
+const EFFORT_LABEL =
+  /\s*(?:\((?:low|medium|high|xhigh)\)|(?:low|medium|high|xhigh))\s*$/iu;
+
+export function servedFamilyVariant(
+  id: string,
+  served: ReadonlySet<string>,
+): string | null {
+  if (served.has(id)) return id;
+  for (const effort of EFFORT_ORDER)
+    if (served.has(`${id}-${effort}`)) return `${id}-${effort}`;
+  return null;
+}
+
+export function isServedFamily(
+  id: string,
+  served: ReadonlySet<string>,
+): boolean {
+  return EFFORT_ORDER.some((effort) => served.has(`${id}-${effort}`));
+}
+
+export function advertisedModels(
+  models: readonly CodeAssistModel[],
+): CodeAssistModel[] {
+  const served = new Set(models.map((model) => model.id));
+  const byId = new Map(models.map((model) => [model.id, model] as const));
+  const aliased = new Set<string>();
+  return models.flatMap((model) => {
+    const family = model.id.replace(EFFORT_SUFFIX, "");
+    if (family === model.id || served.has(family) || aliased.has(family))
+      return [model];
+    aliased.add(family);
+    const variant =
+      byId.get(servedFamilyVariant(family, served) ?? model.id) ?? model;
+    const label = variant.displayName.replace(EFFORT_LABEL, "");
+    return [
+      {
+        id: family,
+        displayName:
+          label === variant.displayName || label === "" ? family : label,
+        maxTokens: variant.maxTokens,
+      },
+      model,
+    ];
+  });
+}
+
+export function hasCodeAssistModelList(payload: unknown): boolean {
+  const root = record(payload);
+  if (root === null) return false;
+  return !("models" in root) || record(root.models) !== null;
+}
+
 export function modelListResponse(
   api: "v1beta" | "v1",
-  onModels: (ids: string[]) => void,
+  onModels: (served: string[], advertised: string[]) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
   return bufferedJson((payload) => {
-    const models = codeAssistModels(payload);
-    onModels(models.map((model) => model.id));
+    const served = codeAssistModels(payload);
+    const models = advertisedModels(served);
+    if (hasCodeAssistModelList(payload))
+      onModels(
+        served.map((model) => model.id),
+        models.map((model) => model.id),
+      );
     if (api === "v1")
       return {
         object: "list",

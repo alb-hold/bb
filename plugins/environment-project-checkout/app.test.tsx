@@ -78,6 +78,26 @@ describe("checkout inputs control", () => {
     ).toContain("Current (main)");
   });
 
+  it("marks the checkout branch trigger as shrinkable in compact promptboxes", () => {
+    const slot = renderSlot(
+      inputsSlot(),
+      {
+        projectId: "project-1",
+        target: { kind: "existing-host", hostId: "host-a" },
+        value: null,
+        onChange: vi.fn(),
+      },
+      {
+        checkoutState: { isGit: null, currentBranch: null },
+      },
+    );
+    const trigger = slot.getByRole("combobox", { name: "Branch" });
+    expect(trigger.textContent).toContain("Checking checkout");
+    expect(trigger.hasAttribute("data-promptbox-shrinkable-control")).toBe(
+      true,
+    );
+  });
+
   it("renders an existing branch pick on the chip", () => {
     const slot = renderSlot(inputsSlot(), {
       projectId: "project-1",

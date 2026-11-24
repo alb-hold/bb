@@ -227,6 +227,8 @@ const TERMINAL_UNICODE_VERSION = "11";
 export const TERMINAL_ALLOW_PROPOSED_API = true;
 const TERMINAL_TOUCH_FOCUS_MAX_DURATION_MS = 700;
 const TERMINAL_TOUCH_FOCUS_MOVEMENT_THRESHOLD_PX = 10;
+export const TERMINAL_SCROLLBACK = 10_000;
+export const TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK = TERMINAL_SCROLLBACK * 5;
 
 async function withAsyncFinally<T>(
   action: () => Promise<T>,
@@ -947,8 +949,7 @@ export async function writeRetainedTerminalOutput({
   onOutputStart?: (sequence: number) => void;
   onOutputParsed?: (sequence: number) => void;
 }): Promise<void> {
-  const readBuffer = () => {
-    const buffer = terminal.buffer.active;
+  const readBuffer = (buffer = terminal.buffer.active) => {
     const lines = Array.from(
       { length: buffer.length },
       (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
@@ -988,8 +989,27 @@ export async function writeRetainedTerminalOutput({
     writeChunk(0);
   });
   alternateExit?.dispose();
-  if (alternateFrame !== null) {
-    const primaryFrame = readBuffer();
+  if (retainNativeOutput && terminal.buffer.active.type === "alternate") {
+    const primaryFrame = readBuffer(terminal.buffer.normal);
+    const frame = readBuffer(terminal.buffer.alternate);
+    const combinedLines =
+      terminal.buffer.normal.length + terminal.buffer.alternate.length + 4;
+    const currentScrollback =
+      terminal.options.scrollback ?? TERMINAL_SCROLLBACK;
+    if (
+      combinedLines > currentScrollback &&
+      combinedLines <= TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK
+    ) {
+      terminal.options.scrollback = combinedLines;
+    }
+    terminal.reset();
+    const combined =
+      primaryFrame.length > 0
+        ? `${primaryFrame}\r\n${frame}\r\n`
+        : `${frame}\r\n`;
+    await new Promise<void>((resolve) => terminal.write(combined, resolve));
+  } else if (alternateFrame !== null) {
+    const primaryFrame = readBuffer(terminal.buffer.normal);
     terminal.reset();
     await new Promise<void>((resolve) =>
       terminal.write(`${alternateFrame}\r\n${primaryFrame}\r\n`, resolve),
@@ -997,6 +1017,27 @@ export async function writeRetainedTerminalOutput({
   }
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
+}
+
+export function prepareRetainedTerminalReflow(
+  terminal: Pick<XTermTerminal, "cols" | "rows" | "buffer" | "options">,
+  target: TerminalGridSize,
+  maxScrollback = TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK,
+): boolean {
+  if (terminal.cols === target.cols && terminal.rows === target.rows) {
+    return true;
+  }
+  const currentScrollback = terminal.options.scrollback ?? TERMINAL_SCROLLBACK;
+  const expansion = Math.max(1, Math.ceil(terminal.cols / target.cols));
+  const requiredScrollback =
+    terminal.buffer.active.length * expansion + target.rows;
+  if (requiredScrollback > maxScrollback) {
+    return false;
+  }
+  if (requiredScrollback > currentScrollback) {
+    terminal.options.scrollback = requiredScrollback;
+  }
+  return true;
 }
 
 export function applyTerminalGridBeforeViewportRestore({
@@ -1404,6 +1445,8 @@ export function ThreadTerminalView({
   const clearAttentionOnInputRef = useRef(clearAttentionOnInput);
   const claimSizeRef = useRef<(() => void) | null>(null);
   const [showFitControl, setShowFitControl] = useState(false);
+  const [retainedOutputHorizontalScroll, setRetainedOutputHorizontalScroll] =
+    useState(false);
   const [truncatedSessionId, setTruncatedSessionId] = useState<string | null>(null);
   const [terminalReady, setTerminalReady] = useState(false);
   const [scrolledAboveBottom, setScrolledAboveBottom] = useState(false);
@@ -1521,6 +1564,7 @@ export function ThreadTerminalView({
     });
   }, [session.id]);
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const invalidateFitRef = useRef<(() => void) | null>(null);
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
@@ -1887,6 +1931,7 @@ export function ThreadTerminalView({
     const holdForFittedGrid =
       container.closest("[data-native-terminal-thread]") !== null;
     setRestoringSession(sessionStatusRef.current === "running");
+    setRetainedOutputHorizontalScroll(false);
 
     container.style.containerType = "inline-size";
 
@@ -1933,6 +1978,7 @@ export function ThreadTerminalView({
       replayCheckpointSequence: null as number | null,
       replayRevealGeneration: 0,
       retainedOutputGrid: null as TerminalGridSize | null,
+      retainedOutputHorizontalScroll: false,
       latestPtyGrid: {
         cols: sessionRef.current.cols,
         rows: sessionRef.current.rows,
@@ -2309,9 +2355,9 @@ export function ThreadTerminalView({
           containerElement.style.opacity = "0";
         const scrollRetainedOutput =
           !needsFittedGrid() &&
-          (lifecycle.retainedOutputGrid !== null
-            ? getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
-            : presentation.panHorizontally);
+          (lifecycle.retainedOutputGrid === null
+            ? presentation.panHorizontally
+            : lifecycle.retainedOutputHorizontalScroll);
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.touchAction = scrollRetainedOutput
@@ -2322,7 +2368,9 @@ export function ThreadTerminalView({
           applyTerminalSurfaceScale(
             lifecycle.terminal.element,
             scale,
-            !scrollRetainedOutput && !needsFittedGrid(),
+            !scrollRetainedOutput &&
+              !needsFittedGrid() &&
+              lifecycle.retainedOutputGrid === null,
           );
         }
         const rendererWidth =
@@ -2395,7 +2443,7 @@ export function ThreadTerminalView({
         disableStdin: sessionRef.current.status === "exited",
         ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
-        scrollback: 10_000,
+        scrollback: TERMINAL_SCROLLBACK,
         theme: buildTerminalTheme(),
       });
       lifecycle.terminalProgressDisposable = lifecycle.terminal.parser.registerOscHandler(
@@ -2412,6 +2460,9 @@ export function ThreadTerminalView({
         },
       );
       lifecycle.terminalRenderSubscription = lifecycle.terminal.onRender(() => {
+        if (containerElement.style.opacity === "0") {
+          updateGridVisibility();
+        }
         if (
           document.visibilityState === "visible" &&
           lifecycle.containerHasSize &&
@@ -2943,11 +2994,27 @@ export function ThreadTerminalView({
               );
             if (retainNativeOutput && sessionStatusRef.current === "exited") {
               if (lifecycle.retainedOutputReplayed) {
-                lifecycle.retainedOutputGrid = lifecycle.latestPtyGrid;
-                activeTerminal.resize(
-                  lifecycle.retainedOutputGrid.cols,
-                  lifecycle.retainedOutputGrid.rows,
-                );
+                if (prepareRetainedTerminalReflow(activeTerminal, fitted)) {
+                  lifecycle.retainedOutputHorizontalScroll = false;
+                  setRetainedOutputHorizontalScroll(false);
+                  lifecycle.retainedOutputGrid = {
+                    cols: fitted.cols,
+                    rows: fitted.rows,
+                  };
+                  if (
+                    activeTerminal.cols !== fitted.cols ||
+                    activeTerminal.rows !== fitted.rows
+                  ) {
+                    activeTerminal.resize(fitted.cols, fitted.rows);
+                  }
+                } else {
+                  lifecycle.retainedOutputHorizontalScroll = true;
+                  setRetainedOutputHorizontalScroll(true);
+                  lifecycle.retainedOutputGrid = {
+                    cols: activeTerminal.cols,
+                    rows: activeTerminal.rows,
+                  };
+                }
               }
               updateGridVisibility();
               return true;
@@ -3051,6 +3118,7 @@ export function ThreadTerminalView({
         });
       }
       scheduleFitRef.current = scheduleFit;
+      invalidateFitRef.current = () => fitWork.invalidate();
       lifecycle.unobserveContainerResize = observeSharedResize(containerElement, {
         read: (entry) => {
           const entries = entry === undefined ? [] : [entry];
@@ -3225,6 +3293,10 @@ export function ThreadTerminalView({
           lifecycle.processExitedSeen = true;
           sessionStatusRef.current = "exited";
           activeTerminal.options.disableStdin = true;
+          if (retainNativeOutput) {
+            fitWork.invalidate();
+            scheduleFit();
+          }
         }
         if (message.type === "error") {
           if (
@@ -3896,6 +3968,18 @@ export function ThreadTerminalView({
               pendingExitNotices.length = 0;
               lifecycle.retainedReplayFailed = false;
             }
+            if (
+              retainNativeOutput &&
+              lifecycle.latestPtyGrid.cols > 0 &&
+              lifecycle.latestPtyGrid.rows > 0 &&
+              (activeTerminal.cols !== lifecycle.latestPtyGrid.cols ||
+                activeTerminal.rows !== lifecycle.latestPtyGrid.rows)
+            ) {
+              activeTerminal.resize(
+                lifecycle.latestPtyGrid.cols,
+                lifecycle.latestPtyGrid.rows,
+              );
+            }
             await writeRetainedTerminalOutput({
               chunks: output.chunks.map((chunk) => ({
                 seq: chunk.seq,
@@ -4176,6 +4260,7 @@ export function ThreadTerminalView({
       disposeTerminalWithRenderer(lifecycle.terminal, lifecycle.webglRenderer);
       terminalRef.current = null;
       scheduleFitRef.current = null;
+      invalidateFitRef.current = null;
       if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {
         terminalVisibilityReporterRef.current = null;
       }
@@ -4239,6 +4324,9 @@ export function ThreadTerminalView({
     if (!terminal) {
       return;
     }
+    if (session.status === "exited" && retainNativeOutput) {
+      invalidateFitRef.current?.();
+    }
     scheduleFitRef.current?.();
     if (session.status === "exited") {
       return;
@@ -4248,7 +4336,7 @@ export function ThreadTerminalView({
       session,
       terminal,
     });
-  }, [session]);
+  }, [retainNativeOutput, session]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -4530,7 +4618,7 @@ export function ThreadTerminalView({
           <TerminalAttentionPane
             attention={session.attention}
             bannerOnly={attentionShownAsBanner}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || retainedOutputHorizontalScroll ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);
@@ -4675,6 +4763,7 @@ export function ThreadTerminalView({
             !terminalReady ||
             (session.status !== "running" && session.status !== "exited")
           }
+          typingKeys={session.status !== "exited"}
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();

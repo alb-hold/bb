@@ -9,6 +9,11 @@ import type { CommandOf } from "../command-dispatch-support.js";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 import { resolveWriteTarget } from "./file-write.js";
+import {
+  processDoubtsIgnorableForRemoval,
+  temporaryTargetOnAnotherMount,
+  type TemporaryRemovalContext,
+} from "./temporary-removal.js";
 
 function assertAbsolute(value: string, field: string): void {
   if (!path.isAbsolute(value)) {
@@ -261,8 +266,24 @@ export async function moveHostPath(
 
 export async function removeHostPath(
   command: CommandOf<"host.remove_path">,
+  context: TemporaryRemovalContext,
 ): Promise<HostDaemonOnlineRpcResult<"host.remove_path">> {
   refuseOnWindows(`remove ${command.path}`);
+  if (command.temporaryRemoval !== undefined && path.isAbsolute(command.path)) {
+    const mountCheck = await temporaryTargetOnAnotherMount(command.path);
+    if (mountCheck === null) {
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to remove ${command.path}: filesystem mount state could not be established, so it was not touched.`,
+      );
+    }
+    if (mountCheck) {
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to remove ${command.path}: it is on a different filesystem mount than the temporary directory, so it was not touched.`,
+      );
+    }
+  }
   const { target, root } = await requireExistingWithin(
     command.path,
     command.rootPath,
@@ -279,6 +300,11 @@ export async function removeHostPath(
       directory: target,
       action: "remove",
       recursive: command.recursive,
+      ignoreProcessDoubts: await processDoubtsIgnorableForRemoval(
+        target,
+        context,
+        command.temporaryRemoval?.protectedPaths,
+      ),
     });
   } else {
     await fs.rm(target, { recursive: command.recursive, force: false });

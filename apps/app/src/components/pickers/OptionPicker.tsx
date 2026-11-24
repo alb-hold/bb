@@ -14,6 +14,12 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@bb/shared-ui/tooltip";
 import type { ComponentType, ReactElement, ReactNode } from "react";
 import { OptionPickerItems } from "./OptionPickerItemsSplit";
 
@@ -37,6 +43,7 @@ interface OptionPickerProps<T extends string> {
   iconOnly?: boolean;
   notice?: ReactNode;
   leading?: ReactNode;
+  tooltip?: ReactNode;
   value?: T;
   options: readonly PickerOption<T>[];
   onChange: (value: T) => void;
@@ -63,6 +70,7 @@ export function OptionPicker<T extends string>({
   iconOnly = false,
   notice,
   leading,
+  tooltip,
   value,
   options,
   onChange,
@@ -144,14 +152,37 @@ export function OptionPicker<T extends string>({
   );
 
   if (disabled) {
-    return trigger;
+    if (!tooltip) {
+      return trigger;
+    }
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent>{tooltip}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
   }
+
+  const menuTrigger = (
+    <DropdownMenuTrigger asChild {...OptionPickerItems.intentProps}>
+      {trigger}
+    </DropdownMenuTrigger>
+  );
 
   return (
     <DropdownMenu defaultOpen={defaultOpen} modal={modal}>
-      <DropdownMenuTrigger asChild {...OptionPickerItems.intentProps}>
-        {trigger}
-      </DropdownMenuTrigger>
+      {tooltip ? (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>{menuTrigger}</TooltipTrigger>
+            <TooltipContent>{tooltip}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        menuTrigger
+      )}
       <DropdownMenuContent
         align={align}
         className={cn(OPTION_MENU_CONTENT_CLASS_NAME, contentClassName)}

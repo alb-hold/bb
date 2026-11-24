@@ -190,33 +190,36 @@ vi.mock("@/hooks/useQuickCreateProject", () => ({
   }),
 }));
 
-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
-  useSidebarNavigationPreview: () => undefined,
-  useSidebarNavigationPaging: () => ({
-    hasNextPage: false,
-    isFetchingNextPage: false,
-    isFetchNextPageError: false,
-    fetchNextPage: async () => undefined,
-  }),
-  useSidebarNavigation: () => ({
-    data: {
-      sections: [],
-      personalProject: {
-        id: "proj_personal",
-        kind: "personal",
-        name: "Personal",
-        sources: [],
-        threads: [],
-        defaultExecutionOptions: null,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      projects: [],
+vi.mock("@/hooks/queries/sidebar-navigation-query", () => {
+  const sidebarNavigationData = {
+    sections: [],
+    personalProject: {
+      id: "proj_personal",
+      kind: "personal",
+      name: "Personal",
+      sources: [],
+      threads: [],
+      defaultExecutionOptions: null,
+      createdAt: 1,
+      updatedAt: 1,
     },
-    isError: false,
-    isSuccess: true,
-  }),
-}));
+    projects: [],
+  };
+  return {
+    useSidebarNavigationPreview: () => undefined,
+    useSidebarNavigationPaging: () => ({
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetchNextPageError: false,
+      fetchNextPage: async () => undefined,
+    }),
+    useSidebarNavigation: () => ({
+      data: sidebarNavigationData,
+      isError: false,
+      isSuccess: true,
+    }),
+  };
+});
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useArchivedThreads: () => ({ data: undefined }),

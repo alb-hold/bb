@@ -1,4 +1,7 @@
-import { TerminalColorQueries } from "@bb/domain";
+import {
+  TerminalColorQueries,
+  TerminalCursorPositionQueries,
+} from "@bb/domain";
 import {
   prepareHostPtyCommand,
   hostToolchain,
@@ -198,6 +201,7 @@ interface TerminalSession {
   gridMarkerEmitted: boolean;
   outputFlushCancel: (() => void) | null;
   colorQueries: TerminalColorQueries | null;
+  cursorPositionQueries: TerminalCursorPositionQueries;
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
   gridMarkerScanner: ReturnType<typeof createTerminalGridMarkerScanner>;
@@ -830,6 +834,10 @@ export class TerminalManager {
         colorQueries: message.defaultColors
           ? new TerminalColorQueries(message.defaultColors)
           : null,
+        cursorPositionQueries: new TerminalCursorPositionQueries(
+          message.cols,
+          message.rows,
+        ),
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
         gridMarkerScanner: createTerminalGridMarkerScanner(),
@@ -1073,6 +1081,7 @@ export class TerminalManager {
     this.flushTerminalOutput(session);
     session.cols = args.cols;
     session.rows = args.rows;
+    session.cursorPositionQueries.resize(args.cols, args.rows);
     this.bufferTerminalOutput(
       session,
       createTerminalGridMarker({ cols: session.cols, rows: session.rows }),
@@ -1194,6 +1203,13 @@ export class TerminalManager {
     data =
       session.colorQueries?.push(data, (reply) => session.pty.write(reply)) ??
       data;
+    const cursorReplies: string[] = [];
+    data = session.cursorPositionQueries.push(data, (reply) => {
+      cursorReplies.push(reply);
+    });
+    if (cursorReplies.length > 0) {
+      session.pty.write(cursorReplies.join(""));
+    }
     const result = consumePrimaryDeviceAttributesQueries(
       session.pendingPrimaryDeviceAttributesQuery,
       data,
@@ -1508,6 +1524,22 @@ export class TerminalManager {
     if (this.sessions.get(args.session.terminalId) !== args.session) {
       return;
     }
+    this.bufferTerminalContent(
+      args.session,
+      args.session.gridMarkerScanner.flush(),
+    );
+    const flushedColor = args.session.colorQueries?.flush() ?? "";
+    const flushedCursor =
+      args.session.cursorPositionQueries.push(flushedColor, () => undefined) +
+      args.session.cursorPositionQueries.flush();
+    if (flushedCursor.length > 0) {
+      const result = consumePrimaryDeviceAttributesQueries(
+        args.session.pendingPrimaryDeviceAttributesQuery,
+        flushedCursor,
+      );
+      args.session.pendingPrimaryDeviceAttributesQuery = result.pendingQuery;
+      this.bufferTerminalOutput(args.session, result.output);
+    }
     if (args.session.pendingPrimaryDeviceAttributesQuery.length > 0) {
       this.bufferTerminalOutput(
         args.session,
@@ -1515,14 +1547,6 @@ export class TerminalManager {
       );
       args.session.pendingPrimaryDeviceAttributesQuery = "";
     }
-    this.bufferTerminalContent(
-      args.session,
-      args.session.gridMarkerScanner.flush(),
-    );
-    this.bufferTerminalOutput(
-      args.session,
-      args.session.colorQueries?.flush() ?? "",
-    );
     this.flushTerminalOutput(args.session);
     this.disableOutputFlow(args.session);
     if (args.session.closeTimeout !== null) {

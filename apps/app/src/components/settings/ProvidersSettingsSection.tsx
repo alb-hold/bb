@@ -514,7 +514,7 @@ export function ProvidersSettingsSection({
               <h3 className="text-sm font-medium text-foreground">
                 Collapse finished turns
               </h3>
-              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground/75">
+              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground">
                 When a turn finishes, fold its work into one Worked for row and
                 keep the final answer visible. Turn off collapsing to keep every
                 step of a finished turn visible.

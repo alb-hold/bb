@@ -68,6 +68,7 @@ export interface FileRemoveArgs {
   path: string;
   rootPath?: string;
   recursive?: boolean;
+  temporary?: boolean;
 }
 
 export interface FilePreviewArgs {

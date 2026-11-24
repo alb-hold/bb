@@ -192,6 +192,20 @@ describe("readAntigravityRuntimeVersion", () => {
       (caught: unknown) => caught,
     );
     expect((error as GeminiLoginError).reason).toBe("runtime_missing");
+    expect((error as Error).message).toBe(
+      'No antigravity-acp agent is configured. Add the "antigravity-acp" entry to provider-acp\'s customAgents setting, pointing at the antigravity-acp 1.5.0 runtime.',
+    );
+  });
+
+  it("says the customAgents lookup failed, not that the agent is missing, when reading the setting throws", async () => {
+    const error = await readAntigravityRuntimeVersion(async () => {
+      throw new Error("provider-acp is not loaded yet");
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GeminiLoginError);
+    expect((error as GeminiLoginError).reason).toBe("runtime_missing");
+    expect((error as Error).message).toBe(
+      'bb could not read provider-acp\'s customAgents setting to find the "antigravity-acp" agent: provider-acp is not loaded yet',
+    );
   });
 });
 

@@ -57,6 +57,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   afterBaseline?: (directory: string) => Promise<void>;
   earlyDeleteGuard?: { changesSince: number; fingerprint: string };
   testWorktreeHolderScan?: WorktreeHolderScan;
+  ignoreProcessDoubts?: boolean;
 }): Promise<void> {
   const deadlineMs = testRemovalBounds?.deadlineMs ?? REMOVE_DEADLINE_MS;
   const deadline = AbortSignal.timeout(deadlineMs);
@@ -72,7 +73,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   }
   const identity = await directoryIdentity(args.directory);
   const unchanged =
-    identity === null
+    identity === null || args.ignoreProcessDoubts === true
       ? null
       : await unchangedHolderRefusal(args.directory, identity);
   if (identity !== null && unchanged !== null) {
@@ -112,8 +113,10 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     const rootInfo = await fs.lstat(quarantine);
     await refuseWhileHeld({
       directory: quarantine,
+      displayDirectory: args.directory,
       action: args.action,
       final: true,
+      ignoreProcessDoubts: args.ignoreProcessDoubts === true,
       onDoubt: async (scan) => {
         doubted = true;
         if (identity === null) return null;

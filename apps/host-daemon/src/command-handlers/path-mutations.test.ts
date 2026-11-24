@@ -25,6 +25,11 @@ import {
   type ProcReader,
 } from "@bb/process-utils";
 
+const unrelatedRemovalContext = {
+  dataDir: "/nonexistent/bb-path-mutations-data",
+  threadStorageRootPath: "/nonexistent/bb-path-mutations-storage",
+  runtimeManager: { listLoadedWorkspacePaths: () => [] },
+};
 const roots: string[] = [];
 const trackedPids = new Set<number>();
 const hasHeldDirectoryRemoval = existsSync(
@@ -365,12 +370,15 @@ describe("confined host path mutations", () => {
     ).resolves.toEqual({ ok: true });
     await expect(fs.readFile(destination, "utf8")).resolves.toBe("# Plan");
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: destination,
-        rootPath: root,
-        recursive: false,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: destination,
+          rootPath: root,
+          recursive: false,
+        },
+        unrelatedRemovalContext,
+      ),
     ).resolves.toEqual({ ok: true });
     await expect(fs.stat(destination)).rejects.toMatchObject({
       code: "ENOENT",
@@ -386,12 +394,15 @@ describe("confined host path mutations", () => {
     Object.defineProperty(process, "platform", { value: "win32" });
     try {
       await expect(
-        removeHostPath({
-          type: "host.remove_path",
-          path: source,
-          rootPath: root,
-          recursive: false,
-        }),
+        removeHostPath(
+          {
+            type: "host.remove_path",
+            path: source,
+            rootPath: root,
+            recursive: false,
+          },
+          unrelatedRemovalContext,
+        ),
       ).rejects.toMatchObject({ code: "invalid_path" });
       await expect(
         moveHostPath({
@@ -437,12 +448,15 @@ describe("confined host path mutations", () => {
     });
     try {
       await expect(
-        removeHostPath({
-          type: "host.remove_path",
-          path: target,
-          rootPath: root,
-          recursive: true,
-        }),
+        removeHostPath(
+          {
+            type: "host.remove_path",
+            path: target,
+            rootPath: root,
+            recursive: true,
+          },
+          unrelatedRemovalContext,
+        ),
       ).rejects.toMatchObject({ code: "path_in_use" });
       await expect(
         fs.readFile(path.join(target, "note.txt"), "utf8"),
@@ -608,12 +622,15 @@ describe("confined host path mutations", () => {
       const workers: ReturnType<typeof spawn>[] = [];
       try {
         await expect(
-          removeHostPath({
-            type: "host.remove_path",
-            path: target,
-            rootPath: root,
-            recursive: true,
-          }),
+          removeHostPath(
+            {
+              type: "host.remove_path",
+              path: target,
+              rootPath: root,
+              recursive: true,
+            },
+            unrelatedRemovalContext,
+          ),
         ).rejects.toMatchObject({ code: "path_in_use" });
         expect(replacementInode).not.toBeNull();
         expect((await fs.stat(target)).ino).toBe(replacementInode);
@@ -657,12 +674,15 @@ describe("confined host path mutations", () => {
     const empty = path.join(root, "empty");
     await fs.mkdir(empty);
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: empty,
-        rootPath: root,
-        recursive: false,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: empty,
+          rootPath: root,
+          recursive: false,
+        },
+        unrelatedRemovalContext,
+      ),
     ).resolves.toEqual({ ok: true });
     await expect(fs.stat(empty)).rejects.toMatchObject({ code: "ENOENT" });
 
@@ -670,22 +690,28 @@ describe("confined host path mutations", () => {
     await fs.mkdir(nonEmpty);
     await fs.writeFile(path.join(nonEmpty, "note.md"), "# Note");
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: nonEmpty,
-        rootPath: root,
-        recursive: false,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: nonEmpty,
+          rootPath: root,
+          recursive: false,
+        },
+        unrelatedRemovalContext,
+      ),
     ).rejects.toThrow();
     await expect(fs.stat(nonEmpty)).resolves.toMatchObject({});
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: nonEmpty,
-        rootPath: root,
-        recursive: true,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: nonEmpty,
+          rootPath: root,
+          recursive: true,
+        },
+        unrelatedRemovalContext,
+      ),
     ).resolves.toEqual({ ok: true });
     await expect(fs.stat(nonEmpty)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -699,20 +725,26 @@ describe("confined host path mutations", () => {
     await fs.writeFile(path.join(outside, "secret.md"), "secret");
 
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: escaped,
-        rootPath: root,
-        recursive: false,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: escaped,
+          rootPath: root,
+          recursive: false,
+        },
+        unrelatedRemovalContext,
+      ),
     ).rejects.toMatchObject({ code: "invalid_path" });
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: root,
-        rootPath: root,
-        recursive: true,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: root,
+          rootPath: root,
+          recursive: true,
+        },
+        unrelatedRemovalContext,
+      ),
     ).rejects.toMatchObject({ code: "invalid_path" });
   });
 
@@ -1044,12 +1076,15 @@ describe("confined host path mutations", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_path" });
     await expect(
-      removeHostPath({
-        type: "host.remove_path",
-        path: path.join(root, "alias", "a.txt"),
-        rootPath: root,
-        recursive: false,
-      }),
+      removeHostPath(
+        {
+          type: "host.remove_path",
+          path: path.join(root, "alias", "a.txt"),
+          rootPath: root,
+          recursive: false,
+        },
+        unrelatedRemovalContext,
+      ),
     ).rejects.toMatchObject({ code: "invalid_path" });
     await expect(fs.readFile(path.join(real, "a.txt"), "utf8")).resolves.toBe(
       "keep",
