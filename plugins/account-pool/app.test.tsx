@@ -329,7 +329,7 @@ describe("Subscription picker", () => {
           parent: {
             baseUrl: "https://parent.example",
             mode: "proxy",
-            availability: { claude: true, codex: true },
+            availability: { claude: true, codex: true, gemini: true },
           },
         };
       }
@@ -412,7 +412,7 @@ describe("Subscription picker", () => {
       parent: {
         baseUrl: "https://parent.example",
         mode: "proxy" as const,
-        availability: { claude: true, codex: true },
+        availability: { claude: true, codex: true, gemini: true },
       },
     };
     const proxySlot = pinnedSlot(parentProxyStatus);
@@ -489,7 +489,7 @@ describe("Subscription picker", () => {
       parent: {
         baseUrl: "https://parent.example",
         mode: "proxy",
-        availability: { claude: true, codex: true },
+        availability: { claude: true, codex: true, gemini: true },
       },
     };
     await slot.emitRealtime(ACCOUNT_POOL_CONFIG_CHANGED, {});
@@ -568,7 +568,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "isolate",
-      availability: { claude: true, codex: true },
+      availability: { claude: true, codex: true, gemini: true },
     });
     expect(
       await slot.findByText("Parent Account Pooler available"),
@@ -583,14 +583,14 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: true, codex: true },
+      availability: { claude: true, codex: true, gemini: true },
     });
     expect(
       await slot.findByText("Using the parent Account Pooler"),
     ).toBeTruthy();
     expect(
       slot.getByText(
-        /Claude and Codex requests are sent to the pool on 127\.0\.0\.1:25231\. Accounts on this server are not used/,
+        /Claude and Codex and Antigravity \(Gemini\) requests are sent to the pool on 127\.0\.0\.1:25231\. Accounts on this server are not used/,
       ),
     ).toBeTruthy();
   });
@@ -599,11 +599,11 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: true, codex: false },
+      availability: { claude: true, codex: false, gemini: true },
     });
     expect(
       await slot.findByText(
-        /Claude requests are sent to the pool on .*Codex has no accounts there, so those requests fall back/,
+        /Claude and Antigravity \(Gemini\) requests are sent to the pool on .*Codex has no accounts there, so those requests fall back/,
       ),
     ).toBeTruthy();
   });
@@ -612,7 +612,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: false, codex: false },
+      availability: { claude: false, codex: false, gemini: false },
     });
     expect(
       await slot.findByText(/has no accounts available right now/),

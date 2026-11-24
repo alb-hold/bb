@@ -1813,7 +1813,7 @@ describe("Account Pool plugin", () => {
       }),
     ).resolves.toBeNull();
     expect(host.harness.inspection.needsConfigurationMessages).toEqual([
-      "Add and enable a Claude or Codex account with `bb pool account add`.",
+      "Add and enable a Claude, Codex or Antigravity (Gemini) account with `bb pool account add`.",
     ]);
     const hello = helloResponse();
     expect(hello.status).toBe(200);
@@ -12040,7 +12040,7 @@ describe("Account Pool nested proxy", () => {
   }
 
   async function startParent(args: {
-    availability?: { claude: boolean; codex: boolean };
+    availability?: { claude: boolean; codex: boolean; gemini?: boolean };
     availabilityStatus?: number;
   }): Promise<{ upstream: Upstream; records: ParentRecord[] }> {
     const records: ParentRecord[] = [];
@@ -12265,6 +12265,19 @@ describe("Account Pool nested proxy", () => {
     expect(
       entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN")?.value,
     ).not.toBe(PARENT_TOKEN);
+  });
+
+  it("reports Antigravity as served through the parent pool when the parent has a Gemini account (test-change-reason: Antigravity joins the pooled providers)", async () => {
+    const parent = await startParent({
+      availability: { claude: false, codex: false, gemini: true },
+    });
+    cleanups.push(parent.upstream.close);
+    const host = await createChild({ parentUrl: parent.upstream.url });
+    await expect(
+      host.harness.behavior.resolveProviderEnvHealth("acp-antigravity-acp", {
+        hostId: "host-one",
+      }),
+    ).resolves.toMatchObject({ label: "Proxied" });
   });
 
   it("proxies a pinned thread through the parent pool after switching to proxy mode", async () => {

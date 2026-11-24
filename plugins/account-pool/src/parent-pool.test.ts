@@ -88,11 +88,12 @@ describe("ParentAvailability", () => {
 
   it("reads the parent booleans and presents the hub token", async () => {
     const fetchImpl = vi.fn(async () =>
-      Response.json({ claude: true, codex: false }),
+      Response.json({ claude: true, codex: false, gemini: true }),
     ) as unknown as typeof fetch;
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: true,
       codex: false,
+      gemini: true,
     });
     expect(vi.mocked(fetchImpl).mock.calls[0]?.[0]).toBe(
       `${BASE_URL}/availability`,
@@ -101,6 +102,22 @@ describe("ParentAvailability", () => {
     expect(
       (init?.headers as Record<string, string>)["x-bb-account-pool-token"],
     ).toBe(TOKEN);
+    expect(
+      (init?.headers as Record<string, string>)[
+        "x-bb-account-pool-availability-providers"
+      ],
+    ).toBe("gemini");
+  });
+
+  it("reads gemini as false from an older parent body that omits it", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ claude: true, codex: true }),
+    ) as unknown as typeof fetch;
+    await expect(availability({ fetchImpl }).get()).resolves.toEqual({
+      claude: true,
+      codex: true,
+      gemini: false,
+    });
   });
 
   it("fails closed when the parent is unreachable", async () => {
@@ -116,6 +133,7 @@ describe("ParentAvailability", () => {
     await expect(client.get()).resolves.toEqual({
       claude: false,
       codex: false,
+      gemini: false,
     });
     expect(onError).toHaveBeenCalled();
   });
@@ -127,6 +145,7 @@ describe("ParentAvailability", () => {
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: false,
       codex: false,
+      gemini: false,
     });
   });
 
@@ -137,6 +156,7 @@ describe("ParentAvailability", () => {
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: false,
       codex: false,
+      gemini: false,
     });
   });
 

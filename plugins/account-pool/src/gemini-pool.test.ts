@@ -8,6 +8,7 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { statusSchema } from "./contracts.js";
+import { retryAvailabilityMethod } from "./retry-contract.js";
 import { createGeminiAdapter, geminiQuotaRejection, geminiWindowsFromQuota, parseGoogleDuration, parseLoadCodeAssist } from "./gemini-adapter.js";
 import {
   importGeminiCredentials,
@@ -3232,6 +3233,59 @@ describe("Gemini bare family ids through the pool", () => {
       { models: 0 },
     ])
       expect(hasCodeAssistModelList(malformed)).toBe(false);
+  });
+});
+
+describe("Gemini in the pool's retry and availability contracts", () => {
+  async function routedFixture() {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(google, { "/homes/a": creds("tok-a") });
+    await addGemini(fixture.host, "/homes/a", 0);
+    const env = await geminiEnv(fixture.host);
+    return { fixture, env };
+  }
+
+  it("treats a routed Antigravity thread as pooled when asked about a retry", async () => {
+    const { fixture } = await routedFixture();
+    await expect(
+      fixture.host.harness.behavior.callRpc(retryAvailabilityMethod, {
+        threadId: THREAD,
+        requestId: "creq_aaaaaaaaaa",
+      }),
+    ).resolves.toEqual({ kind: "unavailable", reason: "source-unavailable" });
+  });
+
+  it("tells a nested server that this pool serves Gemini", async () => {
+    const { fixture, env } = await routedFixture();
+    const nestedToken = env.byName.get(PARENT_TOKEN_ENV);
+    if (typeof nestedToken !== "string") throw new Error("Nested token missing.");
+    const response = await fixture.host.harness.behavior.fetchHttp("GET", "/availability", {
+      headers: {
+        "x-bb-account-pool-token": nestedToken,
+        "x-bb-account-pool-availability-providers": "gemini",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ claude: false, codex: false, gemini: true });
+  });
+
+  it("answers a client that does not ask for Gemini with the exact claude and codex body an older child parses", async () => {
+    const { fixture, env } = await routedFixture();
+    const nestedToken = env.byName.get(PARENT_TOKEN_ENV);
+    if (typeof nestedToken !== "string") throw new Error("Nested token missing.");
+    const response = await fixture.host.harness.behavior.fetchHttp("GET", "/availability", {
+      headers: { "x-bb-account-pool-token": nestedToken },
+    });
+    const body: unknown = await response.json();
+    const legacyPoolAvailabilitySchema = z
+      .object({ claude: z.boolean(), codex: z.boolean() })
+      .strict();
+    expect(legacyPoolAvailabilitySchema.parse(body)).toEqual({ claude: false, codex: false });
   });
 });
 

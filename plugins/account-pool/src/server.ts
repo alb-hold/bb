@@ -23,7 +23,7 @@ import {
   accountPoolConfigSetInputSchema,
   draftSelectionSchema,
   modelFamilySchema,
-  poolAvailabilitySchema,
+  providerSchema,
   type AccountPoolConfigController,
   type PoolProvider,
   type PoolStatus,
@@ -36,6 +36,7 @@ import {
 import { ActorRouteIssuer } from "./actor-routes.js";
 import {
   AVAILABILITY_PATH,
+  AVAILABILITY_PROVIDERS_HEADER,
   PARENT_TOKEN_ENV,
   PARENT_URL_ENV,
   ParentAvailability,
@@ -795,10 +796,10 @@ export function createAccountPoolPlugin(
     });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
-        "Add and enable a Claude or Codex account with `bb pool account add`.",
+        "Add and enable a Claude, Codex or Antigravity (Gemini) account with `bb pool account add`.",
       );
     }
-    const routedProviderSchema = z.enum(["claude", "codex"]);
+    const routedProviderSchema = providerSchema;
     const failedRequestSchema = z.object({
       requestId: z.string(),
       execution: z.object({ model: z.string() }),
@@ -854,9 +855,7 @@ export function createAccountPoolPlugin(
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
-        return provider === "gemini"
-          ? false
-          : (await availability.get())[provider];
+        return (await availability.get())[provider];
       }
       return operations.hasUsableEnabledAccount(provider);
     };
@@ -1425,11 +1424,17 @@ export function createAccountPoolPlugin(
         if ((await hub.authenticateNested(context.req.raw)) === null) {
           return new Response(null, { status: 401 });
         }
+        const claude = await canServe("claude");
+        const codex = await canServe("codex");
+        const understandsGemini = (
+          context.req.raw.headers.get(AVAILABILITY_PROVIDERS_HEADER) ?? ""
+        )
+          .split(",")
+          .some((value) => value.trim() === "gemini");
         return Response.json(
-          poolAvailabilitySchema.parse({
-            claude: await canServe("claude"),
-            codex: await canServe("codex"),
-          }),
+          understandsGemini
+            ? { claude, codex, gemini: await canServe("gemini") }
+            : { claude, codex },
         );
       },
       { auth: "none" },

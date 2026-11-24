@@ -8,6 +8,7 @@ import {
 export const PARENT_URL_ENV = "BB_ACCOUNT_POOL_PARENT_URL";
 export const PARENT_TOKEN_ENV = "BB_ACCOUNT_POOL_PARENT_TOKEN";
 export const AVAILABILITY_PATH = "/availability";
+export const AVAILABILITY_PROVIDERS_HEADER = "x-bb-account-pool-availability-providers";
 export const HUB_TOKEN_HEADER = "x-bb-account-pool-token";
 
 const DEFAULT_AVAILABILITY_TTL_MS = 30_000;
@@ -128,7 +129,10 @@ export class ParentAvailability {
         `${this.options.parent.baseUrl}${AVAILABILITY_PATH}`,
         {
           method: "GET",
-          headers: { [HUB_TOKEN_HEADER]: this.options.parent.token },
+          headers: {
+            [HUB_TOKEN_HEADER]: this.options.parent.token,
+            [AVAILABILITY_PROVIDERS_HEADER]: "gemini",
+          },
           signal: AbortSignal.timeout(AVAILABILITY_TIMEOUT_MS),
         },
       );
