@@ -422,4 +422,218 @@ describe("ended native terminal transcript rendering", () => {
       ).toBe(false);
     }
   });
+
+  it.each(["normal", "alternate"] as const)(
+    "preserves first and last transcript markers across 135-to-49 phone and desktop reflows when exiting from %s buffer",
+    async (exitBuffer) => {
+      const readLogicalBufferText = (terminal: Terminal) => {
+        const buffer = terminal.buffer.active;
+        const lines: string[] = [];
+        for (let index = 0; index < buffer.length; index += 1) {
+          const line = buffer.getLine(index);
+          if (!line) continue;
+          const content = line.translateToString(true);
+          if (line.isWrapped && lines.length > 0) {
+            lines[lines.length - 1] += content;
+          } else {
+            lines.push(content);
+          }
+        }
+        return lines.join("\n");
+      };
+
+      const bodyLines = Array.from(
+        { length: 4_500 },
+        (_, index) =>
+          index === 0
+            ? `FIRST-TRANSCRIPT-MARKER-${"a".repeat(108)}`
+            : `ROW-${String(index).padStart(4, "0")}-${"b".repeat(123)}`,
+      );
+      const lastLine = `LAST-TRANSCRIPT-MARKER-${"z".repeat(109)}`;
+      const payload =
+        exitBuffer === "alternate"
+          ? `\x1b]7791;bb-grid;135;41\x07${bodyLines.join("\r\n")}\r\n\x1b[?1049h\x1b[2J\x1b[H${lastLine}\r\n`
+          : `\x1b]7791;bb-grid;135;41\x07${bodyLines.join("\r\n")}\r\n${lastLine}\r\n`;
+      const dataBase64 = Buffer.from(payload, "utf8").toString("base64");
+
+      const viewports = [
+        {
+          viewportWidth: 390,
+          containerWidth: 390,
+          containerHeight: 520,
+          cellWidth: 7.4,
+          fittedCols: 49,
+          fittedRows: 28,
+          touch: true,
+        },
+        {
+          viewportWidth: 1440,
+          containerWidth: 1140,
+          containerHeight: 720,
+          cellWidth: 8.5,
+          fittedCols: 130,
+          fittedRows: 38,
+          touch: false,
+        },
+      ];
+
+      for (const viewport of viewports) {
+        let activeTerminal: Terminal | null = null;
+        let initialScrollback = 0;
+        const open = Terminal.prototype.open;
+        vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+          this: Terminal,
+          element: HTMLElement,
+        ) {
+          activeTerminal = this;
+          initialScrollback = this.options.scrollback ?? 0;
+          open.call(this, element);
+        });
+        stubViewportLayout({
+          ...viewport,
+          getTerminal: () => activeTerminal,
+        });
+        testState.output.mockResolvedValue({
+          chunks: [{ seq: 0, dataBase64 }],
+          nextSeq: 1,
+        });
+
+        const view = render(
+          <MemoryRouter>
+            <AppCommandProvider>
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen
+                retainNativeOutput
+                session={makeTerminalSession({
+                  status: "exited",
+                  exitCode: 0,
+                  cols: 135,
+                  rows: 41,
+                })}
+              />
+            </AppCommandProvider>
+          </MemoryRouter>,
+        );
+
+        await waitFor(() => {
+          const host = view.container.querySelector<HTMLElement>(
+            "[data-terminal-renderer]",
+          );
+          expect(host?.style.opacity).toBe("");
+          expect(host?.dataset.renderGridCols).toBe(
+            String(viewport.fittedCols),
+          );
+        });
+
+        await act(async () => {
+          await new Promise<void>((resolve) =>
+            activeTerminal!.write("", resolve),
+          );
+        });
+
+        const transcript = readLogicalBufferText(activeTerminal!);
+        expect(transcript).toContain("FIRST-TRANSCRIPT-MARKER-");
+        expect(transcript).toContain("LAST-TRANSCRIPT-MARKER-");
+
+        if (viewport.fittedCols === 49) {
+          expect(initialScrollback).toBeGreaterThan(0);
+          expect(activeTerminal!.buffer.active.length).toBeGreaterThan(
+            initialScrollback,
+          );
+          expect(activeTerminal!.options.scrollback).toBeGreaterThan(
+            initialScrollback,
+          );
+        }
+
+        view.unmount();
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
+  it("keeps the recorded column grid with horizontal scroll when reflow would exceed the scrollback cap", async () => {
+    let activeTerminal: Terminal | null = null;
+    let initialScrollback = 0;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      activeTerminal = this;
+      initialScrollback = this.options.scrollback ?? 0;
+      open.call(this, element);
+    });
+    stubViewportLayout({
+      viewportWidth: 390,
+      containerWidth: 390,
+      containerHeight: 520,
+      cellWidth: 7.4,
+      fittedCols: 40,
+      fittedRows: 28,
+      touch: true,
+      getTerminal: () => activeTerminal,
+    });
+    const lines = Array.from({ length: 10_000 }, (_, index) =>
+      index === 0
+        ? "FIRST-CAP-MARKER"
+        : index === 9_999
+          ? "LAST-CAP-MARKER"
+          : `L${index}`,
+    );
+    const payload = `\x1b]7791;bb-grid;250;41\x07${lines.join("\r\n")}\r\n`;
+    testState.output.mockResolvedValue({
+      chunks: [
+        { seq: 0, dataBase64: Buffer.from(payload, "utf8").toString("base64") },
+      ],
+      nextSeq: 1,
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            retainNativeOutput
+            session={makeTerminalSession({
+              status: "exited",
+              exitCode: 0,
+              cols: 250,
+              rows: 41,
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      const host = view.container.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      );
+      expect(host?.style.opacity).toBe("");
+      expect(host?.dataset.renderGridCols).toBe("250");
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => activeTerminal!.write("", resolve));
+    });
+
+    const host = view.container.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    expect(host.style.overflowX).toBe("auto");
+    expect(host.style.overflowY).toBe("auto");
+    expect(host.style.touchAction).toBe("pan-x pan-y");
+    expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(true);
+    expect(activeTerminal!.options.scrollback).toBe(initialScrollback);
+
+    const buffer = activeTerminal!.buffer.active;
+    const text = Array.from(
+      { length: buffer.length },
+      (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+    ).join("\n");
+    expect(text).toContain("FIRST-CAP-MARKER");
+    expect(text).toContain("LAST-CAP-MARKER");
+  });
 });

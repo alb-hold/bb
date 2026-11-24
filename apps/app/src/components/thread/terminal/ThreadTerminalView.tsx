@@ -227,6 +227,8 @@ const TERMINAL_UNICODE_VERSION = "11";
 export const TERMINAL_ALLOW_PROPOSED_API = true;
 const TERMINAL_TOUCH_FOCUS_MAX_DURATION_MS = 700;
 const TERMINAL_TOUCH_FOCUS_MOVEMENT_THRESHOLD_PX = 10;
+export const TERMINAL_SCROLLBACK = 10_000;
+export const TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK = TERMINAL_SCROLLBACK * 5;
 
 async function withAsyncFinally<T>(
   action: () => Promise<T>,
@@ -989,6 +991,16 @@ export async function writeRetainedTerminalOutput({
   if (retainNativeOutput && terminal.buffer.active.type === "alternate") {
     const primaryFrame = readBuffer(terminal.buffer.normal);
     const frame = readBuffer(terminal.buffer.alternate);
+    const combinedLines =
+      terminal.buffer.normal.length + terminal.buffer.alternate.length + 4;
+    const currentScrollback =
+      terminal.options.scrollback ?? TERMINAL_SCROLLBACK;
+    if (
+      combinedLines > currentScrollback &&
+      combinedLines <= TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK
+    ) {
+      terminal.options.scrollback = combinedLines;
+    }
     terminal.reset();
     const combined =
       primaryFrame.length > 0
@@ -1004,6 +1016,27 @@ export async function writeRetainedTerminalOutput({
   }
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
+}
+
+export function prepareRetainedTerminalReflow(
+  terminal: Pick<XTermTerminal, "cols" | "rows" | "buffer" | "options">,
+  target: TerminalGridSize,
+  maxScrollback = TERMINAL_RETAINED_REFLOW_MAX_SCROLLBACK,
+): boolean {
+  if (terminal.cols === target.cols && terminal.rows === target.rows) {
+    return true;
+  }
+  const currentScrollback = terminal.options.scrollback ?? TERMINAL_SCROLLBACK;
+  const expansion = Math.max(1, Math.ceil(terminal.cols / target.cols));
+  const requiredScrollback =
+    terminal.buffer.active.length * expansion + target.rows;
+  if (requiredScrollback > maxScrollback) {
+    return false;
+  }
+  if (requiredScrollback > currentScrollback) {
+    terminal.options.scrollback = requiredScrollback;
+  }
+  return true;
 }
 
 export function applyTerminalGridBeforeViewportRestore({
@@ -1410,6 +1443,8 @@ export function ThreadTerminalView({
   const clearAttentionOnInputRef = useRef(clearAttentionOnInput);
   const claimSizeRef = useRef<(() => void) | null>(null);
   const [showFitControl, setShowFitControl] = useState(false);
+  const [retainedOutputHorizontalScroll, setRetainedOutputHorizontalScroll] =
+    useState(false);
   const [truncatedSessionId, setTruncatedSessionId] = useState<string | null>(null);
   const [terminalReady, setTerminalReady] = useState(false);
   const [scrolledAboveBottom, setScrolledAboveBottom] = useState(false);
@@ -1894,6 +1929,7 @@ export function ThreadTerminalView({
     const holdForFittedGrid =
       container.closest("[data-native-terminal-thread]") !== null;
     setRestoringSession(sessionStatusRef.current === "running");
+    setRetainedOutputHorizontalScroll(false);
 
     container.style.containerType = "inline-size";
 
@@ -1940,6 +1976,7 @@ export function ThreadTerminalView({
       replayCheckpointSequence: null as number | null,
       replayRevealGeneration: 0,
       retainedOutputGrid: null as TerminalGridSize | null,
+      retainedOutputHorizontalScroll: false,
       latestPtyGrid: {
         cols: sessionRef.current.cols,
         rows: sessionRef.current.rows,
@@ -2316,8 +2353,9 @@ export function ThreadTerminalView({
           containerElement.style.opacity = "0";
         const scrollRetainedOutput =
           !needsFittedGrid() &&
-          lifecycle.retainedOutputGrid === null &&
-          presentation.panHorizontally;
+          (lifecycle.retainedOutputGrid === null
+            ? presentation.panHorizontally
+            : lifecycle.retainedOutputHorizontalScroll);
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.touchAction = scrollRetainedOutput
@@ -2403,7 +2441,7 @@ export function ThreadTerminalView({
         disableStdin: sessionRef.current.status === "exited",
         ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
-        scrollback: 10_000,
+        scrollback: TERMINAL_SCROLLBACK,
         theme: buildTerminalTheme(),
       });
       lifecycle.terminalProgressDisposable = lifecycle.terminal.parser.registerOscHandler(
@@ -2954,15 +2992,26 @@ export function ThreadTerminalView({
               );
             if (retainNativeOutput && sessionStatusRef.current === "exited") {
               if (lifecycle.retainedOutputReplayed) {
-                lifecycle.retainedOutputGrid = {
-                  cols: fitted.cols,
-                  rows: fitted.rows,
-                };
-                if (
-                  activeTerminal.cols !== fitted.cols ||
-                  activeTerminal.rows !== fitted.rows
-                ) {
-                  activeTerminal.resize(fitted.cols, fitted.rows);
+                if (prepareRetainedTerminalReflow(activeTerminal, fitted)) {
+                  lifecycle.retainedOutputHorizontalScroll = false;
+                  setRetainedOutputHorizontalScroll(false);
+                  lifecycle.retainedOutputGrid = {
+                    cols: fitted.cols,
+                    rows: fitted.rows,
+                  };
+                  if (
+                    activeTerminal.cols !== fitted.cols ||
+                    activeTerminal.rows !== fitted.rows
+                  ) {
+                    activeTerminal.resize(fitted.cols, fitted.rows);
+                  }
+                } else {
+                  lifecycle.retainedOutputHorizontalScroll = true;
+                  setRetainedOutputHorizontalScroll(true);
+                  lifecycle.retainedOutputGrid = {
+                    cols: activeTerminal.cols,
+                    rows: activeTerminal.rows,
+                  };
                 }
               }
               updateGridVisibility();
@@ -3917,6 +3966,18 @@ export function ThreadTerminalView({
               pendingExitNotices.length = 0;
               lifecycle.retainedReplayFailed = false;
             }
+            if (
+              retainNativeOutput &&
+              lifecycle.latestPtyGrid.cols > 0 &&
+              lifecycle.latestPtyGrid.rows > 0 &&
+              (activeTerminal.cols !== lifecycle.latestPtyGrid.cols ||
+                activeTerminal.rows !== lifecycle.latestPtyGrid.rows)
+            ) {
+              activeTerminal.resize(
+                lifecycle.latestPtyGrid.cols,
+                lifecycle.latestPtyGrid.rows,
+              );
+            }
             await writeRetainedTerminalOutput({
               chunks: output.chunks.map((chunk) => ({
                 seq: chunk.seq,
@@ -4555,7 +4616,7 @@ export function ThreadTerminalView({
           <TerminalAttentionPane
             attention={session.attention}
             bannerOnly={attentionShownAsBanner}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || retainedOutputHorizontalScroll ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);
