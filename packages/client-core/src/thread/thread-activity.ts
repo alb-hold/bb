@@ -34,6 +34,8 @@ function isRuntimeBusyThread(
   );
 }
 
+const NATIVE_ACTIVITY_FUTURE_TOLERANCE_MS = 2_000;
+
 export function isNativeActivityUnconfirmed(
   runtime: ThreadRuntimeShape["runtime"],
   now = Date.now(),
@@ -44,7 +46,7 @@ export function isNativeActivityUnconfirmed(
   return (
     activity.confirmation !== "confirmed" ||
     activity.lastEvidenceAt === null ||
-    current < activity.lastEvidenceAt ||
+    current + NATIVE_ACTIVITY_FUTURE_TOLERANCE_MS < activity.lastEvidenceAt ||
     current - activity.lastEvidenceAt > activity.freshForMs
   );
 }
@@ -59,7 +61,7 @@ export function nativeActivityEvidenceKind(
   if (!unconfirmed) return "holder-report";
   const lastToolCallAt = activity.lastToolCallAt;
   return lastToolCallAt !== undefined &&
-    now >= lastToolCallAt &&
+    now + NATIVE_ACTIVITY_FUTURE_TOLERANCE_MS >= lastToolCallAt &&
     now - lastToolCallAt <= activity.freshForMs
     ? "tool-call"
     : "unknown";
