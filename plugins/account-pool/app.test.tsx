@@ -672,6 +672,7 @@ describe("Account Pool settings", () => {
         rateLimitTier: null,
         limitWindows: [
           claudeWindow("primary", 0.37, { windowMinutes: 1_440 }),
+          claudeWindow("secondary", 0.52, { windowMinutes: null }),
         ],
       }),
     ]);
@@ -681,8 +682,19 @@ describe("Account Pool settings", () => {
     });
     expect(group.textContent).toContain("Antigravity (Gemini)");
     expect(group.textContent).toContain("gem@example.com");
-    expect(group.textContent).toContain("37%");
+    expect(group.textContent).toContain("Google AI Ultra");
     expect(group.textContent).not.toMatch(/claude|chatgpt|5 hour|7 day/iu);
+
+    await openActions(slot, "gem@example.com");
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("1 day")).toBeTruthy();
+    expect(slot.getByText(/^37% ·/)).toBeTruthy();
+    expect(slot.getByText("Usage limit")).toBeTruthy();
+    expect(slot.getByText(/^52% ·/)).toBeTruthy();
+    expect(slot.getByText("OAuth · Google")).toBeTruthy();
+    expect(slot.getByRole("dialog").textContent).not.toMatch(
+      /claude|chatgpt|5 hour|7 day/iu,
+    );
   });
 
   it("keeps the resolved next account visible during a refresh", async () => {
