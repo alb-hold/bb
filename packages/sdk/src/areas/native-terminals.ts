@@ -16,6 +16,7 @@ export interface NativeTerminalThreadArgs {
 
 export interface NativeTerminalLaunchArgs extends NativeTerminalThreadArgs {
   imagesAsArgv?: boolean;
+  reportsSessionStart?: boolean;
 }
 
 export interface NativeTerminalOpenArgs extends NativeTerminalThreadArgs {
@@ -92,7 +93,14 @@ export function createNativeTerminalsArea(
         route().launch.$post(
           {
             param: { id: input.threadId },
-            query: input.imagesAsArgv === true ? { images: "argv" } : {},
+            query: {
+              ...(input.imagesAsArgv === true
+                ? { images: "argv" as const }
+                : {}),
+              ...(input.reportsSessionStart === true
+                ? { sessionStart: "reported" as const }
+                : {}),
+            },
           },
           ...signalRequestArgs(input.signal),
         ),

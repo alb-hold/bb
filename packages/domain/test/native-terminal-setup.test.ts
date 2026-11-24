@@ -11,6 +11,7 @@ describe("native setup cue", () => {
     expect(
       nativeTerminalMayNeedSetup({
         nativeSessionId: null,
+        awaitingSessionStart: false,
         terminal,
         now: 12999,
       }),
@@ -18,6 +19,7 @@ describe("native setup cue", () => {
     expect(
       nativeTerminalMayNeedSetup({
         nativeSessionId: null,
+        awaitingSessionStart: false,
         terminal,
         now: 13000,
       }),
@@ -32,6 +34,7 @@ describe("native setup cue", () => {
       expect(
         nativeTerminalMayNeedSetup({
           nativeSessionId: null,
+          awaitingSessionStart: false,
           terminal: afterInput,
           now,
         }),
@@ -39,6 +42,7 @@ describe("native setup cue", () => {
       expect(
         nativeTerminalMayNeedSetup({
           nativeSessionId: "bound",
+          awaitingSessionStart: false,
           terminal: afterInput,
           now,
         }),
@@ -47,6 +51,7 @@ describe("native setup cue", () => {
     expect(
       nativeTerminalMayNeedSetup({
         nativeSessionId: null,
+        awaitingSessionStart: false,
         terminal: { ...terminal, lastUserInputAt: 500 },
         now: 12999,
       }),
@@ -54,14 +59,43 @@ describe("native setup cue", () => {
   });
   it("clears on input or binding, and excludes absent and ended terminals", () => {
     for (const args of [
-      { nativeSessionId: "bound", terminal },
+      { nativeSessionId: "bound", awaitingSessionStart: false, terminal },
       {
         nativeSessionId: null,
+        awaitingSessionStart: false,
         terminal: { ...terminal, lastUserInputAt: 13001 },
       },
-      { nativeSessionId: null, terminal: { ...terminal, status: "exited" } },
-      { nativeSessionId: null, terminal: null },
+      {
+        nativeSessionId: null,
+        awaitingSessionStart: false,
+        terminal: { ...terminal, status: "exited" },
+      },
+      { nativeSessionId: null, awaitingSessionStart: false, terminal: null },
     ])
       expect(nativeTerminalMayNeedSetup({ ...args, now: 20000 })).toBe(false);
+  });
+  it("cues a pre-assigned session until its started signal arrives", () => {
+    const base = { nativeSessionId: "preassigned", terminal };
+    expect(
+      nativeTerminalMayNeedSetup({
+        ...base,
+        awaitingSessionStart: true,
+        now: 12999,
+      }),
+    ).toBe(false);
+    expect(
+      nativeTerminalMayNeedSetup({
+        ...base,
+        awaitingSessionStart: true,
+        now: 13000,
+      }),
+    ).toBe(true);
+    expect(
+      nativeTerminalMayNeedSetup({
+        ...base,
+        awaitingSessionStart: false,
+        now: 13000,
+      }),
+    ).toBe(false);
   });
 });

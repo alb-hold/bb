@@ -113,6 +113,7 @@ export default function plugin(bb: BbPluginApi) {
           working: ["UserPromptSubmit", "PreToolUse"],
           idle: [],
           pending: ["Stop"],
+          started: ["SessionStart"],
           promptField: "prompt",
           sessionIdField: "session_id",
           permission: {

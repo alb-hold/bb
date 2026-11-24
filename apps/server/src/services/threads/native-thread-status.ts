@@ -5,6 +5,7 @@ import {
   getThread,
   listNativeTerminalThreadsNeedingStatusCheck,
   listStoredEventRows,
+  settleNativeTerminalSessionStart,
   stampNativeTerminalTranscriptEvidence,
   type NativeTerminalThreadRecord,
 } from "@bb/db";
@@ -12,6 +13,7 @@ import {
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
   classifyNativeTranscriptRecord,
   isActiveTerminalSessionStatus,
+  readNativeTranscriptRecordTimestamp,
 } from "@bb/domain";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { callHostOnlineRpcForWork } from "../hosts/online-rpc.js";
@@ -22,6 +24,7 @@ import {
 } from "./native-terminal-threads.js";
 import { interruptActiveThreadsForHost } from "./thread-lifecycle.js";
 import { getActiveTurnId } from "./thread-events.js";
+import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
 type NativeThreadStatusDeps = LoggedPendingInteractionWorkSessionDeps;
 
@@ -127,6 +130,7 @@ export async function reconcileNativeThreadStatus(
   if (liveness === "recovering") return;
   const now = Date.now();
   if (
+    !native.awaitingSessionStart &&
     native.lastEvidenceAt !== null &&
     now >= native.lastEvidenceAt &&
     now - native.lastEvidenceAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS
@@ -142,6 +146,7 @@ export async function reconcileNativeThreadStatus(
   }
   states.set(threadId, now);
   let state: "idle" | "working" | null = null;
+  let latestTranscriptRecordAt: number | null = null;
   let transcriptSessionId: string | null = null;
   const nativeTerminal = deps.providerRegistry.get(
     thread.providerId,
@@ -179,15 +184,27 @@ export async function reconcileNativeThreadStatus(
           );
           const records = content.split("\n").filter((line) => line.length > 0);
           for (let index = records.length - 1; index >= 0; index -= 1) {
+            let parsed: unknown;
             try {
-              state = classifyNativeTranscriptRecord(
-                transcript,
-                JSON.parse(records[index]),
-              );
+              parsed = JSON.parse(records[index]);
             } catch {
               continue;
             }
-            if (state !== null) break;
+            const recordAt = readNativeTranscriptRecordTimestamp(
+              transcript,
+              parsed,
+            );
+            if (
+              recordAt !== null &&
+              (latestTranscriptRecordAt === null ||
+                recordAt > latestTranscriptRecordAt)
+            ) {
+              latestTranscriptRecordAt = recordAt;
+            }
+            if (state === null) {
+              state = classifyNativeTranscriptRecord(transcript, parsed);
+            }
+            if (state !== null && latestTranscriptRecordAt !== null) break;
           }
         }
       } catch (error) {
@@ -199,7 +216,8 @@ export async function reconcileNativeThreadStatus(
       }
     }
   }
-  if (state !== null && transcriptSessionId !== null) {
+  let settledSessionStart = false;
+  if (transcriptSessionId !== null) {
     const current = getNativeTerminalThread(deps.db, threadId);
     if (
       current === null ||
@@ -207,11 +225,27 @@ export async function reconcileNativeThreadStatus(
     ) {
       return;
     }
-    stampNativeTerminalTranscriptEvidence(deps.db, {
-      at: now,
-      nativeSessionId: transcriptSessionId,
-      threadId,
-    });
+    const hasPostLaunchTranscriptEvidence =
+      current.terminalSessionId === native.terminalSessionId &&
+      current.nativeSessionId === transcriptSessionId &&
+      current.terminalCreatedAt !== null &&
+      latestTranscriptRecordAt !== null &&
+      latestTranscriptRecordAt >= current.terminalCreatedAt;
+    if (current.awaitingSessionStart && hasPostLaunchTranscriptEvidence) {
+      settledSessionStart = settleNativeTerminalSessionStart(deps.db, {
+        threadId,
+      }).settled;
+    }
+    if (
+      state !== null &&
+      (!current.awaitingSessionStart || settledSessionStart)
+    ) {
+      stampNativeTerminalTranscriptEvidence(deps.db, {
+        at: now,
+        nativeSessionId: transcriptSessionId,
+        threadId,
+      });
+    }
   }
   if (
     state === null &&
@@ -227,12 +261,30 @@ export async function reconcileNativeThreadStatus(
   ) {
     state = "idle";
   }
-  if (state === null || (state === "working") === (thread.status === "active"))
+  if (
+    state === null ||
+    (state === "working") === (thread.status === "active")
+  ) {
+    if (settledSessionStart) {
+      deps.hub.notifyThread(
+        threadId,
+        ["status-changed"],
+        buildThreadStatusChangeMetadata(deps, thread),
+      );
+    }
     return;
-  applyLoggedThreadLifecycleEvent(deps, {
+  }
+  const outcome = applyLoggedThreadLifecycleEvent(deps, {
     event: { type: state === "idle" ? "run.succeeded" : "run.started" },
     threadId,
   });
+  if (!outcome.applied && settledSessionStart) {
+    deps.hub.notifyThread(
+      threadId,
+      ["status-changed"],
+      buildThreadStatusChangeMetadata(deps, thread),
+    );
+  }
 }
 
 export async function sweepNativeThreadStatus(

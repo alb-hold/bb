@@ -80,6 +80,7 @@ export function nativeActivityHookSettingsObject(
       ...hooks.working,
       ...hooks.idle,
       ...(hooks.pending ?? []),
+      ...(hooks.started ?? []),
       ...(hooks.permission?.open ?? []),
       ...(hooks.permission?.close ?? []),
     ]),

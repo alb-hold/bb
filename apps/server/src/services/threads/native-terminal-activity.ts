@@ -6,6 +6,7 @@ import {
   getThread,
   clearThreadRowStateAtOutputSeqs,
   retagInterruptedPendingInteraction,
+  settleNativeTerminalSessionStart,
   stampNativeTerminalThreadActivity,
   stampNativeTerminalThreadToolCall,
   upsertNativeThreadReply,
@@ -616,6 +617,7 @@ export function clearNativeTerminalStateOnExit(
   }
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
+  settleNativeTerminalSessionStart(deps.db, { threadId: session.threadId });
   interruptNativeTerminalQuestions(deps, session.threadId);
   clearThreadRowStateAtOutputSeqs(deps.db, session.threadId);
   deps.hub.notifyThread(session.threadId, ["status-changed"]);

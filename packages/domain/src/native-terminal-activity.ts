@@ -47,3 +47,18 @@ export function classifyNativeTranscriptRecord(
   }
   return null;
 }
+
+export function readNativeTranscriptRecordTimestamp(
+  transcript: ActivityTranscript,
+  record: unknown,
+): number | null {
+  const field = transcript.identity?.timestamp;
+  if (field === undefined) return null;
+  const value = readRecordField(record, field);
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}

@@ -121,6 +121,7 @@ export const providerNativeTerminalActivitySchema = z
         working: z.array(hookEventNameSchema).min(1).max(8),
         idle: z.array(hookEventNameSchema).max(8),
         pending: z.array(hookEventNameSchema).min(1).max(8).optional(),
+        started: z.array(hookEventNameSchema).min(1).max(8).optional(),
         promptField: recordFieldPathSchema,
         sessionIdField: recordFieldPathSchema.optional(),
         permission: z
@@ -418,10 +419,12 @@ export const NATIVE_TERMINAL_SETUP_DELAY_MS = 12_000;
 
 export function nativeTerminalMayNeedSetup({
   nativeSessionId,
+  awaitingSessionStart,
   terminal,
   now,
 }: {
   nativeSessionId: string | null;
+  awaitingSessionStart: boolean;
   terminal: {
     status: string;
     createdAt: number;
@@ -430,7 +433,7 @@ export function nativeTerminalMayNeedSetup({
   now: number;
 }): boolean {
   return (
-    nativeSessionId === null &&
+    (nativeSessionId === null || awaitingSessionStart) &&
     terminal !== null &&
     terminal.status === "running" &&
     now - Math.max(terminal.createdAt, terminal.lastUserInputAt ?? 0) >=
