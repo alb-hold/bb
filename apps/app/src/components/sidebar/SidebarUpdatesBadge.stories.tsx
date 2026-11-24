@@ -41,7 +41,7 @@ import {
 import { sdk } from "@/lib/sdk";
 import { makeInstalledPlugin } from "@/test/fixtures/plugins";
 
-export default { title: "sidebar/Update button" };
+export default { title: "sidebar/Updates badge" };
 
 const UPDATE: ProviderCliInstallAction = {
   kind: "update",
@@ -451,22 +451,21 @@ const SCENARIOS = {
   everything: {
     title: "bb, provider CLIs and plugins",
     description:
-      "Hover the round button at the end of the footer. bb installs itself when you're idle; Update all runs the CLIs and plugins without restarting bb.",
+      "Separate chips at the end of the footer link directly to Settings › Updates.",
     bb: "auto",
     providers: true,
     plugins: true,
   },
   clisAndPlugins: {
     title: "Only provider CLIs and plugins",
-    description: "bb is current, so the card is just the list and Update all.",
+    description: "bb is current, so only the provider and plugin chips appear.",
     bb: null,
     providers: true,
     plugins: true,
   },
   onlyBb: {
     title: "Only bb",
-    description:
-      "The button stays so you can see what is coming and restart early. Two threads are running, so Restart now asks first.",
+    description: "Shows only the bb chip linking to Settings › Updates.",
     bb: "auto",
     providers: false,
     plugins: false,
@@ -474,15 +473,15 @@ const SCENARIOS = {
   },
   bbManual: {
     title: "bb with automatic updates off",
-    description: "bb waits for a restart; Restart now does it immediately.",
+    description: "Shows the bb and plugin chips linking to Settings › Updates.",
     bb: "manual",
     providers: false,
     plugins: true,
   },
   oneFails: {
-    title: "One update fails",
+    title: "Provider and plugin updates",
     description:
-      "Press Update all. Claude Code fails; the rest finish and the failure stays greyed out so it can be tried again.",
+      "Provider and plugin chips link to Settings › Updates where updates can be started.",
     bb: null,
     providers: true,
     plugins: true,
@@ -491,7 +490,7 @@ const SCENARIOS = {
   offlineMachine: {
     title: "Updates with a machine offline",
     description:
-      "The machine warning and the update button sit side by side at the end of the footer.",
+      "The machine warning and the update chips sit side by side at the end of the footer.",
     bb: "auto",
     providers: true,
     plugins: true,
