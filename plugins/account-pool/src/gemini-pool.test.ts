@@ -3265,10 +3265,27 @@ describe("Gemini in the pool's retry and availability contracts", () => {
     const nestedToken = env.byName.get(PARENT_TOKEN_ENV);
     if (typeof nestedToken !== "string") throw new Error("Nested token missing.");
     const response = await fixture.host.harness.behavior.fetchHttp("GET", "/availability", {
-      headers: { "x-bb-account-pool-token": nestedToken },
+      headers: {
+        "x-bb-account-pool-token": nestedToken,
+        "x-bb-account-pool-availability-providers": "gemini",
+      },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ claude: false, codex: false, gemini: true });
+  });
+
+  it("answers a client that does not ask for Gemini with the exact claude and codex body an older child parses", async () => {
+    const { fixture, env } = await routedFixture();
+    const nestedToken = env.byName.get(PARENT_TOKEN_ENV);
+    if (typeof nestedToken !== "string") throw new Error("Nested token missing.");
+    const response = await fixture.host.harness.behavior.fetchHttp("GET", "/availability", {
+      headers: { "x-bb-account-pool-token": nestedToken },
+    });
+    const body: unknown = await response.json();
+    const legacyPoolAvailabilitySchema = z
+      .object({ claude: z.boolean(), codex: z.boolean() })
+      .strict();
+    expect(legacyPoolAvailabilitySchema.parse(body)).toEqual({ claude: false, codex: false });
   });
 });
 

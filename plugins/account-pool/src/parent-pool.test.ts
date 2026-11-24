@@ -102,6 +102,22 @@ describe("ParentAvailability", () => {
     expect(
       (init?.headers as Record<string, string>)["x-bb-account-pool-token"],
     ).toBe(TOKEN);
+    expect(
+      (init?.headers as Record<string, string>)[
+        "x-bb-account-pool-availability-providers"
+      ],
+    ).toBe("gemini");
+  });
+
+  it("reads gemini as false from an older parent body that omits it", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ claude: true, codex: true }),
+    ) as unknown as typeof fetch;
+    await expect(availability({ fetchImpl }).get()).resolves.toEqual({
+      claude: true,
+      codex: true,
+      gemini: false,
+    });
   });
 
   it("fails closed when the parent is unreachable", async () => {

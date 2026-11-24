@@ -12525,11 +12525,7 @@ describe("Account Pool nested proxy", () => {
       { headers: { "x-bb-account-pool-token": nestedToken } },
     );
     expect(allowed.status).toBe(200);
-    expect(await allowed.json()).toEqual({
-      claude: true,
-      codex: false,
-      gemini: false,
-    });
+    expect(await allowed.json()).toEqual({ claude: true, codex: false });
   });
 });
 

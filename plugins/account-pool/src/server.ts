@@ -23,7 +23,6 @@ import {
   accountPoolConfigSetInputSchema,
   draftSelectionSchema,
   modelFamilySchema,
-  poolAvailabilitySchema,
   providerSchema,
   type AccountPoolConfigController,
   type PoolProvider,
@@ -37,6 +36,7 @@ import {
 import { ActorRouteIssuer } from "./actor-routes.js";
 import {
   AVAILABILITY_PATH,
+  AVAILABILITY_PROVIDERS_HEADER,
   PARENT_TOKEN_ENV,
   PARENT_URL_ENV,
   ParentAvailability,
@@ -1424,12 +1424,17 @@ export function createAccountPoolPlugin(
         if ((await hub.authenticateNested(context.req.raw)) === null) {
           return new Response(null, { status: 401 });
         }
+        const claude = await canServe("claude");
+        const codex = await canServe("codex");
+        const understandsGemini = (
+          context.req.raw.headers.get(AVAILABILITY_PROVIDERS_HEADER) ?? ""
+        )
+          .split(",")
+          .some((value) => value.trim() === "gemini");
         return Response.json(
-          poolAvailabilitySchema.parse({
-            claude: await canServe("claude"),
-            codex: await canServe("codex"),
-            gemini: await canServe("gemini"),
-          }),
+          understandsGemini
+            ? { claude, codex, gemini: await canServe("gemini") }
+            : { claude, codex },
         );
       },
       { auth: "none" },
