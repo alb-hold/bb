@@ -578,9 +578,12 @@ describe("thread entity store", () => {
       expect(rows[0]?.runtime.nativeActivity?.lastEvidenceAt).toBe(100_000);
   });
 
-  it.each([10, 11])(
-    "clears the stored native activity receipt when a runtime without one arrives at updatedAt %i",
-    async (updatedAt) => {
+  it.each([
+    { updatedAt: 10, status: "error" as const },
+    { updatedAt: 11, status: "active" as const },
+  ])(
+    "clears the stored native activity receipt when a $status runtime without one arrives at updatedAt $updatedAt",
+    async ({ updatedAt, status }) => {
       const server = [
         entry("t1", {
           status: "active",
@@ -598,8 +601,8 @@ describe("thread entity store", () => {
       const s = setup(server);
       await s.fetchList(s.listKey, () => server);
       updateCachedThreadListStatusState(s.queryClient, "t1", {
-        status: "stopping",
-        runtime: { displayStatus: "stopping" },
+        status,
+        runtime: { displayStatus: status },
         activity: server[0]!.activity,
         latestAttentionAt: 0,
         updatedAt,
