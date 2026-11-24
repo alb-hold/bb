@@ -276,4 +276,147 @@ describe("thread list continuation", () => {
       expect(pagedByProject).toEqual(expectedByProject);
     });
   });
+
+  it("returns all 250 seeded threads each once when sdk.threads.list is called without a limit", async () => {
+    await withTestHarness(async (harness) => {
+      const expectedIds: string[] = [];
+      for (let i = 0; i < 250; i++) {
+        const id = `thr_sdk_all_${String(i).padStart(3, "0")}`;
+        expectedIds.push(id);
+        harness.db
+          .insert(threads)
+          .values({
+            id,
+            projectId: PERSONAL_PROJECT_ID,
+            providerId: "codex",
+            status: "idle",
+            latestAttentionAt: 10_000 - (i % 40),
+            createdAt: 1_000 + i,
+            updatedAt: 10_000 - (i % 40),
+          })
+          .run();
+      }
+
+      const requests: URL[] = [];
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://localhost",
+          runtime: "node",
+          fetch: async (input, init) => {
+            const request = new Request(input, init);
+            requests.push(new URL(request.url));
+            return harness.app.fetch(request);
+          },
+        }),
+      });
+
+      const rows = await sdk.threads.list();
+      const ids = rows.map((row) => row.id);
+
+      expect(rows).toHaveLength(250);
+      expect(new Set(ids).size).toBe(250);
+      expect(new Set(ids)).toEqual(new Set(expectedIds));
+      expect(requests).toHaveLength(3);
+    });
+  });
+
+  it("returns all 150 childThreads from sdk.status.get when a parent has more than one page of children", async () => {
+    await withTestHarness(async (harness) => {
+      harness.db
+        .insert(threads)
+        .values({
+          id: "thr_status_parent",
+          projectId: PERSONAL_PROJECT_ID,
+          providerId: "codex",
+          status: "active",
+          latestAttentionAt: 20_000,
+          createdAt: 20_000,
+          updatedAt: 20_000,
+        })
+        .run();
+
+      const expectedChildIds: string[] = [];
+      for (let i = 0; i < 150; i++) {
+        const id = `thr_status_child_${String(i).padStart(3, "0")}`;
+        expectedChildIds.push(id);
+        harness.db
+          .insert(threads)
+          .values({
+            id,
+            projectId: PERSONAL_PROJECT_ID,
+            parentThreadId: "thr_status_parent",
+            providerId: "codex",
+            status: "idle",
+            latestAttentionAt: 15_000 - (i % 30),
+            createdAt: 2_000 + i,
+            updatedAt: 15_000 - (i % 30),
+          })
+          .run();
+      }
+
+      const requests: URL[] = [];
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://localhost",
+          runtime: "node",
+          fetch: async (input, init) => {
+            const request = new Request(input, init);
+            requests.push(new URL(request.url));
+            return harness.app.fetch(request);
+          },
+        }),
+      });
+
+      const status = await sdk.status.get({
+        projectId: PERSONAL_PROJECT_ID,
+        threadId: "thr_status_parent",
+      });
+
+      expect(status.thread?.id).toBe("thr_status_parent");
+      expect(status.childThreads).toHaveLength(150);
+      const childIds = (status.childThreads ?? []).map((row) => row.id);
+      expect(new Set(childIds).size).toBe(150);
+      expect(new Set(childIds)).toEqual(new Set(expectedChildIds));
+    });
+  });
+
+  it("returns 50 rows in a single page request when sdk.threads.list receives limit 50", async () => {
+    await withTestHarness(async (harness) => {
+      for (let i = 0; i < 150; i++) {
+        harness.db
+          .insert(threads)
+          .values({
+            id: `thr_sdk_limited_${String(i).padStart(3, "0")}`,
+            projectId: PERSONAL_PROJECT_ID,
+            providerId: "codex",
+            status: "idle",
+            latestAttentionAt: 5_000 - i,
+            createdAt: 5_000 - i,
+            updatedAt: 5_000 - i,
+          })
+          .run();
+      }
+
+      const requests: URL[] = [];
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://localhost",
+          runtime: "node",
+          fetch: async (input, init) => {
+            const request = new Request(input, init);
+            requests.push(new URL(request.url));
+            return harness.app.fetch(request);
+          },
+        }),
+      });
+
+      const rows = await sdk.threads.list({ limit: 50 });
+
+      expect(rows).toHaveLength(50);
+      expect(new Set(rows.map((row) => row.id)).size).toBe(50);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.searchParams.get("limit")).toBe("50");
+      expect(requests[0]?.searchParams.has("cursor")).toBe(false);
+    });
+  });
 });
