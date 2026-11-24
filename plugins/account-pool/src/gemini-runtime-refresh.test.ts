@@ -487,3 +487,72 @@ describe("scheduled Gemini usage refresh", () => {
     },
   );
 });
+
+describe("usage refresh while requests are in flight", () => {
+  function markInFlight(pool: Awaited<ReturnType<typeof createGeminiPool>>, id: string) {
+    const counts = Reflect.get(pool.hub, "inFlightByAccount");
+    if (!(counts instanceof Map)) throw new Error("Missing in-flight map.");
+    counts.set(id, 2);
+  }
+
+  it("refreshes a busy Gemini account on a forced refresh and stamps a new reading", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const oldObservedAt = setStaleUsage(pool);
+    markInFlight(pool, pool.account.id);
+
+    const account = await pool.operations.refreshUsage(pool.account.id);
+
+    expect(account?.inFlight).toBe(2);
+    expect(account?.observedAt).toBe(pool.now());
+    expect(account?.observedAt).not.toBe(oldObservedAt);
+  });
+
+  it("refreshes a busy Gemini account on the scheduled interval but not within it", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    markInFlight(pool, pool.account.id);
+    const quotaCalls = () =>
+      pool.calls.filter((url) => url.endsWith(":retrieveUserQuotaSummary")).length;
+    const before = quotaCalls();
+
+    await pool.hub.refreshUsage();
+    expect(quotaCalls()).toBe(before);
+
+    pool.advance(6 * MINUTE);
+    await pool.hub.refreshUsage();
+    expect(quotaCalls()).toBe(before + 1);
+  });
+
+  it("still skips a busy Claude account, even on a forced refresh", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const claude = await pool.accounts.add(
+      {
+        provider: "claude",
+        kind: "oauth",
+        label: "synthetic-claude",
+        email: null,
+        accountUuid: null,
+        geminiProject: null,
+        geminiEndpoint: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        enabled: true,
+        priority: 0,
+      },
+      {
+        kind: "oauth",
+        accessToken: "access-claude",
+        refreshToken: "refresh-claude",
+        expiresAt: pool.now() + 24 * 60 * MINUTE,
+      },
+    );
+    markInFlight(pool, claude.id);
+    const before = pool.calls.length;
+
+    expect(await pool.hub.refreshUsage(claude.id, true)).toBe(true);
+
+    expect(pool.calls.length).toBe(before);
+  });
+});

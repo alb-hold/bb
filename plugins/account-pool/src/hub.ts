@@ -882,7 +882,11 @@ export class AccountPoolHub {
     ]);
     signal.throwIfAborted();
     const adapter = this.adapter(account.provider);
-    if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return true;
+    if (
+      adapter.usageFromResponses &&
+      (this.inFlightByAccount.get(account.id) ?? 0) > 0
+    )
+      return true;
     const running = this.usageRefreshes.get(account.id);
     if (running !== undefined) return running;
     const now = this.options.now();

@@ -1034,6 +1034,7 @@ export function createGeminiAdapter(options: {
   return {
     provider: "gemini",
     upstreamName: "Google Gemini",
+    usageFromResponses: false,
     async localLogin() {
       const imported = await importGeminiFileCredentials().catch(() => null);
       return imported === null ? null : { email: null, planLabel: null };

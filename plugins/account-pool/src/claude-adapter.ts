@@ -318,6 +318,7 @@ export function createClaudeAdapter(options: {
     provider: "claude",
     refreshProfile,
     upstreamName: "Anthropic",
+    usageFromResponses: true,
     async localLogin() {
       return null;
     },

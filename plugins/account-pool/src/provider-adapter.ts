@@ -96,6 +96,7 @@ export interface ImportedProviderAccount {
 export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
+  usageFromResponses: boolean;
   importAccount(options?: { home?: string }): Promise<ImportedProviderAccount>;
   probeImport?(options?: { home?: string }): Promise<ImportProbe>;
   localLogin(): Promise<{
