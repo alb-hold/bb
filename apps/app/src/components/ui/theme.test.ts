@@ -616,7 +616,11 @@ describe("sidebar and timeline metadata contrast", () => {
         ...canvas,
         lightness: ink.lightness * share + canvas.lightness * (1 - share),
       };
-      for (const token of ["subtle-foreground", "muted-foreground"]) {
+      for (const token of [
+        "subtle-foreground",
+        "muted-foreground",
+        "destructive-text",
+      ]) {
         it(`${mode} ${token} metadata reaches 4.5:1 on ${background}`, () => {
           expect(
             contrastRatio(parseOklch(variableValue(block, token)), surface),

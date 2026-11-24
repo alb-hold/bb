@@ -987,7 +987,6 @@ function EnvironmentThreadGroupHeader({
   if (stickyLevel !== undefined) {
     return (
       <SidebarStickyTier
-        {...dragBindings?.attributes}
         {...dragBindings?.listeners}
         ref={dragBindings?.setActivatorNodeRef}
         tier="parent"
@@ -1003,7 +1002,6 @@ function EnvironmentThreadGroupHeader({
 
   return (
     <div
-      {...dragBindings?.attributes}
       {...dragBindings?.listeners}
       ref={dragBindings?.setActivatorNodeRef}
       data-sidebar-rename-row=""

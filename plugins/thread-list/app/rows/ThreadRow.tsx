@@ -281,7 +281,6 @@ function ThreadRowContainer({
     "data-sidebar-nest-target": nestTargetState ?? undefined,
     "data-sidebar-reorder-placement": reorderPlacement ?? undefined,
     "data-sidebar-thread-selected": selected ? "" : undefined,
-    ...dragBindings?.attributes,
     ...(dragBindings?.listeners ?? {}),
     onClick,
     onClickCapture,
@@ -525,7 +524,7 @@ const PULL_REQUEST_STATE_CLASS = {
   draft: "text-muted-foreground",
   open: "text-success-foreground",
   merged: "text-accent-foreground",
-  closed: "text-destructive",
+  closed: "text-destructive-text",
 } as const;
 
 function getPullRequestRepository(url: string): string {
@@ -569,7 +568,7 @@ function SidebarThreadPullRequestChip({ thread }: { thread: SidebarThread }) {
           aria-label={accessibleLabel}
           onClick={(event) => event.stopPropagation()}
           className={cn(
-            "relative z-20 shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline",
+            "relative z-20 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1.5 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline",
             PULL_REQUEST_STATE_CLASS[pullRequest.state],
           )}
         >
@@ -607,7 +606,7 @@ function PhoneBranchLabel({ branch }: { branch: string }) {
     <span
       data-sidebar-thread-phone-context=""
       title={branch}
-      className="flex min-w-0 max-w-full whitespace-nowrap md:hidden"
+      className="flex min-w-0 flex-1 whitespace-nowrap md:hidden"
     >
       <span className="min-w-0 truncate">{head}</span>
       <span className="shrink-0">{tail}</span>
@@ -892,7 +891,7 @@ function ThreadRowComponent({
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
-    "gap-1 md:py-0.5",
+    "gap-1 py-1 md:py-0.5",
     DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
     !hasRowState &&
       "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
@@ -1060,7 +1059,7 @@ function ThreadRowComponent({
                     data-sidebar-thread-leading=""
                     role={provider && !hasModeGlyph ? "img" : undefined}
                     aria-label={provider && !hasModeGlyph ? provider.displayName : undefined}
-                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit! [&_[data-thread-mode-badge]]:text-foreground!"
+                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 self-start mt-0.5 text-muted-foreground [&_*]:text-inherit! [&_[data-thread-mode-badge]]:text-foreground!"
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -1081,7 +1080,7 @@ function ThreadRowComponent({
               </span>
             ) : (
               <span
-                className="min-w-0 flex-1 max-md:flex max-md:flex-col md:flex md:flex-col"
+                className="min-w-0 flex-1 flex flex-col"
                 title={labelTitle}
                 onDoubleClick={startTitleEditing}
               >
@@ -1094,7 +1093,7 @@ function ThreadRowComponent({
                     trailingIndicatorKind === "check-terminal" ||
                     trailingIndicatorKind === "waiting-for-input"
                   }
-                  className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
+                  className="bb-thread-title leading-5 md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
                 >
                   <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
                     <ThreadTitle threadId={thread.id} experimental_fallbackTitle={thread.displayTitle} />
@@ -1103,7 +1102,9 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex max-md:flex max-md:flex-col max-md:items-stretch max-md:[&_[data-thread-row-project]]:shrink",
+                    "flex min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit max-md:[&_[data-thread-row-project]]:shrink",
+                    phoneBranch !== null &&
+                      "max-md:[&>[data-thread-context-metadata]]:flex-initial max-md:[&>[data-thread-context-metadata]]:max-w-[55%]",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}
@@ -1113,7 +1114,12 @@ function ThreadRowComponent({
                     age={<InfoRowTime timestamp={thread.updatedAt} />}
                   />
                   {phoneBranch !== null ? (
-                    <PhoneBranchLabel branch={phoneBranch} />
+                    <>
+                      <span aria-hidden="true" className="shrink-0 md:hidden">
+                        {"·"}
+                      </span>
+                      <PhoneBranchLabel branch={phoneBranch} />
+                    </>
                   ) : null}
                 </span>
               </span>
@@ -1126,7 +1132,7 @@ function ThreadRowComponent({
                   data-sidebar-thread-cross-project=""
                   role="img"
                   aria-label={crossProjectLabel}
-                  className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground md:self-start md:mt-0.5"
+                  className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground self-start mt-0.5"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1143,9 +1149,8 @@ function ThreadRowComponent({
             <SidebarChildToggleChevron
               disabled={isEditing}
               className={cn(
-                "md:self-start md:mt-0.5",
+                "self-start mt-0.5",
                 isEditing && "hidden",
-                hasVisibleStatus && "size-4",
               )}
               isCollapsed={isParentCollapsed}
               expandLabel={`Expand ${labelTitle} threads`}

@@ -247,7 +247,6 @@ function SidebarSectionRowComponent({
         level={stickyLevel}
         className={className}
         style={style}
-        {...dragBindings?.attributes}
         {...(dragBindings?.listeners ?? {})}
         onClickCapture={
           consumeClickSuppression ? handleClickCapture : undefined
@@ -264,7 +263,6 @@ function SidebarSectionRowComponent({
       data-sidebar-rename-row=""
       className={className}
       style={style}
-      {...dragBindings?.attributes}
       {...(dragBindings?.listeners ?? {})}
       onClickCapture={consumeClickSuppression ? handleClickCapture : undefined}
     >

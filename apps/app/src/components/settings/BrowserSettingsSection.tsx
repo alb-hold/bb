@@ -123,7 +123,7 @@ function BrowserRow({
               </SettingsBadge>
             ) : null}
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-subtle-foreground/75">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-subtle-foreground">
             <span
               className={cn(
                 "inline-flex shrink-0 items-center gap-1.5",
@@ -311,7 +311,7 @@ export function BrowserSettingsSectionContent({
         )}
       </SettingsSection>
       {supported ? (
-        <p className="mt-4 text-xs text-subtle-foreground/75">
+        <p className="mt-4 text-xs text-subtle-foreground">
           Also from the CLI: <code>bb browser import-sources</code> and{" "}
           <code>bb browser import-cookies</code>.
         </p>
