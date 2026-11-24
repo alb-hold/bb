@@ -11,6 +11,7 @@ import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 import { resolveWriteTarget } from "./file-write.js";
 import {
   processDoubtsIgnorableForRemoval,
+  temporaryTargetOnAnotherMount,
   type TemporaryRemovalContext,
 } from "./temporary-removal.js";
 
@@ -268,6 +269,16 @@ export async function removeHostPath(
   context: TemporaryRemovalContext,
 ): Promise<HostDaemonOnlineRpcResult<"host.remove_path">> {
   refuseOnWindows(`remove ${command.path}`);
+  if (
+    command.temporaryRemoval !== undefined &&
+    path.isAbsolute(command.path) &&
+    (await temporaryTargetOnAnotherMount(command.path))
+  ) {
+    throw new CommandDispatchError(
+      "path_in_use",
+      `Refusing to remove ${command.path}: it is on a different filesystem mount than the temporary directory, so it was not touched.`,
+    );
+  }
   const { target, root } = await requireExistingWithin(
     command.path,
     command.rootPath,
