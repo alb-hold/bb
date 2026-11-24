@@ -543,7 +543,7 @@ describe("thread entity store", () => {
       status: "active",
       runtime: receipt(100_000),
       activity: server[0]!.activity,
-      latestAttentionAt: null,
+      latestAttentionAt: 0,
       updatedAt: 10,
     });
     await s.fetchList(s.listKey, () => server);
