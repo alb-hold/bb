@@ -159,6 +159,60 @@ describe("live cursor position queries", () => {
       input: "\x1b[2;5r\x1b[?6h\x1b[?6n\x1b[2;4H\x1b[?6n\x1b[?6l\x1b[?6n",
       expected: ["\x1b[?2;1R", "\x1b[?3;4R", "\x1b[?1;1R"],
     },
+    {
+      name: "HT, HTS, TBC (0 and 3), CHT, and CBT including pending-wrap no-op",
+      cols: 20,
+      rows: 4,
+      input:
+        "\t\x1b[6n\x1b[2I\x1b[6n\x1b[Z\x1b[6n\x1b[0g\r\x1b[2I\x1b[6n\x1b[1;5H\x1bH\r\t\x1b[6n\x1b[3g\t\x1b[6n\x1b[1;1H" +
+        "a".repeat(20) +
+        "\t\x1b[2I\x1b[Z\x1b[6n",
+      expected: [
+        "\x1b[1;9R",
+        "\x1b[1;20R",
+        "\x1b[1;17R",
+        "\x1b[1;20R",
+        "\x1b[1;5R",
+        "\x1b[1;20R",
+        "\x1b[1;21R",
+      ],
+    },
+    {
+      name: "REP repeats ASCII and wide characters and resets after control or CSI sequences",
+      cols: 8,
+      rows: 4,
+      input:
+        "A\x1b[3b\x1b[6n\x1b[2b\x1b[6n漢\x1b[2b\x1b[6nB\x1b[0m\x1b[4b\x1b[6n",
+      expected: ["\x1b[1;5R", "\x1b[1;5R", "\x1b[2;3R", "\x1b[2;4R"],
+    },
+    {
+      name: "IND, NEL, RI, C1 controls, IL/DL column reset, and invalid DECSTBM no-op",
+      cols: 10,
+      rows: 5,
+      input:
+        "\x1b[2;4r\x1b[4;3r\x1b[2;6H\x1bM\x1b[6n\x1bD\x84\x1b[6n\x1bE\x1b[6n\x1b[3;7H\x1b[L\x1b[6n\x1b[1;7H\x1b[M\x1b[6n",
+      expected: [
+        "\x1b[2;6R",
+        "\x1b[4;6R",
+        "\x1b[4;1R",
+        "\x1b[3;1R",
+        "\x1b[1;7R",
+      ],
+    },
+    {
+      name: "alternate screen modes 47, 1047, and 1048 cursor transfers and tab reset",
+      cols: 16,
+      rows: 4,
+      input:
+        "\x1b[2;5H\x1b[?47h\x1b[6n\x1b[3g\t\x1b[6n\x1b[?47l\x1b[6n\x1b[?1047h\r\t\x1b[6n\x1b[?1048h\x1b[4;2H\x1b[?1048l\x1b[6n\x1b[?1047l",
+      expected: [
+        "\x1b[2;5R",
+        "\x1b[2;16R",
+        "\x1b[2;16R",
+        "\x1b[2;9R",
+        "\x1b[2;9R",
+      ],
+    },
   ])(
     "matches xterm.js Unicode 11 cursor position: $name",
     ({ cols, rows, input, expected }) => {
@@ -183,7 +237,8 @@ describe("live cursor position queries", () => {
     expect(push("\x1b7\x1b[?1049h\x1b[6n")).toBe("\x1b7\x1b[?1049h");
     expect(push("\x1b[?1049l\x1b[6n")).toBe("\x1b[?1049l");
     tracker.resize(3, 1);
-    expect(push("\x1b[6n")).toBe("");
+    expect(push("\x1b[6n")).toBe("\x1b[6n");
+    expect(push("\x1b[1;9H\x1b[6n")).toBe("\x1b[1;9H");
 
     expect(replies).toEqual([
       "\x1b[1;1R",
@@ -195,6 +250,132 @@ describe("live cursor position queries", () => {
       "\x1b[2;4R",
       "\x1b[1;3R",
     ]);
+  });
+
+  for (const query of ["\x1b[6n", "\x1b[?6n"] as const) {
+    for (let split = 0; split <= query.length; split++) {
+      it(`forwards ${JSON.stringify(query)} raw when split at ${split} while cursor position is unknown`, () => {
+        const tracker = new TerminalCursorPositionQueries(10, 4);
+        const replies: string[] = [];
+        const reply = (text: string) => {
+          replies.push(text);
+        };
+        tracker.push("1234567890abc", reply);
+        tracker.resize(6, 4);
+
+        const out =
+          tracker.push(`pre${query.slice(0, split)}`, reply) +
+          tracker.push(`${query.slice(split)}post`, reply);
+        expect(out).toBe(`pre${query}post`);
+        expect(replies).toEqual([]);
+        expect(tracker.flush()).toBe("");
+      });
+    }
+
+    it(`forwards ${JSON.stringify(query)} raw when resize marks position unknown mid-query`, () => {
+      const tracker = new TerminalCursorPositionQueries(10, 4);
+      const replies: string[] = [];
+      const reply = (text: string) => {
+        replies.push(text);
+      };
+      tracker.push("1234567890abc", reply);
+      const prefix = query.slice(0, -1);
+      const out1 = tracker.push(`A${prefix}`, reply);
+      tracker.resize(6, 4);
+      const out2 = tracker.push("nB", reply);
+      expect(out1 + out2).toBe(`A${query}B`);
+      expect(replies).toEqual([]);
+    });
+  }
+
+  it("defers DSR while position is unknown from reverse-wraparound, unknown tabs, or deep scrollback and resumes once row and column are both known", () => {
+    const tracker = new TerminalCursorPositionQueries(10, 5);
+    const replies: string[] = [];
+    const push = (text: string) =>
+      tracker.push(text, (reply) => replies.push(reply));
+
+    expect(push("\x1b[?45h\x1b[2;1H\b\x1b[6n\x1b[?6n")).toBe(
+      "\x1b[?45h\x1b[2;1H\b\x1b[6n\x1b[?6n",
+    );
+    expect(replies).toEqual([]);
+
+    expect(push("\r\x1b[6n")).toBe("\r\x1b[6n");
+    expect(push("\x1b[4G\x1b[6n")).toBe("\x1b[4G\x1b[6n");
+    expect(replies).toEqual([]);
+
+    expect(push("\x1b[3d\x1b[6n")).toBe("\x1b[3d");
+    expect(replies).toEqual(["\x1b[3;4R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[2;1H\b\x1b[2d\x1b[6n")).toBe("\x1b[2;1H\b\x1b[2d\x1b[6n");
+    expect(replies).toEqual([]);
+    expect(push("\x1b[5G\x1b[?6n")).toBe("\x1b[5G");
+    expect(replies).toEqual(["\x1b[?2;5R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[2;1H\b\x1bH\x1b[1;1H\t\x1b[6n")).toBe(
+      "\x1b[2;1H\b\x1bH\x1b[1;1H\t\x1b[6n",
+    );
+    expect(replies).toEqual([]);
+    expect(push("\x1b[3g\x1b[2;3f\x1b[6n")).toBe("\x1b[3g\x1b[2;3f");
+    expect(replies).toEqual(["\x1b[2;3R"]);
+
+    replies.length = 0;
+    expect(push("\x1b7" + "\n".repeat(205) + "\x1b8\x1b[6n")).toBe(
+      "\x1b7" + "\n".repeat(205) + "\x1b8\x1b[6n",
+    );
+    expect(replies).toEqual([]);
+
+    expect(push("\x1b[2;4r\x1b[6n")).toBe("\x1b[2;4r");
+    expect(replies).toEqual(["\x1b[1;1R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[3;1H\b\x1b[?6h\x1b[6n")).toBe("\x1b[3;1H\b\x1b[?6h");
+    expect(replies).toEqual(["\x1b[2;1R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[3;1H\b\x1b#8\x1b[6n\x1b[?6l\x1b[6n")).toBe(
+      "\x1b[3;1H\b\x1b#8\x1b[?6l",
+    );
+    expect(replies).toEqual(["\x1b[2;1R", "\x1b[1;1R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[?45h\x1b[2;1H\b\x1bc\x1b[6n")).toBe(
+      "\x1b[?45h\x1b[2;1H\b\x1bc",
+    );
+    expect(replies).toEqual(["\x1b[1;1R"]);
+  });
+
+  it("keeps cursor position known across non-reflowing resizes and marks it unknown when shrinking cols reflows normal-buffer text", () => {
+    const tracker = new TerminalCursorPositionQueries(80, 24);
+    const replies: string[] = [];
+    const push = (text: string) =>
+      tracker.push(text, (reply) => replies.push(reply));
+
+    expect(push("\x1b[1;1Hlive-1")).toBe("\x1b[1;1Hlive-1");
+    tracker.resize(85, 26);
+    expect(push("\x1b[6n")).toBe("");
+    expect(replies).toEqual(["\x1b[1;7R"]);
+
+    replies.length = 0;
+    tracker.resize(10, 5);
+    expect(push("\x1b[6n")).toBe("");
+    expect(replies).toEqual(["\x1b[1;7R"]);
+
+    replies.length = 0;
+    tracker.resize(4, 5);
+    expect(push("\x1b[6n")).toBe("\x1b[6n");
+    expect(replies).toEqual([]);
+
+    tracker.resize(10, 5);
+    expect(push("\x1b[?1049h\x1b[2;4Habcdef")).toBe("\x1b[?1049h\x1b[2;4Habcdef");
+    tracker.resize(4, 1);
+    expect(push("\x1b[6n")).toBe("");
+    expect(replies).toEqual(["\x1b[1;4R"]);
+
+    replies.length = 0;
+    expect(push("\x1b[?1049l\x1b[6n")).toBe("\x1b[?1049l\x1b[6n");
+    expect(replies).toEqual([]);
   });
 
   it("ignores OSC and DCS payloads so titles and hyperlinks do not move the cursor", () => {

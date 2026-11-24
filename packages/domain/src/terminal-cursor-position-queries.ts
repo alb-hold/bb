@@ -1,21 +1,45 @@
-const MAX_CSI_PARAMS_LENGTH = 64;
+const MAX_CSI_PARAMS = 32;
+const MAX_CSI_PARAM_VALUE = 0x7fffffff;
+const MIN_GUARANTEED_SCROLLBACK = 200;
 
 type ParserState =
   | "ground"
   | "esc"
   | "esc-intermediate"
-  | "csi"
+  | "csi-entry"
+  | "csi-param"
+  | "csi-intermediate"
+  | "csi-ignore"
   | "osc"
-  | "osc-esc"
-  | "string"
-  | "string-esc";
+  | "dcs-entry"
+  | "dcs-param"
+  | "dcs-intermediate"
+  | "dcs-passthrough"
+  | "dcs-ignore"
+  | "sos-pm"
+  | "apc";
 
-interface SavedCursor {
-  row: number;
-  col: number;
-  pendingWrap: boolean;
-  originMode: boolean;
-  autowrap: boolean;
+interface BufferCursorState {
+  x: number;
+  y: number;
+  ybase: number;
+  ybaseKnown: boolean;
+  scrollsSinceReset: number;
+  hasWrappedLine: boolean;
+  maxPrintedCol: number;
+  linesLength: number;
+  scrollTop: number;
+  scrollBottom: number;
+  tabs: Set<number>;
+  tabsKnown: boolean;
+  rowKnown: boolean;
+  colKnown: boolean;
+  savedX: number;
+  savedY: number;
+  savedOriginMode: boolean;
+  savedAutowrap: boolean;
+  savedRowKnown: boolean;
+  savedColKnown: boolean;
 }
 
 type CodePointRange = readonly [number, number];
@@ -180,88 +204,248 @@ export function unicodeV11CellWidth(cp: number): number {
   return 1;
 }
 
-function isQueryPrefix(value: string): boolean {
-  return (
-    value === "\u001b" ||
-    value === "\u001b[" ||
-    value === "\u001b[6" ||
-    value === "\u001b[?" ||
-    value === "\u001b[?6"
-  );
+function collectByte(current: number, byte: number): number {
+  if (current > 0xffff) return 0x1000000;
+  return (current << 8) | byte;
 }
 
-function parseCsiParam(raw: string | undefined, fallback: number): number {
-  if (raw === undefined || raw.length === 0) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+function createDefaultTabs(cols: number): Set<number> {
+  const tabs = new Set<number>();
+  for (let i = 0; i < cols; i += 8) {
+    tabs.add(i);
+  }
+  return tabs;
+}
+
+function prevTabStop(tabs: Set<number>, cols: number, startX: number): number {
+  let x = startX - 1;
+  while (!tabs.has(x) && x > 0) {
+    x -= 1;
+  }
+  return x >= cols ? cols - 1 : x < 0 ? 0 : x;
+}
+
+function nextTabStop(tabs: Set<number>, cols: number, startX: number): number {
+  let x = startX + 1;
+  while (!tabs.has(x) && x < cols) {
+    x += 1;
+  }
+  return x >= cols ? cols - 1 : x < 0 ? 0 : x;
+}
+
+function extendTabStops(tabs: Set<number>, cols: number, fromIndex: number): void {
+  let i = fromIndex;
+  if (!tabs.has(i)) {
+    i = prevTabStop(tabs, cols, i);
+  }
+  for (; i < cols; i += 8) {
+    tabs.add(i);
+  }
+}
+
+function createBufferCursorState(
+  cols: number,
+  rows: number,
+  initialLinesLength: number,
+): BufferCursorState {
+  return {
+    x: 0,
+    y: 0,
+    ybase: 0,
+    ybaseKnown: true,
+    scrollsSinceReset: 0,
+    hasWrappedLine: false,
+    maxPrintedCol: 0,
+    linesLength: initialLinesLength,
+    scrollTop: 0,
+    scrollBottom: rows - 1,
+    tabs: createDefaultTabs(cols),
+    tabsKnown: true,
+    rowKnown: true,
+    colKnown: true,
+    savedX: 0,
+    savedY: 0,
+    savedOriginMode: false,
+    savedAutowrap: true,
+    savedRowKnown: true,
+    savedColKnown: true,
+  };
 }
 
 export class TerminalCursorPositionQueries {
   private cols: number;
   private rows: number;
-  private row = 0;
-  private col = 0;
-  private pendingWrap = false;
-  private scrollTop = 0;
-  private scrollBottom: number;
-  private altScrollTop = 0;
-  private altScrollBottom: number;
+  private normal: BufferCursorState;
+  private alt: BufferCursorState;
+  private altScreen = false;
   private originMode = false;
   private autowrap = true;
-  private altScreen = false;
-  private savedMain: SavedCursor = {
-    row: 0,
-    col: 0,
-    pendingWrap: false,
-    originMode: false,
-    autowrap: true,
-  };
-  private savedAlt: SavedCursor = {
-    row: 0,
-    col: 0,
-    pendingWrap: false,
-    originMode: false,
-    autowrap: true,
-  };
+  private reverseWraparound = false;
+  private insertMode = false;
+  private convertEol = false;
+  private precedingWidth = 0;
+  private highSurrogate = 0;
   private state: ParserState = "ground";
-  private csiParams = "";
+  private escCollect = 0;
+  private csiCollect = 0;
+  private readonly csiParams = new Int32Array(MAX_CSI_PARAMS);
+  private csiParamCount = 1;
+  private csiDigitIsSub = false;
+  private csiRejectDigits = false;
   private held = "";
 
   constructor(cols: number, rows: number) {
-    this.cols = Math.max(1, Math.floor(cols));
+    this.cols = Math.max(2, Math.floor(cols));
     this.rows = Math.max(1, Math.floor(rows));
-    this.scrollBottom = this.rows - 1;
-    this.altScrollBottom = this.rows - 1;
+    this.normal = createBufferCursorState(this.cols, this.rows, this.rows);
+    this.alt = createBufferCursorState(this.cols, this.rows, 0);
+  }
+
+  private active(): BufferCursorState {
+    return this.altScreen ? this.alt : this.normal;
+  }
+
+  private isPositionKnown(): boolean {
+    const buf = this.active();
+    return buf.rowKnown && buf.colKnown;
   }
 
   resize(cols: number, rows: number): void {
-    this.cols = Math.max(1, Math.floor(cols));
-    this.rows = Math.max(1, Math.floor(rows));
-    this.row = Math.min(this.row, this.rows - 1);
-    this.col = Math.min(this.col, this.cols - 1);
-    this.scrollTop = 0;
-    this.scrollBottom = this.rows - 1;
-    this.altScrollTop = 0;
-    this.altScrollBottom = this.rows - 1;
-    this.pendingWrap = false;
-  }
+    if (Number.isNaN(cols) || Number.isNaN(rows)) return;
+    const nextCols = Math.max(2, Math.floor(cols));
+    const nextRows = Math.max(1, Math.floor(rows));
+    const prevCols = this.cols;
+    const prevRows = this.rows;
 
-  private activeScrollTop(): number {
-    return this.altScreen ? this.altScrollTop : this.scrollTop;
-  }
+    this.resizeNormalBuffer(prevCols, prevRows, nextCols, nextRows);
+    this.resizeAltBuffer(nextCols, nextRows);
 
-  private activeScrollBottom(): number {
-    return this.altScreen ? this.altScrollBottom : this.scrollBottom;
-  }
+    this.cols = nextCols;
+    this.rows = nextRows;
 
-  private setActiveScrollRegion(top: number, bottom: number): void {
-    if (this.altScreen) {
-      this.altScrollTop = top;
-      this.altScrollBottom = bottom;
-    } else {
-      this.scrollTop = top;
-      this.scrollBottom = bottom;
+    if (this.normal.tabsKnown) {
+      extendTabStops(this.normal.tabs, nextCols, nextCols);
     }
+    if (this.alt.tabsKnown) {
+      extendTabStops(this.alt.tabs, nextCols, nextCols);
+    }
+  }
+
+  private resizeNormalBuffer(
+    prevCols: number,
+    prevRows: number,
+    nextCols: number,
+    nextRows: number,
+  ): void {
+    const buf = this.normal;
+    const mayReflow =
+      (nextCols > prevCols && buf.hasWrappedLine) ||
+      (nextCols < prevCols &&
+        (buf.hasWrappedLine || buf.maxPrintedCol > nextCols));
+    if (!mayReflow && buf.ybaseKnown && buf.rowKnown && buf.colKnown) {
+      let addToY = 0;
+      if (prevRows < nextRows) {
+        for (let y = prevRows; y < nextRows; y += 1) {
+          if (buf.linesLength < nextRows + buf.ybase) {
+            if (buf.ybase > 0 && buf.linesLength <= buf.ybase + buf.y + addToY + 1) {
+              buf.ybase -= 1;
+              addToY += 1;
+            } else {
+              buf.linesLength += 1;
+            }
+          }
+        }
+      } else {
+        for (let y = prevRows; y > nextRows; y -= 1) {
+          if (buf.linesLength > nextRows + buf.ybase) {
+            if (buf.linesLength > buf.ybase + buf.y + 1) {
+              buf.linesLength -= 1;
+            } else {
+              buf.ybase += 1;
+            }
+          }
+        }
+      }
+      const newMaxLength = nextRows + MIN_GUARANTEED_SCROLLBACK;
+      if (buf.linesLength > newMaxLength) {
+        const trim = buf.linesLength - newMaxLength;
+        buf.linesLength -= trim;
+        buf.ybase = Math.max(buf.ybase - trim, 0);
+        buf.savedY = Math.max(buf.savedY - trim, 0);
+      }
+      buf.x = Math.min(buf.x, nextCols - 1);
+      buf.y = Math.min(buf.y, nextRows - 1) + addToY;
+      buf.savedX = Math.min(buf.savedX, nextCols - 1);
+      buf.scrollTop = 0;
+      buf.scrollBottom = nextRows - 1;
+      buf.maxPrintedCol = Math.min(buf.maxPrintedCol, nextCols);
+      const maxY = Math.max(0, buf.linesLength - buf.ybase - 1);
+      buf.y = Math.min(buf.y, maxY);
+      return;
+    }
+
+    buf.scrollTop = 0;
+    buf.scrollBottom = nextRows - 1;
+    buf.savedX = Math.min(buf.savedX, nextCols - 1);
+    if (nextCols !== prevCols) {
+      buf.hasWrappedLine = true;
+      buf.maxPrintedCol = nextCols;
+    }
+    if (nextCols === prevCols && nextRows === prevRows) {
+      if (buf.colKnown) buf.x = Math.min(buf.x, nextCols - 1);
+      if (buf.rowKnown) buf.y = Math.min(buf.y, nextRows - 1);
+      return;
+    }
+
+    buf.rowKnown = false;
+    buf.colKnown = false;
+    buf.ybaseKnown = false;
+    buf.savedRowKnown = false;
+    buf.savedColKnown = false;
+  }
+
+  private resizeAltBuffer(nextCols: number, nextRows: number): void {
+    const buf = this.alt;
+    if (buf.linesLength > 0) {
+      if (buf.colKnown) {
+        buf.x = Math.min(buf.x, nextCols - 1);
+      }
+      if (buf.rowKnown) {
+        buf.y = Math.min(buf.y, nextRows - 1);
+      } else if (nextRows === 1) {
+        buf.y = 0;
+        buf.rowKnown = true;
+      }
+      buf.savedX = Math.min(buf.savedX, nextCols - 1);
+      buf.scrollTop = 0;
+      buf.linesLength = nextRows;
+    }
+    buf.scrollBottom = nextRows - 1;
+  }
+
+  private resetCsi(): void {
+    this.csiCollect = 0;
+    this.csiParams[0] = 0;
+    this.csiParamCount = 1;
+    this.csiDigitIsSub = false;
+    this.csiRejectDigits = false;
+  }
+
+  private addCsiParam(): void {
+    this.csiDigitIsSub = false;
+    if (this.csiParamCount >= MAX_CSI_PARAMS) {
+      this.csiRejectDigits = true;
+      return;
+    }
+    this.csiParams[this.csiParamCount] = 0;
+    this.csiParamCount += 1;
+  }
+
+  private addCsiDigit(digit: number): void {
+    if (this.csiDigitIsSub || this.csiRejectDigits) return;
+    const idx = this.csiParamCount - 1;
+    const next = this.csiParams[idx]! * 10 + digit;
+    this.csiParams[idx] = next > MAX_CSI_PARAM_VALUE ? MAX_CSI_PARAM_VALUE : next;
   }
 
   push(chunk: string, reply: (data: string) => void): string {
@@ -282,225 +466,250 @@ export class TerminalCursorPositionQueries {
     };
 
     let index = 0;
+    if (this.highSurrogate !== 0) {
+      const prevHigh = this.highSurrogate;
+      this.highSurrogate = 0;
+      const first = chunk.charCodeAt(0);
+      if (first >= 0xdc00 && first <= 0xdfff) {
+        const combined = ((prevHigh - 0xd800) << 10) + (first - 0xdc00) + 0x10000;
+        this.processNonAsciiCodePoint(combined);
+        index = 1;
+      } else {
+        this.processNonAsciiCodePoint(prevHigh);
+      }
+    }
+
     while (index < chunk.length) {
       const code = chunk.charCodeAt(index);
 
+      if (code === 0xfeff) {
+        if (this.held.length > 0) {
+          emitRaw(this.held);
+          this.held = "";
+          mutated = true;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (this.held.length > 0) {
+        if (this.state === "esc" && code === 0x5b) {
+          this.held = "\u001b[";
+          this.state = "csi-entry";
+          this.resetCsi();
+          mutated = true;
+          sliceStart = index + 1;
+          index += 1;
+          continue;
+        }
+        if (this.state === "csi-entry" && this.held === "\u001b[" && code === 0x3f) {
+          this.held = "\u001b[?";
+          this.csiCollect = 0x3f;
+          this.state = "csi-param";
+          mutated = true;
+          sliceStart = index + 1;
+          index += 1;
+          continue;
+        }
+        if (
+          (this.state === "csi-entry" || this.state === "csi-param") &&
+          (this.held === "\u001b[" || this.held === "\u001b[?") &&
+          code === 0x36
+        ) {
+          this.held += "6";
+          this.addCsiDigit(6);
+          this.state = "csi-param";
+          mutated = true;
+          sliceStart = index + 1;
+          index += 1;
+          continue;
+        }
+        if (
+          this.state === "csi-param" &&
+          (this.held === "\u001b[6" || this.held === "\u001b[?6") &&
+          code === 0x6e
+        ) {
+          const fullQuery = `${this.held}n`;
+          const isPrivate = this.held === "\u001b[?6";
+          this.held = "";
+          this.state = "ground";
+          this.precedingWidth = 0;
+          mutated = true;
+          sliceStart = index + 1;
+          if (this.isPositionKnown()) {
+            reply(this.formatReport(isPrivate));
+          } else {
+            emitRaw(fullQuery);
+          }
+          index += 1;
+          continue;
+        }
+        if (code === 0x1b) {
+          flushSlice(index);
+          emitRaw(this.held);
+          this.held = "\u001b";
+          this.state = "esc";
+          this.escCollect = 0;
+          if (this.isPayloadState()) {
+            this.precedingWidth = 0;
+          }
+          mutated = true;
+          sliceStart = index + 1;
+          index += 1;
+          continue;
+        }
+        emitRaw(this.held);
+        this.held = "";
+        mutated = true;
+      }
+
+      if (code === 0x1b) {
+        flushSlice(index);
+        if (this.isPayloadState()) {
+          this.precedingWidth = 0;
+        }
+        this.held = "\u001b";
+        this.state = "esc";
+        this.escCollect = 0;
+        mutated = true;
+        sliceStart = index + 1;
+        index += 1;
+        continue;
+      }
+
+      if (code >= 0x80 && code <= 0x9f) {
+        this.handleC1(code);
+        index += 1;
+        continue;
+      }
+
+      if (code === 0x18 || code === 0x1a) {
+        this.precedingWidth = 0;
+        this.state = "ground";
+        index += 1;
+        continue;
+      }
+
+      if (this.state === "ground") {
+        if (code >= 0x20 && code < 0x7f) {
+          const runStart = index;
+          index += 1;
+          while (index < chunk.length) {
+            const next = chunk.charCodeAt(index);
+            if (next < 0x20 || next >= 0x7f) break;
+            index += 1;
+          }
+          this.advanceAsciiRun(index - runStart);
+          continue;
+        }
+        if (code < 0x20) {
+          this.applyExecute(code);
+          index += 1;
+          continue;
+        }
+        if (code === 0x7f) {
+          index += 1;
+          continue;
+        }
+        if (code >= 0xd800 && code <= 0xdbff) {
+          if (index + 1 >= chunk.length) {
+            this.highSurrogate = code;
+            index += 1;
+            continue;
+          }
+          const low = chunk.charCodeAt(index + 1);
+          if (low >= 0xdc00 && low <= 0xdfff) {
+            const cp = ((code - 0xd800) << 10) + (low - 0xdc00) + 0x10000;
+            this.printCodePoint(cp);
+            index += 2;
+            continue;
+          }
+        }
+        this.printCodePoint(code);
+        index += 1;
+        continue;
+      }
+
       if (this.state === "osc") {
-        if (code === 0x07 || code === 0x9c) {
+        if (code === 0x07) {
+          this.precedingWidth = 0;
           this.state = "ground";
-        } else if (code === 0x1b) {
-          this.state = "osc-esc";
-        } else if (code === 0x18 || code === 0x1a) {
-          this.state = "ground";
+        } else if (code >= 0xd800 && code <= 0xdbff && index + 1 >= chunk.length) {
+          this.highSurrogate = code;
         }
         index += 1;
         continue;
       }
 
-      if (this.state === "osc-esc") {
-        if (code === 0x5c) {
-          this.state = "ground";
-        } else if (code === 0x1b) {
-          this.state = "osc-esc";
-        } else if (code === 0x07 || code === 0x18 || code === 0x1a) {
-          this.state = "ground";
-        } else {
+      if (
+        this.state === "sos-pm" ||
+        this.state === "apc" ||
+        this.state === "dcs-passthrough" ||
+        this.state === "dcs-ignore"
+      ) {
+        if (code >= 0xd800 && code <= 0xdbff && index + 1 >= chunk.length) {
+          this.highSurrogate = code;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (
+        this.state === "dcs-entry" ||
+        this.state === "dcs-param" ||
+        this.state === "dcs-intermediate"
+      ) {
+        this.stepDcsHeader(code);
+        index += 1;
+        continue;
+      }
+
+      if (this.state === "esc") {
+        if (code < 0x20) {
+          this.applyExecute(code);
+        } else if (code >= 0x20 && code <= 0x2f) {
+          this.escCollect = collectByte(this.escCollect, code);
+          this.state = "esc-intermediate";
+        } else if (code === 0x5b) {
+          this.resetCsi();
+          this.state = "csi-entry";
+        } else if (code === 0x5d) {
           this.state = "osc";
-        }
-        index += 1;
-        continue;
-      }
-
-      if (this.state === "string") {
-        if (code === 0x9c || code === 0x18 || code === 0x1a) {
+        } else if (code === 0x50) {
+          this.state = "dcs-entry";
+        } else if (code === 0x58 || code === 0x5e) {
+          this.state = "sos-pm";
+        } else if (code === 0x5f) {
+          this.state = "apc";
+        } else if (code >= 0x30 && code <= 0x7e) {
+          this.applyEsc(0, code);
+          this.precedingWidth = 0;
           this.state = "ground";
-        } else if (code === 0x1b) {
-          this.state = "string-esc";
-        }
-        index += 1;
-        continue;
-      }
-
-      if (this.state === "string-esc") {
-        if (code === 0x5c || code === 0x18 || code === 0x1a) {
+        } else if (code !== 0x7f) {
           this.state = "ground";
-        } else if (code === 0x1b) {
-          this.state = "string-esc";
-        } else {
-          this.state = "string";
         }
         index += 1;
         continue;
       }
 
       if (this.state === "esc-intermediate") {
-        if (code === 0x1b) {
-          flushSlice(index);
-          mutated = true;
-          this.state = "esc";
-          this.held = "\u001b";
-          sliceStart = index + 1;
-        } else if (code === 0x18 || code === 0x1a) {
-          this.state = "ground";
-        } else if (code >= 0x30 && code <= 0x7e) {
-          this.state = "ground";
-        } else if (code < 0x20 || code > 0x2f) {
-          this.state = "ground";
-        }
-        index += 1;
-        continue;
-      }
-
-      if (this.state === "esc") {
-        if (code === 0x5b) {
-          this.state = "csi";
-          this.csiParams = "";
-          if (this.held.length > 0) {
-            this.held = "\u001b[";
-            mutated = true;
-            sliceStart = index + 1;
-          }
-          index += 1;
-          continue;
-        }
-        if (code === 0x1b) {
-          flushSlice(index);
-          if (this.held.length > 0) {
-            emitRaw(this.held);
-          }
-          this.held = "\u001b";
-          mutated = true;
-          sliceStart = index + 1;
-          index += 1;
-          continue;
-        }
-        if (this.held.length > 0) {
-          emitRaw(this.held);
-          this.held = "";
-          mutated = true;
-        }
-        if (code === 0x5d) {
-          this.state = "osc";
-        } else if (
-          code === 0x50 ||
-          code === 0x58 ||
-          code === 0x5e ||
-          code === 0x5f
-        ) {
-          this.state = "string";
+        if (code < 0x20) {
+          this.applyExecute(code);
         } else if (code >= 0x20 && code <= 0x2f) {
-          this.state = "esc-intermediate";
-        } else {
-          this.applyEsc(code);
+          this.escCollect = collectByte(this.escCollect, code);
+        } else if (code >= 0x30 && code <= 0x7e) {
+          this.applyEsc(this.escCollect, code);
+          this.precedingWidth = 0;
+          this.state = "ground";
+        } else if (code !== 0x7f) {
           this.state = "ground";
         }
         index += 1;
         continue;
       }
 
-      if (this.state === "csi") {
-        if (this.held.length > 0) {
-          const ch = chunk.charAt(index);
-          const candidate = this.held + ch;
-          if (candidate === "\u001b[6n" || candidate === "\u001b[?6n") {
-            const isPrivate = candidate === "\u001b[?6n";
-            this.held = "";
-            this.csiParams = "";
-            this.state = "ground";
-            mutated = true;
-            sliceStart = index + 1;
-            reply(this.formatReport(isPrivate));
-            index += 1;
-            continue;
-          }
-          if (isQueryPrefix(candidate)) {
-            this.held = candidate;
-            this.csiParams += ch;
-            mutated = true;
-            sliceStart = index + 1;
-            index += 1;
-            continue;
-          }
-          emitRaw(this.held);
-          this.held = "";
-          mutated = true;
-        }
-
-        if (code === 0x1b) {
-          flushSlice(index);
-          mutated = true;
-          this.state = "esc";
-          this.csiParams = "";
-          this.held = "\u001b";
-          sliceStart = index + 1;
-        } else if (code === 0x18 || code === 0x1a) {
-          this.csiParams = "";
-          this.state = "ground";
-        } else if (code >= 0x40 && code <= 0x7e) {
-          this.applyCsi(this.csiParams, code);
-          this.csiParams = "";
-          this.state = "ground";
-        } else if (code >= 0x20 && code <= 0x3f) {
-          if (this.csiParams.length < MAX_CSI_PARAMS_LENGTH) {
-            this.csiParams += chunk.charAt(index);
-          }
-        } else if (code < 0x20) {
-          this.applyC0(code);
-        }
-        index += 1;
-        continue;
-      }
-
-      if (code >= 0x20 && code < 0x7f) {
-        const runStart = index;
-        index += 1;
-        while (index < chunk.length) {
-          const next = chunk.charCodeAt(index);
-          if (next < 0x20 || next >= 0x7f) break;
-          index += 1;
-        }
-        this.advanceAsciiRun(index - runStart);
-        continue;
-      }
-      if (code === 0x1b) {
-        flushSlice(index);
-        mutated = true;
-        this.state = "esc";
-        this.held = "\u001b";
-        sliceStart = index + 1;
-        index += 1;
-        continue;
-      }
-      if (code === 0x9b) {
-        this.state = "csi";
-        this.csiParams = "";
-        index += 1;
-        continue;
-      }
-      if (code === 0x9d) {
-        this.state = "osc";
-        index += 1;
-        continue;
-      }
-      if (code === 0x90 || code === 0x98 || code === 0x9e || code === 0x9f) {
-        this.state = "string";
-        index += 1;
-        continue;
-      }
-      if (code < 0x20) {
-        this.applyC0(code);
-        index += 1;
-        continue;
-      }
-      if (code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
-        index += 1;
-        continue;
-      }
-
-      const cp = chunk.codePointAt(index) ?? code;
-      const step = cp > 0xffff ? 2 : 1;
-      this.advancePrintable(unicodeV11CellWidth(cp));
-      index += step;
+      this.stepCsi(code);
+      index += 1;
     }
 
     if (!mutated) return chunk;
@@ -514,353 +723,923 @@ export class TerminalCursorPositionQueries {
     return remaining;
   }
 
+  private isPayloadState(): boolean {
+    return (
+      this.state === "osc" ||
+      this.state === "dcs-passthrough" ||
+      this.state === "apc"
+    );
+  }
+
+  private processNonAsciiCodePoint(cp: number): void {
+    if (cp === 0xfeff) return;
+    if (cp >= 0x80 && cp <= 0x9f) {
+      this.handleC1(cp);
+      return;
+    }
+    if (this.state === "ground") {
+      this.printCodePoint(cp);
+      return;
+    }
+    if (
+      this.state === "osc" ||
+      this.state === "csi-ignore" ||
+      this.state === "dcs-ignore" ||
+      this.state === "dcs-passthrough" ||
+      this.state === "apc"
+    ) {
+      return;
+    }
+    this.state = "ground";
+  }
+
+  private handleC1(code: number): void {
+    if (this.isPayloadState()) {
+      this.precedingWidth = 0;
+    }
+    switch (code) {
+      case 0x90:
+        this.state = "dcs-entry";
+        return;
+      case 0x98:
+      case 0x9e:
+        this.state = "sos-pm";
+        return;
+      case 0x9b:
+        this.resetCsi();
+        this.state = "csi-entry";
+        return;
+      case 0x9c:
+        this.state = "ground";
+        return;
+      case 0x9d:
+        this.state = "osc";
+        return;
+      case 0x9f:
+        this.state = "apc";
+        return;
+      default:
+        this.applyExecute(code);
+        this.state = "ground";
+        return;
+    }
+  }
+
+  private stepDcsHeader(code: number): void {
+    if (code < 0x20 || code === 0x7f) {
+      return;
+    }
+    if (code >= 0x40 && code <= 0x7e) {
+      this.state = "dcs-passthrough";
+      return;
+    }
+    if (this.state === "dcs-entry") {
+      if (code >= 0x20 && code <= 0x2f) {
+        this.state = "dcs-intermediate";
+      } else if (code >= 0x30 && code <= 0x3f) {
+        this.state = "dcs-param";
+      } else {
+        this.state = "ground";
+      }
+      return;
+    }
+    if (this.state === "dcs-param") {
+      if (code >= 0x20 && code <= 0x2f) {
+        this.state = "dcs-intermediate";
+      } else if (code >= 0x3c && code <= 0x3f) {
+        this.state = "dcs-ignore";
+      } else if (code > 0x7f) {
+        this.state = "ground";
+      }
+      return;
+    }
+    if (code >= 0x30 && code <= 0x3f) {
+      this.state = "dcs-ignore";
+    } else if (code > 0x7f) {
+      this.state = "ground";
+    }
+  }
+
+  private stepCsi(code: number): void {
+    if (code < 0x20) {
+      this.applyExecute(code);
+      return;
+    }
+    if (code === 0x7f) {
+      return;
+    }
+    if (this.state === "csi-ignore") {
+      if (code >= 0x40 && code <= 0x7e) {
+        this.state = "ground";
+      }
+      return;
+    }
+    if (this.state === "csi-entry") {
+      if (code >= 0x40 && code <= 0x7e) {
+        this.applyCsi(code);
+        this.precedingWidth = 0;
+        this.state = "ground";
+      } else if (code >= 0x30 && code <= 0x39) {
+        this.addCsiDigit(code - 0x30);
+        this.state = "csi-param";
+      } else if (code === 0x3b) {
+        this.addCsiParam();
+        this.state = "csi-param";
+      } else if (code === 0x3a) {
+        this.csiDigitIsSub = true;
+        this.state = "csi-param";
+      } else if (code >= 0x3c && code <= 0x3f) {
+        this.csiCollect = collectByte(this.csiCollect, code);
+        this.state = "csi-param";
+      } else if (code >= 0x20 && code <= 0x2f) {
+        this.csiCollect = collectByte(this.csiCollect, code);
+        this.state = "csi-intermediate";
+      } else {
+        this.state = "ground";
+      }
+      return;
+    }
+    if (this.state === "csi-param") {
+      if (code >= 0x40 && code <= 0x7e) {
+        this.applyCsi(code);
+        this.precedingWidth = 0;
+        this.state = "ground";
+      } else if (code >= 0x30 && code <= 0x39) {
+        this.addCsiDigit(code - 0x30);
+      } else if (code === 0x3b) {
+        this.addCsiParam();
+      } else if (code === 0x3a) {
+        this.csiDigitIsSub = true;
+      } else if (code >= 0x20 && code <= 0x2f) {
+        this.csiCollect = collectByte(this.csiCollect, code);
+        this.state = "csi-intermediate";
+      } else if (code >= 0x3c && code <= 0x3f) {
+        this.state = "csi-ignore";
+      } else {
+        this.state = "ground";
+      }
+      return;
+    }
+    if (code >= 0x40 && code <= 0x7e) {
+      this.applyCsi(code);
+      this.precedingWidth = 0;
+      this.state = "ground";
+    } else if (code >= 0x20 && code <= 0x2f) {
+      this.csiCollect = collectByte(this.csiCollect, code);
+    } else if (code >= 0x30 && code <= 0x3f) {
+      this.state = "csi-ignore";
+    } else {
+      this.state = "ground";
+    }
+  }
+
   private formatReport(isPrivate: boolean): string {
-    const reportRow = this.row + 1;
-    const reportCol = this.pendingWrap ? this.cols + 1 : this.col + 1;
+    const buf = this.active();
+    const reportRow = buf.y + 1;
+    const reportCol = buf.x + 1;
     return isPrivate
       ? `\u001b[?${reportRow};${reportCol}R`
       : `\u001b[${reportRow};${reportCol}R`;
   }
 
+  private restrictCursor(maxCol = this.cols - 1): void {
+    const buf = this.active();
+    if (buf.colKnown) {
+      buf.x = Math.min(maxCol, Math.max(0, buf.x));
+    }
+    const minRow = this.originMode ? buf.scrollTop : 0;
+    const maxRow = this.originMode ? buf.scrollBottom : this.rows - 1;
+    if (buf.rowKnown) {
+      buf.y = Math.min(maxRow, Math.max(minRow, buf.y));
+    } else if (minRow === maxRow) {
+      buf.y = minRow;
+      buf.rowKnown = true;
+    }
+  }
+
+  private setCursor(
+    x: number,
+    y: number,
+    setsCol: boolean,
+    setsRow: boolean,
+  ): void {
+    const buf = this.active();
+    if (setsCol || buf.colKnown) {
+      buf.x = x;
+      if (setsCol) buf.colKnown = true;
+    }
+    if (setsRow || buf.rowKnown) {
+      buf.y = this.originMode ? buf.scrollTop + y : y;
+      if (setsRow) buf.rowKnown = true;
+    }
+    this.restrictCursor();
+  }
+
+  private moveCursor(dx: number, dy: number): void {
+    this.restrictCursor();
+    const buf = this.active();
+    this.setCursor(buf.x + dx, buf.y + dy, false, false);
+  }
+
+  private recordNormalScrolls(count: number): void {
+    if (count <= 0) return;
+    const buf = this.normal;
+    if (buf.scrollTop !== 0) return;
+    if (!buf.ybaseKnown) return;
+    buf.scrollsSinceReset += count;
+    if (buf.scrollsSinceReset > MIN_GUARANTEED_SCROLLBACK) {
+      buf.ybaseKnown = false;
+      return;
+    }
+    buf.ybase += count;
+    buf.linesLength = this.rows + buf.ybase;
+  }
+
+  private advanceRowsDown(count: number): void {
+    if (count <= 0) return;
+    const buf = this.active();
+    if (!buf.rowKnown) {
+      if (!this.altScreen && buf.scrollTop === 0) {
+        this.normal.ybaseKnown = false;
+      }
+      return;
+    }
+    if (buf.y <= buf.scrollBottom) {
+      const dist = buf.scrollBottom - buf.y;
+      if (count <= dist) {
+        buf.y += count;
+      } else {
+        buf.y = buf.scrollBottom;
+        if (!this.altScreen) {
+          this.recordNormalScrolls(count - dist);
+        }
+      }
+      return;
+    }
+    buf.y = Math.min(this.rows - 1, buf.y + count);
+  }
+
   private saveCursor(): void {
-    const saved: SavedCursor = {
-      row: this.row,
-      col: this.col,
-      pendingWrap: false,
-      originMode: this.originMode,
-      autowrap: this.autowrap,
-    };
-    if (this.altScreen) this.savedAlt = saved;
-    else this.savedMain = saved;
+    const buf = this.active();
+    buf.savedX = buf.x;
+    buf.savedColKnown = buf.colKnown;
+    if (this.altScreen) {
+      buf.savedY = buf.y;
+      buf.savedRowKnown = buf.rowKnown;
+    } else if (buf.rowKnown && buf.ybaseKnown) {
+      buf.savedY = buf.ybase + buf.y;
+      buf.savedRowKnown = true;
+    } else {
+      buf.savedRowKnown = false;
+    }
+    buf.savedOriginMode = this.originMode;
+    buf.savedAutowrap = this.autowrap;
   }
 
   private restoreCursor(): void {
-    const saved = this.altScreen ? this.savedAlt : this.savedMain;
-    this.originMode = saved.originMode;
-    this.autowrap = saved.autowrap;
-    if (this.originMode) {
-      this.row = Math.max(
-        this.activeScrollTop(),
-        Math.min(this.activeScrollBottom(), saved.row),
-      );
+    const buf = this.active();
+    this.originMode = buf.savedOriginMode;
+    this.autowrap = buf.savedAutowrap;
+    buf.x = buf.savedX || 0;
+    buf.colKnown = buf.savedColKnown;
+    if (this.altScreen) {
+      buf.y = Math.max(buf.savedY, 0);
+      buf.rowKnown = buf.savedRowKnown;
+    } else if (buf.savedRowKnown && buf.ybaseKnown) {
+      buf.y = Math.max(buf.savedY - buf.ybase, 0);
+      buf.rowKnown = true;
     } else {
-      this.row = Math.min(saved.row, this.rows - 1);
+      buf.rowKnown = false;
     }
-    this.col = Math.min(saved.col, this.cols - 1);
-    this.pendingWrap = false;
+    this.restrictCursor();
   }
 
-  private homeCursor(): void {
-    this.row = this.originMode ? this.activeScrollTop() : 0;
-    this.col = 0;
-    this.pendingWrap = false;
+  private activateAltBuffer(): void {
+    if (this.altScreen) return;
+    if (this.alt.linesLength === 0) {
+      this.alt.linesLength = this.rows;
+    }
+    this.alt.x = this.normal.x;
+    this.alt.y = this.normal.y;
+    this.alt.colKnown = this.normal.colKnown;
+    this.alt.rowKnown = this.normal.rowKnown;
+    this.altScreen = true;
   }
 
-  private lineFeed(count = 1): void {
-    if (count <= 0) return;
-    const bottom = this.activeScrollBottom();
-    if (this.row <= bottom) {
-      this.row = Math.min(bottom, this.row + count);
+  private activateNormalBuffer(): void {
+    if (!this.altScreen) return;
+    this.normal.x = this.alt.x;
+    this.normal.y = this.alt.y;
+    this.normal.colKnown = this.alt.colKnown;
+    this.normal.rowKnown = this.alt.rowKnown;
+    this.alt.x = 0;
+    this.alt.y = 0;
+    this.alt.linesLength = 0;
+    this.alt.scrollTop = 0;
+    this.alt.scrollBottom = this.rows - 1;
+    this.alt.tabs = createDefaultTabs(this.cols);
+    this.alt.tabsKnown = true;
+    this.alt.rowKnown = true;
+    this.alt.colKnown = true;
+    this.altScreen = false;
+  }
+
+  private fullReset(): void {
+    this.normal = createBufferCursorState(this.cols, this.rows, this.rows);
+    this.alt = createBufferCursorState(this.cols, this.rows, 0);
+    this.altScreen = false;
+    this.originMode = false;
+    this.autowrap = true;
+    this.reverseWraparound = false;
+    this.insertMode = false;
+    this.precedingWidth = 0;
+  }
+
+  private softReset(): void {
+    const buf = this.active();
+    buf.scrollTop = 0;
+    buf.scrollBottom = this.rows - 1;
+    this.originMode = false;
+    this.autowrap = true;
+    this.reverseWraparound = false;
+    this.insertMode = false;
+    buf.savedX = 0;
+    buf.savedColKnown = true;
+    if (this.altScreen) {
+      buf.savedY = 0;
+      buf.savedRowKnown = true;
+    } else if (buf.ybaseKnown) {
+      buf.savedY = buf.ybase;
+      buf.savedRowKnown = true;
+    } else {
+      buf.savedRowKnown = false;
+    }
+    buf.savedOriginMode = false;
+    buf.savedAutowrap = true;
+  }
+
+  private lineFeed(): void {
+    const buf = this.active();
+    if (this.convertEol) {
+      buf.x = 0;
+      buf.colKnown = true;
+    }
+    this.advanceRowsDown(1);
+    if (buf.colKnown && buf.x >= this.cols) {
+      buf.x -= 1;
+    }
+  }
+
+  private index(): void {
+    this.restrictCursor();
+    this.advanceRowsDown(1);
+    this.restrictCursor();
+  }
+
+  private nextLine(): void {
+    const buf = this.active();
+    buf.x = 0;
+    buf.colKnown = true;
+    this.index();
+  }
+
+  private reverseIndex(): void {
+    this.restrictCursor();
+    const buf = this.active();
+    if (!buf.rowKnown) return;
+    if (buf.y !== buf.scrollTop) {
+      buf.y -= 1;
+      this.restrictCursor();
+    }
+  }
+
+  private tabSet(): void {
+    const buf = this.active();
+    if (buf.colKnown) {
+      buf.tabs.add(buf.x);
+    } else {
+      buf.tabsKnown = false;
+    }
+  }
+
+  private forwardTab(count: number): void {
+    const buf = this.active();
+    if (!buf.colKnown) return;
+    if (buf.x >= this.cols) return;
+    if (!buf.tabsKnown) {
+      buf.colKnown = false;
       return;
     }
-    this.row = Math.min(this.rows - 1, this.row + count);
+    const steps = Math.min(count, this.cols);
+    for (let i = 0; i < steps; i += 1) {
+      buf.x = nextTabStop(buf.tabs, this.cols, buf.x);
+    }
+  }
+
+  private backwardTab(count: number): void {
+    const buf = this.active();
+    if (!buf.colKnown) return;
+    if (buf.x >= this.cols) return;
+    if (!buf.tabsKnown) {
+      buf.colKnown = false;
+      return;
+    }
+    const steps = Math.min(count, this.cols);
+    for (let i = 0; i < steps; i += 1) {
+      buf.x = prevTabStop(buf.tabs, this.cols, buf.x);
+    }
+  }
+
+  private backspace(): void {
+    const buf = this.active();
+    if (!this.reverseWraparound) {
+      this.restrictCursor();
+      if (buf.colKnown && buf.x > 0) {
+        buf.x -= 1;
+      }
+      return;
+    }
+    this.restrictCursor(this.cols);
+    if (!buf.colKnown) {
+      buf.rowKnown = false;
+      return;
+    }
+    if (buf.x > 0) {
+      buf.x -= 1;
+      this.restrictCursor();
+      return;
+    }
+    if (buf.rowKnown && (buf.y <= buf.scrollTop || buf.y > buf.scrollBottom)) {
+      this.restrictCursor();
+      return;
+    }
+    buf.rowKnown = false;
+    buf.colKnown = false;
+  }
+
+  private recordNormalPrinted(endCol: number, wrapped: boolean): void {
+    if (this.altScreen) return;
+    const buf = this.normal;
+    if (wrapped) {
+      buf.hasWrappedLine = true;
+      buf.maxPrintedCol = this.cols;
+      return;
+    }
+    if (this.insertMode && buf.maxPrintedCol > 0) {
+      buf.maxPrintedCol = this.cols;
+      return;
+    }
+    const clamped = Math.min(this.cols, endCol);
+    if (clamped > buf.maxPrintedCol) {
+      buf.maxPrintedCol = clamped;
+    }
   }
 
   private advanceAsciiRun(count: number): void {
     if (count <= 0) return;
+    const buf = this.active();
+    this.precedingWidth = 1;
+    if (!buf.colKnown) {
+      this.recordNormalPrinted(this.cols, this.autowrap);
+      if (this.autowrap) {
+        buf.rowKnown = false;
+        if (!this.altScreen && buf.scrollTop === 0) {
+          this.normal.ybaseKnown = false;
+        }
+      }
+      return;
+    }
     if (!this.autowrap) {
-      this.pendingWrap = false;
-      this.col = Math.min(this.cols - 1, this.col + count);
+      buf.x = Math.min(this.cols, buf.x + count);
+      this.recordNormalPrinted(buf.x, false);
       return;
     }
-    if (this.pendingWrap) {
-      this.col = 0;
-      this.lineFeed(1);
-      this.pendingWrap = false;
+    let remaining = count;
+    let wrapped = false;
+    if (buf.x > this.cols) {
+      this.advanceRowsDown(1);
+      buf.x = 1;
+      wrapped = true;
+      remaining -= 1;
+      if (remaining === 0) {
+        this.recordNormalPrinted(buf.x, true);
+        return;
+      }
     }
-    const remaining = this.cols - this.col;
-    if (count < remaining) {
-      this.col += count;
+    if (buf.x + remaining <= this.cols) {
+      buf.x += remaining;
+      this.recordNormalPrinted(buf.x, wrapped);
       return;
     }
-    const rest = count - remaining;
-    if (rest === 0) {
-      this.col = this.cols - 1;
-      this.pendingWrap = true;
+    const afterLine = buf.x + remaining - this.cols;
+    const wraps = Math.ceil(afterLine / this.cols);
+    this.advanceRowsDown(wraps);
+    buf.x = ((afterLine - 1) % this.cols) + 1;
+    this.recordNormalPrinted(buf.x, true);
+  }
+
+  private printWideCount(count: number): void {
+    if (count <= 0) return;
+    const buf = this.active();
+    this.precedingWidth = 2;
+    if (!buf.colKnown) {
+      this.recordNormalPrinted(this.cols, this.autowrap);
+      if (this.autowrap) {
+        buf.rowKnown = false;
+        if (!this.altScreen && buf.scrollTop === 0) {
+          this.normal.ybaseKnown = false;
+        }
+      }
       return;
     }
-    const wraps = Math.ceil(rest / this.cols);
-    this.lineFeed(wraps);
-    const rem = rest % this.cols;
-    if (rem === 0) {
-      this.col = this.cols - 1;
-      this.pendingWrap = true;
-    } else {
-      this.col = rem;
-      this.pendingWrap = false;
+    if (!this.autowrap) {
+      if (buf.x + 2 > this.cols) {
+        buf.x = this.cols - 1;
+      } else if (count === 1) {
+        buf.x += 2;
+      } else if (buf.x + count * 2 <= this.cols) {
+        buf.x += count * 2;
+      } else {
+        buf.x = this.cols - 1;
+      }
+      this.recordNormalPrinted(buf.x, false);
+      return;
+    }
+    let wrapped = false;
+    if (count <= 8) {
+      for (let i = 0; i < count; i += 1) {
+        if (buf.x + 2 > this.cols) {
+          this.advanceRowsDown(1);
+          buf.x = 2;
+          wrapped = true;
+        } else {
+          buf.x += 2;
+        }
+      }
+      this.recordNormalPrinted(buf.x, wrapped);
+      return;
+    }
+    let remaining = count;
+    if (buf.x + 2 > this.cols) {
+      this.advanceRowsDown(1);
+      buf.x = 2;
+      wrapped = true;
+      remaining -= 1;
+    }
+    const fitCurrent = Math.floor((this.cols - buf.x) / 2);
+    if (remaining <= fitCurrent) {
+      buf.x += remaining * 2;
+      this.recordNormalPrinted(buf.x, wrapped);
+      return;
+    }
+    remaining -= fitCurrent;
+    const perLine = Math.floor(this.cols / 2);
+    const wraps = Math.ceil(remaining / perLine);
+    this.advanceRowsDown(wraps);
+    const onLastLine = ((remaining - 1) % perLine) + 1;
+    buf.x = onLastLine * 2;
+    this.recordNormalPrinted(buf.x, true);
+  }
+
+  private printCodePoint(cp: number): void {
+    if (cp === 0xad) return;
+    const width = unicodeV11CellWidth(cp);
+    if (width === 1) {
+      this.advanceAsciiRun(1);
+      return;
+    }
+    if (width === 2) {
+      this.printWideCount(1);
+      return;
+    }
+    if (this.precedingWidth > 0) {
+      return;
+    }
+    const buf = this.active();
+    this.precedingWidth = 0;
+    if (!buf.colKnown) {
+      this.recordNormalPrinted(this.cols, this.autowrap);
+      if (this.autowrap) {
+        buf.rowKnown = false;
+        if (!this.altScreen && buf.scrollTop === 0) {
+          this.normal.ybaseKnown = false;
+        }
+      }
+      return;
+    }
+    if (buf.x > this.cols) {
+      if (this.autowrap) {
+        this.advanceRowsDown(1);
+        buf.x = 1;
+        this.recordNormalPrinted(buf.x, true);
+      } else {
+        buf.x = this.cols;
+        this.recordNormalPrinted(buf.x, false);
+      }
+      return;
+    }
+    buf.x += 1;
+    this.recordNormalPrinted(buf.x, false);
+  }
+
+  private repeatPreceding(count: number): void {
+    if (this.precedingWidth === 1) {
+      this.advanceAsciiRun(count);
+    } else if (this.precedingWidth === 2) {
+      this.printWideCount(count);
     }
   }
 
-  private reverseIndex(): void {
-    const top = this.activeScrollTop();
-    if (this.row === top) {
-      return;
-    }
-    if (this.row > 0) {
-      this.row -= 1;
-    }
-  }
-
-  private applyC0(code: number): void {
+  private applyExecute(code: number): void {
+    this.precedingWidth = 0;
     switch (code) {
       case 0x08:
-        this.pendingWrap = false;
-        if (this.col > 0) {
-          this.col -= 1;
-        }
+        this.backspace();
         return;
       case 0x09:
-        if (!this.pendingWrap) {
-          this.col = Math.min(this.cols - 1, (Math.floor(this.col / 8) + 1) * 8);
-        }
+        this.forwardTab(1);
         return;
       case 0x0a:
       case 0x0b:
       case 0x0c:
-        this.pendingWrap = false;
         this.lineFeed();
         return;
-      case 0x0d:
-        this.pendingWrap = false;
-        this.col = 0;
+      case 0x0d: {
+        const buf = this.active();
+        buf.x = 0;
+        buf.colKnown = true;
+        return;
+      }
+      case 0x84:
+        this.index();
+        return;
+      case 0x85:
+        this.nextLine();
+        return;
+      case 0x88:
+        this.tabSet();
         return;
     }
   }
 
-  private applyEsc(code: number): void {
-    switch (code) {
-      case 0x37:
-        this.saveCursor();
-        return;
-      case 0x38:
-        this.restoreCursor();
-        return;
-      case 0x44:
-        this.pendingWrap = false;
-        this.lineFeed();
-        return;
-      case 0x45:
-        this.pendingWrap = false;
-        this.col = 0;
-        this.lineFeed();
-        return;
-      case 0x4d:
-        this.pendingWrap = false;
-        this.reverseIndex();
-        return;
-      case 0x63:
-        this.row = 0;
-        this.col = 0;
-        this.pendingWrap = false;
-        this.scrollTop = 0;
-        this.scrollBottom = this.rows - 1;
-        this.altScrollTop = 0;
-        this.altScrollBottom = this.rows - 1;
-        this.originMode = false;
-        this.autowrap = true;
-        this.altScreen = false;
-        this.savedMain = {
-          row: 0,
-          col: 0,
-          pendingWrap: false,
-          originMode: false,
-          autowrap: true,
-        };
-        this.savedAlt = {
-          row: 0,
-          col: 0,
-          pendingWrap: false,
-          originMode: false,
-          autowrap: true,
-        };
-        return;
+  private applyEsc(collect: number, finalByte: number): void {
+    if (collect === 0) {
+      switch (finalByte) {
+        case 0x37:
+          this.saveCursor();
+          return;
+        case 0x38:
+          this.restoreCursor();
+          return;
+        case 0x44:
+          this.index();
+          return;
+        case 0x45:
+          this.nextLine();
+          return;
+        case 0x48:
+          this.tabSet();
+          return;
+        case 0x4d:
+          this.reverseIndex();
+          return;
+        case 0x63:
+          this.fullReset();
+          return;
+      }
+      return;
+    }
+    if (collect === 0x23 && finalByte === 0x38) {
+      if (!this.altScreen) {
+        this.normal.maxPrintedCol = this.cols;
+      }
+      this.setCursor(0, 0, true, true);
     }
   }
 
-  private applyCsi(rawParams: string, finalByte: number): void {
-    if (rawParams.startsWith("?")) {
+  private cursorUp(count: number): void {
+    const buf = this.active();
+    if (!buf.rowKnown) {
+      this.restrictCursor();
+      return;
+    }
+    const diffToTop = buf.y - buf.scrollTop;
+    const delta = diffToTop >= 0 ? -Math.min(diffToTop, count) : -count;
+    this.moveCursor(0, delta);
+  }
+
+  private cursorDown(count: number): void {
+    const buf = this.active();
+    if (!buf.rowKnown) {
+      this.restrictCursor();
+      return;
+    }
+    const diffToBottom = buf.scrollBottom - buf.y;
+    const delta = diffToBottom >= 0 ? Math.min(diffToBottom, count) : count;
+    this.moveCursor(0, delta);
+  }
+
+  private applyCsi(finalByte: number): void {
+    const collect = this.csiCollect;
+    const p0 = this.csiParams[0]!;
+
+    if (collect === 0x3f) {
+      if (finalByte === 0x4a) {
+        this.restrictCursor(this.cols);
+        if (p0 === 3 && !this.altScreen) {
+          this.normal.ybase = 0;
+          this.normal.ybaseKnown = true;
+          this.normal.scrollsSinceReset = 0;
+          this.normal.linesLength = this.rows;
+        }
+        return;
+      }
+      if (finalByte === 0x4b) {
+        this.restrictCursor(this.cols);
+        return;
+      }
       if (finalByte !== 0x68 && finalByte !== 0x6c) return;
       const enable = finalByte === 0x68;
-      for (const part of rawParams.slice(1).split(";")) {
-        const mode = Number.parseInt(part, 10);
-        if (mode === 6) {
-          this.originMode = enable;
-          this.homeCursor();
-        } else if (mode === 7) {
-          this.autowrap = enable;
-        } else if (mode === 47 || mode === 1047) {
-          this.altScreen = enable;
-          this.pendingWrap = false;
-        } else if (mode === 1049) {
-          if (enable) {
-            if (!this.altScreen) {
+      for (let i = 0; i < this.csiParamCount; i += 1) {
+        const mode = this.csiParams[i]!;
+        switch (mode) {
+          case 6:
+            this.originMode = enable;
+            this.setCursor(0, 0, true, true);
+            break;
+          case 7:
+            this.autowrap = enable;
+            break;
+          case 45:
+            this.reverseWraparound = enable;
+            break;
+          case 1048:
+            if (enable) this.saveCursor();
+            else this.restoreCursor();
+            break;
+          case 1049:
+            if (enable) {
               this.saveCursor();
-              this.altScreen = true;
-              this.altScrollTop = 0;
-              this.altScrollBottom = this.rows - 1;
-              this.pendingWrap = false;
+              this.activateAltBuffer();
+            } else {
+              this.activateNormalBuffer();
+              this.restoreCursor();
             }
-          } else if (this.altScreen) {
-            this.altScreen = false;
-            this.restoreCursor();
-          }
+            break;
+          case 47:
+          case 1047:
+            if (enable) this.activateAltBuffer();
+            else this.activateNormalBuffer();
+            break;
         }
       }
       return;
     }
 
-    if (
-      rawParams.length > 0 &&
-      (rawParams.charCodeAt(0) < 0x30 || rawParams.charCodeAt(0) > 0x3b)
-    ) {
+    if (collect === 0x21) {
+      if (finalByte === 0x70) {
+        this.softReset();
+      }
       return;
     }
 
-    const parts = rawParams.length === 0 ? [] : rawParams.split(";");
-    const scrollTop = this.activeScrollTop();
-    const scrollBottom = this.activeScrollBottom();
-    const topBound = this.originMode ? scrollTop : 0;
-    const bottomBound = this.originMode ? scrollBottom : this.rows - 1;
+    if ((collect === 0x20 && finalByte === 0x41) || (collect === 0x27 && finalByte === 0x7d)) {
+      if (!this.altScreen && this.normal.maxPrintedCol > 0) {
+        this.normal.maxPrintedCol = this.cols;
+      }
+      return;
+    }
 
+    if (collect !== 0) {
+      return;
+    }
+
+    const buf = this.active();
     switch (finalByte) {
-      case 0x41: {
-        const n = parseCsiParam(parts[0], 1);
-        const limit = this.row >= scrollTop ? scrollTop : 0;
-        this.row = Math.max(limit, this.row - n);
-        this.pendingWrap = false;
+      case 0x40:
+        this.restrictCursor();
+        if (!this.altScreen && this.normal.maxPrintedCol > 0) {
+          this.normal.maxPrintedCol = this.cols;
+        }
         return;
-      }
+      case 0x50:
+      case 0x58:
+        this.restrictCursor();
+        return;
+      case 0x41:
+        this.cursorUp(p0 || 1);
+        return;
       case 0x42:
-      case 0x65: {
-        const n = parseCsiParam(parts[0], 1);
-        const limit = this.row <= scrollBottom ? scrollBottom : this.rows - 1;
-        this.row = Math.min(limit, this.row + n);
-        this.pendingWrap = false;
+        this.cursorDown(p0 || 1);
         return;
-      }
       case 0x43:
-      case 0x61: {
-        const n = parseCsiParam(parts[0], 1);
-        this.col = Math.min(this.cols - 1, this.col + n);
-        this.pendingWrap = false;
+      case 0x61:
+        this.moveCursor(p0 || 1, 0);
         return;
-      }
-      case 0x44: {
-        const n = parseCsiParam(parts[0], 1);
-        this.col = Math.max(0, this.col - n);
-        this.pendingWrap = false;
+      case 0x44:
+        this.moveCursor(-(p0 || 1), 0);
         return;
-      }
-      case 0x45: {
-        const n = parseCsiParam(parts[0], 1);
-        const limit = this.row <= scrollBottom ? scrollBottom : this.rows - 1;
-        this.row = Math.min(limit, this.row + n);
-        this.col = 0;
-        this.pendingWrap = false;
+      case 0x45:
+        this.cursorDown(p0 || 1);
+        buf.x = 0;
+        buf.colKnown = true;
         return;
-      }
-      case 0x46: {
-        const n = parseCsiParam(parts[0], 1);
-        const limit = this.row >= scrollTop ? scrollTop : 0;
-        this.row = Math.max(limit, this.row - n);
-        this.col = 0;
-        this.pendingWrap = false;
+      case 0x46:
+        this.cursorUp(p0 || 1);
+        buf.x = 0;
+        buf.colKnown = true;
         return;
-      }
       case 0x47:
-      case 0x60: {
-        const col = parseCsiParam(parts[0], 1) - 1;
-        this.col = Math.max(0, Math.min(this.cols - 1, col));
-        this.pendingWrap = false;
+      case 0x60:
+        this.setCursor((p0 || 1) - 1, buf.y, true, false);
         return;
-      }
       case 0x48:
       case 0x66: {
-        const targetRow = parseCsiParam(parts[0], 1) - 1;
-        const targetCol = parseCsiParam(parts[1], 1) - 1;
-        this.row = Math.max(
-          topBound,
-          Math.min(bottomBound, topBound + targetRow),
-        );
-        this.col = Math.max(0, Math.min(this.cols - 1, targetCol));
-        this.pendingWrap = false;
+        const col = this.csiParamCount >= 2 ? (this.csiParams[1]! || 1) - 1 : 0;
+        const row = (p0 || 1) - 1;
+        this.setCursor(col, row, true, true);
         return;
       }
-      case 0x64: {
-        const targetRow = parseCsiParam(parts[0], 1) - 1;
-        this.row = Math.max(
-          topBound,
-          Math.min(bottomBound, topBound + targetRow),
-        );
-        this.pendingWrap = false;
+      case 0x49:
+        this.forwardTab(p0 || 1);
+        return;
+      case 0x4a:
+        this.restrictCursor(this.cols);
+        if (p0 === 3 && !this.altScreen) {
+          this.normal.ybase = 0;
+          this.normal.ybaseKnown = true;
+          this.normal.scrollsSinceReset = 0;
+          this.normal.linesLength = this.rows;
+        }
+        return;
+      case 0x4b:
+        this.restrictCursor(this.cols);
+        return;
+      case 0x4c:
+      case 0x4d:
+        this.restrictCursor();
+        if (!buf.rowKnown) {
+          buf.colKnown = false;
+        } else if (buf.y >= buf.scrollTop && buf.y <= buf.scrollBottom) {
+          buf.x = 0;
+          buf.colKnown = true;
+        }
+        return;
+      case 0x5a:
+        this.backwardTab(p0 || 1);
+        return;
+      case 0x62:
+        this.repeatPreceding(p0 || 1);
+        return;
+      case 0x64:
+        this.setCursor(buf.x, (p0 || 1) - 1, false, true);
+        return;
+      case 0x65:
+        this.moveCursor(0, p0 || 1);
+        return;
+      case 0x67:
+        if (p0 === 0) {
+          if (buf.colKnown) {
+            buf.tabs.delete(buf.x);
+          } else {
+            buf.tabsKnown = false;
+          }
+        } else if (p0 === 3) {
+          buf.tabs.clear();
+          buf.tabsKnown = true;
+        }
+        return;
+      case 0x68:
+      case 0x6c: {
+        const enable = finalByte === 0x68;
+        for (let i = 0; i < this.csiParamCount; i += 1) {
+          const mode = this.csiParams[i];
+          if (mode === 4) {
+            this.insertMode = enable;
+          } else if (mode === 20) {
+            this.convertEol = enable;
+          }
+        }
         return;
       }
       case 0x72: {
-        const top = parseCsiParam(parts[0], 1) - 1;
-        const bottom = parseCsiParam(parts[1], this.rows) - 1;
-        if (top >= 0 && bottom < this.rows && top < bottom) {
-          this.setActiveScrollRegion(top, bottom);
-        } else {
-          this.setActiveScrollRegion(0, this.rows - 1);
+        const top = p0 || 1;
+        const rawBottom = this.csiParamCount >= 2 ? this.csiParams[1]! : 0;
+        const bottom =
+          rawBottom === 0 || rawBottom > this.rows ? this.rows : rawBottom;
+        if (bottom > top) {
+          buf.scrollTop = top - 1;
+          buf.scrollBottom = bottom - 1;
+          this.setCursor(0, 0, true, true);
         }
-        this.homeCursor();
         return;
       }
       case 0x73:
-        if (rawParams.length === 0) {
-          this.saveCursor();
-        }
+        this.saveCursor();
         return;
       case 0x75:
-        if (rawParams.length === 0) {
-          this.restoreCursor();
-        }
+        this.restoreCursor();
         return;
-    }
-  }
-
-  private advancePrintable(width: number): void {
-    if (width === 0) {
-      if (this.col > 0 || this.pendingWrap) return;
-      width = 1;
-    }
-    if (this.pendingWrap) {
-      if (this.autowrap) {
-        this.col = 0;
-        this.lineFeed();
-      }
-      this.pendingWrap = false;
-    }
-    if (this.col + width >= this.cols) {
-      if (this.autowrap) {
-        if (width === 2 && this.col === this.cols - 1) {
-          this.col = 0;
-          this.lineFeed();
-          if (width >= this.cols) {
-            this.col = this.cols - 1;
-            this.pendingWrap = true;
-          } else {
-            this.col = width;
-          }
-        } else {
-          this.col = this.cols - 1;
-          this.pendingWrap = true;
-        }
-      } else {
-        this.col = this.cols - 1;
-      }
-    } else {
-      this.col += width;
     }
   }
 }
