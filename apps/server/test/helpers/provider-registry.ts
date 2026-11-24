@@ -88,6 +88,46 @@ function providerIconSnapshot(args: {
   return readPluginProviderIcon(firstPartyPluginRootDir(args.pluginId), asset);
 }
 
+interface FirstPartyProviderPlugin {
+  declarations: readonly {
+    declaration: NormalizedPluginProviderDeclaration;
+    icon: { bytes: Uint8Array; contentType: string; hash: string } | null;
+  }[];
+  icons: ReadonlyMap<string, string>;
+  hostEntry: boolean;
+}
+
+const firstPartyProviderPlugins = new Map<
+  string,
+  Promise<FirstPartyProviderPlugin>
+>();
+
+async function loadFirstPartyProviderPlugin(
+  pluginId: string,
+): Promise<FirstPartyProviderPlugin> {
+  const declarations = await captureFirstPartyProviderDeclarations(pluginId);
+  const icons = await declaredIcons(pluginId);
+  return {
+    declarations: declarations.map((declaration) => ({
+      declaration,
+      icon: providerIconSnapshot({ pluginId, icon: declaration.icon, icons }),
+    })),
+    icons,
+    hostEntry: await hasHostEntry(firstPartyPluginRootDir(pluginId)),
+  };
+}
+
+function firstPartyProviderPlugin(
+  pluginId: string,
+): Promise<FirstPartyProviderPlugin> {
+  const cached = firstPartyProviderPlugins.get(pluginId);
+  if (cached !== undefined) return cached;
+  const pending = loadFirstPartyProviderPlugin(pluginId);
+  firstPartyProviderPlugins.set(pluginId, pending);
+  pending.catch(() => firstPartyProviderPlugins.delete(pluginId));
+  return pending;
+}
+
 export async function registerFirstPartyProviders(
   registry: ProviderRegistryService,
   options: {
@@ -102,21 +142,16 @@ export async function registerFirstPartyProviders(
     if (excluded.has(pluginId)) {
       continue;
     }
-    const declarations = await captureFirstPartyProviderDeclarations(pluginId);
-    const icons = await declaredIcons(pluginId);
+    const { declarations, icons, hostEntry } =
+      await firstPartyProviderPlugin(pluginId);
     if (
       options.artifacts !== undefined &&
       !unavailable.has(pluginId) &&
-      (await hasHostEntry(firstPartyPluginRootDir(pluginId)))
+      hostEntry
     ) {
       options.artifacts.set(pluginId, stubHostArtifact(pluginId));
     }
-    for (const declaration of declarations) {
-      const icon = providerIconSnapshot({
-        pluginId,
-        icon: declaration.icon,
-        icons,
-      });
+    for (const { declaration, icon } of declarations) {
       registry.register({
         ...buildPluginProviderRegistration({
           available: !unavailable.has(pluginId),

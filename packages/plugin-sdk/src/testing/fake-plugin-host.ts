@@ -785,6 +785,7 @@ function createFakePluginHostInternal(
       assertLive();
       if (!databaseHandle?.open) {
         databaseHandle = new Database(join(storageRoot, "data.db"));
+        databaseHandle.pragma("synchronous = OFF");
         databaseHandle.pragma("auto_vacuum = INCREMENTAL");
         databaseHandle.pragma("journal_mode = WAL");
         databaseHandle.pragma("busy_timeout = 5000");
