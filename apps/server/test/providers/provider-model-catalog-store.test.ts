@@ -1,4 +1,8 @@
-import { getStoredProviderModelCatalog, updateHost } from "@bb/db";
+import {
+  getStoredProviderModelCatalog,
+  getThreadExecutionOverride,
+  updateHost,
+} from "@bb/db";
 import type { JsonValue, ProviderFork } from "@bb/domain";
 import type { HostDaemonOnlineRpcRequestMessage } from "@bb/host-daemon-contract";
 import { createDeferredPromise } from "@bb/test-helpers";
@@ -993,6 +997,12 @@ describe("provider model catalog store", () => {
   it("validates a model switch on a pooled Antigravity thread with the pool's catalog env when the host has no Google sign-in", async () => {
     await withTestHarness(async (harness) => {
       const providerId = "acp-antigravity-acp";
+      const base = requireRegistration(harness, "acp-cursor");
+      harness.deps.providerRegistry.register({
+        ...base,
+        info: { ...base.info, id: providerId },
+        bridgeOptions: { ...base.bridgeOptions, acpAgentId: providerId },
+      });
       const host = setupCatalogHost(harness, { id: "host-pooled-gemini" });
       const contexts: unknown[] = [];
       setPluginAgentContributions({
@@ -1060,18 +1070,21 @@ describe("provider model catalog store", () => {
           status: "idle",
         });
 
+        await host.read(providerId, environment.id);
+        await settleTimers();
         const listed = await host.read(providerId, environment.id);
         expect(listed.modelLoadError).toBeNull();
         expect(modelIds(listed)).toEqual([
           "gemini-4-neon-medium",
           "gemini-4-neon-high",
         ]);
-        await expect(
-          applyThreadExecutionOverride(harness.deps, {
-            thread,
-            patch: { model: "gemini-4-neon-medium" },
-          }),
-        ).resolves.toBeDefined();
+        await applyThreadExecutionOverride(harness.deps, {
+          thread,
+          patch: { model: "gemini-4-neon-medium" },
+        });
+        expect(getThreadExecutionOverride(harness.db, thread.id)).toMatchObject(
+          { modelOverride: "gemini-4-neon-medium" },
+        );
         await expect(
           applyThreadExecutionOverride(harness.deps, {
             thread,

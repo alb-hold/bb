@@ -60,6 +60,44 @@ describe("buildAcpModelListParams", () => {
     });
   });
 
+  it("gives every discovery command the contributed env over the launch env, as thread launches do", () => {
+    const launchSpec = launchSpecFor({
+      displayName: "Pooled ACP",
+      command: "pooled-agent",
+      args: ["acp"],
+      env: { SHARED: "launch", LAUNCH_ONLY: "1" },
+    });
+    const envVars = { SHARED: "contributed", POOL_KEY: "test-pool" };
+    const merged = { SHARED: "contributed", LAUNCH_ONLY: "1", POOL_KEY: "test-pool" };
+    const params = buildAcpModelListParams(launchSpec, {
+      parameterizedModelPicker: false,
+      envVars,
+    });
+
+    expect(params.agent?.envVars).toEqual(merged);
+    expect(params.optionsAgent?.envVars).toEqual(merged);
+    expect(
+      buildAcpSessionParams({
+        additionalWorkspaceWriteRoots: [],
+        cwd: "/work",
+        launchSpec,
+        options: { ...BASE_OPTIONS, envVars },
+        providerLabel: "Pooled ACP",
+        threadId: "thread-1",
+        parameterizedModelPicker: false,
+      }).envVars,
+    ).toEqual(merged);
+    expect(
+      buildAcpModelListParams(
+        launchSpecFor({
+          ...launchSpec,
+          modelCli: { listArgs: ["models"], primaryModels: [] },
+        }),
+        { parameterizedModelPicker: false, envVars },
+      ).listCommand?.envVars,
+    ).toEqual(merged);
+  });
+
   it("passes launch-time reasoning CLI config through to discovery", () => {
     const reasoningCli: NonNullable<AcpLaunchSpec["reasoningCli"]> = {
       flag: "--reasoning-effort",
