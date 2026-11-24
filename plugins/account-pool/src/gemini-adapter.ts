@@ -56,6 +56,12 @@ export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
 const USER_AGENT_TTL_MS = 10 * 60 * 1_000;
+export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX =
+  "Gemini usage refresh stopped (runtime_version): ";
+
+export function isGeminiRuntimeRefreshError(error: string): boolean {
+  return error.startsWith(GEMINI_RUNTIME_REFRESH_ERROR_PREFIX);
+}
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
 
 const refreshResponseSchema = z
@@ -1192,12 +1198,17 @@ export function createGeminiAdapter(options: {
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const agent = await userAgent().catch((error: unknown) => {
-        context.quotas.put({
-          ...context.quotas.get(context.account.id),
-          error: `Gemini usage refresh stopped (runtime_version): ${errorMessage(error)}`,
-        });
+        const previous = context.quotas.get(context.account.id);
+        if (previous.error === null || isGeminiRuntimeRefreshError(previous.error))
+          context.quotas.put({
+            ...previous,
+            error: `${GEMINI_RUNTIME_REFRESH_ERROR_PREFIX}${errorMessage(error)}`,
+          });
         throw error;
       });
+      const stale = context.quotas.get(context.account.id);
+      if (stale.error !== null && isGeminiRuntimeRefreshError(stale.error))
+        context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
       context.signal?.throwIfAborted();
       if (secret.kind !== "oauth") return;
