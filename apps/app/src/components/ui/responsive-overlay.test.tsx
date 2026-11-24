@@ -1225,6 +1225,8 @@ describe("compact overlay trigger focus return", () => {
           <DropdownMenuItem>Action</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>,
+      "menuitem",
+      "Action",
     ],
     [
       "Popover",
@@ -1234,6 +1236,8 @@ describe("compact overlay trigger focus return", () => {
           <button type="button">Action</button>
         </PopoverContent>
       </Popover>,
+      "button",
+      "Action",
     ],
     [
       "Dialog",
@@ -1244,10 +1248,12 @@ describe("compact overlay trigger focus return", () => {
           <DialogDescription>Description</DialogDescription>
         </DialogContent>
       </Dialog>,
+      "heading",
+      "Title",
     ],
   ])(
     "returns focus to the %s trigger after a tap-style open and Escape",
-    (_, overlay) => {
+    (_, overlay, contentRole, contentName) => {
       mockPointerCoarse(true);
       vi.spyOn(window, "requestAnimationFrame").mockImplementation(
         (callback) => {
@@ -1268,7 +1274,20 @@ describe("compact overlay trigger focus return", () => {
 
       fireEvent.mouseDown(trigger);
       fireEvent.click(trigger);
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.getAttribute("data-state")).toBe("open");
+      expect(dialog.getAttribute("aria-hidden")).toBe("false");
+      expect(dialog.hasAttribute("inert")).toBe(false);
+      expect(screen.getByRole(contentRole, { name: contentName })).toBeTruthy();
+
       fireEvent.keyDown(document, { key: "Escape" });
+
+      expect(dialog.getAttribute("data-state")).toBe("closed");
+      expect(dialog.getAttribute("aria-hidden")).toBe("true");
+      expect(dialog.hasAttribute("inert")).toBe(true);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole(contentRole, { name: contentName })).toBeNull();
 
       expect(document.activeElement).toBe(trigger);
     },
