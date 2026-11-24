@@ -388,7 +388,7 @@ describe("Gemini usage refresh results", () => {
     );
   });
 
-  it.each(["http", "unreadable", "missing"] as const)(
+  it.each(["http", "unreadable", "missing", "unknown"] as const)(
     "reports a %s Gemini quota response as a failed refresh without replacing the cached reading",
     async (mode) => {
       const pool = await createGeminiPool(0);
@@ -423,21 +423,21 @@ describe("Gemini usage refresh results", () => {
     });
   });
 
-  it.each(["empty", "unknown"] as const)(
-    "stamps an empty parsed reading for a forced %s quota response",
-    async (mode) => {
-      const pool = await createGeminiPool(0);
-      await pool.settled();
-      const oldObservedAt = setStaleUsage(pool);
-      pool.setQuotaMode(mode);
+  it("stamps an empty parsed reading for a forced empty quota response", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const oldObservedAt = setStaleUsage(pool);
+    pool.setQuotaMode("empty");
 
-      const account = await pool.operations.refreshUsage(pool.account.id);
+    const account = await pool.operations.refreshUsage(pool.account.id);
 
-      expect(account?.observedAt).toBe(pool.now());
-      expect(account?.observedAt).not.toBe(oldObservedAt);
-      expect(account?.limitWindows).toEqual([]);
-    },
-  );
+    expect(account?.observedAt).toBe(pool.now());
+    expect(account?.observedAt).not.toBe(oldObservedAt);
+    expect(account?.limitWindows).toEqual([]);
+    expect(account?.usageRestriction).toBeNull();
+    expect(await pool.eligible()).toBe(true);
+    expect((await pool.summary()).limitWindows).toEqual([]);
+  });
 });
 
 describe("scheduled Gemini usage refresh", () => {
@@ -463,7 +463,7 @@ describe("scheduled Gemini usage refresh", () => {
   it.each([
     ["missing", false],
     ["empty", true],
-    ["unknown", true],
+    ["unknown", false],
   ] as const)(
     "handles a scheduled %s quota response as expected",
     async (mode, succeeds) => {

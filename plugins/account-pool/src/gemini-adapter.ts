@@ -1364,6 +1364,14 @@ export function createGeminiAdapter(options: {
         quotaSummary,
         now,
       );
+      const bucketCount =
+        (parsedQuotaSummary.data.buckets?.length ?? 0) +
+        (parsedQuotaSummary.data.groups?.reduce(
+          (count, group) => count + (group.buckets?.length ?? 0),
+          0,
+        ) ?? 0);
+      if (bucketCount > 0 && windows.length === 0)
+        throw new Error("Usage refresh returned no recognized quota buckets.");
       context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");
