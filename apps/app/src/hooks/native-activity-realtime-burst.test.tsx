@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { createRealtimeCacheEffects } from "./realtime-cache-effects";
-import { threadQueryKey } from "./queries/query-keys";
+import { threadListQueryKey, threadQueryKey } from "./queries/query-keys";
 import { useNativeActivityNotice } from "./useNativeActivityUnconfirmed";
 
 const START_MS = 1_800_000_000_500;
@@ -161,6 +161,105 @@ describe("native activity realtime burst", () => {
     expect(perTick.filter((entry) => entry.startsWith("activity-unreported"))).toEqual([]);
     expect(perTick.at(-1)?.startsWith("working|active|")).toBe(true);
     expect(detailFetches.length).toBeGreaterThan(0);
+    unmount();
+  });
+
+  it("keeps the newest receipt when a list refetch returns an older copy at the same updatedAt", async () => {
+    vi.useFakeTimers({ now: START_MS });
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const seeded: ThreadResponse = {
+      ...makeThreadResponse({ runtime: runtimeOf("active", START_MS - 10) }),
+      status: "active",
+      nativeTerminal: true,
+    };
+    const threadId = seeded.id;
+    const staleEntry = makeThreadListEntry({
+      id: threadId,
+      projectId: "project-1",
+      status: "active",
+      updatedAt: seeded.updatedAt,
+      runtime: runtimeOf("active", START_MS - 120_000),
+    });
+    const listKey = threadListQueryKey({
+      archived: false,
+      projectId: "project-1",
+    });
+    const effects = createRealtimeCacheEffects({ queryClient });
+    const activity = makeThreadListEntry().activity;
+    let freshRuntime = seeded.runtime;
+    let listFetches = 0;
+
+    const log: string[] = [];
+    const { unmount } = renderHook(
+      () => {
+        const thread = useQuery<ThreadResponse>({
+          queryKey: threadQueryKey(threadId),
+          queryFn: async () => ({ ...seeded, runtime: freshRuntime }),
+          initialData: seeded,
+          staleTime: Infinity,
+        }).data;
+        useQuery({
+          queryKey: listKey,
+          queryFn: async () => {
+            listFetches += 1;
+            return [staleEntry];
+          },
+          initialData: [staleEntry],
+          staleTime: Infinity,
+        });
+        const notice = useNativeActivityNotice(thread.runtime);
+        const portal = isRunningThreadRuntimeDisplayStatus(
+          thread.runtime.displayStatus,
+        )
+          ? notice.unconfirmed
+            ? "activity-unreported"
+            : "working"
+          : "none";
+        log.push(`${portal}|${thread.runtime.nativeActivity?.lastEvidenceAt}`);
+        return portal;
+      },
+      { wrapper },
+    );
+
+    const perTick: string[] = [];
+    for (let elapsed = 1_000; elapsed <= SESSION_MS; elapsed += 1_000) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      if (elapsed % HEARTBEAT_MS === 0) {
+        freshRuntime = runtimeOf("active", Date.now() - 10);
+        await act(async () => {
+          effects.handleChanged({
+            type: "changed",
+            entity: "thread",
+            id: threadId,
+            changes: ["status-changed"],
+            metadata: {
+              statusChange: {
+                status: "active",
+                runtime: freshRuntime,
+                activity,
+                latestAttentionAt: seeded.latestAttentionAt,
+                updatedAt: seeded.updatedAt,
+              },
+            },
+          });
+          effects.handleChanged({
+            type: "changed",
+            entity: "thread",
+            id: threadId,
+            changes: ["terminals-changed", "status-changed"],
+          });
+          await vi.advanceTimersByTimeAsync(300);
+        });
+      }
+      perTick.push(log.at(-1) ?? "none");
+    }
+
+    expect(listFetches).toBeGreaterThan(0);
+    expect(
+      perTick.filter((entry) => entry.startsWith("activity-unreported")),
+    ).toEqual([]);
     unmount();
   });
 });
