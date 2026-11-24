@@ -1099,9 +1099,11 @@ async function createGeminiFixture(
     loginStartupTimeoutMs?: number;
     runtimeGate?: Promise<void>;
     now?: () => number;
+    dataDir?: string;
   } = {},
 ) {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-"));
+  const dataDir =
+    options.dataDir ?? (await mkdtemp(path.join(tmpdir(), "bb-account-pool-gemini-")));
   const hostDataDir = await tempDir("bb-host-worker-");
   const requestedHomes: Array<string | undefined> = [];
   const host = createAccountPoolTestHost({
@@ -1206,11 +1208,17 @@ async function createGeminiFixture(
     },
   })(host.bb);
   const service = host.harness.behavior.runService("hub");
+  let stopped: Promise<void> | null = null;
+  const stop = () =>
+    (stopped ??= (async () => {
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+    })());
   cleanups.push(async () => {
-    service.controller.abort();
-    await service.done;
-    await host.harness.lifecycle.dispose();
-    await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+    await stop();
+    if (options.dataDir === undefined)
+      await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
   });
   await vi.waitFor(async () => {
     expect(
@@ -1218,7 +1226,7 @@ async function createGeminiFixture(
         .accepting,
     ).toBe(true);
   });
-  return { host, requestedHomes, dataDir, hostDataDir };
+  return { host, requestedHomes, dataDir, hostDataDir, stop };
 }
 
 function creds(access: string): ImportedGeminiCredentials {
@@ -2811,6 +2819,93 @@ describe("Gemini bare family ids through the pool", () => {
         .filter((call) => call.method === "streamGenerateContent")
         .map((call) => (call.body as { model: string }).model),
     ).toEqual(["gemini-4-neon-medium"]);
+  });
+
+  it("resolves on the account's saved ids when its first model list fails after a restart", async () => {
+    let failList = false;
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: NEON_MODELS,
+      rejectUnservedModels: true,
+      modelListFails: () => failList,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const first = await createGeminiFixture(google, { "/homes/a": creds("tok-a") });
+    const added = await addGemini(first.host, "/homes/a", 0);
+    const firstEnv = await geminiEnv(first.host);
+    await (
+      await runtimeCall(first.host, firstEnv.token, { method: "GET", path: "/gemini/v1beta/models" })
+    ).text();
+    let saved: unknown;
+    await vi.waitFor(async () => {
+      saved = await first.host.bb.storage.kv.get("gemini-served-models:v1");
+      expect(saved).toEqual({ [added.id]: expect.arrayContaining(["gemini-4-neon", "gemini-4-neon-medium"]) });
+    });
+    await first.stop();
+    failList = true;
+    const restarted = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { dataDir: first.dataDir, kv: { "gemini-served-models:v1": saved } },
+    );
+    const env = await geminiEnv(restarted.host);
+    const before = google.calls.filter((call) => call.method === "fetchAvailableModels").length;
+    const response = await runtimeCall(restarted.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(
+      google.calls.filter((call) => call.method === "fetchAvailableModels"),
+    ).toHaveLength(before + 1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual(["gemini-4-neon-medium"]);
+  });
+
+  it("sends the id unchanged, after one failed model list, when the account has no saved ids", async () => {
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: NEON_MODELS,
+      rejectUnservedModels: true,
+      modelListFails: () => true,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      {
+        kv: {
+          "gemini-served-models:v1": {
+            "00000000-0000-4000-8000-000000000001": ["gemini-4-neon", "gemini-4-neon-medium"],
+          },
+        },
+      },
+    );
+    await addGemini(fixture.host, "/homes/a", 0);
+    const env = await geminiEnv(fixture.host);
+    const before = google.calls.filter((call) => call.method === "fetchAvailableModels").length;
+    const response = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain(
+      "Model 'gemini-4-neon' is not available for the current authentication method.",
+    );
+    expect(
+      google.calls.filter((call) => call.method === "fetchAvailableModels"),
+    ).toHaveLength(before + 1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual(["gemini-4-neon"]);
   });
 });
 

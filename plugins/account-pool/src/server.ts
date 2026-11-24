@@ -620,7 +620,7 @@ export function createAccountPoolPlugin(
           bb.log.warn(`Account Pooler refused Gemini on host ${hostId}: ${reason}`);
         geminiRefusals.set(hostId, reason);
       },
-      geminiKnownModels: () => Object.values(geminiServedModels).flat(),
+      geminiSavedModels: () => geminiServedModels,
       onGeminiModels: (accountId, ids) => {
         for (const id of ids) routeGeminiModel(id);
         if (

@@ -874,7 +874,7 @@ export function createGeminiAdapter(options: {
   fetch?: typeof fetch;
   now?: () => number;
   onModels?: (accountId: string, ids: string[]) => void;
-  knownModels?: () => Iterable<string>;
+  savedModels?: () => Readonly<Record<string, readonly string[]>>;
   onboarding?: { pollMs: number; timeoutMs: number };
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
@@ -923,7 +923,17 @@ export function createGeminiAdapter(options: {
   const isKnownFamily = (model: string) =>
     [...servedModels.values()].some((entry) =>
       isServedFamily(model, entry.ids),
-    ) || isServedFamily(model, new Set(options.knownModels?.() ?? []));
+    ) ||
+    isServedFamily(
+      model,
+      new Set(Object.values(options.savedModels?.() ?? {}).flat()),
+    );
+  const savedServed = (accountId: string): ReadonlySet<string> | undefined => {
+    const saved = options.savedModels?.()[accountId];
+    if (saved === undefined || saved.length === 0) return undefined;
+    const ids = new Set(saved);
+    return new Set(saved.filter((id) => !isServedFamily(id, ids)));
+  };
   const refreshServed = (
     account: Account,
     secret: AccountSecret,
@@ -1166,7 +1176,8 @@ export function createGeminiAdapter(options: {
           await refreshServed(account, secret, signal);
         },
         forAccount: (account) => {
-          const served = servedModels.get(account.id)?.ids;
+          const served =
+            servedModels.get(account.id)?.ids ?? savedServed(account.id);
           return encodeJson({
             model:
               served === undefined
