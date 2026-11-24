@@ -19,6 +19,7 @@ import {
 import {
   codeAssistModel,
   codeAssistModels,
+  hasCodeAssistModelList,
   geminiRuntimeRefusal,
   geminiUpstreamUserAgent,
   unwrapSse,
@@ -984,10 +985,22 @@ async function startGoogle(args: {
             send(503, { error: { code: 503, status: "UNAVAILABLE" } });
           else send(200, args.models ?? MODELS_PAYLOAD);
         } else if (method === "streamGenerateContent" || method === "generateContent") {
-          const served = Object.keys(
-            ((args.models ?? MODELS_PAYLOAD) as { models: Record<string, unknown> })
-              .models,
+          const rawModels = (
+            args.models !== undefined &&
+            typeof args.models === "object" &&
+            args.models !== null &&
+            "models" in args.models
+              ? (args.models as { models: unknown }).models
+              : args.models === undefined
+                ? MODELS_PAYLOAD.models
+                : {}
           );
+          const served =
+            typeof rawModels === "object" &&
+            rawModels !== null &&
+            !Array.isArray(rawModels)
+              ? Object.keys(rawModels)
+              : [];
           if (
             args.rejectUnservedModels === true &&
             !served.includes(String(body.model))
@@ -2961,6 +2974,214 @@ describe("Gemini bare family ids through the pool", () => {
         .filter((call) => call.method === "streamGenerateContent")
         .map((call) => (call.body as { model: string }).model),
     ).toEqual(["gemini-4-neon"]);
+  });
+
+  it("replaces cached and saved suffixed variants when a refresh returns an empty list, sending the bare id unchanged", async () => {
+    let clock = Date.now();
+    const currentModels: { models: Record<string, unknown> } = {
+      models: { ...NEON_MODELS.models },
+    };
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: currentModels,
+      rejectUnservedModels: true,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const first = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { now: () => clock },
+    );
+    const added = await addGemini(first.host, "/homes/a", 0);
+    const firstEnv = await geminiEnv(first.host);
+    const listed = await runtimeCall(first.host, firstEnv.token, {
+      method: "GET",
+      path: "/gemini/v1beta/models",
+    });
+    expect(listed.status).toBe(200);
+    await listed.text();
+    const warmed = await runtimeCall(first.host, firstEnv.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(warmed.status).toBe(200);
+    await warmed.text();
+    await vi.waitFor(async () => {
+      expect(await first.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+        [added.id]: {
+          served: expect.arrayContaining(["gemini-4-neon-medium"]),
+          aliases: ["gemini-4-neon"],
+        },
+      });
+    });
+
+    clock += 11 * 60 * 1_000;
+    currentModels.models = {};
+    const beforeRefresh = google.calls.filter(
+      (call) => call.method === "fetchAvailableModels",
+    ).length;
+    const afterEmpty = await runtimeCall(first.host, firstEnv.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterEmpty.status).toBe(400);
+    const afterEmptyBody = await afterEmpty.text();
+    expect(
+      google.calls.filter((call) => call.method === "fetchAvailableModels"),
+    ).toHaveLength(beforeRefresh + 1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual(["gemini-4-neon-medium", "gemini-4-neon"]);
+    expect(afterEmptyBody).toContain(
+      "Model 'gemini-4-neon' is not available for the current authentication method.",
+    );
+
+    let saved: unknown;
+    await vi.waitFor(async () => {
+      saved = await first.host.bb.storage.kv.get("gemini-served-models:v1");
+      expect(saved).toEqual({
+        [added.id]: { served: [], aliases: [] },
+      });
+    });
+    const kept: Record<string, unknown> = { "gemini-served-models:v1": saved };
+    for (const key of ["accounts:v1", "accounts:gemini:v1"]) {
+      const value = await first.host.bb.storage.kv.get(key);
+      if (value !== undefined && value !== null) kept[key] = value;
+    }
+    await first.stop();
+    const restarted = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { dataDir: first.dataDir, kv: kept },
+    );
+    expect(await restarted.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+      [added.id]: { served: [], aliases: [] },
+    });
+    const restartedEnv = await geminiEnv(restarted.host);
+    await expect(
+      runtimeCall(restarted.host, restartedEnv.token, {
+        path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+      }),
+    ).rejects.toThrow(/no http route/u);
+  });
+
+  it("keeps cached and saved suffixed variants on { models: null }, while clearing them on { models: {} } and {}", async () => {
+    let clock = Date.now();
+    const currentModels: Record<string, unknown> = {
+      models: { ...NEON_MODELS.models },
+    };
+    const google = await startGoogle({
+      projects: { "tok-a": "proj-a" },
+      quotaFraction: {},
+      models: currentModels,
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const fixture = await createGeminiFixture(
+      google,
+      { "/homes/a": creds("tok-a") },
+      { now: () => clock },
+    );
+    const added = await addGemini(fixture.host, "/homes/a", 0);
+    const env = await geminiEnv(fixture.host);
+
+    const warmAndExpectServed = async () => {
+      currentModels.models = { ...NEON_MODELS.models };
+      const listed = await runtimeCall(fixture.host, env.token, {
+        method: "GET",
+        path: "/gemini/v1beta/models",
+      });
+      expect(listed.status).toBe(200);
+      await listed.text();
+      await vi.waitFor(async () => {
+        expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+          [added.id]: {
+            served: expect.arrayContaining(["gemini-4-neon-medium"]),
+            aliases: ["gemini-4-neon"],
+          },
+        });
+      });
+    };
+
+    await warmAndExpectServed();
+    clock += 11 * 60 * 1_000;
+    currentModels.models = null;
+    const afterNullRefresh = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterNullRefresh.status).toBe(200);
+    await afterNullRefresh.text();
+    const afterNullList = await runtimeCall(fixture.host, env.token, {
+      method: "GET",
+      path: "/gemini/v1beta/models",
+    });
+    expect(afterNullList.status).toBe(200);
+    await afterNullList.text();
+    const afterNullTurn = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterNullTurn.status).toBe(200);
+    await afterNullTurn.text();
+    expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+      [added.id]: {
+        served: expect.arrayContaining(["gemini-4-neon-medium"]),
+        aliases: ["gemini-4-neon"],
+      },
+    });
+
+    clock += 11 * 60 * 1_000;
+    currentModels.models = {};
+    const afterEmptyObject = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterEmptyObject.status).toBe(200);
+    await afterEmptyObject.text();
+    await vi.waitFor(async () => {
+      expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+        [added.id]: { served: [], aliases: [] },
+      });
+    });
+
+    await warmAndExpectServed();
+    clock += 11 * 60 * 1_000;
+    delete currentModels.models;
+    const afterMissingKey = await runtimeCall(fixture.host, env.token, {
+      path: "/gemini/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
+    });
+    expect(afterMissingKey.status).toBe(200);
+    await afterMissingKey.text();
+    await vi.waitFor(async () => {
+      expect(await fixture.host.bb.storage.kv.get("gemini-served-models:v1")).toEqual({
+        [added.id]: { served: [], aliases: [] },
+      });
+    });
+
+    expect(
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => (call.body as { model: string }).model),
+    ).toEqual([
+      "gemini-4-neon-medium",
+      "gemini-4-neon-medium",
+      "gemini-4-neon",
+      "gemini-4-neon",
+    ]);
+
+    expect(hasCodeAssistModelList({})).toBe(true);
+    expect(hasCodeAssistModelList({ models: {} })).toBe(true);
+    for (const malformed of [
+      null,
+      [],
+      "models",
+      42,
+      { models: null },
+      { models: [] },
+      { models: "none" },
+      { models: 0 },
+    ])
+      expect(hasCodeAssistModelList(malformed)).toBe(false);
   });
 });
 

@@ -309,6 +309,12 @@ export function advertisedModels(
   });
 }
 
+export function hasCodeAssistModelList(payload: unknown): boolean {
+  const root = record(payload);
+  if (root === null) return false;
+  return !("models" in root) || record(root.models) !== null;
+}
+
 export function modelListResponse(
   api: "v1beta" | "v1",
   onModels: (served: string[], advertised: string[]) => void,
@@ -316,10 +322,11 @@ export function modelListResponse(
   return bufferedJson((payload) => {
     const served = codeAssistModels(payload);
     const models = advertisedModels(served);
-    onModels(
-      served.map((model) => model.id),
-      models.map((model) => model.id),
-    );
+    if (hasCodeAssistModelList(payload))
+      onModels(
+        served.map((model) => model.id),
+        models.map((model) => model.id),
+      );
     if (api === "v1")
       return {
         object: "list",
