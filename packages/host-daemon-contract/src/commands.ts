@@ -613,6 +613,10 @@ const hostRemovePathCommandSchema = z
     path: z.string().min(1),
     rootPath: z.string().min(1).optional(),
     recursive: z.boolean(),
+    temporaryRemoval: z
+      .object({ protectedPaths: z.array(z.string().min(1)) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1717,7 +1721,9 @@ export const hostDaemonCommandRegistry = {
         active: z.boolean(),
         pids: z.array(z.number().int().positive()),
         unreadablePids: z.array(z.number().int().positive()),
-        unrelatedUnreadablePids: z.array(z.number().int().positive()).optional(),
+        unrelatedUnreadablePids: z
+          .array(z.number().int().positive())
+          .optional(),
         processCommands: z.record(z.string(), z.string()).optional(),
       })
       .strict(),
@@ -2058,7 +2064,9 @@ type HostDaemonRetryableOnlineRpcCommandSchema =
 type HostDaemonResultSchemaMapForTransport<
   Transport extends HostDaemonCommandTransport,
 > = {
-  [Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]]: Descriptor["resultSchema"];
+  [
+    Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]
+  ]: Descriptor["resultSchema"];
 };
 
 type HostDaemonCommandResultSchemaMap =
@@ -2071,8 +2079,7 @@ export type HostDaemonSettledCommandType =
 export type HostDaemonOnlineRpcCommandType =
   HostDaemonCommandTypeForTransport<"onlineRpc">;
 export type HostDaemonRpcCommandType =
-  | HostDaemonSettledCommandType
-  | HostDaemonOnlineRpcCommandType;
+  HostDaemonSettledCommandType | HostDaemonOnlineRpcCommandType;
 
 export type HostDaemonCommand = z.infer<
   HostDaemonSchemaForTransport<"settled">
@@ -2083,8 +2090,7 @@ export type HostDaemonOnlineRpcCommand = z.infer<
 export type HostDaemonRetryableOnlineRpcCommand =
   z.infer<HostDaemonRetryableOnlineRpcCommandSchema>;
 export type HostDaemonRpcCommand =
-  | HostDaemonCommand
-  | HostDaemonOnlineRpcCommand;
+  HostDaemonCommand | HostDaemonOnlineRpcCommand;
 
 function hostDaemonCommandDescriptorsForTransport<
   const Transport extends HostDaemonCommandTransport,

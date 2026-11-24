@@ -15,6 +15,7 @@ import { ApiError } from "../errors.js";
 import { browserRequestProblem } from "../browser-request-guard.js";
 import type { AppDeps } from "../types.js";
 import type { HostDaemonRpcCommand } from "@bb/host-daemon-contract";
+import { listEnvironments, listProjectSourcesByHost } from "@bb/db";
 import {
   callHostOnlineRpcForWork,
   callHostRetryableOnlineRpc,
@@ -46,6 +47,17 @@ import {
 } from "./path-list-policy.js";
 
 const HOST_FILE_LIST_LIMIT_DEFAULT = 1000;
+
+function listHostWorkspacePaths(db: AppDeps["db"], hostId: string): string[] {
+  const paths = new Set<string>();
+  for (const environment of listEnvironments(db, { hostId })) {
+    if (environment.path !== null) paths.add(environment.path);
+    if (environment.claimPath !== null) paths.add(environment.claimPath);
+  }
+  for (const source of listProjectSourcesByHost(db, hostId))
+    paths.add(source.path);
+  return [...paths];
+}
 
 const FILE_PREVIEW_TTL_MS = 10 * 60 * 1000;
 const REVISION_REF_PATTERN = /^(?:HEAD|[0-9a-f]{4,40})$/iu;
@@ -322,6 +334,13 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
         recursive: payload.recursive ?? false,
         ...(payload.rootPath !== undefined
           ? { rootPath: payload.rootPath }
+          : {}),
+        ...(payload.temporary === true
+          ? {
+              temporaryRemoval: {
+                protectedPaths: listHostWorkspacePaths(deps.db, hostId),
+              },
+            }
           : {}),
       });
       return context.json(result);

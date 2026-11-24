@@ -2,7 +2,13 @@ import type { HostDaemonOnlineRpcRequestMessage } from "@bb/host-daemon-contract
 import { describe, expect, it } from "vitest";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
-import { seedHostSession, seedPrimaryHost } from "../helpers/seed.js";
+import {
+  seedEnvironment,
+  seedHost,
+  seedHostSession,
+  seedPrimaryHost,
+  seedProjectWithSource,
+} from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import { DEFAULT_PATH_LIST_EXCLUDE_NAMES } from "../../src/routes/path-list-policy.js";
 
@@ -413,6 +419,82 @@ describe("host file routes", () => {
         }),
       );
       expect(missingResponse.status).toBe(404);
+    });
+  });
+
+  it("sends every workspace the server knows on that host with a temporary removal, and nothing without one", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const other = seedHost(harness.deps, { id: "other-host" });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/srv/source",
+      });
+      seedProjectWithSource(harness.deps, {
+        hostId: other.id,
+        name: "Other Project",
+        path: "/srv/other-source",
+      });
+      seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/unloaded-workspace",
+        status: "destroyed",
+      });
+      seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/srv/worktree",
+      });
+      seedEnvironment(harness.deps, {
+        hostId: other.id,
+        projectId: project.id,
+        path: "/srv/other-worktree",
+      });
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      for (const payload of [
+        {
+          hostId: host.id,
+          path: "/tmp/bundle",
+          recursive: true,
+          temporary: true,
+        },
+        {
+          hostId: host.id,
+          path: "/tmp/bundle",
+          recursive: true,
+          temporary: false,
+        },
+        { hostId: host.id, path: "/tmp/bundle", recursive: true },
+      ]) {
+        const response = await harness.app.request(
+          ...postJson("/api/v1/files/remove", payload),
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+      }
+
+      expect(commands).toHaveLength(3);
+      const [temporary, notTemporary, unspecified] = commands;
+      if (temporary?.type !== "host.remove_path")
+        throw new Error("expected a remove command");
+      expect(
+        [...(temporary.temporaryRemoval?.protectedPaths ?? [])].sort(),
+      ).toEqual(["/srv/source", "/srv/worktree", "/tmp/unloaded-workspace"]);
+      for (const command of [notTemporary, unspecified])
+        expect(command).toEqual({
+          type: "host.remove_path",
+          path: "/tmp/bundle",
+          recursive: true,
+        });
     });
   });
 
