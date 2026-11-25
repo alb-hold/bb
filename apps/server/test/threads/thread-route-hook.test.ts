@@ -184,7 +184,8 @@ describe("experimental_thread.route", () => {
         throw new Error("Expected start command");
       }
       expect(start.command.options.model).toBe("codex-model");
-      expect(JSON.stringify(warn.mock.calls)).toContain("no-such-model");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("no-such-model");
+      expect(JSON.stringify(warn.mock.calls)).toContain("unlisted");
     });
   });
 
@@ -242,7 +243,7 @@ describe("experimental_thread.route", () => {
         const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
         expect(lines).not.toContain(title);
         expect(lines).not.toContain("route me");
-        expect(lines).toContain("[redacted len=");
+        expect(lines).toContain("reason_present");
       });
     }
   });
@@ -299,13 +300,50 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it.each([
+    ["error name", "name"],
+    ["reason", "reason"],
+    ["input-text reason", "inputReason"],
+    ["provider id and model", "ids"],
+  ] as const)("never logs a one-token hook value: %s", async (_label, mode) => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      const token = "HIV";
+      installRouteHook((context) => {
+        if (mode === "name") {
+          const error = new Error("x");
+          error.name = token;
+          throw error;
+        }
+        if (mode === "reason") {
+          return { providerId: "claude-code", model: "claude-code-model", reason: token };
+        }
+        if (mode === "inputReason") {
+          return { providerId: "claude-code", model: "claude-code-model", reason: context.inputText ?? "" };
+        }
+        return { providerId: token, model: token, reason: "balance" };
+      });
+      const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      await createThreadFromRequest(harness.deps, {
+        ...request,
+        title: token,
+        input: textInput(token),
+      });
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+      expect(lines).not.toContain(token);
+      if (mode === "name") expect(lines).toContain("threw");
+      if (mode === "ids") expect(lines).toContain("unregistered");
+    });
+  });
+
   it("logs a benign reason", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);
       installRouteHook(toClaude);
       const info = vi.spyOn(harness.deps.logger, "info");
       await createThreadFromRequest(harness.deps, request);
-      expect(JSON.stringify(info.mock.calls)).toContain("(balance)");
+      expect(JSON.stringify(info.mock.calls)).toContain('"reason_present":true');
     });
   });
 

@@ -47,6 +47,20 @@ export function safeHookLogToken(value: string): string {
   return SAFE_LOG_TOKEN.test(value) ? value : `[redacted len=${value.length}]`;
 }
 
+const BUILT_IN_ERROR_NAMES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "AbortError",
+  "TimeoutError",
+]);
+
+export function builtInErrorLabel(name: string): string {
+  return BUILT_IN_ERROR_NAMES.has(name) ? name : "other";
+}
+
 type HandlerResult =
   | { threw: false; value: unknown }
   | { threw: true; errorName: string };
@@ -66,7 +80,9 @@ export async function runThreadRouteHooks(
           } catch (error) {
             return {
               threw: true,
-              errorName: error instanceof Error ? error.name : "NonError",
+              errorName: builtInErrorLabel(
+                error instanceof Error ? error.name : "NonError",
+              ),
             };
           }
         },

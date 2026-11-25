@@ -941,6 +941,11 @@ export async function createThreadFromRequest(
     if (decision !== null && (providerChanged || modelChanged)) {
       let rejection: string | null = null;
       let decidedModel = decision.model;
+      let modelLabel = "unlisted";
+      const providerLabel =
+        deps.providerRegistry.get(decision.providerId) === null
+          ? "unregistered"
+          : decision.providerId;
       if (deps.providerRegistry.get(decision.providerId) === null) {
         rejection = "unknown provider";
       } else {
@@ -962,7 +967,9 @@ export async function createThreadFromRequest(
           model: decidedModel,
         });
         if (check === "unknown") {
-          rejection = `model ${safeHookLogToken(decidedModel)} is not in the ${safeHookLogToken(decision.providerId)} catalog`;
+          rejection = "model is not in the provider catalog";
+        } else if (check === "known") {
+          modelLabel = decidedModel;
         }
       }
       if (rejection !== null) {
@@ -970,9 +977,10 @@ export async function createThreadFromRequest(
           {
             projectId: requestInput.projectId,
             from: providerId,
-            to: safeHookLogToken(decision.providerId),
+            to: providerLabel,
+            model: modelLabel,
           },
-          `thread route hook named ${safeHookLogToken(decision.providerId)}, keeping ${providerId}: ${rejection}`,
+          `thread route hook named ${providerLabel}, keeping ${providerId}: ${rejection}`,
         );
       } else {
         providerId = decision.providerId;
@@ -988,13 +996,11 @@ export async function createThreadFromRequest(
             projectId: requestInput.projectId,
             from: originalProviderId,
             to: providerId,
-            reason:
-              decision.reason === null
-                ? null
-                : safeHookLogToken(decision.reason),
+            model: modelLabel,
+            reason_present: decision.reason !== null,
             pluginId: safeHookLogToken(decision.pluginId),
           },
-          `thread rerouted by ${safeHookLogToken(decision.pluginId)}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${safeHookLogToken(decision.reason)})`}`,
+          `thread rerouted by ${safeHookLogToken(decision.pluginId)}: ${originalProviderId} -> ${providerId}`,
         );
       }
     }
