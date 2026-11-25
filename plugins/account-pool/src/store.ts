@@ -12,6 +12,7 @@ import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
   accountBalanceSchema,
   accountSchema,
+  storedAccountSchema,
   accountSecretSchema,
   EMPTY_FAMILY_WEEKLY,
   hubTokenSummarySchema,
@@ -58,7 +59,17 @@ const planClock = z
   .parse(Reflect.get(globalThis, planClockKey) ?? new Map<string, number>());
 Reflect.set(globalThis, planClockKey, planClock);
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
-const accountsSchema = z.array(accountSchema);
+export function legacyGeneration(id: string, createdAt: number): string {
+  return createHash("sha256").update(`${id}:${createdAt}`).digest("hex");
+}
+
+export const accountsSchema = z.array(
+  storedAccountSchema.transform((account) => ({
+    ...account,
+    generation:
+      account.generation ?? legacyGeneration(account.id, account.createdAt),
+  })),
+);
 const generationsSchema = z.record(z.string(), z.string().min(1));
 
 function withoutGeneration(account: Account): Omit<Account, "generation"> {

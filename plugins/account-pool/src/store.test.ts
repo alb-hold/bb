@@ -12,8 +12,8 @@ import {
   PoolAffinityStore,
   QUOTA_MIGRATIONS,
   QuotaStore,
+  legacyGeneration,
 } from "./store.js";
-import { legacyGeneration } from "./contracts.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
