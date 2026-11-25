@@ -53,6 +53,7 @@ import {
   HubTokenStore,
   PoolAffinityStore,
   QuotaStore,
+  accountsSchema,
 } from "./store.js";
 import { ThreadTokenStore } from "./thread-tokens.js";
 import { createHostProxy } from "./host-proxy.js";
@@ -7920,6 +7921,7 @@ describe("Account Pool plugin", () => {
         signal?: AbortSignal,
       ) =>
         adapter.refreshProfile!({
+          stillCurrent: () => true,
           account,
           signal,
           accounts: store,
@@ -8816,6 +8818,7 @@ describe("Account Pool plugin", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let finished = false;
     const pending = adapter.refreshProfile!({
+      stillCurrent: () => true,
       account: accounts[0]!,
       accounts: store,
       quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9196,6 +9199,7 @@ describe("Account Pool plugin", () => {
     });
     const pending = accounts.slice(0, 3).map((account) =>
       adapter.refreshProfile!({
+        stillCurrent: () => true,
         account,
         accounts: store,
         quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9208,6 +9212,7 @@ describe("Account Pool plugin", () => {
     await arrived.promise;
     pending.push(
       adapter.refreshProfile!({
+        stillCurrent: () => true,
         account: accounts[3]!,
         accounts: store,
         quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9583,7 +9588,7 @@ describe("Account Pool plugin", () => {
         });
       } finally {
         release.resolve();
-        await refresh;
+        await refresh.catch(() => undefined);
       }
       const quotas = new QuotaStore(fixture.host.bb.storage.database());
       expect({
@@ -11871,9 +11876,8 @@ describe("sequential pool recovery", () => {
       third.id,
       second.id,
     ]);
-    const persisted = z
-      .array(accountSchema)
-      .parse(await fixture.host.bb.storage.kv.get("accounts:v1"));
+    const persistedRaw = await fixture.host.bb.storage.kv.get("accounts:v1");
+    const persisted = accountsSchema.parse(persistedRaw);
     expect(
       persisted.find((account) => account.id === third.id)?.priority,
     ).toBeLessThan(
@@ -11892,7 +11896,7 @@ describe("sequential pool recovery", () => {
       ).rejects.toThrow("exactly once");
     }
     expect(await fixture.host.bb.storage.kv.get("accounts:v1")).toEqual(
-      persisted,
+      persistedRaw,
     );
     await send("new-before-failover");
     rejectFirst = true;

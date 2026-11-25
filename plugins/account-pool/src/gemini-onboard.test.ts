@@ -35,6 +35,11 @@ function fakeCodeAssist(script: {
   operations?: unknown[];
   onboardFailure?: { status: number } | { error: Error };
   quota?: unknown;
+  quotaByBase?: Partial<Record<"prod" | "daily", unknown>>;
+  quotaFailureByBase?: Partial<Record<"prod" | "daily", number>>;
+  quotaByProject?: Record<string, unknown>;
+  quotaByProjectBase?: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+  quotaFailureByProjectBase?: Record<string, Partial<Record<"prod" | "daily", number>>>;
   runtimeUserAgent?: () => Promise<string>;
   unrecognizedClientLoad?: unknown;
   now?: () => number;
@@ -85,6 +90,19 @@ function fakeCodeAssist(script: {
     }
     if (rest === "/v1internal:retrieveUserQuotaSummary") {
       calls.push({ method: "retrieveUserQuotaSummary", base, body, userAgent });
+      const failureStatus = script.quotaFailureByBase?.[base];
+      if (failureStatus !== undefined)
+        return new Response("{}", { status: failureStatus });
+      const project = typeof body?.project === "string" ? body.project : "";
+      const projectFailure = script.quotaFailureByProjectBase?.[project]?.[base];
+      if (projectFailure !== undefined)
+        return new Response("{}", { status: projectFailure });
+      const byProjectBase = script.quotaByProjectBase?.[project]?.[base];
+      if (byProjectBase !== undefined) return json(byProjectBase);
+      const byProject = script.quotaByProject?.[project];
+      if (byProject !== undefined) return json(byProject);
+      const byBase = script.quotaByBase?.[base];
+      if (byBase !== undefined) return json(byBase);
       return script.quota === undefined
         ? new Response("{}", { status: 404 })
         : json(script.quota);
@@ -1073,6 +1091,7 @@ async function usageStores() {
 function pooledLiveAccount(): Account {
   return accountSchema.parse({
     id: randomUUID(),
+    generation: randomUUID(),
     provider: "gemini",
     kind: "oauth",
     label: EMAIL,
@@ -1087,6 +1106,20 @@ function pooledLiveAccount(): Account {
   });
 }
 
+async function storeLive(
+  stores: Awaited<ReturnType<typeof usageStores>>,
+  account: Account,
+): Promise<Account> {
+  const { id: _id, createdAt: _c, generation: _g, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+    account;
+  return stores.accounts.add(input, {
+    kind: "oauth",
+    accessToken: TOKEN,
+    refreshToken: "refresh-onboard",
+    expiresAt: null,
+  });
+}
+
 function usageContext(
   stores: Awaited<ReturnType<typeof usageStores>>,
   account: Account,
@@ -1095,6 +1128,7 @@ function usageContext(
 ): AdapterUsageContext {
   return {
     account,
+    stillCurrent: () => true,
     freshSecret: async () => ({
       kind: "oauth",
       accessToken: TOKEN,
@@ -1130,13 +1164,17 @@ describe("the live Antigravity daily shape", () => {
       ["loadCodeAssist", "daily"],
     ]);
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now));
     const quota = stores.quotas.get(account.id);
     expect(quota.error).toBeNull();
     expect(quota.limitWindows).toHaveLength(1);
     expect(google.calls.some((call) => call.method === "onboardUser")).toBe(false);
-    expect(google.calls.some((call) => call.base === "prod")).toBe(false);
+    expect(
+      google.calls.some(
+        (call) => call.base === "prod" && call.method !== "retrieveUserQuotaSummary",
+      ),
+    ).toBe(false);
     expect(google.calls.every((call) => call.userAgent === AGY_AGENT)).toBe(true);
     const dryRun = fakeCodeAssist({
       loads: [LIVE_AGY_DAILY],
@@ -1189,7 +1227,7 @@ describe("the live Antigravity daily shape", () => {
       },
     });
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     const context = usageContext(stores, account, google.fetch, () => time);
     await google.adapter.refreshUsage(context);
     failing = true;
@@ -1203,6 +1241,7 @@ describe("the live Antigravity daily shape", () => {
     expect(google.calls.map(({ method, userAgent }) => [method, userAgent])).toEqual([
       ["loadCodeAssist", AGY_AGENT],
       ["retrieveUserQuotaSummary", AGY_AGENT],
+      ["retrieveUserQuotaSummary", AGY_AGENT],
     ]);
   });
 
@@ -1215,7 +1254,7 @@ describe("the live Antigravity daily shape", () => {
       },
     });
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     await expect(
       google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now)),
     ).rejects.toThrow(RUNTIME_VERSION_FAILURE);
@@ -1288,6 +1327,1207 @@ describe("Gemini Neon quota", () => {
     "reports no usage windows for an answer it cannot read (%j)",
     (payload) => {
       expect(geminiWindowsFromQuota(payload, 1_000)).toEqual([]);
+    },
+  );
+});
+
+const NOW = Date.parse("2026-11-25T12:00:00Z");
+const QUOTA_READ_PREFIX = "Gemini usage refresh stopped (quota_read): ";
+const QUOTA_READ_ERROR = /^Gemini usage refresh stopped \(quota_read\): ./u;
+const FUTURE = "2100-01-01T00:00:00Z";
+const bucket = (bucketId: string, remainingFraction: number) => ({
+  bucketId,
+  remainingFraction,
+  resetTime: FUTURE,
+});
+const DAILY_WITHOUT_GEMINI = {
+  groups: [
+    {
+      displayName: "Claude and GPT models",
+      buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+    },
+  ],
+};
+const PROD_WITH_GEMINI = {
+  groups: [
+    {
+      displayName: "Gemini models",
+      buckets: [bucket("gemini-5h", 0.4), bucket("gemini-weekly", 0.7)],
+    },
+    {
+      displayName: "Claude and GPT models",
+      buckets: [bucket("3p-5h", 0.6), bucket("3p-weekly", 0.95)],
+    },
+  ],
+};
+
+async function refreshed(
+  google: ReturnType<typeof fakeCodeAssist>,
+  account: Account = pooledLiveAccount(),
+) {
+  const stores = await usageStores();
+  const stored = await storeLive(stores, account);
+  await google.adapter.refreshUsage(
+    usageContext(stores, stored, google.fetch, () => NOW),
+  );
+  return { stores, account: stored, quota: stores.quotas.get(stored.id) };
+}
+
+describe("Antigravity quota across the daily and prod endpoints", () => {
+  afterEach(async () => {
+    while (usageDirs.length > 0)
+      await fs.rm(usageDirs.pop() ?? "", { recursive: true, force: true });
+  });
+
+  it("merges prod's Gemini group into a daily answer that lacks it, and the higher reading wins per bucket", async () => {
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaByBase: { daily: DAILY_WITHOUT_GEMINI, prod: PROD_WITH_GEMINI },
+    });
+    const { stores, account, quota } = await refreshed(google);
+    expect(quota.error).toBeNull();
+    expect(
+      quota.limitWindows.map((window) => [window.slot, window.utilization]),
+    ).toEqual([
+      ["primary", expect.closeTo(0.6)],
+      ["secondary", expect.closeTo(0.3)],
+    ]);
+    const display = stores.quotas.modelWeekly(account.id);
+    expect(display?.["Claude and GPT models · 5 hour"]?.utilization).toBeCloseTo(0.4);
+    expect(display?.["Claude and GPT models · 7 day"]?.utilization).toBeCloseTo(0.2);
+    expect(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .map((call) => call.base)
+        .sort(),
+    ).toEqual(["daily", "prod"]);
+  });
+
+  it("keeps the other endpoint's buckets when one endpoint errors or answers empty", async () => {
+    for (const script of [
+      { quotaFailureByBase: { daily: 500 }, quotaByBase: { prod: ONE_WINDOW } },
+      { quotaFailureByBase: { prod: 503 }, quotaByBase: { daily: ONE_WINDOW } },
+      { quotaByBase: { daily: { buckets: [] }, prod: ONE_WINDOW } },
+    ] as const) {
+      const google = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], ...script });
+      const { quota } = await refreshed(google);
+      expect(quota.error).toBeNull();
+      expect(quota.limitWindows).toHaveLength(1);
+      expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    }
+  });
+
+  it("leaves the stored quota alone when every endpoint fails", async () => {
+    const stores = await usageStores();
+    const account = await storeLive(stores, pooledLiveAccount());
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const failing = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaFailureByBase: { daily: 500, prod: 500 },
+    });
+    await expect(
+      failing.adapter.refreshUsage(
+        usageContext(stores, account, failing.fetch, () => NOW),
+      ),
+    ).rejects.toThrow(/HTTP 500/u);
+    expect(stores.quotas.get(account.id).limitWindows).toHaveLength(1);
+  });
+
+  it("keeps Claude and GPT buckets out of routing input and in the display model", async () => {
+    expect(geminiWindowsFromQuota(DAILY_WITHOUT_GEMINI, NOW)).toEqual([]);
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaByBase: { daily: DAILY_WITHOUT_GEMINI, prod: PROD_WITH_GEMINI },
+    });
+    const { quota } = await refreshed(google);
+    expect(quota.limitWindows).toHaveLength(2);
+    expect(quota.limitWindows.map((window) => window.utilization)).not.toContain(0.4);
+    expect(quota.limitWindows.map((window) => window.utilization)).not.toContain(0.2);
+  });
+});
+
+describe("Antigravity companion project for consumer accounts", () => {
+  afterEach(async () => {
+    while (usageDirs.length > 0)
+      await fs.rm(usageDirs.pop() ?? "", { recursive: true, force: true });
+  });
+
+  const consumerAccount = () => ({
+    ...pooledLiveAccount(),
+    geminiProject: "aicode-consumers",
+  });
+  const NO_PROJECT_DAILY = {
+    currentTier: { id: "free-tier" },
+    paidTier: { id: "g1-ultra-lite-tier" },
+  };
+
+  it("uses the companion project loadCodeAssist returns instead of the consumer token project", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      loadsByBase: {
+        daily: [NO_PROJECT_DAILY],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      },
+      quotaByProject: {
+        "proj-companion": ONE_WINDOW,
+        "aicode-consumers": { buckets: [] },
+      },
+    });
+    const { quota } = await refreshed(google, consumerAccount());
+    expect(quota.limitWindows).toHaveLength(1);
+    const projects = google.calls
+      .filter((call) => call.method === "retrieveUserQuotaSummary")
+      .map((call) => call.body?.project);
+    expect(new Set(projects)).toEqual(new Set(["proj-companion"]));
+    const load = google.calls.find((call) => call.method === "loadCodeAssist");
+    expect(load?.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
+  });
+
+  it("prefers the other endpoint's companion over a non-consumer token project", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      loadsByBase: {
+        daily: [NO_PROJECT_DAILY],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      },
+      quotaByProject: {
+        "proj-companion": ONE_WINDOW,
+        "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+      },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(
+      new Set(
+        google.calls
+          .filter((call) => call.method === "retrieveUserQuotaSummary")
+          .map((call) => call.body?.project),
+      ),
+    ).toEqual(new Set(["proj-companion"]));
+  });
+
+  it("tries quota with no project and keeps its buckets when no project is stored and no endpoint returns a companion", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      quotaByProject: { "": ONE_WINDOW },
+    });
+    const { geminiProject: _stored, ...withoutProject } = pooledLiveAccount();
+    const { quota } = await refreshed(google, withoutProject);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .every((call) => call.body?.project === undefined),
+    ).toBe(true);
+  });
+
+  it("falls back from the companion project to the token project, then to none", async () => {
+    const google = fakeCodeAssist({
+      loads: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      quotaByProject: {
+        "proj-companion": { buckets: [] },
+        "aicode-consumers": { buckets: [] },
+        "": ONE_WINDOW,
+      },
+    });
+    const { quota } = await refreshed(google, consumerAccount());
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(
+      [
+        ...new Set(
+          google.calls
+            .filter((call) => call.method === "retrieveUserQuotaSummary")
+            .map((call) => call.body?.project ?? "none"),
+        ),
+      ],
+    ).toEqual(["proj-companion", "aicode-consumers", "none"]);
+  });
+
+  const ownAndOtherCompanions = (
+    quotaByProject: Record<string, unknown>,
+    mixed: {
+      quotaByProjectBase?: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+      quotaFailureByProjectBase?: Record<string, Partial<Record<"prod" | "daily", number>>>;
+    } = {},
+  ) =>
+    fakeCodeAssist({
+      ...mixed,
+      loads: [LIVE_AGY_DAILY],
+      loadsByBase: {
+        daily: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-own" }],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-other" }],
+      },
+      quotaByProject,
+    });
+  const quotaProjects = (google: ReturnType<typeof fakeCodeAssist>) => [
+    ...new Set(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .map((call) => call.body?.project ?? "none"),
+    ),
+  ];
+
+  it("tries the other endpoint's companion when the own companion has no buckets, before the token project", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [] },
+      "proj-other": ONE_WINDOW,
+      "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
+  });
+
+  it("guard: makes no extra load or quota call when the own companion already has buckets", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": ONE_WINDOW,
+      "proj-other": { buckets: [bucket("gemini-4-neon", 0.9)] },
+      "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quotaProjects(google)).toEqual(["proj-own"]);
+    expect(
+      google.calls.filter((call) => call.method === "loadCodeAssist"),
+    ).toHaveLength(1);
+  });
+
+  it("uses the stored project when the own and the other endpoint's companions both have no buckets", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [] },
+      "proj-other": { buckets: [] },
+      "proj-token": ONE_WINDOW,
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quotaProjects(google)).toEqual([
+      "proj-own",
+      "proj-other",
+      "proj-token",
+    ]);
+  });
+
+  const storedAccount = async (
+    stores: Awaited<ReturnType<typeof usageStores>>,
+    geminiProject: string,
+  ) => {
+    const { id: _id, createdAt: _c, generation: _g, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+      pooledLiveAccount();
+    return stores.accounts.add(
+      { ...input, geminiProject },
+      { kind: "oauth", accessToken: TOKEN, refreshToken: "refresh-onboard", expiresAt: null },
+    );
+  };
+
+  const THIRD_PARTY_ONLY = {
+    groups: [
+      {
+        displayName: "Claude and GPT models",
+        buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+      },
+    ],
+  };
+
+  it("keeps searching past a candidate with only Claude and GPT buckets, routes on the next candidate's Gemini windows and stores that project", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": ONE_WINDOW,
+    });
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
+    expect(setProject).toHaveBeenCalledTimes(1);
+    expect(setProject).toHaveBeenCalledWith(
+      account.id,
+      "proj-other",
+      undefined,
+      account.generation,
+    );
+  });
+
+  it("saves the Claude and GPT display, keeps the stored windows and project, and does not throw when no candidate has Gemini buckets", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const before = stores.quotas.get(account.id).limitWindows;
+    expect(before).toHaveLength(1);
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+      "proj-live-agy": THIRD_PARTY_ONLY,
+      "": THIRD_PARTY_ONLY,
+    });
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    const current = (await stores.accounts.get(account.id)) ?? account;
+    await google.adapter.refreshUsage(
+      usageContext(stores, current, google.fetch, () => NOW),
+    );
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(before);
+    expect(setProject).not.toHaveBeenCalled();
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-live-agy", "none"]);
+  });
+
+  it("applies the no-project answer's Gemini windows when every project returns only Claude and GPT buckets, and leaves the stored project alone", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+      "": { ...ONE_WINDOW, groups: THIRD_PARTY_ONLY.groups },
+    });
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-token", "none"]);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-token");
+  });
+
+  it("completes a Claude and GPT only refresh without a Gemini reading: clears a recoverable error, keeps the stored restriction, windows, observedAt and project", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const seeded = stores.quotas.get(account.id);
+    const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+    expect(storedProject).toBe("proj-live-agy");
+    expect(seeded.limitWindows).toHaveLength(1);
+    stores.quotas.put({
+      ...seeded,
+      error: "OAuth refresh failed with HTTP 500.",
+      usageRestriction: { reason: "quota_exhausted", resetAt: NOW + 1 },
+    });
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+      "proj-live-agy": THIRD_PARTY_ONLY,
+      "": THIRD_PARTY_ONLY,
+    });
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(
+        stores,
+        (await stores.accounts.get(account.id)) ?? account,
+        google.fetch,
+        () => NOW + 60_000,
+      ),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.usageRestriction).toEqual({ reason: "quota_exhausted", resetAt: NOW + 1 });
+    expect(quota.observedAt).toBe(seeded.observedAt);
+    expect(quota.limitWindows).toEqual(seeded.limitWindows);
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+  });
+
+  type CandidateState =
+    | "fails"
+    | "empty"
+    | "third-party"
+    | "gemini"
+    | "both"
+    | "mixed"
+    | "mixed-3p"
+    | "unreadable"
+    | "mixed-unreadable";
+  const CANDIDATE_STATES: CandidateState[] = [
+    "fails",
+    "empty",
+    "third-party",
+    "gemini",
+    "both",
+    "mixed",
+    "mixed-3p",
+    "unreadable",
+    "mixed-unreadable",
+  ];
+  const matrixPayload = (state: CandidateState, gemini: number, thirdParty: number) => {
+    const geminiBuckets = [bucket("gemini-4-neon", gemini)];
+    const groups = [
+      {
+        displayName: "Claude and GPT models",
+        buckets: [bucket("3p-5h", thirdParty), bucket("3p-weekly", thirdParty - 0.1)],
+      },
+    ];
+    if (state === "empty" || state === "mixed") return { buckets: [] };
+    if (state === "third-party" || state === "mixed-3p") return { groups };
+    if (state === "gemini") return { buckets: geminiBuckets };
+    if (state === "both") return { buckets: geminiBuckets, groups };
+    if (state === "unreadable") return { buckets: "none" };
+    return undefined;
+  };
+  const matrixRows = CANDIDATE_STATES.flatMap((a) =>
+    CANDIDATE_STATES.map((b) => [a, b] as const),
+  );
+
+  it.each(matrixRows)(
+    "refreshes with own companion %s and other companion %s: routing from the first Gemini candidate, 3p display kept, project and error settled",
+    async (a, b) => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-token");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const seeded = stores.quotas.get(account.id);
+      const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+      const seededRestriction = {
+        reason: "quota_exhausted" as const,
+        resetAt: NOW + 3_600_000,
+      };
+      stores.quotas.put({
+        ...seeded,
+        error: "OAuth refresh failed with HTTP 500.",
+        usageRestriction: seededRestriction,
+      });
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
+      const byProject: Record<string, unknown> = {
+        "proj-token": { buckets: [] },
+        "proj-live-agy": { buckets: [] },
+        "": { buckets: [] },
+      };
+      const mixedAnswers: {
+        quotaByProjectBase: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+        quotaFailureByProjectBase: Record<string, Partial<Record<"prod" | "daily", number>>>;
+      } = { quotaByProjectBase: {}, quotaFailureByProjectBase: {} };
+      for (const [project, state, gemini, thirdParty] of [
+        ["proj-own", a, 0.3, 0.9],
+        ["proj-other", b, 0.1, 0.6],
+      ] as const) {
+        const payload = matrixPayload(state, gemini, thirdParty);
+        if (state === "mixed" || state === "mixed-3p") {
+          mixedAnswers.quotaFailureByProjectBase[project] = { daily: 503 };
+          mixedAnswers.quotaByProjectBase[project] = { prod: payload };
+        } else if (state === "mixed-unreadable") {
+          mixedAnswers.quotaByProjectBase[project] = {
+            daily: { buckets: "none" },
+            prod: { buckets: [] },
+          };
+        } else if (payload !== undefined) byProject[project] = payload;
+      }
+      const google = ownAndOtherCompanions(byProject, mixedAnswers);
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const run = google.adapter.refreshUsage(
+        usageContext(stores, live, google.fetch, () => NOW + 60_000),
+      );
+      const hasGemini = (state: CandidateState) => state === "gemini" || state === "both";
+      const hasThirdParty = (state: CandidateState) =>
+        state === "third-party" || state === "both" || state === "mixed-3p";
+      const rejects = (state: CandidateState) =>
+        state === "fails" ||
+        state === "mixed" ||
+        state === "mixed-3p" ||
+        state === "unreadable" ||
+        state === "mixed-unreadable";
+      const winner = hasGemini(a) ? "a" : hasGemini(b) ? "b" : null;
+      const visitedRejected = rejects(a) || (!hasGemini(a) && rejects(b));
+      if (winner === null && visitedRejected) {
+        await expect(run).rejects.toBeDefined();
+        const kept = stores.quotas.get(account.id);
+        expect(kept.limitWindows).toEqual(seeded.limitWindows);
+        expect(kept.observedAt).toBe(seeded.observedAt);
+        expect(kept.error).toMatch(QUOTA_READ_ERROR);
+        expect(kept.usageRestriction).toEqual(seededRestriction);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        return;
+      }
+      await run;
+      const quota = stores.quotas.get(account.id);
+      expect(quota.error).toBeNull();
+      const thirdPartyOnly = winner === null && (hasThirdParty(a) || hasThirdParty(b));
+      expect(quota.observedAt).toBe(thirdPartyOnly ? seeded.observedAt : NOW + 60_000);
+      expect(quota.usageRestriction).toEqual(
+        winner === null ? seededRestriction : null,
+      );
+      if (winner === null)
+        expect(quota.limitWindows).toEqual(
+          hasThirdParty(a) || hasThirdParty(b) ? seeded.limitWindows : [],
+        );
+      else {
+        expect(quota.limitWindows).toHaveLength(1);
+        expect(quota.limitWindows[0]?.utilization).toBeCloseTo(winner === "a" ? 0.7 : 0.9);
+      }
+      const display = stores.quotas.modelWeekly(account.id) ?? {};
+      expect(Object.keys(display)).not.toContain("Stale 3p");
+      const winnerState = winner === "a" ? a : winner === "b" ? b : null;
+      const displaySource =
+        winnerState !== null && hasThirdParty(winnerState)
+          ? winner
+          : hasThirdParty(a)
+            ? "a"
+            : winner !== "a" && hasThirdParty(b)
+              ? "b"
+              : null;
+      if (displaySource === null) expect(Object.keys(display)).toHaveLength(0);
+      else {
+        expect(Object.keys(display)).toHaveLength(2);
+        const fiveHour = Object.values(display).find((row) => row.utilization !== null && Math.abs(row.utilization - (displaySource === "a" ? 0.1 : 0.4)) < 1e-6);
+        expect(fiveHour).toBeDefined();
+      }
+      const expectedProject = winner === "a" ? "proj-own" : winner === "b" ? "proj-other" : storedProject;
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(expectedProject);
+    },
+  );
+
+  const abortingContext = (
+    stores: Awaited<ReturnType<typeof usageStores>>,
+    account: Account,
+    google: ReturnType<typeof fakeCodeAssist>,
+    controller: AbortController,
+    now: () => number,
+  ): AdapterUsageContext => ({
+    ...usageContext(stores, account, google.fetch, now),
+    signal: controller.signal,
+  });
+  const seededForCommit = async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+    const seeded = stores.quotas.get(account.id);
+    const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+    const live = (await stores.accounts.get(account.id)) ?? account;
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [bucket("gemini-4-neon", 0.1)] },
+    });
+    return { stores, account: live, seeded, storedProject, google };
+  };
+
+  it("records no error when the refresh is cancelled during the quota read, since a cancel is not a failed read", async () => {
+    const { stores, account, seeded, google } = await seededForCommit();
+    stores.quotas.put({ ...seeded, error: "OAuth refresh failed with HTTP 500." });
+    const controller = new AbortController();
+    const abortingFetch: typeof fetch = async (input, init) => {
+      if (String(input).endsWith(":retrieveUserQuotaSummary")) controller.abort();
+      return google.fetch(input, init);
+    };
+    await expect(
+      google.adapter.refreshUsage({
+        ...abortingContext(stores, account, google, controller, () => NOW + 60_000),
+        fetch: abortingFetch,
+      }),
+    ).rejects.toBeDefined();
+    const kept = stores.quotas.get(account.id);
+    expect(kept.error).toBe("OAuth refresh failed with HTTP 500.");
+    expect(kept.limitWindows).toEqual(seeded.limitWindows);
+    expect(kept.observedAt).toBe(seeded.observedAt);
+  });
+
+  const RECOVERABLE_ERRORS = [
+    ["quota_read", `${QUOTA_READ_PREFIX}old read failure`],
+    ["runtime_version", "Gemini usage refresh stopped (runtime_version): old lookup failure"],
+  ] as const;
+
+  const seededWithError = async (seedError: string) => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quota: ONE_WINDOW,
+    });
+    await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW));
+    stores.quotas.put({ ...stores.quotas.get(account.id), error: seedError });
+    const live = (await stores.accounts.get(account.id)) ?? account;
+    return {
+      stores,
+      account: live,
+      google,
+      before: stores.quotas.get(account.id),
+      accountBefore: live,
+    };
+  };
+
+  it.each(RECOVERABLE_ERRORS)(
+    "keeps a seeded %s error and every quota field when the refresh is cancelled during the quota read",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      const controller = new AbortController();
+      const abortingFetch: typeof fetch = async (input, init) => {
+        if (String(input).endsWith(":retrieveUserQuotaSummary")) controller.abort();
+        return google.fetch(input, init);
+      };
+      await expect(
+        google.adapter.refreshUsage({
+          ...abortingContext(stores, account, google, controller, () => NOW + 60_000),
+          fetch: abortingFetch,
+        }),
+      ).rejects.toBeDefined();
+      expect(stores.quotas.get(account.id)).toEqual(before);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(
+        account.geminiProject,
+      );
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "keeps a seeded %s error and every quota field when the credential refresh fails, and records no quota_read error",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      await expect(
+        google.adapter.refreshUsage({
+          ...usageContext(stores, account, google.fetch, () => NOW + 60_000),
+          freshSecret: async () => {
+            throw new Error("OAuth refresh failed with HTTP 401.");
+          },
+        }),
+      ).rejects.toThrow("OAuth refresh failed with HTTP 401.");
+      expect(stores.quotas.get(account.id)).toEqual(before);
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "records a runtime_version error and moves nothing else when the version lookup fails over a seeded %s error",
+    async (_kind, seedError) => {
+      const { stores, account, before } = await seededWithError(seedError);
+      const failing = fakeCodeAssist({
+        loads: [LIVE_AGY_DAILY],
+        quota: ONE_WINDOW,
+        runtimeUserAgent: async () => {
+          throw new Error(RUNTIME_VERSION_FAILURE);
+        },
+      });
+      await expect(
+        failing.adapter.refreshUsage(usageContext(stores, account, failing.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow(RUNTIME_VERSION_FAILURE);
+      expect(failing.calls).toEqual([]);
+      expect(stores.quotas.get(account.id)).toEqual({
+        ...before,
+        error: `Gemini usage refresh stopped (runtime_version): ${RUNTIME_VERSION_FAILURE}`,
+      });
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "records a quota_read error and leaves the endpoint, tier, project and quota alone when loadCodeAssist fails over a seeded %s error",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      const failingFetch: typeof fetch = async (input, init) =>
+        String(input).endsWith(":loadCodeAssist")
+          ? new Response("{}", { status: 503 })
+          : google.fetch(input, init);
+      await expect(
+        google.adapter.refreshUsage({
+          ...usageContext(stores, account, failingFetch, () => NOW + 60_000),
+        }),
+      ).rejects.toBeDefined();
+      const after = stores.quotas.get(account.id);
+      expect(after.error?.startsWith(QUOTA_READ_PREFIX)).toBe(true);
+      expect({ ...after, error: null }).toEqual({ ...before, error: null });
+      const stored = await stores.accounts.get(account.id);
+      expect(stored?.geminiEndpoint).toBe(account.geminiEndpoint);
+      expect(stored?.subscriptionType).toBe(account.subscriptionType);
+      expect(stored?.geminiProject).toBe(account.geminiProject);
+    },
+  );
+
+  it("never mixes the new project with the old windows when the refresh is aborted right after the project commits", async () => {
+    const { stores, account, seeded, google } = await seededForCommit();
+    const controller = new AbortController();
+    const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+    vi.spyOn(stores.accounts, "setGeminiProject").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      controller.abort();
+      return result;
+    });
+    await google.adapter
+      .refreshUsage(abortingContext(stores, account, google, controller, () => NOW + 60_000))
+      .catch(() => undefined);
+    const project = (await stores.accounts.get(account.id))?.geminiProject;
+    const utilization = stores.quotas.get(account.id).limitWindows[0]?.utilization;
+    expect([project, utilization?.toFixed(2)]).toEqual(["proj-own", "0.90"]);
+    expect(seeded.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+  });
+
+  it("commits the windows and the project together when the abort lands as the project write starts", async () => {
+    const { stores, account, google } = await seededForCommit();
+    const controller = new AbortController();
+    const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+    vi.spyOn(stores.accounts, "setGeminiProject").mockImplementation(async (...args) => {
+      controller.abort();
+      return original(...args);
+    });
+    await google.adapter
+      .refreshUsage(abortingContext(stores, account, google, controller, () => NOW + 60_000))
+      .catch(() => undefined);
+    const project = (await stores.accounts.get(account.id))?.geminiProject;
+    const utilization = stores.quotas.get(account.id).limitWindows[0]?.utilization;
+    expect([project, utilization?.toFixed(2)]).toEqual(["proj-own", "0.90"]);
+  });
+
+  it("changes neither the project nor the quota when the abort lands before the commit point", async () => {
+    const { stores, account, seeded, storedProject, google } = await seededForCommit();
+    const controller = new AbortController();
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    let calls = 0;
+    const result = await google.adapter
+      .refreshUsage(
+        abortingContext(stores, account, google, controller, () => {
+          calls += 1;
+          controller.abort();
+          return NOW + 60_000;
+        }),
+      )
+      .catch((error: unknown) => error);
+    expect(calls).toBeGreaterThan(0);
+    expect(result).toBeInstanceOf(Error);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+    expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
+  });
+
+  it("keeps the old project and the old quota together when the project write fails, and the next refresh repairs both", async () => {
+    const { stores, account, seeded, storedProject, google } = await seededForCommit();
+    const spy = vi
+      .spyOn(stores.accounts, "setGeminiProject")
+      .mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+    ).rejects.toThrow("disk full");
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+    expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
+    expect(stores.quotas.get(account.id).error).toBe(
+      `${QUOTA_READ_PREFIX}disk full`,
+    );
+    spy.mockRestore();
+    await google.adapter.refreshUsage(
+      usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+    );
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+    expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
+  });
+
+  describe("the commit step is all-or-nothing", () => {
+    const COMMIT_PREFIX = "Gemini usage refresh stopped (commit): ";
+    const WINNER_WITH_THIRD_PARTY = {
+      buckets: [bucket("gemini-4-neon", 0.1)],
+      groups: [
+        {
+          displayName: "Claude and GPT models",
+          buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+        },
+      ],
+    };
+    const seededForRollback = async () => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-token");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const google = ownAndOtherCompanions({ "proj-own": WINNER_WITH_THIRD_PARTY });
+      return {
+        stores,
+        account: live,
+        google,
+        staleDisplay,
+        seeded: stores.quotas.get(account.id),
+        storedProject: live.geminiProject,
+      };
+    };
+
+    const failCommitPut = (stores: Awaited<ReturnType<typeof usageStores>>) => {
+      const real = stores.quotas.put.bind(stores.quotas);
+      return vi
+        .spyOn(stores.quotas, "put")
+        .mockImplementationOnce(real)
+        .mockImplementationOnce(() => {
+          throw new Error("disk full");
+        });
+    };
+
+    it.each(["putModelWeekly", "put"] as const)(
+      "restores the old project and keeps the old quota and 3p display when %s throws after the project changed",
+      async (failing) => {
+        const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+        expect(storedProject).not.toBe("proj-own");
+        const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+        if (failing === "put") failCommitPut(stores);
+        else
+          vi.spyOn(stores.quotas, "putModelWeekly").mockImplementationOnce(() => {
+            throw new Error("disk full");
+          });
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("disk full");
+        expect(setProject.mock.calls.map((call) => call[1])).toEqual(["proj-own", storedProject]);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+        expect(stores.quotas.get(account.id)).toEqual({
+          ...seeded,
+          error: `${QUOTA_READ_PREFIX}disk full`,
+        });
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      },
+    );
+
+    it("restores a project that was unset before the refresh", async () => {
+      const { stores, google } = await seededForRollback();
+      const bare = await storedAccount(stores, "proj-token");
+      await stores.accounts.setGeminiProject(bare.id, undefined);
+      const account = (await stores.accounts.get(bare.id)) ?? bare;
+      expect(account.geminiProject).toBeUndefined();
+      failCommitPut(stores);
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("disk full");
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBeUndefined();
+    });
+
+    it("writes nothing, not even the project, when the reading does not validate", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+      const putDisplay = vi.spyOn(stores.quotas, "putModelWeekly");
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      expect(setProject).not.toHaveBeenCalled();
+      expect(putDisplay).not.toHaveBeenCalled();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      const kept = stores.quotas.get(account.id);
+      expect(kept.error).toMatch(QUOTA_READ_ERROR);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("writes no quota when only the 3p display does not validate", async () => {
+      const { stores, account, staleDisplay, seeded } = await seededForRollback();
+      const google = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: DAILY_WITHOUT_GEMINI });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      const kept = stores.quotas.get(account.id);
+      expect(kept.error).toMatch(QUOTA_READ_ERROR);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("changes neither the endpoint, the tier, the project nor the quota when the reading does not validate after the load reports a new endpoint and tier", async () => {
+      const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const changed = {
+        ...LIVE_AGY_DAILY,
+        paidTier: { id: "g1-ultra-tier", usesGcpTos: true },
+      };
+      const google = fakeCodeAssist({ loads: [changed], quota: ONE_WINDOW });
+      const setEndpoint = vi.spyOn(stores.accounts, "setGeminiEndpoint");
+      const setTier = vi.spyOn(stores.accounts, "setSubscriptionType");
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      expect(setEndpoint).not.toHaveBeenCalled();
+      expect(setTier).not.toHaveBeenCalled();
+      const stored = await stores.accounts.get(account.id);
+      expect(stored?.geminiEndpoint).toBe(account.geminiEndpoint);
+      expect(stored?.subscriptionType).toBe(account.subscriptionType);
+      expect(stored?.geminiProject).toBe(storedProject);
+      const kept = stores.quotas.get(account.id);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("records a blocking commit error when the restore fails too, and the next successful commit clears it", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      const setProject = vi
+        .spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("restore failed"));
+      failCommitPut(stores);
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("disk full; the previous project could not be restored: restore failed");
+      expect(setProject).toHaveBeenCalledTimes(2);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      const stored = stores.quotas.get(account.id);
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`);
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      expect(storedProject).not.toBe("proj-own");
+      expect(google.adapter.isTransientUsageError?.(stored.error ?? "")).toBe(true);
+      expect(google.adapter.isNonBlockingUsageError?.(stored.error ?? "")).toBe(false);
+      setProject.mockRestore();
+      await google.adapter.refreshUsage(
+        usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+      );
+      expect(stores.quotas.get(account.id).error).toBeNull();
+      expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
+      expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    });
+
+    it("keeps the marker when the commit, the restore and every later write fail, and the next successful refresh clears it", async () => {
+      const { stores, account, google, staleDisplay, seeded } = await seededForRollback();
+      const real = stores.quotas.put.bind(stores.quotas);
+      let puts = 0;
+      vi.spyOn(stores.quotas, "put").mockImplementation((value) => {
+        puts += 1;
+        if (puts > 1) throw new Error("disk full");
+        return real(value);
+      });
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      vi.spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("restore failed"));
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("restore failed");
+      vi.restoreAllMocks();
+      const stored = stores.quotas.get(account.id);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`);
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      expect(google.adapter.isTransientUsageError?.(stored.error ?? "")).toBe(true);
+      expect(google.adapter.isNonBlockingUsageError?.(stored.error ?? "")).toBe(false);
+      await google.adapter.refreshUsage(
+        usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+      );
+      expect(stores.quotas.get(account.id).error).toBeNull();
+    });
+
+    it("leaves the new project beside the old quota with the marker stored when the process dies after the project write", async () => {
+      const { stores, account, google, seeded } = await seededForRollback();
+      vi.spyOn(stores.quotas, "commitReading").mockImplementation(() => {
+        throw new Error("process died");
+      });
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      vi.spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("process died"));
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("process died");
+      vi.restoreAllMocks();
+      const stored = stores.quotas.get(account.id);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stored.error?.startsWith(COMMIT_PREFIX)).toBe(true);
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+    });
+
+    it("changes nothing and still serves the old project when the marker write itself fails", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("disk full");
+      expect(setProject).not.toHaveBeenCalled();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      expect(stores.quotas.get(account.id)).toEqual({ ...seeded, error: `${QUOTA_READ_PREFIX}disk full` });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("leaves no marker after a successful project change", async () => {
+      const { stores, account, google } = await seededForRollback();
+      const put = vi.spyOn(stores.quotas, "put");
+      await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000));
+      expect(put.mock.calls.map((call) => call[0].error)).toEqual([`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`, null]);
+      expect(stores.quotas.get(account.id).error).toBeNull();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stores.quotas.get(account.id).usageRestriction ?? null).toBeNull();
+    });
+
+    it("writes no marker when the project does not change", async () => {
+      const { stores, account, storedProject } = await seededForRollback();
+      const same = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      const put = vi.spyOn(stores.quotas, "put");
+      await same.adapter.refreshUsage(usageContext(stores, account, same.fetch, () => NOW + 60_000));
+      expect(put.mock.calls.map((call) => call[0].error)).toEqual([null]);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+    });
+
+    it.each([
+      ["a failed load", "quota_read"],
+      ["a failed version lookup", "runtime_version"],
+    ] as const)(
+      "changes nothing and surfaces the write error when recording the error of %s throws",
+      async (_name, kind) => {
+        const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+        const google =
+          kind === "quota_read"
+            ? fakeCodeAssist({ loads: [], loadFailureByBase: { daily: { status: 503 } }, quota: ONE_WINDOW })
+            : fakeCodeAssist({
+                loads: [LIVE_AGY_DAILY],
+                quota: ONE_WINDOW,
+                runtimeUserAgent: () => Promise.reject(new Error(RUNTIME_VERSION_FAILURE)),
+              });
+        vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+          throw new Error("error record failed");
+        });
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("error record failed");
+        expect(stores.quotas.get(account.id)).toEqual(seeded);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      },
+    );
+
+    it.each([
+      ["endpoint", "setGeminiEndpoint", [{ ...LIVE_AGY_DAILY, paidTier: { id: "enterprise-tier", usesGcpTos: true } }]],
+      ["tier", "setSubscriptionType", [{ ...LIVE_AGY_DAILY, paidTier: { id: "g1-ultra-tier" } }]],
+    ] as const)(
+      "stores the %s error and writes no quota, display or project when the %s write throws",
+      async (_name, method, script) => {
+        const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+        const google = fakeCodeAssist({ loads: [...script], quota: ONE_WINDOW });
+        vi.spyOn(stores.accounts, method).mockRejectedValueOnce(new Error("disk full"));
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("disk full");
+        expect(stores.quotas.get(account.id)).toEqual({ ...seeded, error: `${QUOTA_READ_PREFIX}disk full` });
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      },
+    );
+  });
+
+  it("stores a changed tier on a refresh when the endpoint is unchanged, and leaves the endpoint alone", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-live-agy");
+    expect(account.geminiEndpoint).toBe("daily");
+    expect(account.subscriptionType).toBe("g1-ultra-lite-tier");
+    const google = fakeCodeAssist({
+      loads: [{ ...LIVE_AGY_DAILY, paidTier: { id: "g1-ultra-tier" } }],
+      quota: ONE_WINDOW,
+    });
+    const setEndpoint = vi.spyOn(stores.accounts, "setGeminiEndpoint");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const stored = await stores.accounts.get(account.id);
+    expect(stored?.subscriptionType).toBe("g1-ultra-tier");
+    expect(stored?.geminiEndpoint).toBe("daily");
+    expect(setEndpoint).not.toHaveBeenCalled();
+  });
+
+  type EndpointOutcome = "data" | "empty" | "failed" | "unreadable";
+  const ENDPOINT_OUTCOMES: EndpointOutcome[] = ["data", "empty", "failed", "unreadable"];
+  const endpointRows = ENDPOINT_OUTCOMES.flatMap((daily) =>
+    ENDPOINT_OUTCOMES.map((prod) => [daily, prod] as const),
+  );
+  const endpointScript = (daily: EndpointOutcome, prod: EndpointOutcome) => {
+    const payload = (outcome: EndpointOutcome) =>
+      outcome === "data"
+        ? {
+            buckets: [bucket("gemini-4-neon", 0.3)],
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+              },
+            ],
+          }
+        : outcome === "unreadable"
+          ? { buckets: "none" }
+          : { buckets: [] };
+    const quotaByBase: Partial<Record<"daily" | "prod", unknown>> = {};
+    const quotaFailureByBase: Partial<Record<"daily" | "prod", number>> = {};
+    for (const [base, outcome] of [["daily", daily], ["prod", prod]] as const) {
+      if (outcome === "failed") quotaFailureByBase[base] = 503;
+      else quotaByBase[base] = payload(outcome);
+    }
+    return { quotaByBase, quotaFailureByBase };
+  };
+
+  it.each(endpointRows)(
+    "refreshes with the daily endpoint %s and the prod endpoint %s: an empty answer is real only when no endpoint failed or was unreadable",
+    async (daily, prod) => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-live-agy");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const seeded = stores.quotas.get(account.id);
+      const seededError = "OAuth refresh failed with HTTP 500.";
+      stores.quotas.put({ ...seeded, error: seededError });
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
+      const google = fakeCodeAssist({
+        loads: [LIVE_AGY_DAILY],
+        ...endpointScript(daily, prod),
+      });
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const run = google.adapter.refreshUsage(
+        usageContext(stores, live, google.fetch, () => NOW + 60_000),
+      );
+      const outcomes = [daily, prod];
+      const hasData = outcomes.includes("data");
+      const anyFailed = outcomes.includes("failed") || outcomes.includes("unreadable");
+      if (!hasData && anyFailed) {
+        await expect(run).rejects.toBeDefined();
+        const kept = stores.quotas.get(account.id);
+        expect(kept.limitWindows).toEqual(seeded.limitWindows);
+        expect(kept.observedAt).toBe(seeded.observedAt);
+        expect(kept.error).toMatch(QUOTA_READ_ERROR);
+        expect(kept.error).not.toBe(seededError);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        return;
+      }
+      await run;
+      const fresh = stores.quotas.get(account.id);
+      expect(fresh.error).toBeNull();
+      expect(fresh.observedAt).toBe(NOW + 60_000);
+      const display = stores.quotas.modelWeekly(account.id) ?? {};
+      expect(Object.keys(display)).not.toContain("Stale 3p");
+      if (hasData) {
+        expect(fresh.limitWindows).toHaveLength(1);
+        expect(fresh.limitWindows[0]?.utilization).toBeCloseTo(0.7);
+        expect(Object.keys(display)).toHaveLength(2);
+      } else {
+        expect(fresh.limitWindows).toEqual([]);
+        expect(Object.keys(display)).toHaveLength(0);
+      }
     },
   );
 });

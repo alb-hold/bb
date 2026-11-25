@@ -35,7 +35,10 @@ export function accountUsageWindows(
   if (account.limitWindows.length > 0) {
     return account.limitWindows.map((window) => ({
       id: window.slot,
-      label: usageWindowLabel(window.windowMinutes, window.slot),
+      label: usageWindowLabel(
+        window.windowMinutes,
+        window.slot === "primary" ? "Usage limit" : "Secondary limit",
+      ),
       utilization: window.utilization,
       resetAt: window.resetAt,
     }));
@@ -229,7 +232,7 @@ export function registerUsageSource(
             )) {
               add(
                 `weekly:${name}`,
-                `Weekly · ${name}`,
+                account.provider === "gemini" ? name : `Weekly · ${name}`,
                 quota.utilization,
                 quota.resetAt,
                 name,

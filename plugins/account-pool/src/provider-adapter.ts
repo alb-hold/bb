@@ -73,11 +73,13 @@ export interface AdapterUsageContext {
   signal?: AbortSignal;
   background?: boolean;
   account: Account;
+  stillCurrent: () => boolean;
   freshSecret: (signal?: AbortSignal) => Promise<AccountSecret>;
   accounts: AccountStore;
   quotas: QuotaStore;
   fetch: typeof fetch;
   now: () => number;
+  onProjectCommitted?: (accountId: string, project: string) => void;
 }
 
 export interface ImportedProviderAccount {
@@ -156,6 +158,7 @@ export interface ProviderAdapter {
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
   refreshUsage(context: AdapterUsageContext): Promise<void>;
   isTransientUsageError?(error: string): boolean;
+  isNonBlockingUsageError?(error: string): boolean;
   refreshProfile?(context: AdapterUsageContext): Promise<void>;
   errorResponse(
     status: number,

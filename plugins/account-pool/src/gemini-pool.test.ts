@@ -2356,6 +2356,182 @@ describe("Gemini account pool", () => {
     expect(a?.observedAt).toBe(before?.observedAt);
   });
 
+  it.each([
+    ["an exhausted account stays gated by its old quota", true],
+    ["a usable account keeps sending with its old project", false],
+  ] as const)(
+    "after a failed project write, %s",
+    async (_name, exhausted) => {
+      const projects = { "tok-a": "proj-a" };
+      const google = await startGoogle({
+        projects,
+        quotaFraction: {},
+        stream: () =>
+          exhausted
+            ? { status: 429, body: QUOTA_BODY }
+            : { status: 200, body: OK_BODY },
+      });
+      upstreams.push(google.close);
+      const fixture = await createGeminiFixture(google, {
+        "/homes/a": creds("tok-a"),
+      });
+      const a = await addGemini(fixture.host, "/homes/a", 0);
+      const env = await geminiEnv(fixture.host);
+      const post = (sessionId: string) =>
+        runtimeCall(fixture.host, env.token, {
+          body: { contents: [], sessionId },
+        });
+      const streamProjects = () =>
+        google.calls
+          .filter((call) => call.method === "streamGenerateContent")
+          .map((call) => call.project);
+      await post("session-1");
+      const read = async () =>
+        statusSchema
+          .parse(await fixture.host.harness.behavior.callRpc("status.get", null))
+          .accounts.find((account) => account.id === a.id);
+      const before = await read();
+      expect(before?.usageRestriction?.reason ?? null).toBe(
+        exhausted ? "quota_exhausted" : null,
+      );
+      projects["tok-a"] = "proj-new";
+      const kv = fixture.host.bb.storage.kv;
+      const set = kv.set.bind(kv);
+      const failing = vi
+        .spyOn(kv, "set")
+        .mockImplementation(async (key, value) => {
+          if (JSON.stringify(value).includes("proj-new"))
+            throw new Error("disk full");
+          return set(key, value);
+        });
+      await expect(
+        fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+          accountId: a.id,
+        }),
+      ).rejects.toThrow();
+      failing.mockRestore();
+      const after = await read();
+      expect(after?.limitWindows).toEqual(before?.limitWindows);
+      expect(after?.observedAt).toBe(before?.observedAt);
+      expect(after?.usageRestriction).toEqual(before?.usageRestriction);
+      const sent = streamProjects().length;
+      const response = await post("session-2");
+      expect(response.status).toBe(exhausted ? 429 : 200);
+      expect(streamProjects().slice(sent)).toEqual(exhausted ? [] : ["proj-a"]);
+      expect(streamProjects()).not.toContain("proj-new");
+    },
+  );
+
+  describe("after a quota write fails once the project changed", () => {
+    const setup = async () => {
+      const projects = { "tok-a": "proj-a" };
+      const google = await startGoogle({
+        projects,
+        quotaFraction: {},
+        stream: () => ({ status: 200, body: OK_BODY }),
+      });
+      upstreams.push(google.close);
+      const fixture = await createGeminiFixture(google, {
+        "/homes/a": creds("tok-a"),
+      });
+      const a = await addGemini(fixture.host, "/homes/a", 0);
+      const env = await geminiEnv(fixture.host);
+      const post = (sessionId: string) =>
+        runtimeCall(fixture.host, env.token, {
+          body: { contents: [], sessionId },
+        });
+      const streamProjects = () =>
+        google.calls
+          .filter((call) => call.method === "streamGenerateContent")
+          .map((call) => call.project);
+      const read = async () =>
+        statusSchema
+          .parse(await fixture.host.harness.behavior.callRpc("status.get", null))
+          .accounts.find((account) => account.id === a.id);
+      await post("session-1");
+      const database = fixture.host.bb.storage.database();
+      const prepare = database.prepare.bind(database);
+      const failWrite = (table: string, times = 1, skip = 0) => {
+        let left = times;
+        let skipped = skip;
+        return vi.spyOn(database, "prepare").mockImplementation((sql: string) => {
+          if (left > 0 && sql.includes(`INTO ${table}`)) {
+            if (skipped > 0) {
+              skipped -= 1;
+              return prepare(sql);
+            }
+            left -= 1;
+            throw new Error("disk full");
+          }
+          return prepare(sql);
+        });
+      };
+      return { projects, google, fixture, a, post, streamProjects, read, failWrite };
+    };
+
+    it.each([
+      ["pool_model_weekly", 0],
+      ["account_quota", 1],
+      ["account_quota", 0],
+    ] as const)(
+      "keeps the old project, quota and display, and sends the next request with the old project, when the %s write throws after %s earlier writes",
+      async (table, skip) => {
+        const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
+        const before = await read();
+        projects["tok-a"] = "proj-new";
+        const failing = failWrite(table, 1, skip);
+        await expect(
+          fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+            accountId: a.id,
+          }),
+        ).rejects.toThrow();
+        failing.mockRestore();
+        const after = await read();
+        expect(after?.limitWindows).toEqual(before?.limitWindows);
+        expect(after?.observedAt).toBe(before?.observedAt);
+        expect(after?.usageRestriction).toEqual(before?.usageRestriction);
+        const sent = streamProjects().length;
+        const response = await post("session-2");
+        expect(response.status).toBe(200);
+        expect(streamProjects().slice(sent)).toEqual(["proj-a"]);
+        expect(streamProjects()).not.toContain("proj-new");
+      },
+    );
+
+    it("refuses requests while the commit, the restore and every later write failed, and serves again after the next successful refresh", async () => {
+      const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
+      projects["tok-a"] = "proj-new";
+      const kv = fixture.host.bb.storage.kv;
+      const set = kv.set.bind(kv);
+      let accountWrites = 0;
+      const restoring = vi.spyOn(kv, "set").mockImplementation(async (key, value) => {
+        if (JSON.stringify(value).includes("proj-a") && accountWrites > 0)
+          throw new Error("restore failed");
+        if (JSON.stringify(value).includes("proj-new")) accountWrites += 1;
+        return set(key, value);
+      });
+      const failing = failWrite("account_quota", 99, 1);
+      await expect(
+        fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+          accountId: a.id,
+        }),
+      ).rejects.toThrow();
+      failing.mockRestore();
+      restoring.mockRestore();
+      const sent = streamProjects().length;
+      const refused = await post("session-2");
+      expect(refused.status).not.toBe(200);
+      expect(streamProjects().slice(sent)).toEqual([]);
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: a.id,
+      });
+      expect((await read())?.usageRestriction ?? null).toBeNull();
+      const served = await post("session-3");
+      expect(served.status).toBe(200);
+      expect(streamProjects().slice(sent)).toEqual(["proj-new"]);
+    });
+  });
+
   it("reports unknown-only quota buckets as a failed refresh through RPC and CLI", async () => {
     const { fixture, ids } = await twoAccounts(
       () => ({ status: 200, body: OK_BODY }),
@@ -2450,7 +2626,7 @@ describe("Gemini account pool", () => {
             .map((call) => `${call.bearer} ${call.endpoint}`),
         ),
       ].sort(),
-    ).toEqual(["tok-a daily", "tok-e daily"]);
+    ).toEqual(["tok-a daily", "tok-a prod", "tok-e daily", "tok-e prod"]);
   });
 
   it("reads a prod-served account's usage from the daily quota summary", async () => {
@@ -2477,6 +2653,7 @@ describe("Gemini account pool", () => {
       "loadCodeAssist daily",
       "loadCodeAssist prod",
       "retrieveUserQuotaSummary daily",
+      "retrieveUserQuotaSummary prod",
     ]);
     const quotaCalls = codeAssist.filter(
       (call) => call.method === "retrieveUserQuotaSummary",

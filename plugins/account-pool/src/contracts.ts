@@ -162,7 +162,7 @@ export const draftSelectionSchema = z
   })
   .strict();
 
-export const accountSchema = z
+export const storedAccountSchema = z
   .object({
     id: z.string().uuid(),
     provider: providerSchema,
@@ -178,10 +178,15 @@ export const accountSchema = z
     enabled: z.boolean(),
     priority: z.number().int(),
     createdAt: z.number().int().nonnegative(),
+    generation: z.string().min(1).optional(),
     lastUsedAt: z.number().int().nonnegative().nullable().default(null),
     lastUsedHostId: z.string().min(1).nullable().default(null),
   })
   .strict();
+
+export const accountSchema = storedAccountSchema.extend({
+  generation: z.string().min(1),
+});
 
 export type Account = z.infer<typeof accountSchema>;
 
@@ -321,7 +326,7 @@ export const routingBindingNextSchema = z
   })
   .strict();
 
-export const accountSummarySchema = accountSchema.extend({
+export const accountSummarySchema = storedAccountSchema.extend({
   lastUsedHostName: z.string().min(1).nullable(),
   active: z.boolean().default(false),
   balance: accountBalanceSchema,
