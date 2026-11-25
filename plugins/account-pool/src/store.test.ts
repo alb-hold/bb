@@ -13,6 +13,7 @@ import {
   QUOTA_MIGRATIONS,
   QuotaStore,
   RoutingStore,
+  legacyGeneration,
 } from "./store.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -83,7 +84,10 @@ describe("AccountStore", () => {
     });
     const account = (
       label: string,
-    ): Omit<Account, "id" | "createdAt" | "lastUsedAt" | "lastUsedHostId"> => ({
+    ): Omit<
+      Account,
+      "id" | "createdAt" | "generation" | "lastUsedAt" | "lastUsedHostId"
+    > => ({
       provider: "claude",
       kind: "api-key",
       label,
@@ -103,6 +107,89 @@ describe("AccountStore", () => {
     expect((await store.list()).map((entry) => entry.id).sort()).toEqual(
       [first.id, second.id].sort(),
     );
+    expect(first.generation).not.toBe(second.generation);
+    expect(first.generation).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it("keeps the generation out of the claude and codex account list and restores it on reload", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    const open = async () => {
+      const store = new AccountStore(
+        host.bb.storage.kv,
+        path.join(dataDir, "secrets"),
+      );
+      await store.initialize();
+      return store;
+    };
+    const store = await open();
+    const added = await store.add(
+      {
+        provider: "claude",
+        kind: "api-key",
+        label: "kept",
+        email: null,
+        accountUuid: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        enabled: true,
+        priority: 100,
+      },
+      { kind: "api-key", apiKey: "sk-kept" },
+    );
+
+    const rows = (await host.bb.storage.kv.get("accounts:v1")) as object[];
+    const reloaded = await (await open()).get(added.id);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("generation");
+    expect(reloaded?.generation).toBe(added.generation);
+    await store.remove(added.id);
+    expect(await host.bb.storage.kv.get("accounts:generations:v1")).toEqual({});
+  });
+
+  it("gives a persisted account without a generation a deterministic one from its id and createdAt", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    const legacy = {
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "claude",
+      kind: "api-key",
+      label: "legacy",
+      email: null,
+      accountUuid: null,
+      subscriptionType: null,
+      rateLimitTier: null,
+      enabled: true,
+      priority: 100,
+      createdAt: 5,
+      lastUsedAt: null,
+      lastUsedHostId: null,
+    };
+    await host.bb.storage.kv.set("accounts:v1", [legacy]);
+    const read = async () => {
+      const store = new AccountStore(
+        host.bb.storage.kv,
+        path.join(dataDir, "secrets"),
+      );
+      await store.initialize();
+      return store.list();
+    };
+
+    const [first] = await read();
+    const [second] = await read();
+
+    expect(first?.generation).toBe(legacyGeneration(legacy.id, 5));
+    expect(second?.generation).toBe(first?.generation);
+    expect(legacyGeneration(legacy.id, 6)).not.toBe(first?.generation);
   });
 
   it("forgets a removed account's organization and keeps the others", async () => {

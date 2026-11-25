@@ -1,4 +1,5 @@
 import type { ImportedProviderAccount } from "./provider-adapter.js";
+import { writeQuotaIfCurrent, type QuotaWriteGuard } from "./store.js";
 import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
@@ -29,6 +30,7 @@ import {
 } from "./codex-adapter.js";
 import {
   createGeminiAdapter,
+  GEMINI_COMMIT_ERROR_PREFIX,
   DEFAULT_GEMINI_REFRESH_URL,
   DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
   type GeminiUpstreamBaseUrls,
@@ -330,6 +332,7 @@ export class AccountPoolHub {
   private affinityBindings = new Map<string, AccountBinding>();
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
   private readonly usageRefreshes = new Map<string, Promise<boolean>>();
+  private readonly usageAborts = new Map<string, Set<AbortController>>();
   private readonly lastUsageRefreshAt = new Map<string, number>();
   private readonly transientUsageRetries = new Map<
     string,
@@ -337,7 +340,22 @@ export class AccountPoolHub {
   >();
   private readonly drainWaiters = new Set<() => void>();
 
-  constructor(private readonly options: HubOptions) {}
+  constructor(private readonly options: HubOptions) {
+    options.quotas.onRemove((accountId) => {
+      const known = this.generations.get(accountId);
+      this.generations.set(accountId, {
+        generation: known?.generation ?? "",
+        removed: true,
+      });
+      this.committedProjects.delete(accountId);
+      const aborts = this.usageAborts.get(accountId);
+      this.usageAborts.delete(accountId);
+      for (const controller of aborts ?? [])
+        controller.abort(new Error("The account was removed."));
+      this.usageRefreshes.delete(accountId);
+      this.lastUsageRefreshAt.delete(accountId);
+    });
+  }
 
   async start(signal: AbortSignal): Promise<void> {
     this.affinityBindings = this.options.affinity.loadBindings(
@@ -459,14 +477,17 @@ export class AccountPoolHub {
         );
         continue;
       }
+      const capturedAccount = this.options.accounts
+        .get(accountId)
+        .catch(() => null);
       const flight: SecretFlight = {
         kind: "replacement",
         result: writeSecret()
           .then(async () => {
             this.refreshBackoffs.delete(accountId);
             await this.options.accounts.clearRejectedRefresh(accountId);
-            const quota = this.options.quotas.get(accountId);
-            this.options.quotas.put({ ...quota, error: null });
+            const captured = await capturedAccount;
+            if (captured !== null) await this.setError(captured, null);
           })
           .finally(() => {
             if (this.refreshes.get(accountId) === flight)
@@ -877,6 +898,7 @@ export class AccountPoolHub {
     const listed = new Set(accounts.map((account) => account.id));
     for (const id of [...this.transientUsageRetries.keys()])
       if (!listed.has(id)) this.transientUsageRetries.delete(id);
+    this.syncGenerations(await this.options.accounts.list());
     const before = new Map(
       accounts.map((account) => [
         account.id,
@@ -954,11 +976,14 @@ export class AccountPoolHub {
     recoverError = false,
     callerSignal?: AbortSignal,
   ): Promise<boolean> {
+    const controller = new AbortController();
     const signal = AbortSignal.any([
       this.stopped.signal,
+      controller.signal,
       ...(callerSignal === undefined ? [] : [callerSignal]),
     ]);
     signal.throwIfAborted();
+    this.observeAccount(account);
     const adapter = this.adapter(account.provider);
     if (
       adapter.usageFromResponses &&
@@ -973,10 +998,14 @@ export class AccountPoolHub {
     this.lastUsageRefreshAt.set(account.id, now);
     const recover =
       recoverError && this.options.quotas.get(account.id).error !== null;
-    const refresh = adapter
+    const aborts = this.usageAborts.get(account.id) ?? new Set();
+    aborts.add(controller);
+    this.usageAborts.set(account.id, aborts);
+    const refresh: Promise<boolean> = adapter
       .refreshUsage({
         signal,
         account,
+        stillCurrent: () => this.isCurrentInstance(account.id, account.generation),
         freshSecret: (profileSignal = signal) =>
           this.freshSecret(
             account,
@@ -984,25 +1013,37 @@ export class AccountPoolHub {
             { kind: "normal" },
             recover,
             profileSignal,
-          ).catch((error: unknown) => {
+            true,
+          ).catch(async (error: unknown) => {
             if (
               !profileSignal.aborted &&
               (recover || error instanceof OAuthRefreshError) &&
               !(error instanceof TransientOAuthRefreshError)
             )
-              this.setError(account.id, errorMessage(error));
+              await this.setError(account, errorMessage(error));
             throw error;
           }),
         accounts: this.options.accounts,
         quotas: this.options.quotas,
         fetch: this.options.fetch,
         now: this.options.now,
+        onProjectCommitted: (accountId, project) =>
+          this.committedProjects.set(accountId, {
+            project,
+            generation: account.generation,
+          }),
       })
       .then(
         () => true,
         () => false,
       )
-      .finally(() => this.usageRefreshes.delete(account.id));
+      .finally(() => {
+        aborts.delete(controller);
+        if (aborts.size === 0 && this.usageAborts.get(account.id) === aborts)
+          this.usageAborts.delete(account.id);
+        if (this.usageRefreshes.get(account.id) === refresh)
+          this.usageRefreshes.delete(account.id);
+      });
     this.usageRefreshes.set(account.id, refresh);
     return refresh;
   }
@@ -1090,6 +1131,8 @@ export class AccountPoolHub {
           account,
           signal,
           background: true,
+          stillCurrent: () =>
+            this.isCurrentInstance(account.id, account.generation),
           freshSecret: (profileSignal = signal) =>
             this.options.accounts.readSecret(account.id, profileSignal),
           accounts: this.options.accounts,
@@ -1249,8 +1292,8 @@ export class AccountPoolHub {
         quota: this.options.quotas.get(account.id),
       }))
       .filter(
-        ({ quota }) =>
-          quota.error === null &&
+        ({ account, quota }) =>
+          !this.usageErrorBlocks(account.provider, quota.error) &&
           !isUsageRestricted(quota, now) &&
           (!isQuotaExhausted(quota, null, now) ||
             hasExtraUsage(quota)),
@@ -1464,7 +1507,7 @@ export class AccountPoolHub {
           if (error instanceof TransientOAuthRefreshError) {
             failure = { status: 503, message: error.message, headers: {} };
           } else {
-            this.setError(selected.account.id, errorMessage(error));
+            await this.setError(selected.account, errorMessage(error));
           }
           continue;
         }
@@ -1533,14 +1576,15 @@ export class AccountPoolHub {
             signal.throwIfAborted();
           }
           const { response } = upstream;
-          const observed = adapter.quotaFromHeaders(
-            selected.account.id,
-            response.headers,
-            this.options.quotas.get(selected.account.id),
-            family,
-            this.options.now(),
-          );
-          this.options.quotas.put(observed);
+          const observe = (stored: AccountQuota): AccountQuota =>
+            adapter.quotaFromHeaders(
+              selected.account.id,
+              response.headers,
+              stored,
+              family,
+              this.options.now(),
+            );
+          await this.putObservedQuota(selected.account, observe);
           if (pacing !== null && !response.ok) {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
@@ -1563,13 +1607,13 @@ export class AccountPoolHub {
                 this.options.now(),
               );
               if (rejection !== null) {
-                this.options.quotas.put({
-                  ...observed,
+                await this.putObservedQuota(selected.account, (stored) => ({
+                  ...observe(stored),
                   usageRestriction: {
                     reason: rejection.reason,
                     resetAt: rejection.resetAt,
                   },
-                });
+                }));
                 failure = {
                   status: 429,
                   message: rejection.message,
@@ -1584,10 +1628,10 @@ export class AccountPoolHub {
               this.options.now(),
             );
             const heldUntil = this.options.now() + waitMs;
-            this.options.quotas.put({
-              ...observed,
+            await this.putObservedQuota(selected.account, (stored) => ({
+              ...observe(stored),
               heldUntil,
-            });
+            }));
             if (
               !paced &&
               waitMs <= MAX_INLINE_HOLD_MS &&
@@ -1668,7 +1712,7 @@ export class AccountPoolHub {
                     selected.account,
                     secret,
                     signal,
-                    () => this.setError(selected.account.id, message),
+                    () => this.setError(selected.account, message),
                   );
                 }
                 break;
@@ -1703,7 +1747,7 @@ export class AccountPoolHub {
                 selected.account,
                 secret,
                 signal,
-                () => this.setError(selected.account.id, message),
+                () => this.setError(selected.account, message),
               );
             }
             break;
@@ -1716,11 +1760,12 @@ export class AccountPoolHub {
               response: adapter.transformResponse(response, {
                 url: requestUrl,
                 account: selected.account,
-                onQuotaRejection: ({ reason, resetAt }) =>
-                  this.options.quotas.put({
-                    ...this.options.quotas.get(accountId),
+                onQuotaRejection: ({ reason, resetAt }) => {
+                  void this.putObservedQuota(selected.account, (stored) => ({
+                    ...stored,
                     usageRestriction: { reason, resetAt },
-                  }),
+                  })).catch(() => undefined);
+                },
               }),
             };
           }
@@ -1802,10 +1847,10 @@ export class AccountPoolHub {
     account: Account,
     rejected: AccountSecret,
     signal: AbortSignal,
-    apply: () => void,
+    apply: () => void | Promise<void>,
   ): Promise<void> {
     if (rejected.kind !== "oauth") {
-      apply();
+      await apply();
       return;
     }
     while (true) {
@@ -1825,7 +1870,7 @@ export class AccountPoolHub {
         kind: "rejection-check",
         result: this.options.accounts
           .readSecret(account.id)
-          .then((current) => {
+          .then(async (current) => {
             const backoff = this.refreshBackoffs.get(account.id);
             if (
               !signal.aborted &&
@@ -1837,7 +1882,7 @@ export class AccountPoolHub {
                 backoff.accessToken === current.accessToken
               )
             ) {
-              apply();
+              await apply();
             }
           })
           .finally(() => {
@@ -1866,6 +1911,7 @@ export class AccountPoolHub {
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
     );
+    this.syncGenerations(accounts);
     signal.throwIfAborted();
     const now = this.options.now();
     const threshold = this.options.getSettings().switchThreshold;
@@ -1893,7 +1939,9 @@ export class AccountPoolHub {
         };
       })
       .filter(
-        ({ quota }) => quota.error === null && !isUsageRestricted(quota, now),
+        ({ account, quota }) =>
+          !this.usageErrorBlocks(account.provider, quota.error) &&
+          !isUsageRestricted(quota, now),
       )
       .filter(
         ({ quota }) =>
@@ -2102,6 +2150,7 @@ export class AccountPoolHub {
     use: SecretUse,
     recover = false,
     signal?: AbortSignal,
+    usageRefresh = false,
   ): Promise<AccountSecret> {
     while (true) {
       signal?.throwIfAborted();
@@ -2177,7 +2226,15 @@ export class AccountPoolHub {
                   )
                 : null;
             const error = this.options.quotas.get(account.id).error;
-            if (error !== null && !recover) throw new Error(error);
+            if (
+              !recover &&
+              this.usageErrorBlocks(account.provider, error) &&
+              !(
+                usageRefresh &&
+                adapter.isTransientUsageError?.(error) === true
+              )
+            )
+              throw new Error(error);
             if (rejection?.sameToken && !recover && secret.kind === "oauth") {
               if (
                 !forceRefresh &&
@@ -2227,7 +2284,12 @@ export class AccountPoolHub {
                   "succeeded",
                   `previousExpiresAt=${secret.kind === "oauth" ? secret.expiresAt : null}, expiresAt=${result.secret.kind === "oauth" ? result.secret.expiresAt : null}, forced=${forceRefresh}.`,
                 );
-                this.setError(account.id, null);
+                const storedError = this.options.quotas.get(account.id).error;
+                if (
+                  storedError === null ||
+                  adapter.isTransientUsageError?.(storedError) !== true
+                )
+                  await this.setError(account, null);
               }
               if (rejection !== null)
                 await this.options.accounts.clearRejectedRefresh(account.id);
@@ -2540,7 +2602,7 @@ export class AccountPoolHub {
     let unknown = false;
     for (const account of enabled) {
       const quota = this.options.quotas.get(account.id);
-      if (quota.error !== null) continue;
+      if (this.usageErrorBlocks(account.provider, quota.error)) continue;
       if (isUsageRestricted(quota, now)) {
         unknown = true;
         continue;
@@ -2613,17 +2675,130 @@ export class AccountPoolHub {
     }
   }
 
-  private setError(accountId: string, message: string | null): void {
-    const quota = this.options.quotas.get(accountId);
-    const error = message?.slice(0, 1_000) ?? null;
-    if (quota.error === error) return;
-    this.options.quotas.put({ ...quota, error });
-    this.options.onAccountsChanged();
+  private putQuota(quota: AccountQuota): void {
+    const stored = this.options.quotas.get(quota.accountId).error;
+    this.options.quotas.put(
+      stored?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true &&
+        quota.error !== stored
+        ? { ...quota, error: stored }
+        : quota,
+    );
+  }
+
+  private readonly generations = new Map<
+    string,
+    { generation: string; removed: boolean }
+  >();
+
+  private observeAccount(account: Account): void {
+    const known = this.generations.get(account.id);
+    if (
+      known === undefined ||
+      (known.removed && known.generation !== account.generation)
+    )
+      this.generations.set(account.id, {
+        generation: account.generation,
+        removed: false,
+      });
+  }
+
+  private isCurrentInstance(accountId: string, generation: string): boolean {
+    const known = this.generations.get(accountId);
+    return (
+      known === undefined || (!known.removed && known.generation === generation)
+    );
+  }
+
+  private syncGenerations(accounts: readonly Account[]): void {
+    const present = new Set<string>();
+    for (const account of accounts) {
+      present.add(account.id);
+      const known = this.generations.get(account.id);
+      if (known?.removed === true && known.generation === account.generation)
+        continue;
+      this.generations.set(account.id, {
+        generation: account.generation,
+        removed: false,
+      });
+    }
+    for (const [id, known] of this.generations) {
+      if (present.has(id) || known.removed) continue;
+      this.generations.set(id, { generation: known.generation, removed: true });
+      this.committedProjects.delete(id);
+    }
+  }
+
+  private readonly committedProjects = new Map<
+    string,
+    { project: string; generation: string }
+  >();
+
+  private guardOf(account: Account): QuotaWriteGuard {
+    return {
+      id: account.id,
+      generation: account.generation,
+      project:
+        account.provider === "gemini" ? (account.geminiProject ?? null) : undefined,
+    };
+  }
+
+  private async putObservedQuota(
+    sentOn: Account,
+    change: (stored: AccountQuota) => AccountQuota,
+  ): Promise<void> {
+    const stored = this.options.quotas.get(sentOn.id);
+    if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
+    const generation = this.generations.get(sentOn.id);
+    if (
+      generation !== undefined &&
+      (generation.removed || generation.generation !== sentOn.generation)
+    )
+      return;
+    const committed = this.committedProjects.get(sentOn.id);
+    if (
+      committed !== undefined &&
+      committed.generation === sentOn.generation &&
+      committed.project !== sentOn.geminiProject
+    )
+      return;
+    await writeQuotaIfCurrent(this.options.accounts, this.guardOf(sentOn), () => {
+      const current = this.options.quotas.get(sentOn.id);
+      if (current.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
+      this.putQuota(change(current));
+    });
+  }
+
+  private async setError(
+    captured: Account,
+    message: string | null,
+  ): Promise<void> {
+    if (!this.isCurrentInstance(captured.id, captured.generation)) return;
+    await writeQuotaIfCurrent(
+      this.options.accounts,
+      { id: captured.id, generation: captured.generation },
+      () => {
+        const quota = this.options.quotas.get(captured.id);
+        const error = message?.slice(0, 1_000) ?? null;
+        if (quota.error === error) return;
+        this.putQuota({ ...quota, error });
+        this.options.onAccountsChanged();
+      },
+    );
   }
 
   private releasePacing(accountId: string, pacing: PacingFlight): void {
     if (this.pacingByAccount.get(accountId) === pacing)
       this.pacingByAccount.delete(accountId);
+  }
+
+  private usageErrorBlocks(
+    provider: PoolProvider,
+    error: string | null,
+  ): error is string {
+    return (
+      error !== null &&
+      this.adapter(provider).isNonBlockingUsageError?.(error) !== true
+    );
   }
 
   private adapter(provider: PoolProvider): ProviderAdapter {

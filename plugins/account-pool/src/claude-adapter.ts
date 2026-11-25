@@ -1,3 +1,4 @@
+import { writeQuotaIfCurrent } from "./store.js";
 import { z } from "zod";
 import {
   type ClaudeProfile,
@@ -440,14 +441,15 @@ export function createClaudeAdapter(options: {
       if (quota === null)
         throw new Error("Usage refresh returned unreadable data.");
       const models = modelWeeklyFromUsage(payload, context.now());
-      const stored = await context.accounts.withExistingAccount(
-        context.account.id,
+      const stored = await writeQuotaIfCurrent(
+        context.accounts,
+        { id: context.account.id, generation: context.account.generation },
         () => {
+          signal.throwIfAborted();
           context.quotas.put(quota);
           if (models !== null)
             context.quotas.putModelWeekly(context.account.id, models);
         },
-        signal,
       );
       context.signal?.throwIfAborted();
       if (!stored) return;

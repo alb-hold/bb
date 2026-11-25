@@ -493,6 +493,7 @@ describe("requestHeaders", () => {
         enabled: true,
         priority: 0,
         createdAt: 0,
+        generation: "generation-0",
         lastUsedAt: null,
         lastUsedHostId: null,
       },

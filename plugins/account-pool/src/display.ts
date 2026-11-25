@@ -67,3 +67,14 @@ export function modelWeeklyRows(
         ],
   );
 }
+
+export function modelRowLabel(
+  account: Pick<AccountSummary, "provider">,
+  name: string,
+  fromDisplay: boolean,
+): string {
+  if (account.provider === "gemini") return name;
+  return fromDisplay
+    ? `7d · ${name}`
+    : `${name.charAt(0).toUpperCase() + name.slice(1)} 7 day`;
+}
