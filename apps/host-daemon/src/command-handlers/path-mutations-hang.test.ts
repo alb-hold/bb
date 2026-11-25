@@ -8,7 +8,11 @@ import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-direc
 import { hostProc,useProcReaderForTests } from "@bb/process-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandDispatchError } from "../command-dispatch-support.js";
-import { boundedLstat, boundedRealpath, useFsProbesForTests } from "./bounded-fs.js";
+import {
+  boundedLstat,
+  boundedRealpath,
+  useFsProbesForTests,
+} from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
 const removalContext = {
