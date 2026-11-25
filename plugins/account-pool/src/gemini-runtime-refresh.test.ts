@@ -100,10 +100,18 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" = "normal";
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" | "load-http" = "normal";
   const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
+    if (url.endsWith("/token"))
+      return Response.json({
+        access_token: "access-fresh",
+        refresh_token: "refresh-synthetic",
+        expires_in: 3600,
+      });
+    if (url.endsWith("/v1internal:loadCodeAssist") && quotaMode === "load-http")
+      return Response.json({ error: "synthetic failure" }, { status: 503 });
     if (url.endsWith("/v1internal:loadCodeAssist"))
       return Response.json({
         cloudaicompanionProject:
@@ -162,10 +170,11 @@ async function createGeminiPool(
     }
     throw new Error(`Unexpected network destination ${url}.`);
   };
+  const affinity = new PoolAffinityStore(database);
   const hub: AccountPoolHub = createHub({
     accounts,
     quotas,
-    affinity: new PoolAffinityStore(database),
+    affinity,
     hubTokens,
     threadTokens,
     now,
@@ -184,6 +193,7 @@ async function createGeminiPool(
       prod: `${UPSTREAM}/prod`,
       daily: `${UPSTREAM}/daily`,
     },
+    geminiOAuthClient: { clientId: "synthetic-client", clientSecret: "synthetic-client-secret" },
     geminiRuntimeUserAgent: runtimeUserAgent,
     onAccountsChanged: () => {},
   });
@@ -214,6 +224,7 @@ async function createGeminiPool(
   return {
     account,
     accounts,
+    affinity,
     hub,
     operations,
     quotas,
@@ -796,5 +807,88 @@ describe("usage refresh while requests are in flight", () => {
     expect(await pool.hub.refreshUsage(claude.id, true)).toBe(true);
 
     expect(pool.calls.length).toBe(before);
+  });
+});
+
+describe("Gemini usage refresh writes in the hub", () => {
+  const COMMIT_MARKER =
+    "Gemini usage refresh stopped (commit): project change to proj-new pending";
+  const expireSecret = (pool: Awaited<ReturnType<typeof createGeminiPool>>) =>
+    pool.accounts.writeSecret(pool.account.id, {
+      kind: "oauth",
+      accessToken: "access-synthetic",
+      refreshToken: "refresh-synthetic",
+      expiresAt: pool.now() - MINUTE,
+    });
+
+  it.each([false, true] as const)(
+    "keeps a commit marker blocking through a successful credential refresh and a failed load, and a committed reading clears it (forced: %s)",
+    async (forced) => {
+      const pool = await createGeminiPool(0);
+      await pool.settled();
+      await expireSecret(pool);
+      pool.quotas.put({ ...pool.quotas.get(pool.account.id), error: COMMIT_MARKER });
+      pool.advance(10 * MINUTE);
+      pool.setQuotaMode("load-http");
+
+      expect(await pool.hub.refreshUsage(undefined, forced)).toBe(false);
+
+      expect(pool.calls.some((url) => url.endsWith("/token"))).toBe(true);
+      expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+      expect(await pool.eligible()).toBe(false);
+
+      pool.advance(10 * MINUTE);
+      pool.setQuotaMode("normal");
+      expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+      expect(pool.quotas.get(pool.account.id).error).toBeNull();
+      expect(await pool.eligible()).toBe(true);
+    },
+  );
+
+  it("changes no quota, error or project when persisting the refreshed credential fails on a scheduled refresh", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await expireSecret(pool);
+    pool.advance(10 * MINUTE);
+    const before = pool.quotas.get(pool.account.id);
+    const project = (await pool.accounts.get(pool.account.id))?.geminiProject;
+    vi.spyOn(pool.accounts, "writeSecret").mockRejectedValueOnce(new Error("disk full"));
+
+    expect(await pool.hub.refreshUsage()).toBe(false);
+
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe(project);
+    expect(await pool.eligible()).toBe(true);
+  });
+
+  it("leaves the quota and error unchanged when the credential write fails on a forced refresh, and the next forced refresh succeeds", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await expireSecret(pool);
+    pool.advance(10 * MINUTE);
+    const failing = vi.spyOn(pool.accounts, "writeSecret").mockRejectedValueOnce(new Error("disk full"));
+
+    const before = pool.quotas.get(pool.account.id);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+
+    expect(failing).toHaveBeenCalledTimes(1);
+    pool.advance(10 * MINUTE);
+    const second = await pool.hub.refreshUsage(undefined, true);
+    expect([second, pool.quotas.get(pool.account.id).error]).toEqual([true, null]);
+  });
+
+  it("writes no affinity, active-account or automatic-choice row during a usage refresh", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.advance(10 * MINUTE);
+    const writes = [
+      vi.spyOn(pool.affinity, "putBinding"),
+      vi.spyOn(pool.affinity, "putActiveAccount"),
+      vi.spyOn(pool.affinity, "putAutomaticChoice"),
+      vi.spyOn(pool.affinity, "removeBinding"),
+    ];
+    await pool.hub.refreshUsage(undefined, true);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
   });
 });

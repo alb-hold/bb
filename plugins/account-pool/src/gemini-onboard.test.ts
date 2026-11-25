@@ -2151,15 +2151,27 @@ describe("Antigravity companion project for consumer accounts", () => {
       };
     };
 
+    const failCommitPut = (stores: Awaited<ReturnType<typeof usageStores>>) => {
+      const real = stores.quotas.put.bind(stores.quotas);
+      return vi
+        .spyOn(stores.quotas, "put")
+        .mockImplementationOnce(real)
+        .mockImplementationOnce(() => {
+          throw new Error("disk full");
+        });
+    };
+
     it.each(["putModelWeekly", "put"] as const)(
       "restores the old project and keeps the old quota and 3p display when %s throws after the project changed",
       async (failing) => {
         const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
         expect(storedProject).not.toBe("proj-own");
         const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
-        vi.spyOn(stores.quotas, failing).mockImplementationOnce(() => {
-          throw new Error("disk full");
-        });
+        if (failing === "put") failCommitPut(stores);
+        else
+          vi.spyOn(stores.quotas, "putModelWeekly").mockImplementationOnce(() => {
+            throw new Error("disk full");
+          });
         await expect(
           google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
         ).rejects.toThrow("disk full");
@@ -2179,9 +2191,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       await stores.accounts.setGeminiProject(bare.id, undefined);
       const account = (await stores.accounts.get(bare.id)) ?? bare;
       expect(account.geminiProject).toBeUndefined();
-      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
-        throw new Error("disk full");
-      });
+      failCommitPut(stores);
       await expect(
         google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
       ).rejects.toThrow("disk full");
@@ -2223,18 +2233,14 @@ describe("Antigravity companion project for consumer accounts", () => {
         .spyOn(stores.accounts, "setGeminiProject")
         .mockImplementationOnce(original)
         .mockRejectedValueOnce(new Error("restore failed"));
-      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
-        throw new Error("disk full");
-      });
+      failCommitPut(stores);
       await expect(
         google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
-      ).rejects.toThrow(COMMIT_PREFIX);
+      ).rejects.toThrow("disk full; the previous project could not be restored: restore failed");
       expect(setProject).toHaveBeenCalledTimes(2);
       expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
       const stored = stores.quotas.get(account.id);
-      expect(stored.error).toBe(
-        `${COMMIT_PREFIX}disk full; the previous project could not be restored: restore failed`,
-      );
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending`);
       expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
       expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
       expect(storedProject).not.toBe("proj-own");
@@ -2247,6 +2253,89 @@ describe("Antigravity companion project for consumer accounts", () => {
       expect(stores.quotas.get(account.id).error).toBeNull();
       expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
       expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    });
+
+    it("keeps the marker when the commit, the restore and every later write fail, and the next successful refresh clears it", async () => {
+      const { stores, account, google, staleDisplay, seeded } = await seededForRollback();
+      const real = stores.quotas.put.bind(stores.quotas);
+      let puts = 0;
+      vi.spyOn(stores.quotas, "put").mockImplementation((value) => {
+        puts += 1;
+        if (puts > 1) throw new Error("disk full");
+        return real(value);
+      });
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      vi.spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("restore failed"));
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("restore failed");
+      vi.restoreAllMocks();
+      const stored = stores.quotas.get(account.id);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending`);
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      expect(google.adapter.isTransientUsageError?.(stored.error ?? "")).toBe(true);
+      expect(google.adapter.isNonBlockingUsageError?.(stored.error ?? "")).toBe(false);
+      await google.adapter.refreshUsage(
+        usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+      );
+      expect(stores.quotas.get(account.id).error).toBeNull();
+    });
+
+    it("leaves the new project beside the old quota with the marker stored when the process dies after the project write", async () => {
+      const { stores, account, google, seeded } = await seededForRollback();
+      vi.spyOn(stores.quotas, "commitReading").mockImplementation(() => {
+        throw new Error("process died");
+      });
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      vi.spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("process died"));
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("process died");
+      vi.restoreAllMocks();
+      const stored = stores.quotas.get(account.id);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stored.error?.startsWith(COMMIT_PREFIX)).toBe(true);
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+    });
+
+    it("changes nothing and still serves the old project when the marker write itself fails", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("disk full");
+      expect(setProject).not.toHaveBeenCalled();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      expect(stores.quotas.get(account.id)).toEqual({ ...seeded, error: `${QUOTA_READ_PREFIX}disk full` });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("leaves no marker after a successful project change", async () => {
+      const { stores, account, google } = await seededForRollback();
+      const put = vi.spyOn(stores.quotas, "put");
+      await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000));
+      expect(put.mock.calls.map((call) => call[0].error)).toEqual([`${COMMIT_PREFIX}project change to proj-own pending`, null]);
+      expect(stores.quotas.get(account.id).error).toBeNull();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      expect(stores.quotas.get(account.id).usageRestriction ?? null).toBeNull();
+    });
+
+    it("writes no marker when the project does not change", async () => {
+      const { stores, account, storedProject } = await seededForRollback();
+      const same = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      const put = vi.spyOn(stores.quotas, "put");
+      await same.adapter.refreshUsage(usageContext(stores, account, same.fetch, () => NOW + 60_000));
+      expect(put.mock.calls.map((call) => call[0].error)).toEqual([null]);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
     });
 
     it.each([

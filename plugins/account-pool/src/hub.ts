@@ -2239,7 +2239,13 @@ export class AccountPoolHub {
                   "succeeded",
                   `previousExpiresAt=${secret.kind === "oauth" ? secret.expiresAt : null}, expiresAt=${result.secret.kind === "oauth" ? result.secret.expiresAt : null}, forced=${forceRefresh}.`,
                 );
-                this.setError(account.id, null);
+                const storedError = this.options.quotas.get(account.id).error;
+                if (
+                  storedError === null ||
+                  !usageRefresh ||
+                  adapter.isTransientUsageError?.(storedError) !== true
+                )
+                  this.setError(account.id, null);
               }
               if (rejection !== null)
                 await this.options.accounts.clearRejectedRefresh(account.id);

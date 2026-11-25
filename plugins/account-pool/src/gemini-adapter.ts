@@ -70,7 +70,6 @@ export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR
 export const GEMINI_QUOTA_READ_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}quota_read): `;
 export const GEMINI_COMMIT_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}commit): `;
 
-class GeminiCommitError extends Error {}
 
 export function isGeminiQuotaReadError(error: string): boolean {
   return error.startsWith(GEMINI_QUOTA_READ_ERROR_PREFIX);
@@ -1529,6 +1528,7 @@ export function createGeminiAdapter(options: {
         throw error;
       });
       const secret = await context.freshSecret(context.signal);
+      let projectRestored = false;
       try {
         context.signal?.throwIfAborted();
         if (secret.kind !== "oauth")
@@ -1699,43 +1699,55 @@ export function createGeminiAdapter(options: {
         const previousProject = context.account.geminiProject;
         const newProject =
           found && quotaProject !== previousProject ? quotaProject : null;
-        const projectChanged = newProject !== null;
         if (newProject !== null)
-          await context.accounts.setGeminiProject(
-            context.account.id,
-            newProject,
-          );
+          context.quotas.put({
+            ...context.quotas.get(context.account.id),
+            error:
+              `${GEMINI_COMMIT_ERROR_PREFIX}project change to ${newProject} pending`.slice(
+                0,
+                1_000,
+              ),
+          });
+        if (newProject !== null) {
+          try {
+            await context.accounts.setGeminiProject(
+              context.account.id,
+              newProject,
+            );
+          } catch (error) {
+            projectRestored = true;
+            throw error;
+          }
+        }
         try {
-          context.quotas.commitReading(
-            readingToStore,
-            displayToStore,
-          );
+          context.quotas.commitReading(readingToStore, displayToStore);
         } catch (error) {
-          if (projectChanged) {
+          if (newProject !== null) {
             try {
               await context.accounts.setGeminiProject(
                 context.account.id,
                 previousProject,
               );
+              projectRestored = true;
             } catch (restoreError) {
-              const message =
-                `${GEMINI_COMMIT_ERROR_PREFIX}${errorMessage(error)}; the previous project could not be restored: ${errorMessage(restoreError)}`.slice(
+              throw new Error(
+                `${errorMessage(error)}; the previous project could not be restored: ${errorMessage(restoreError)}`.slice(
                   0,
                   1_000,
-                );
-              try {
-                context.quotas.put({
-                  ...context.quotas.get(context.account.id),
-                  error: message,
-                });
-              } catch {}
-              throw new GeminiCommitError(message);
+                ),
+              );
             }
           }
           throw error;
         }
       } catch (error) {
-        if (error instanceof GeminiCommitError) throw error;
+        if (
+          !projectRestored &&
+          context.quotas
+            .get(context.account.id)
+            .error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true
+        )
+          throw error;
         if (context.signal?.aborted !== true)
           context.quotas.put({
             ...context.quotas.get(context.account.id),

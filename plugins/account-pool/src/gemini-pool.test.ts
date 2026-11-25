@@ -2451,10 +2451,15 @@ describe("Gemini account pool", () => {
       await post("session-1");
       const database = fixture.host.bb.storage.database();
       const prepare = database.prepare.bind(database);
-      const failWrite = (table: string, times = 1) => {
+      const failWrite = (table: string, times = 1, skip = 0) => {
         let left = times;
+        let skipped = skip;
         return vi.spyOn(database, "prepare").mockImplementation((sql: string) => {
           if (left > 0 && sql.includes(`INTO ${table}`)) {
+            if (skipped > 0) {
+              skipped -= 1;
+              return prepare(sql);
+            }
             left -= 1;
             throw new Error("disk full");
           }
@@ -2464,13 +2469,17 @@ describe("Gemini account pool", () => {
       return { projects, google, fixture, a, post, streamProjects, read, failWrite };
     };
 
-    it.each(["pool_model_weekly", "account_quota"] as const)(
-      "keeps the old project, quota and display, and sends the next request with the old project, when the %s write throws",
-      async (table) => {
+    it.each([
+      ["pool_model_weekly", 0],
+      ["account_quota", 1],
+      ["account_quota", 0],
+    ] as const)(
+      "keeps the old project, quota and display, and sends the next request with the old project, when the %s write throws after %s earlier writes",
+      async (table, skip) => {
         const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
         const before = await read();
         projects["tok-a"] = "proj-new";
-        const failing = failWrite(table);
+        const failing = failWrite(table, 1, skip);
         await expect(
           fixture.host.harness.behavior.callRpc("account.refreshUsage", {
             accountId: a.id,
@@ -2489,7 +2498,7 @@ describe("Gemini account pool", () => {
       },
     );
 
-    it("refuses requests while the restore also failed, and serves again after the next successful refresh", async () => {
+    it("refuses requests while the commit, the restore and every later write failed, and serves again after the next successful refresh", async () => {
       const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
       projects["tok-a"] = "proj-new";
       const kv = fixture.host.bb.storage.kv;
@@ -2501,7 +2510,7 @@ describe("Gemini account pool", () => {
         if (JSON.stringify(value).includes("proj-new")) accountWrites += 1;
         return set(key, value);
       });
-      const failing = failWrite("pool_model_weekly");
+      const failing = failWrite("account_quota", 99, 1);
       await expect(
         fixture.host.harness.behavior.callRpc("account.refreshUsage", {
           accountId: a.id,
