@@ -1585,35 +1585,6 @@ export function createGeminiAdapter(options: {
           loadOtherCompanion,
           async () => stored,
         ];
-        if (info.endpoint !== context.account.geminiEndpoint) {
-          if (!context.stillCurrent()) throw stale;
-          const written = await context.accounts.setGeminiEndpoint(
-            context.account.id,
-            info.endpoint,
-            context.signal,
-            context.account.generation,
-          );
-          if (written === null) {
-            context.signal?.throwIfAborted();
-            throw stale;
-          }
-        }
-        if (
-          info.tier !== null &&
-          info.tier !== context.account.subscriptionType
-        ) {
-          if (!context.stillCurrent()) throw stale;
-          const written = await context.accounts.setSubscriptionType(
-            context.account.id,
-            info.tier,
-            context.signal,
-            context.account.generation,
-          );
-          if (written === null) {
-            context.signal?.throwIfAborted();
-            throw stale;
-          }
-        }
         let quotaSummary: unknown = null;
         let quotaFailure: unknown = null;
         let quotaFailed = false;
@@ -1729,6 +1700,35 @@ export function createGeminiAdapter(options: {
         };
         const readingToStore = quotaSchema.parse(quota);
         const displayToStore = modelWeeklySchema.parse(thirdParty);
+        if (info.endpoint !== context.account.geminiEndpoint) {
+          if (!context.stillCurrent()) throw stale;
+          const written = await context.accounts.setGeminiEndpoint(
+            context.account.id,
+            info.endpoint,
+            context.signal,
+            context.account.generation,
+          );
+          if (written === null) {
+            context.signal?.throwIfAborted();
+            throw stale;
+          }
+        }
+        if (
+          info.tier !== null &&
+          info.tier !== context.account.subscriptionType
+        ) {
+          if (!context.stillCurrent()) throw stale;
+          const written = await context.accounts.setSubscriptionType(
+            context.account.id,
+            info.tier,
+            context.signal,
+            context.account.generation,
+          );
+          if (written === null) {
+            context.signal?.throwIfAborted();
+            throw stale;
+          }
+        }
         context.signal?.throwIfAborted();
         const previousProject = context.account.geminiProject;
         const newProject =
