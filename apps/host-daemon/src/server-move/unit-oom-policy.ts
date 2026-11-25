@@ -1,16 +1,26 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findServiceDefinition,
   type FindServiceDefinitionArgs,
 } from "./service-definition.js";
-import { isFileNotFoundError, writeFileAtomically } from "./fs.js";
+import { isFileNotFoundError } from "./fs.js";
 import type { ServerMoveCommandRunner } from "./service-manager.js";
 
 export const OOM_POLICY_DROP_IN_NAME = "50-oom-policy.conf";
 export const OOM_POLICY_DROP_IN_CONTENT = "[Service]\nOOMPolicy=continue\n";
 
+const MAX_CREATE_ATTEMPTS = 5;
 const OOM_POLICY_DIRECTIVE = /^OOMPolicy\s*=/u;
+
+function isFileExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "EEXIST"
+  );
+}
 const SECTION_HEADER = /^\[([^\]]*)\]\s*$/u;
 
 function setsServiceOomPolicy(text: string): boolean {
@@ -91,21 +101,31 @@ export async function ensureUnitOomPolicy(
     return "already-current";
   }
   const dropInDir = `${definition.path}.d`;
-  const scan = await scanDropIns(dropInDir);
-  if (scan.setsOomPolicy) {
-    return "already-current";
+  await mkdir(dropInDir, { recursive: true });
+  for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt += 1) {
+    const scan = await scanDropIns(dropInDir);
+    if (scan.setsOomPolicy) {
+      return "already-current";
+    }
+    const dropInPath = join(dropInDir, freeDropInName(scan.names));
+    try {
+      await writeFile(dropInPath, OOM_POLICY_DROP_IN_CONTENT, {
+        flag: "wx",
+        mode: 0o644,
+      });
+    } catch (error) {
+      if (isFileExistsError(error)) {
+        continue;
+      }
+      throw error;
+    }
+    try {
+      await args.runCommand("systemctl", ["--user", "daemon-reload"]);
+    } catch (error) {
+      await rm(dropInPath, { force: true });
+      throw error;
+    }
+    return "migrated";
   }
-  const dropInPath = join(dropInDir, freeDropInName(scan.names));
-  await writeFileAtomically({
-    path: dropInPath,
-    content: OOM_POLICY_DROP_IN_CONTENT,
-    mode: 0o644,
-  });
-  try {
-    await args.runCommand("systemctl", ["--user", "daemon-reload"]);
-  } catch (error) {
-    await rm(dropInPath, { force: true });
-    throw error;
-  }
-  return "migrated";
+  throw new Error("Could not create a free OOM policy drop-in name");
 }

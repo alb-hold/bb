@@ -8,7 +8,27 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const raceHooks = vi.hoisted(() => ({
+  afterReaddir: null as null | ((dir: string) => Promise<void>),
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readdir: (async (...readdirArgs: Parameters<typeof actual.readdir>) => {
+      const result = await actual.readdir(...readdirArgs);
+      const hook = raceHooks.afterReaddir;
+      if (hook !== null && String(readdirArgs[0]).endsWith(".service.d")) {
+        raceHooks.afterReaddir = null;
+        await hook(String(readdirArgs[0]));
+      }
+      return result;
+    }) as typeof actual.readdir,
+  };
+});
 import {
   ensureUnitOomPolicy,
   OOM_POLICY_DROP_IN_CONTENT,
@@ -176,6 +196,49 @@ describe("ensureUnitOomPolicy", () => {
     expect(fixture.commands).toEqual([
       ["systemctl", "--user", "daemon-reload"],
     ]);
+  });
+
+  it("never overwrites a file that appears at the chosen name after the scan", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    const owner = "[Service]\nNice=5\n";
+    raceHooks.afterReaddir = async (dir) => {
+      await writeFile(join(dir, OOM_POLICY_DROP_IN_NAME), owner, "utf8");
+    };
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
+
+    await expect(
+      readFile(join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME), "utf8"),
+    ).resolves.toBe(owner);
+    await expect(
+      readFile(join(fixture.dropInDir, "50-oom-policy-2.conf"), "utf8"),
+    ).resolves.toBe(OOM_POLICY_DROP_IN_CONTENT);
+  });
+
+  it("does not remove a colliding file when the reload fails", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    const owner = "[Service]\nNice=5\n";
+    raceHooks.afterReaddir = async (dir) => {
+      await writeFile(join(dir, OOM_POLICY_DROP_IN_NAME), owner, "utf8");
+    };
+
+    await expect(
+      ensureUnitOomPolicy({
+        ...fixture.args,
+        runCommand: async () => {
+          throw new Error("reload failed");
+        },
+      }),
+    ).rejects.toThrow("reload failed");
+
+    await expect(readdir(fixture.dropInDir)).resolves.toEqual([
+      OOM_POLICY_DROP_IN_NAME,
+    ]);
+    await expect(
+      readFile(join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME), "utf8"),
+    ).resolves.toBe(owner);
   });
 
   it("removes its drop-in when the reload fails so the next start retries without a restart", async () => {
