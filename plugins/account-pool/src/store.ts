@@ -1297,6 +1297,13 @@ export class QuotaStore {
       );
   }
 
+  private readonly removalListeners: Array<(accountId: string) => void> =
+    [];
+
+  onRemove(listener: (accountId: string) => void): void {
+    this.removalListeners.push(listener);
+  }
+
   remove(accountId: string): void {
     this.db
       .prepare("DELETE FROM pool_model_weekly WHERE account_id = ?")
@@ -1304,6 +1311,7 @@ export class QuotaStore {
     this.db
       .prepare("DELETE FROM account_quota WHERE account_id = ?")
       .run(accountId);
+    for (const listener of this.removalListeners) listener(accountId);
   }
 }
 

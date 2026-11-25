@@ -1335,6 +1335,130 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
   });
 
+  const reAddSameId = async (
+    pool: Awaited<ReturnType<typeof createGeminiPool>>,
+    geminiProject: string,
+  ) => {
+    expect(await pool.operations.remove(pool.account.id)).toBe(true);
+    await pool.kv.set("accounts:gemini:v1", [
+      { ...pool.account, createdAt: pool.account.createdAt + 1, geminiProject },
+    ]);
+    (pool.accounts as unknown as { geminiCache: null }).geminiCache = null;
+    await pool.accounts.writeSecret(pool.account.id, {
+      kind: "oauth",
+      accessToken: "access-synthetic",
+      refreshToken: "refresh-synthetic",
+      expiresAt: pool.now() + 24 * 60 * MINUTE,
+    });
+  };
+  const commitNewProject = async (pool: Awaited<ReturnType<typeof createGeminiPool>>) => {
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+  };
+  const OLD_RESTRICTION_PLAN = { status: 429, body: QUOTA_EXHAUSTED_BODY };
+
+  it("drops a pending old-instance response after a same-id re-add even when a new-instance response went through first", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...OLD_RESTRICTION_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    await commitNewProject(pool);
+    await reAddSameId(pool, "proj-new");
+    await pool.hub.refreshUsage(undefined, true);
+    pool.planGenerate({ status: 429, headers: { "retry-after": "60" }, body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }) });
+    expect(await pool.request()).toBe(429);
+    await flush();
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+
+    body.release();
+    await served;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
+    pool.advance(2 * MINUTE);
+    pool.planGenerate({ status: 200, body: "data: {}\n\n" });
+    expect(await pool.eligible()).toBe(true);
+    expect(await pool.request()).toBe(200);
+  });
+
+  it("drops an old-project response that arrives after a credential replacement", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...OLD_RESTRICTION_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    await commitNewProject(pool);
+    await pool.hub.replaceSecret(
+      pool.account.id,
+      { kind: "api-key", apiKey: "synthetic-api-key" },
+      async () => {},
+    );
+    body.release();
+    await served;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
+  });
+
+  it("drops a response that arrives after its account was removed, and a later re-add starts clean", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...OLD_RESTRICTION_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    await reAddSameId(pool, "synthetic-project");
+    body.release();
+    await served;
+    await flush();
+
+    const stored = pool.quotas.get(pool.account.id);
+    expect(stored.usageRestriction).toBeNull();
+    expect(stored.heldUntil).toBeNull();
+    expect(stored.observedAt).toBeNull();
+  });
+
+  it("drops a response that arrives after its account was removed and not re-added", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...OLD_RESTRICTION_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    expect(await pool.operations.remove(pool.account.id)).toBe(true);
+    body.release();
+    await served;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
+    expect(pool.quotas.get(pool.account.id).observedAt).toBeNull();
+  });
+
+  it("writes the response of a new instance after a same-id re-add", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await commitNewProject(pool);
+    await reAddSameId(pool, "proj-new");
+    await pool.hub.refreshUsage(undefined, true);
+    pool.planGenerate({ status: 429, headers: { "retry-after": "3600" }, body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }) });
+    expect(await pool.request()).toBe(429);
+    await flush();
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+  });
+
   it("still writes the observed fields of a response on the current project", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();

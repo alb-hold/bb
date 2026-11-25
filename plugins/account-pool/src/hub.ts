@@ -338,7 +338,16 @@ export class AccountPoolHub {
   >();
   private readonly drainWaiters = new Set<() => void>();
 
-  constructor(private readonly options: HubOptions) {}
+  constructor(private readonly options: HubOptions) {
+    options.quotas.onRemove((accountId) => {
+      const known = this.generations.get(accountId);
+      this.generations.set(accountId, {
+        createdAt: known?.createdAt ?? -1,
+        removed: true,
+      });
+      this.committedProjects.delete(accountId);
+    });
+  }
 
   async start(signal: AbortSignal): Promise<void> {
     this.affinityBindings = this.options.affinity.loadBindings(
@@ -465,7 +474,6 @@ export class AccountPoolHub {
         result: writeSecret()
           .then(async () => {
             this.refreshBackoffs.delete(accountId);
-            this.committedProjects.delete(accountId);
             await this.options.accounts.clearRejectedRefresh(accountId);
             this.setError(accountId, null);
           })
@@ -878,11 +886,7 @@ export class AccountPoolHub {
     const listed = new Set(accounts.map((account) => account.id));
     for (const id of [...this.transientUsageRetries.keys()])
       if (!listed.has(id)) this.transientUsageRetries.delete(id);
-    const existing = new Set(
-      (await this.options.accounts.list()).map((account) => account.id),
-    );
-    for (const id of [...this.committedProjects.keys()])
-      if (!existing.has(id)) this.committedProjects.delete(id);
+    this.syncGenerations(await this.options.accounts.list());
     const before = new Map(
       accounts.map((account) => [
         account.id,
@@ -1879,6 +1883,7 @@ export class AccountPoolHub {
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
     );
+    this.syncGenerations(accounts);
     signal.throwIfAborted();
     const now = this.options.now();
     const threshold = this.options.getSettings().switchThreshold;
@@ -2652,6 +2657,30 @@ export class AccountPoolHub {
     );
   }
 
+  private readonly generations = new Map<
+    string,
+    { createdAt: number; removed: boolean }
+  >();
+
+  private syncGenerations(accounts: readonly Account[]): void {
+    const present = new Set<string>();
+    for (const account of accounts) {
+      present.add(account.id);
+      const known = this.generations.get(account.id);
+      if (known?.removed === true && known.createdAt === account.createdAt)
+        continue;
+      this.generations.set(account.id, {
+        createdAt: account.createdAt,
+        removed: false,
+      });
+    }
+    for (const [id, known] of this.generations) {
+      if (present.has(id) || known.removed) continue;
+      this.generations.set(id, { createdAt: known.createdAt, removed: true });
+      this.committedProjects.delete(id);
+    }
+  }
+
   private readonly committedProjects = new Map<
     string,
     { project: string; createdAt: number }
@@ -2663,11 +2692,16 @@ export class AccountPoolHub {
   ): void {
     const stored = this.options.quotas.get(sentOn.id);
     if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
+    const generation = this.generations.get(sentOn.id);
+    if (
+      generation !== undefined &&
+      (generation.removed || generation.createdAt !== sentOn.createdAt)
+    )
+      return;
     const committed = this.committedProjects.get(sentOn.id);
-    if (committed !== undefined && committed.createdAt !== sentOn.createdAt)
-      this.committedProjects.delete(sentOn.id);
-    else if (
+    if (
       committed !== undefined &&
+      committed.createdAt === sentOn.createdAt &&
       committed.project !== sentOn.geminiProject
     )
       return;
