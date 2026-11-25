@@ -2682,7 +2682,7 @@ describe("Gemini account pool", () => {
   it("keeps serving from an account whose only exhausted bucket is a third-party model", async () => {
     const { fixture, google, post } = await twoAccounts(
       () => ({ status: 200, body: OK_BODY }),
-      { "tok-a": 0.5 },
+      { "tok-a": 0.9, "tok-b": 0.3 },
       [{ bucketId: "claude-opus-4-5", remainingFraction: 0, resetTime: "2100-01-01T00:00:00Z" }],
     );
     const status = statusSchema.parse(
@@ -2698,9 +2698,11 @@ describe("Gemini account pool", () => {
     );
     const thirdParty = after.accounts.find((account) => account.email === "a@example.com");
     expect(thirdParty?.usageRestriction ?? null).toBeNull();
-    expect(
-      google.calls.filter((call) => call.method === "streamGenerateContent"),
-    ).toHaveLength(1);
+    const served = google.calls.filter(
+      (call) => call.method === "streamGenerateContent",
+    );
+    expect(served.map((call) => call.bearer)).toEqual(["tok-a"]);
+    expect(served.map((call) => call.project)).toEqual(["proj-a"]);
   });
 
   it("shows 40% used and keeps serving when the Gemini group has 60% left and the Claude and GPT group is at 0", async () => {
