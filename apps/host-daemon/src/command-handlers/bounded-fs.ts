@@ -3,13 +3,13 @@ import fs from "node:fs/promises";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
 export const FS_PROBE_DEADLINE_MS = 5000;
-export const MAX_STRANDED_FS_PROBES = 2;
+export const MAX_OUTSTANDING_FS_PROBES = 3;
 
 export interface FsProbes {
   lstat: (target: string) => Promise<Stats>;
   realpath: (target: string) => Promise<string>;
   deadlineMs: number;
-  maxStranded: number;
+  maxOutstanding: number;
 }
 
 interface PendingProbe {
@@ -22,7 +22,7 @@ const hostProbes: FsProbes = {
   lstat: (target) => fs.lstat(target),
   realpath: (target) => fs.realpath(target),
   deadlineMs: FS_PROBE_DEADLINE_MS,
-  maxStranded: MAX_STRANDED_FS_PROBES,
+  maxOutstanding: MAX_OUTSTANDING_FS_PROBES,
 };
 
 let activeProbes: FsProbes = hostProbes;
@@ -34,12 +34,6 @@ export function useFsProbesForTests(override: Partial<FsProbes> | null): void {
   pending.clear();
 }
 
-function strandedCount(): number {
-  let count = 0;
-  for (const entry of pending.values()) if (entry.stranded) count += 1;
-  return count;
-}
-
 function refusal(action: string, target: string, why: string): Error {
   return new CommandDispatchError(
     "path_in_use",
@@ -47,11 +41,7 @@ function refusal(action: string, target: string, why: string): Error {
   );
 }
 
-function admissionRefusal(
-  action: string,
-  target: string,
-  probes: FsProbes,
-): Error | null {
+function admissionRefusal(action: string, target: string): Error | null {
   for (const entry of pending.values())
     if (entry.stranded && entry.target === target)
       return refusal(
@@ -59,13 +49,6 @@ function admissionRefusal(
         target,
         "an earlier check of this path is still waiting on the filesystem (a mount may be hung)",
       );
-  const stuck = strandedCount();
-  if (stuck >= probes.maxStranded)
-    return refusal(
-      action,
-      target,
-      `${stuck} filesystem checks are already stuck (a mount may be hung) and new path checks wait until they settle`,
-    );
   return null;
 }
 
@@ -76,10 +59,18 @@ function bounded<T>(
 ): Promise<T> {
   const probes = activeProbes;
   const key = `${action}\0${target}`;
-  const refused = admissionRefusal(action, target, probes);
+  const refused = admissionRefusal(action, target);
   if (refused !== null) return Promise.reject(refused);
   const joined = pending.get(key);
   if (joined !== undefined) return joined.settled as Promise<T>;
+  if (pending.size >= probes.maxOutstanding)
+    return Promise.reject(
+      refusal(
+        action,
+        target,
+        `${pending.size} filesystem checks are already outstanding (a mount may be hung) and new path checks wait until they settle`,
+      ),
+    );
   const entry: PendingProbe = {
     target,
     stranded: false,

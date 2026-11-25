@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { hostProc,useProcReaderForTests } from "@bb/process-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CommandDispatchError } from "../command-dispatch-support.js";
 import { boundedLstat, useFsProbesForTests } from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
@@ -235,7 +236,7 @@ describe("host path checks against a filesystem that does not answer", () => {
         return hungFiles.includes(target) ? never() : fs.lstat(target);
       },
       deadlineMs: DEADLINE_MS,
-      maxStranded: 2,
+      maxOutstanding: 2,
     });
     for (const file of hungFiles)
       await expect(remove(file)).rejects.toMatchObject({ code: "path_in_use" });
@@ -252,6 +253,35 @@ describe("host path checks against a filesystem that does not answer", () => {
     await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(remove(healthy)).resolves.toEqual({ ok: true });
     await expect(fs.stat(healthy)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses probes of different paths beyond the cap even when none has reached its deadline", async () => {
+    const root = await makeRoot();
+    const files = Array.from({ length: 8 }, (_, index) =>
+      path.join(root, `dir-${index}`, "f.txt"),
+    );
+    const calls: string[] = [];
+    useFsProbesForTests({
+      lstat: (target) => {
+        calls.push(target);
+        return never();
+      },
+      deadlineMs: 2000,
+      maxOutstanding: 3,
+    });
+    const results = files.map((file) =>
+      boundedLstat(file).then(
+        () => "settled",
+        (error: unknown) =>
+          error instanceof CommandDispatchError ? error.code : "other",
+      ),
+    );
+    const refused = await Promise.race([
+      Promise.all(results.slice(3)),
+      delay(1000).then(() => null),
+    ]);
+    expect(refused).toEqual(Array.from({ length: 5 }, () => "path_in_use"));
+    expect(calls).toEqual(files.slice(0, 3));
   });
 
   it("starts a fresh probe once the stuck probe on a path finally settles", async () => {
