@@ -1493,6 +1493,7 @@ export function createGeminiAdapter(options: {
       let quotaFailure: unknown = null;
       let quotaProject: string | null = null;
       let thirdPartySummary: unknown = null;
+      let found = false;
       const tried = new Set<string | null>();
       const sources = [...candidateSources, async () => null];
       for (const [index, source] of sources.entries()) {
@@ -1528,6 +1529,7 @@ export function createGeminiAdapter(options: {
         if (geminiWindowsFromQuota(merged, context.now()).length > 0) {
           quotaSummary = merged;
           quotaProject = candidate;
+          found = true;
           break;
         }
         if (
@@ -1538,14 +1540,14 @@ export function createGeminiAdapter(options: {
         if (quotaSummary === null || !geminiQuotaBuckets(quotaSummary)?.length)
           quotaSummary = merged;
       }
-      if (quotaProject === null && thirdPartySummary !== null) {
+      if (!found && thirdPartySummary !== null) {
         context.quotas.putModelWeekly(
           context.account.id,
           geminiThirdPartyDisplay(thirdPartySummary, context.now()),
         );
         return;
       }
-      if (quotaProject !== null && quotaProject !== context.account.geminiProject)
+      if (found && quotaProject !== null && quotaProject !== context.account.geminiProject)
         await context.accounts.setGeminiProject(
           context.account.id,
           quotaProject,

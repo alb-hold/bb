@@ -1656,4 +1656,27 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
     expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-token", "none"]);
   });
+
+  it("applies the no-project answer's Gemini windows when every project returns only Claude and GPT buckets, and leaves the stored project alone", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+      "": { ...ONE_WINDOW, groups: THIRD_PARTY_ONLY.groups },
+    });
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-token", "none"]);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-token");
+  });
 });
