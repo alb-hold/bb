@@ -106,6 +106,7 @@ describe("experimental_thread.route", () => {
         return toClaude(context);
       });
       const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
       const thread = await createThreadFromRequest(harness.deps, {
         ...request,
         title: "Secret title",
@@ -121,9 +122,9 @@ describe("experimental_thread.route", () => {
         inputText: "route me",
         title: "Secret title",
       });
-      const lines = JSON.stringify(info.mock.calls);
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
       expect(lines).toContain("codex -> claude-code");
-      expect(lines).toContain("Secret title");
+      expect(lines).not.toContain("Secret title");
       expect(lines).not.toContain("route me");
     });
   });

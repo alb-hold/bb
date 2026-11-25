@@ -896,7 +896,7 @@ export async function createThreadFromRequest(
         providerRerouted = true;
         deps.logger.info(
           {
-            title: requestInput.title ?? null,
+            projectId: requestInput.projectId,
             from: originalProviderId,
             to: providerId,
             reason: decision.reason,
