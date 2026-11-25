@@ -1591,4 +1591,69 @@ describe("Antigravity companion project for consumer accounts", () => {
       "proj-token",
     ]);
   });
+
+  const storedAccount = async (
+    stores: Awaited<ReturnType<typeof usageStores>>,
+    geminiProject: string,
+  ) => {
+    const { id: _id, createdAt: _c, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+      pooledLiveAccount();
+    return stores.accounts.add(
+      { ...input, geminiProject },
+      { kind: "oauth", accessToken: TOKEN, refreshToken: "refresh-onboard", expiresAt: null },
+    );
+  };
+
+  const THIRD_PARTY_ONLY = {
+    groups: [
+      {
+        displayName: "Claude and GPT models",
+        buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+      },
+    ],
+  };
+
+  it("keeps searching past a candidate with only Claude and GPT buckets, routes on the next candidate's Gemini windows and stores that project", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": ONE_WINDOW,
+    });
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
+    expect(setProject).toHaveBeenCalledTimes(1);
+    expect(setProject).toHaveBeenCalledWith(account.id, "proj-other", undefined);
+  });
+
+  it("saves the Claude and GPT display, keeps the stored windows and project, and does not throw when no candidate has Gemini buckets", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const before = stores.quotas.get(account.id).limitWindows;
+    expect(before).toHaveLength(1);
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+    });
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(before);
+    expect(setProject).not.toHaveBeenCalled();
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-token", "none"]);
+  });
 });
