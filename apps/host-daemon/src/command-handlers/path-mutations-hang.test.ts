@@ -8,7 +8,7 @@ import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-direc
 import { hostProc,useProcReaderForTests } from "@bb/process-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandDispatchError } from "../command-dispatch-support.js";
-import { boundedLstat, useFsProbesForTests } from "./bounded-fs.js";
+import { boundedLstat, boundedRealpath, useFsProbesForTests } from "./bounded-fs.js";
 import { moveHostPath, removeHostPath } from "./path-mutations.js";
 
 const removalContext = {
@@ -282,6 +282,59 @@ describe("host path checks against a filesystem that does not answer", () => {
     ]);
     expect(refused).toEqual(Array.from({ length: 5 }, () => "path_in_use"));
     expect(calls).toEqual(files.slice(0, 3));
+  });
+
+  it("enforces the host default outstanding-probe cap when a test overrides only the fs calls", async () => {
+    const calls: string[] = [];
+    useFsProbesForTests({
+      lstat: (target) => {
+        calls.push(target);
+        return never();
+      },
+      realpath: () => never(),
+      deadlineMs: 2000,
+    });
+    const targets = ["a", "b", "c", "d"].map((name) =>
+      path.join(os.tmpdir(), `bb-cap-default-${name}`),
+    );
+    const outcomes = targets.map((target) =>
+      boundedLstat(target).then(
+        () => "settled",
+        (error: unknown) =>
+          error instanceof CommandDispatchError ? error.code : "other",
+      ),
+    );
+    const refused = await Promise.race([
+      outcomes[3],
+      delay(1000).then(() => null),
+    ]);
+    expect(refused).toBe("path_in_use");
+    expect(calls).toEqual(targets.slice(0, 3));
+  });
+
+  it("refuses the other action on a path whose earlier probe is stranded, starting no new call", async () => {
+    const target = path.join(os.tmpdir(), "bb-stranded-target");
+    let lstatCalls = 0;
+    let realpathCalls = 0;
+    useFsProbesForTests({
+      lstat: () => {
+        lstatCalls += 1;
+        return never();
+      },
+      realpath: () => {
+        realpathCalls += 1;
+        return never();
+      },
+      deadlineMs: DEADLINE_MS,
+    });
+    await expect(boundedLstat(target)).rejects.toMatchObject({
+      code: "path_in_use",
+    });
+    await expect(boundedRealpath(target)).rejects.toThrow(
+      /earlier check of this path is still waiting/,
+    );
+    expect(lstatCalls).toBe(1);
+    expect(realpathCalls).toBe(0);
   });
 
   it("starts a fresh probe once the stuck probe on a path finally settles", async () => {
