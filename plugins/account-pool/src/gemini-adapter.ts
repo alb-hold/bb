@@ -1526,7 +1526,7 @@ export function createGeminiAdapter(options: {
           context.accounts,
           {
             id: context.account.id,
-            createdAt: context.account.createdAt,
+            generation: context.account.generation,
             project,
           },
           () => {
@@ -1591,7 +1591,7 @@ export function createGeminiAdapter(options: {
             context.account.id,
             info.endpoint,
             context.signal,
-            context.account.createdAt,
+            context.account.generation,
           );
           if (written === null) {
             context.signal?.throwIfAborted();
@@ -1607,7 +1607,7 @@ export function createGeminiAdapter(options: {
             context.account.id,
             info.tier,
             context.signal,
-            context.account.createdAt,
+            context.account.generation,
           );
           if (written === null) {
             context.signal?.throwIfAborted();
@@ -1734,7 +1734,7 @@ export function createGeminiAdapter(options: {
         const newProject =
           found && quotaProject !== previousProject ? quotaProject : null;
         let rowBeforeMarker = context.quotas.get(context.account.id);
-        const instanceTag = ` [instance ${context.account.createdAt}]`;
+        const instanceTag = ` [instance ${context.account.generation}]`;
         const marker =
           newProject === null
             ? null
@@ -1764,7 +1764,7 @@ export function createGeminiAdapter(options: {
               context.account.id,
               previousProject,
               undefined,
-              context.account.createdAt,
+              context.account.generation,
             );
             if (restored === null) {
               await dropMarker();
@@ -1789,7 +1789,7 @@ export function createGeminiAdapter(options: {
               context.account.id,
               newProject,
               undefined,
-              context.account.createdAt,
+              context.account.generation,
             );
           } catch (error) {
             return await restoreProject(error);

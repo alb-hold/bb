@@ -555,7 +555,7 @@ export function createCodexAdapter(options: {
       signal.throwIfAborted();
       await writeQuotaIfCurrent(
         context.accounts,
-        { id: context.account.id, createdAt: context.account.createdAt },
+        { id: context.account.id, generation: context.account.generation },
         () => {
           signal.throwIfAborted();
           context.quotas.put(quota);

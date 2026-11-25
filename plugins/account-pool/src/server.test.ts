@@ -11875,9 +11875,8 @@ describe("sequential pool recovery", () => {
       third.id,
       second.id,
     ]);
-    const persisted = z
-      .array(accountSchema)
-      .parse(await fixture.host.bb.storage.kv.get("accounts:v1"));
+    const persistedRaw = await fixture.host.bb.storage.kv.get("accounts:v1");
+    const persisted = z.array(accountSchema).parse(persistedRaw);
     expect(
       persisted.find((account) => account.id === third.id)?.priority,
     ).toBeLessThan(
@@ -11896,7 +11895,7 @@ describe("sequential pool recovery", () => {
       ).rejects.toThrow("exactly once");
     }
     expect(await fixture.host.bb.storage.kv.get("accounts:v1")).toEqual(
-      persisted,
+      persistedRaw,
     );
     await send("new-before-failover");
     rejectFirst = true;

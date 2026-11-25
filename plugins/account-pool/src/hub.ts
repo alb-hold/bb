@@ -344,7 +344,7 @@ export class AccountPoolHub {
     options.quotas.onRemove((accountId) => {
       const known = this.generations.get(accountId);
       this.generations.set(accountId, {
-        createdAt: known?.createdAt ?? -1,
+        generation: known?.generation ?? "",
         removed: true,
       });
       this.committedProjects.delete(accountId);
@@ -1005,7 +1005,7 @@ export class AccountPoolHub {
       .refreshUsage({
         signal,
         account,
-        stillCurrent: () => this.isCurrentInstance(account.id, account.createdAt),
+        stillCurrent: () => this.isCurrentInstance(account.id, account.generation),
         freshSecret: (profileSignal = signal) =>
           this.freshSecret(
             account,
@@ -1030,7 +1030,7 @@ export class AccountPoolHub {
         onProjectCommitted: (accountId, project) =>
           this.committedProjects.set(accountId, {
             project,
-            createdAt: account.createdAt,
+            generation: account.generation,
           }),
       })
       .then(
@@ -1132,7 +1132,7 @@ export class AccountPoolHub {
           signal,
           background: true,
           stillCurrent: () =>
-            this.isCurrentInstance(account.id, account.createdAt),
+            this.isCurrentInstance(account.id, account.generation),
           freshSecret: (profileSignal = signal) =>
             this.options.accounts.readSecret(account.id, profileSignal),
           accounts: this.options.accounts,
@@ -2687,25 +2687,25 @@ export class AccountPoolHub {
 
   private readonly generations = new Map<
     string,
-    { createdAt: number; removed: boolean }
+    { generation: string; removed: boolean }
   >();
 
   private observeAccount(account: Account): void {
     const known = this.generations.get(account.id);
     if (
       known === undefined ||
-      (known.removed && known.createdAt !== account.createdAt)
+      (known.removed && known.generation !== account.generation)
     )
       this.generations.set(account.id, {
-        createdAt: account.createdAt,
+        generation: account.generation,
         removed: false,
       });
   }
 
-  private isCurrentInstance(accountId: string, createdAt: number): boolean {
+  private isCurrentInstance(accountId: string, generation: string): boolean {
     const known = this.generations.get(accountId);
     return (
-      known === undefined || (!known.removed && known.createdAt === createdAt)
+      known === undefined || (!known.removed && known.generation === generation)
     );
   }
 
@@ -2714,29 +2714,29 @@ export class AccountPoolHub {
     for (const account of accounts) {
       present.add(account.id);
       const known = this.generations.get(account.id);
-      if (known?.removed === true && known.createdAt === account.createdAt)
+      if (known?.removed === true && known.generation === account.generation)
         continue;
       this.generations.set(account.id, {
-        createdAt: account.createdAt,
+        generation: account.generation,
         removed: false,
       });
     }
     for (const [id, known] of this.generations) {
       if (present.has(id) || known.removed) continue;
-      this.generations.set(id, { createdAt: known.createdAt, removed: true });
+      this.generations.set(id, { generation: known.generation, removed: true });
       this.committedProjects.delete(id);
     }
   }
 
   private readonly committedProjects = new Map<
     string,
-    { project: string; createdAt: number }
+    { project: string; generation: string }
   >();
 
   private guardOf(account: Account): QuotaWriteGuard {
     return {
       id: account.id,
-      createdAt: account.createdAt,
+      generation: account.generation,
       project:
         account.provider === "gemini" ? (account.geminiProject ?? null) : undefined,
     };
@@ -2751,13 +2751,13 @@ export class AccountPoolHub {
     const generation = this.generations.get(sentOn.id);
     if (
       generation !== undefined &&
-      (generation.removed || generation.createdAt !== sentOn.createdAt)
+      (generation.removed || generation.generation !== sentOn.generation)
     )
       return;
     const committed = this.committedProjects.get(sentOn.id);
     if (
       committed !== undefined &&
-      committed.createdAt === sentOn.createdAt &&
+      committed.generation === sentOn.generation &&
       committed.project !== sentOn.geminiProject
     )
       return;
@@ -2772,10 +2772,10 @@ export class AccountPoolHub {
     captured: Account,
     message: string | null,
   ): Promise<void> {
-    if (!this.isCurrentInstance(captured.id, captured.createdAt)) return;
+    if (!this.isCurrentInstance(captured.id, captured.generation)) return;
     await writeQuotaIfCurrent(
       this.options.accounts,
-      { id: captured.id, createdAt: captured.createdAt },
+      { id: captured.id, generation: captured.generation },
       () => {
         const quota = this.options.quotas.get(captured.id);
         const error = message?.slice(0, 1_000) ?? null;

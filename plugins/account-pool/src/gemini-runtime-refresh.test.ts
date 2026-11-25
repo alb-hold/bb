@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -764,7 +765,7 @@ describe("Gemini usage refresh results", () => {
         pool.account.id,
         "synthetic-project",
         undefined,
-        pool.account.createdAt,
+        pool.account.generation,
       );
       expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe(
         "synthetic-project",
@@ -925,7 +926,7 @@ describe("Gemini usage refresh writes in the hub", () => {
   const COMMIT_MARKER =
     "Gemini usage refresh stopped (commit): project change to proj-new pending";
   const WRITTEN_COMMIT_MARKER =
-    /^Gemini usage refresh stopped \(commit\): project change to proj-new pending \[instance \d+\]$/u;
+    /^Gemini usage refresh stopped \(commit\): project change to proj-new pending \[instance [0-9a-f-]+\]$/u;
   const expireSecret = (pool: Awaited<ReturnType<typeof createGeminiPool>>) =>
     pool.accounts.writeSecret(pool.account.id, {
       kind: "oauth",
@@ -1327,7 +1328,7 @@ describe("Gemini usage refresh writes in the hub", () => {
     failGeminiAccountWrites(pool, ["reject"]);
     await expect(pool.accounts.setEnabled(pool.account.id, false)).rejects.toThrow("disk full");
     await pool.kv.set("accounts:gemini:v1", [
-      { ...pool.account, createdAt: pool.account.createdAt + 1, geminiProject: "synthetic-project" },
+      { ...pool.account, createdAt: pool.account.createdAt + 1, generation: randomUUID(), geminiProject: "synthetic-project" },
     ]);
     pool.setQuotaMode("normal");
     pool.advance(10 * MINUTE);
@@ -1346,6 +1347,7 @@ describe("Gemini usage refresh writes in the hub", () => {
     pool: Awaited<ReturnType<typeof createGeminiPool>>,
     geminiProject: string,
     quiet = false,
+    sameCreatedAt = false,
   ) => {
     expect(
       await (quiet
@@ -1353,7 +1355,12 @@ describe("Gemini usage refresh writes in the hub", () => {
         : pool.operations.remove(pool.account.id)),
     ).toBe(true);
     await pool.kv.set("accounts:gemini:v1", [
-      { ...pool.account, createdAt: pool.account.createdAt + 1, geminiProject },
+      {
+        ...pool.account,
+        createdAt: pool.account.createdAt + (sameCreatedAt ? 0 : 1),
+        generation: randomUUID(),
+        geminiProject,
+      },
     ]);
     (pool.accounts as unknown as { geminiCache: null }).geminiCache = null;
     await pool.accounts.writeSecret(pool.account.id, {
@@ -1669,6 +1676,59 @@ describe("Gemini usage refresh writes in the hub", () => {
 
     expect(await pool.accounts.get(pool.account.id)).toBeNull();
     expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it("keeps a replacement with the same id and the same createdAt untouched by a held usage refresh", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+    await reAddSameId(pool, "synthetic-project", true, true);
+    const replaced = await pool.accounts.get(pool.account.id);
+    expect(replaced?.createdAt).toBe(pool.account.createdAt);
+    expect(replaced?.generation).not.toBe(pool.account.generation);
+    const before = pool.quotas.get(pool.account.id);
+    const display = pool.quotas.modelWeekly(pool.account.id);
+    held.release();
+    await refresh;
+    await flush();
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(display);
+  });
+
+  it("keeps a replacement with the same id and the same createdAt untouched by a gated response", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...RETRY_AFTER_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+    await reAddSameId(pool, "synthetic-project", true, true);
+    const before = pool.quotas.get(pool.account.id);
+    const display = pool.quotas.modelWeekly(pool.account.id);
+    body.release();
+    await served;
+    await flush();
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(pool.quotas.get(pool.account.id).heldUntil).toBeNull();
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(display);
+  });
+
+  it("keeps a replacement with the same id and the same createdAt untouched by a held marker cleanup", async () => {
+    const pool = await createGeminiPool(0);
+    const paused = await pauseAtProjectWrite(pool);
+    const marker = pool.quotas.get(pool.account.id).error;
+    expect(marker).toMatch(WRITTEN_COMMIT_MARKER);
+    await reAddSameId(pool, "synthetic-replacement", true, true);
+    const before = pool.quotas.get(pool.account.id);
+    const display = pool.quotas.modelWeekly(pool.account.id);
+    paused.gate.release();
+    await paused.refresh;
+    await flush();
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(pool.quotas.get(pool.account.id).error).toBe(marker);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(display);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-replacement");
   });
 
   it("rejects a project write that lands after its account was removed and re-added", async () => {

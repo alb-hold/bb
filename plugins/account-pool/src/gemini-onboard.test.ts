@@ -1109,7 +1109,7 @@ async function storeLive(
   stores: Awaited<ReturnType<typeof usageStores>>,
   account: Account,
 ): Promise<Account> {
-  const { id: _id, createdAt: _c, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+  const { id: _id, createdAt: _c, generation: _g, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
     account;
   return stores.accounts.add(input, {
     kind: "oauth",
@@ -1628,7 +1628,7 @@ describe("Antigravity companion project for consumer accounts", () => {
     stores: Awaited<ReturnType<typeof usageStores>>,
     geminiProject: string,
   ) => {
-    const { id: _id, createdAt: _c, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+    const { id: _id, createdAt: _c, generation: _g, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
       pooledLiveAccount();
     return stores.accounts.add(
       { ...input, geminiProject },
@@ -1666,7 +1666,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       account.id,
       "proj-other",
       undefined,
-      account.createdAt,
+      account.generation,
     );
   });
 
@@ -2263,7 +2263,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       expect(setProject).toHaveBeenCalledTimes(2);
       expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
       const stored = stores.quotas.get(account.id);
-      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.createdAt}]`);
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`);
       expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
       expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
       expect(storedProject).not.toBe("proj-own");
@@ -2297,7 +2297,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       vi.restoreAllMocks();
       const stored = stores.quotas.get(account.id);
       expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
-      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.createdAt}]`);
+      expect(stored.error).toBe(`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`);
       expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
       expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
       expect(google.adapter.isTransientUsageError?.(stored.error ?? "")).toBe(true);
@@ -2346,7 +2346,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       const { stores, account, google } = await seededForRollback();
       const put = vi.spyOn(stores.quotas, "put");
       await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000));
-      expect(put.mock.calls.map((call) => call[0].error)).toEqual([`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.createdAt}]`, null]);
+      expect(put.mock.calls.map((call) => call[0].error)).toEqual([`${COMMIT_PREFIX}project change to proj-own pending [instance ${account.generation}]`, null]);
       expect(stores.quotas.get(account.id).error).toBeNull();
       expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
       expect(stores.quotas.get(account.id).usageRestriction ?? null).toBeNull();

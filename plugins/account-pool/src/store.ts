@@ -29,6 +29,7 @@ import { modelWeeklySchema, type ModelWeekly } from "./display.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
 const GEMINI_ACCOUNTS_KEY = "accounts:gemini:v1";
+const GENERATIONS_KEY = "accounts:generations:v1";
 const ORGANIZATIONS_KEY = "organizations:v1";
 const PLAN_NAMES_KEY = "plan-display-names:v1";
 const PLAN_CHECKS_PREFIX = "plan-display-names:v2:";
@@ -58,6 +59,12 @@ const planClock = z
 Reflect.set(globalThis, planClockKey, planClock);
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
 const accountsSchema = z.array(accountSchema);
+const generationsSchema = z.record(z.string(), z.string().min(1));
+
+function withoutGeneration(account: Account): Omit<Account, "generation"> {
+  const { generation: _generation, ...rest } = account;
+  return rest;
+}
 const organizationsSchema = z.record(z.string(), z.string().uuid());
 const HUB_TOKEN_PREFIX = "hub-token-";
 const HUB_TOKEN_GRACE_MS = 10 * 60 * 1_000;
@@ -136,11 +143,26 @@ export class AccountStore {
         ? await this.loadGeminiRows()
         : this.geminiCache.rows;
     signal?.throwIfAborted();
-    const base = value === undefined ? [] : accountsSchema.parse(value);
+    const generations = this.generationsCache ?? (await this.loadGenerations());
+    const base = (value === undefined ? [] : accountsSchema.parse(value)).map(
+      (account) => ({
+        ...account,
+        generation: generations[account.id] ?? account.generation,
+      }),
+    );
     return gemini === undefined ? base : [...base, ...gemini];
   }
 
   private geminiCache: { rows: Account[] | undefined } | null = null;
+
+  private generationsCache: Record<string, string> | null = null;
+
+  private async loadGenerations(): Promise<Record<string, string>> {
+    const stored = await this.kv.get(GENERATIONS_KEY);
+    this.generationsCache ??=
+      stored === undefined ? {} : generationsSchema.parse(stored);
+    return this.generationsCache;
+  }
 
   private async loadGeminiRows(): Promise<Account[] | undefined> {
     const stored = await this.kv.get(GEMINI_ACCOUNTS_KEY);
@@ -150,6 +172,22 @@ export class AccountStore {
     return this.geminiCache.rows;
   }
 
+  private generationsChange(
+    others: readonly Account[],
+  ): Record<string, string> | null {
+    const next = Object.fromEntries(
+      others.map((account) => [account.id, account.generation]),
+    );
+    return JSON.stringify(this.generationsCache ?? {}) === JSON.stringify(next)
+      ? null
+      : next;
+  }
+
+  private async writeGenerations(next: Record<string, string>): Promise<void> {
+    await this.kv.set(GENERATIONS_KEY, next);
+    this.generationsCache = next;
+  }
+
   private async writeAccounts(accounts: readonly Account[]): Promise<void> {
     const gemini = accounts.filter((account) => account.provider === "gemini");
     const others = accounts.filter((account) => account.provider !== "gemini");
@@ -157,11 +195,14 @@ export class AccountStore {
       this.geminiCache === null
         ? await this.loadGeminiRows()
         : this.geminiCache.rows;
+    const oldShape = others.map(withoutGeneration);
     if (
       (cached === undefined && gemini.length === 0) ||
       JSON.stringify(cached) === JSON.stringify(gemini)
     ) {
-      await this.kv.set(ACCOUNTS_KEY, others);
+      const changed = this.generationsChange(others);
+      if (changed !== null) await this.writeGenerations(changed);
+      await this.kv.set(ACCOUNTS_KEY, oldShape);
       return;
     }
     const stored = await this.kv.get(ACCOUNTS_KEY);
@@ -173,8 +214,11 @@ export class AccountStore {
       throw error;
     }
     this.geminiCache = { rows: gemini };
-    if (JSON.stringify(base) !== JSON.stringify(others))
-      await this.kv.set(ACCOUNTS_KEY, others);
+    if (JSON.stringify(base.map(withoutGeneration)) !== JSON.stringify(oldShape)) {
+      const changed = this.generationsChange(others);
+      if (changed !== null) await this.writeGenerations(changed);
+      await this.kv.set(ACCOUNTS_KEY, oldShape);
+    }
   }
 
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {
@@ -184,7 +228,10 @@ export class AccountStore {
   }
 
   async add(
-    input: Omit<Account, "id" | "createdAt" | "lastUsedAt" | "lastUsedHostId">,
+    input: Omit<
+      Account,
+      "id" | "createdAt" | "generation" | "lastUsedAt" | "lastUsedHostId"
+    >,
     secret: AccountSecret,
   ): Promise<Account> {
     return this.serialized(async () => {
@@ -192,6 +239,7 @@ export class AccountStore {
         ...input,
         id: randomUUID(),
         createdAt: Date.now(),
+        generation: randomUUID(),
         lastUsedAt: null,
         lastUsedHostId: null,
       });
@@ -302,13 +350,13 @@ export class AccountStore {
     id: string,
     subscriptionType: string,
     signal?: AbortSignal,
-    expectedCreatedAt?: number,
+    expectedGeneration?: string,
   ): Promise<Account | null> {
     return this.update(
       id,
       (account) => ({ ...account, subscriptionType }),
       signal,
-      expectedCreatedAt,
+      expectedGeneration,
     );
   }
 
@@ -571,7 +619,7 @@ export class AccountStore {
     id: string,
     geminiProject: string | undefined,
     signal?: AbortSignal,
-    expectedCreatedAt?: number,
+    expectedGeneration?: string,
   ): Promise<Account | null> {
     return this.update(
       id,
@@ -580,7 +628,7 @@ export class AccountStore {
           ? account
           : { ...account, geminiProject },
       signal,
-      expectedCreatedAt,
+      expectedGeneration,
     );
   }
 
@@ -588,7 +636,7 @@ export class AccountStore {
     id: string,
     geminiEndpoint: "prod" | "daily",
     signal?: AbortSignal,
-    expectedCreatedAt?: number,
+    expectedGeneration?: string,
   ): Promise<Account | null> {
     return this.update(
       id,
@@ -597,7 +645,7 @@ export class AccountStore {
           ? account
           : { ...account, geminiEndpoint },
       signal,
-      expectedCreatedAt,
+      expectedGeneration,
     );
   }
 
@@ -633,7 +681,7 @@ export class AccountStore {
     id: string,
     change: (account: Account) => Account,
     signal?: AbortSignal,
-    expectedCreatedAt?: number,
+    expectedGeneration?: string,
   ): Promise<Account | null> {
     return this.serialized(async () => {
       const accounts = await this.list();
@@ -642,8 +690,8 @@ export class AccountStore {
       if (index < 0 || current === undefined) return null;
       if (signal?.aborted) return null;
       if (
-        expectedCreatedAt !== undefined &&
-        current.createdAt !== expectedCreatedAt
+        expectedGeneration !== undefined &&
+        current.generation !== expectedGeneration
       )
         return null;
       const updated = accountSchema.parse(change(current));
@@ -1215,7 +1263,7 @@ const EMPTY_QUOTA = {
 
 export interface QuotaWriteGuard {
   id: string;
-  createdAt: number;
+  generation: string;
   project?: string | null;
 }
 
@@ -1225,7 +1273,7 @@ export async function writeQuotaIfCurrent(
   write: () => void,
 ): Promise<boolean> {
   const stored = await accounts.get(captured.id);
-  if (stored === null || stored.createdAt !== captured.createdAt) return false;
+  if (stored === null || stored.generation !== captured.generation) return false;
   if (
     captured.project !== undefined &&
     (stored.geminiProject ?? null) !== captured.project
