@@ -159,7 +159,10 @@ import {
 } from "@/views/root-compose-environment-selection";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { resolveRootComposeThreadEnvironment } from "@/views/root-compose-thread-environment";
-import { nativeTerminalSupportPendingReason } from "./native-terminal-submit";
+import {
+  nativeTerminalPreferenceStored,
+  nativeTerminalSupportPendingReason,
+} from "./native-terminal-submit";
 import {
   MACHINE_SERVER_ACCESS_TITLE,
   machineServerAccessBlockedReason,
@@ -277,8 +280,10 @@ export interface NewThreadComposerState {
   renderPromptBox: (options: NewThreadComposerPromptOptions) => ReactNode;
 }
 
+const NATIVE_TERMINAL_PREFERENCE_KEY = "bb.composer.nativeTerminal";
+
 const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
-  "bb.composer.nativeTerminal",
+  NATIVE_TERMINAL_PREFERENCE_KEY,
   true,
   createJsonLocalStorage<boolean>(
     (value): value is boolean => typeof value === "boolean",
@@ -1971,6 +1976,7 @@ export function NewThreadComposer({
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
   const nativeTerminalPendingReason = nativeTerminalSupportPendingReason(
     nativeTerminalRequested,
+    nativeTerminalPreferenceStored(NATIVE_TERMINAL_PREFERENCE_KEY),
     nativeTerminalSupport,
   );
   const submitDisabledReason =
