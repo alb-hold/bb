@@ -71,11 +71,16 @@ async function setup(
   const imports: Array<{ home: string; target: GeminiLoginTarget; token: string }> = [];
   const importAccount =
     options.importAccount ??
-    (async (home: string, target: GeminiLoginTarget): Promise<GeminiLoginAccount> => {
+    (async (
+      home: string,
+      target: GeminiLoginTarget,
+      beforeWrite: () => void,
+    ): Promise<GeminiLoginAccount> => {
       const token = await fs.readFile(
         path.join(home, "antigravity-acp", "acp_token.json"),
         "utf8",
       );
+      beforeWrite();
       imports.push({ home, target, token });
       return { id: "acct-1", label: target.label ?? "gemini@example.com" };
     });
@@ -506,5 +511,87 @@ describe("GeminiLogin", () => {
     expect(await fixture.leftovers()).toEqual([]);
     expect(fixture.imports).toEqual([]);
     expect(timers()).toBeLessThanOrEqual(timersBefore);
+  });
+
+  it("adds nothing when the sign-in is cancelled and the browser approves afterwards", async () => {
+    const fixture = await setup();
+    const started = await fixture.login.start({ label: null });
+    const waiting = fixture.login.wait(started.sessionId);
+    fixture.login.cancel(started.sessionId);
+    await fixture.approve();
+    expect(await waiting).toMatchObject({ status: "error", reason: "sign_in_cancelled" });
+    expect(await fixture.login.wait(started.sessionId)).toMatchObject({
+      status: "error",
+      reason: "sign_in_cancelled",
+    });
+    expect(fixture.imports).toEqual([]);
+    await expectNothingLeft(fixture);
+  });
+
+  it("lets a cancel that arrives while the import is checking identity win over the write", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const writes: string[] = [];
+    const fixture = await setup({
+      importAccount: async (_home, _target, beforeWrite) => {
+        entered();
+        await gate;
+        beforeWrite();
+        writes.push("written");
+        return { id: "acct-1", label: "gemini@example.com" };
+      },
+    });
+    const started = await fixture.login.start({ label: null });
+    const waiting = fixture.login.wait(started.sessionId);
+    await fixture.approve();
+    await inside;
+    fixture.login.cancel(started.sessionId);
+    release();
+    expect(await waiting).toMatchObject({ status: "error", reason: "sign_in_cancelled" });
+    expect(writes).toEqual([]);
+    await expectNothingLeft(fixture);
+  });
+
+  it("ignores a cancel that arrives after the write has begun", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fixture = await setup({
+      importAccount: async (_home, _target, beforeWrite) => {
+        beforeWrite();
+        entered();
+        await gate;
+        return { id: "acct-1", label: "gemini@example.com" };
+      },
+    });
+    const started = await fixture.login.start({ label: null });
+    const waiting = fixture.login.wait(started.sessionId);
+    await fixture.approve();
+    await inside;
+    fixture.login.cancel(started.sessionId);
+    release();
+    expect(await waiting).toMatchObject({ status: "complete" });
+    await expectNothingLeft(fixture);
+  });
+
+  it("cleans up a sign-in nobody waits on once it expires", async () => {
+    const fixture = await setup({ timeoutMs: 300 });
+    await fixture.login.start({ label: null });
+    await vi.waitFor(async () => expect(await fixture.leftovers()).toEqual([]), {
+      timeout: 5_000,
+    });
+    expect(fixture.imports).toEqual([]);
+    await expectNothingLeft(fixture);
   });
 });

@@ -1877,6 +1877,42 @@ describe("Account Pool settings", () => {
     );
   });
 
+  it("cancels a sign-in whose start resolves after the dialog was closed, and never waits on it", async () => {
+    const sessionId = "55555555-5555-4555-8555-555555555555";
+    let resolveStart: (value: { sessionId: string; expiresAt: number }) => void = () => {};
+    const slot = render([], {
+      "geminiLogin.start": () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      "geminiLogin.wait": () => new Promise(() => {}),
+      "geminiLogin.cancel": () => ({ cancelled: true }),
+    });
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Add Antigravity account", {
+        selector: "span.block",
+      }),
+    );
+    await slot.findByRole("dialog");
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({ method: "geminiLogin.start", input: {} }),
+    );
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain("geminiLogin.cancel");
+    resolveStart({ sessionId, expiresAt: Date.now() + 300_000 });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "geminiLogin.cancel",
+        input: { sessionId },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain("geminiLogin.wait");
+    expect(slot.queryByRole("dialog")).toBeNull();
+  });
+
   it("signs an Antigravity account in again for that account through geminiLogin", async () => {
     const expired = account({
       id: "55555555-5555-4555-8555-555555555555",

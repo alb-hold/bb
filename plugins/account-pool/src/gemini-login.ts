@@ -67,6 +67,7 @@ export interface GeminiLoginOptions {
   importAccount: (
     home: string,
     target: GeminiLoginTarget,
+    beforeWrite: () => void,
   ) => Promise<GeminiLoginAccount>;
   timeoutMs?: number;
   startupTimeoutMs?: number;
@@ -853,11 +854,16 @@ export class GeminiLogin {
       await stop(session.runtime);
       const stopCancel = session.cancelled as Session["cancelled"];
       if (stopCancel !== null) return { status: "error", ...stopCancel };
-      session.importing = true;
       try {
-        const account = await this.options.importAccount(home, target);
+        const account = await this.options.importAccount(home, target, () => {
+          this.unlessCancelled(session);
+          session.importing = true;
+        });
         return { status: "complete", account };
       } catch (error) {
+        const cancelledNow = session.cancelled as Session["cancelled"];
+        if (!session.importing && cancelledNow !== null)
+          return { status: "error", ...cancelledNow };
         return {
           status: "error",
           reason: "import_failed",

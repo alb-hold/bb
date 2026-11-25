@@ -1239,6 +1239,7 @@ function AccountPoolSettings() {
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
   const signInWindow = useRef<ExperimentalSignInWindow | null>(null);
+  const geminiAttempt = useRef(0);
   const threshold =
     config?.switchThreshold ?? DEFAULT_ACCOUNT_POOL_CONFIG.switchThreshold;
   const applyConfig = useCallback((next: AccountPoolConfig) => {
@@ -1527,17 +1528,30 @@ function AccountPoolSettings() {
   async function startGemini(
     target: AccountSummary | null = null,
   ): Promise<void> {
+    if (pending.size > 0) return;
+    const attempt = ++geminiAttempt.current;
     setDialog({ kind: "gemini-login", accountId: target?.id ?? null });
     setLoginDone(null);
     setGeminiStep(null);
     await run("gemini-login", async () => {
       setAccountLabel("");
-      setGeminiStep(
-        await rpc.call(
+      let started: z.infer<typeof geminiLoginStartSchema>;
+      try {
+        started = await rpc.call(
           "geminiLogin.start",
           target === null ? {} : { accountId: target.id },
-        ),
-      );
+        );
+      } catch (startError) {
+        if (attempt !== geminiAttempt.current) return;
+        throw startError;
+      }
+      if (attempt !== geminiAttempt.current) {
+        void rpc
+          .call("geminiLogin.cancel", { sessionId: started.sessionId })
+          .catch(() => undefined);
+        return;
+      }
+      setGeminiStep(started);
     });
   }
   function closeSignInWindow(): void {
@@ -1690,8 +1704,13 @@ function AccountPoolSettings() {
     closeSignInWindow();
     if (dialog?.kind === "codex-login" && codexStep !== null)
       void rpc.call("codexLogin.cancel", { sessionId: codexStep.sessionId });
-    if (dialog?.kind === "gemini-login" && geminiStep !== null)
-      void rpc.call("geminiLogin.cancel", { sessionId: geminiStep.sessionId });
+    if (dialog?.kind === "gemini-login") {
+      geminiAttempt.current += 1;
+      if (geminiStep !== null)
+        void rpc.call("geminiLogin.cancel", {
+          sessionId: geminiStep.sessionId,
+        });
+    }
     setDialog(null);
     setLoginStep(null);
     setCodexStep(null);

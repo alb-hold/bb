@@ -788,7 +788,7 @@ export function createAccountPoolPlugin(
       ...(options.geminiLoginStartupTimeoutMs === undefined
         ? {}
         : { startupTimeoutMs: options.geminiLoginStartupTimeoutMs }),
-      importAccount: (home, target) =>
+      importAccount: (home, target, beforeWrite) =>
         target.accountId === undefined
           ? operations.add(
               accountAddInputSchema.parse({
@@ -797,8 +797,9 @@ export function createAccountPoolPlugin(
                 label: target.label,
                 priority: target.priority,
               }),
+              beforeWrite,
             )
-          : operations.reauthorizeGemini(target.accountId, home),
+          : operations.reauthorizeGemini(target.accountId, home, beforeWrite),
     });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(

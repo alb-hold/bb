@@ -133,7 +133,10 @@ export class PoolOperations {
     );
   }
 
-  async add(input: AccountAddInput): Promise<Account> {
+  async add(
+    input: AccountAddInput,
+    beforeWrite: () => void = () => undefined,
+  ): Promise<Account> {
     const priority =
       input.priority ?? (await this.nextPriority(input.provider));
     if (input.source.kind === "api-key") {
@@ -182,6 +185,7 @@ export class PoolOperations {
     if (duplicate) {
       throw new Error("This current login is already in the account pool.");
     }
+    beforeWrite();
     const account = await this.accounts.add(
       {
         provider: input.provider,
@@ -374,7 +378,11 @@ export class PoolOperations {
     return summary;
   }
 
-  async reauthorizeGemini(id: string, home: string): Promise<Account> {
+  async reauthorizeGemini(
+    id: string,
+    home: string,
+    beforeWrite: () => void = () => undefined,
+  ): Promise<Account> {
     const account = await this.requireReauthorizable(id, "gemini");
     const imported = await this.hub.importAccount("gemini", { home });
     requireSameLogin(
@@ -388,6 +396,7 @@ export class PoolOperations {
       { email: imported.email ?? account.email },
       imported.secret,
       null,
+      beforeWrite,
     );
   }
 
@@ -406,9 +415,11 @@ export class PoolOperations {
     >,
     secret: AccountSecret,
     organizationUuid: string | null,
+    beforeWrite: () => void = () => undefined,
   ): Promise<Account> {
     let updated = account;
     await this.hub.replaceSecret(account.id, secret, async () => {
+      beforeWrite();
       const replacement = await this.accounts.replaceCredentials(
         account.id,
         identity,
