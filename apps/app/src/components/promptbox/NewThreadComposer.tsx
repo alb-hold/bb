@@ -159,6 +159,7 @@ import {
 } from "@/views/root-compose-environment-selection";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { resolveRootComposeThreadEnvironment } from "@/views/root-compose-thread-environment";
+import { nativeTerminalSupportPendingReason } from "./native-terminal-submit";
 import {
   MACHINE_SERVER_ACCESS_TITLE,
   machineServerAccessBlockedReason,
@@ -1968,7 +1969,12 @@ export function NewThreadComposer({
   });
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
-  const submitDisabledReason = submissionReadinessReason;
+  const nativeTerminalPendingReason = nativeTerminalSupportPendingReason(
+    nativeTerminalRequested,
+    nativeTerminalSupport,
+  );
+  const submitDisabledReason =
+    submissionReadinessReason ?? nativeTerminalPendingReason;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
@@ -1980,6 +1986,7 @@ export function NewThreadComposer({
       if (
         blockedReason !== null ||
         submissionReadinessReason !== null ||
+        nativeTerminalPendingReason !== null ||
         (input.length === 0 && !nativeTerminal) ||
         isSubmittingRef.current ||
         projectDefaultsUnavailable ||
@@ -1990,6 +1997,7 @@ export function NewThreadComposer({
         throw new Error(
           blockedReason ??
             submissionReadinessReason ??
+            nativeTerminalPendingReason ??
             (input.length === 0
               ? "Type a message first."
               : "This composer is not ready to submit yet."),
@@ -2042,6 +2050,7 @@ export function NewThreadComposer({
       clearReuseEnvironment,
       executionInputSources,
       nativeTerminal,
+      nativeTerminalPendingReason,
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,
