@@ -25,9 +25,18 @@ const DROP_DIR_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DROP_MAX_FILES = 4;
 
-interface StagedDrop {
+interface Identity {
+  dev: number;
+  ino: number;
+}
+
+interface StagedFile extends Identity {
+  name: string;
+}
+
+interface StagedDrop extends Identity {
   path: string;
-  files: string[];
+  files: StagedFile[];
   mtimeMs: number;
   bytes: number;
 }
@@ -53,10 +62,13 @@ async function ensurePlainRoot(rootDir: string): Promise<void> {
 async function removeDropEntries(
   dir: string,
   names: readonly string[],
+  verify?: (name: string | null) => Promise<void>,
 ): Promise<boolean> {
   for (const name of names) {
+    await verify?.(name);
     await unlink(join(dir, name)).catch(() => undefined);
   }
+  await verify?.(null);
   try {
     await rmdir(dir);
     return true;
@@ -65,21 +77,45 @@ async function removeDropEntries(
   }
 }
 
+async function requireIdentity(
+  path: string,
+  expected: Identity,
+  isFile: boolean,
+): Promise<void> {
+  const info = await lstat(path);
+  const kind = isFile ? info.isFile() : info.isDirectory();
+  if (
+    !kind ||
+    info.isSymbolicLink() ||
+    info.dev !== expected.dev ||
+    info.ino !== expected.ino
+  ) {
+    throw new Error("Dropped-file store changed while pruning");
+  }
+}
+
 async function scanDrop(path: string): Promise<StagedDrop | null> {
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink()) return null;
   const children = await readdir(path, { withFileTypes: true });
   if (children.length > DROP_MAX_FILES) return null;
-  const files: string[] = [];
+  const files: StagedFile[] = [];
   let bytes = 0;
   for (const child of children) {
     if (!child.isFile()) return null;
     const childInfo = await lstat(join(path, child.name));
     if (!childInfo.isFile()) return null;
     bytes += childInfo.size;
-    files.push(child.name);
+    files.push({ name: child.name, dev: childInfo.dev, ino: childInfo.ino });
   }
-  return { path, files, mtimeMs: info.mtimeMs, bytes };
+  return {
+    path,
+    files,
+    dev: info.dev,
+    ino: info.ino,
+    mtimeMs: info.mtimeMs,
+    bytes,
+  };
 }
 
 export async function pruneDroppedFiles({
@@ -98,7 +134,8 @@ export async function pruneDroppedFiles({
   afterScan?: () => Promise<void>;
 }): Promise<void> {
   try {
-    if (!(await isPlainDirectory(rootDir))) {
+    const rootInfo = await lstat(rootDir);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
       console.warn(
         "bb: skipping dropped-file pruning, store is not a plain directory",
       );
@@ -115,7 +152,18 @@ export async function pruneDroppedFiles({
       }
     }
     const remove = (drop: StagedDrop): Promise<boolean> =>
-      removeDropEntries(drop.path, drop.files);
+      removeDropEntries(
+        drop.path,
+        drop.files.map((file) => file.name),
+        async (name) => {
+          await requireIdentity(rootDir, rootInfo, false);
+          await requireIdentity(drop.path, drop, false);
+          const file = drop.files.find((candidate) => candidate.name === name);
+          if (file !== undefined) {
+            await requireIdentity(join(drop.path, file.name), file, true);
+          }
+        },
+      );
     await afterScan?.();
     const kept: StagedDrop[] = [];
     for (const drop of drops) {

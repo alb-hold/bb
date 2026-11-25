@@ -259,4 +259,45 @@ describe("pruneDroppedFiles", () => {
     expect(await readFile(join(twin, "sub", "deep.txt"), "utf8")).toBe("deep");
     expect(await readFile(join(twin, "keep.txt"), "utf8")).toBe("keep");
   });
+
+  it("aborts when the root is swapped to a symlink and spares an outside twin", async () => {
+    const base = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    const rootDir = join(base, "dropped-files");
+    await mkdir(rootDir);
+    const entry = await makeDrop(rootDir, "old", 10, 30 * DAY);
+    const twin = await makeDrop(outside, "old", 10, 30 * DAY);
+
+    await pruneDroppedFiles({
+      rootDir,
+      afterScan: async () => {
+        await rm(entry, { recursive: true });
+        await rmdir(rootDir);
+        await symlink(outside, rootDir);
+      },
+    });
+
+    expect(await exists(join(twin, "a.png"))).toBe(true);
+    expect(await exists(twin)).toBe(true);
+  });
+
+  it("spares an outside directory with another name after a root swap", async () => {
+    const base = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    const rootDir = join(base, "dropped-files");
+    await mkdir(rootDir);
+    const entry = await makeDrop(rootDir, "old", 10, 30 * DAY);
+    const other = await makeDrop(outside, "fresh", 10, 30 * DAY);
+
+    await pruneDroppedFiles({
+      rootDir,
+      afterScan: async () => {
+        await rm(entry, { recursive: true });
+        await rmdir(rootDir);
+        await symlink(outside, rootDir);
+      },
+    });
+
+    expect(await exists(join(other, "a.png"))).toBe(true);
+  });
 });
