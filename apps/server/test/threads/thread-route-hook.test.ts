@@ -337,6 +337,37 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it.each([
+    ["a throwing providerId getter", "provider"],
+    ["a throwing model getter", "model"],
+    ["a throwing Proxy", "proxy"],
+  ] as const)("keeps the original provider when a decision has %s", async (_label, mode) => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      installRouteHook(() => {
+        const boom = (): never => {
+          throw new Error("HIV");
+        };
+        if (mode === "proxy") {
+          return new Proxy({}, { get: boom, has: boom, ownKeys: boom }) as never;
+        }
+        const decision = { providerId: "claude-code", model: "claude-code-model" };
+        Object.defineProperty(decision, mode === "provider" ? "providerId" : "model", {
+          enumerable: true,
+          get: boom,
+        });
+        return decision as never;
+      });
+      const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, request);
+      expect(thread.providerId).toBe("codex");
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+      expect(lines).not.toContain("HIV");
+      expect(lines).toContain("invalid_decision");
+    });
+  });
+
   it("logs a benign reason", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);

@@ -76,7 +76,11 @@ export async function runThreadRouteHooks(
       decideWithinBox(
         async (): Promise<HandlerResult> => {
           try {
-            return { threw: false, value: await hook.handler(context) };
+            const raw = hook.handler(context);
+            return {
+              threw: false,
+              value: raw instanceof Promise ? await raw : raw,
+            };
           } catch (error) {
             return {
               threw: true,
@@ -113,7 +117,12 @@ export async function runThreadRouteHooks(
       });
       continue;
     }
-    const parsed = routeDecisionSchema.safeParse(invocation.value.value.value);
+    let parsed: ReturnType<typeof routeDecisionSchema.safeParse>;
+    try {
+      parsed = routeDecisionSchema.safeParse(invocation.value.value.value);
+    } catch {
+      parsed = { success: false } as typeof parsed;
+    }
     if (!parsed.success) {
       failures.push({
         pluginId: hook.pluginId,
