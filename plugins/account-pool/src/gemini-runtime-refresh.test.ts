@@ -98,16 +98,28 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" = "normal";
-  const transport: typeof fetch = async (input) => {
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" = "normal";
+  const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
     if (url.endsWith("/v1internal:loadCodeAssist"))
       return Response.json({
-        cloudaicompanionProject: "synthetic-project",
+        cloudaicompanionProject:
+          quotaMode === "a-mixed-b-empty"
+            ? url.includes("/daily/")
+              ? "proj-own"
+              : "proj-other"
+            : "synthetic-project",
         paidTier: { name: "Google AI Ultra" },
       });
     if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+      if (quotaMode === "a-mixed-b-empty") {
+        const project: unknown =
+          typeof init?.body === "string" ? JSON.parse(init.body).project : undefined;
+        return project === "proj-own" && url.includes("/prod/")
+          ? Response.json({ error: "synthetic failure" }, { status: 503 })
+          : Response.json({ buckets: [] });
+      }
       if (quotaMode === "empty-daily-http-prod")
         return url.includes("/daily/")
           ? Response.json({ buckets: [] })
@@ -400,6 +412,21 @@ describe("Gemini usage refresh results", () => {
     const observedAt = setStaleUsage(pool);
     const eligibleBefore = await pool.eligible();
     pool.setQuotaMode("empty-daily-http-prod");
+
+    await expect(pool.operations.refreshUsage(pool.account.id)).rejects.toThrow(
+      "Could not refresh account usage. Try again.",
+    );
+    expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
+    expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(0.54);
+    expect(await pool.eligible()).toBe(eligibleBefore);
+  });
+
+  it("reports an empty read from a later candidate after a mixed failure on an earlier one as a failed refresh that leaves eligibility unchanged", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const observedAt = setStaleUsage(pool);
+    const eligibleBefore = await pool.eligible();
+    pool.setQuotaMode("a-mixed-b-empty");
 
     await expect(pool.operations.refreshUsage(pool.account.id)).rejects.toThrow(
       "Could not refresh account usage. Try again.",

@@ -38,6 +38,8 @@ function fakeCodeAssist(script: {
   quotaByBase?: Partial<Record<"prod" | "daily", unknown>>;
   quotaFailureByBase?: Partial<Record<"prod" | "daily", number>>;
   quotaByProject?: Record<string, unknown>;
+  quotaByProjectBase?: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+  quotaFailureByProjectBase?: Record<string, Partial<Record<"prod" | "daily", number>>>;
   runtimeUserAgent?: () => Promise<string>;
   unrecognizedClientLoad?: unknown;
   now?: () => number;
@@ -92,6 +94,11 @@ function fakeCodeAssist(script: {
       if (failureStatus !== undefined)
         return new Response("{}", { status: failureStatus });
       const project = typeof body?.project === "string" ? body.project : "";
+      const projectFailure = script.quotaFailureByProjectBase?.[project]?.[base];
+      if (projectFailure !== undefined)
+        return new Response("{}", { status: projectFailure });
+      const byProjectBase = script.quotaByProjectBase?.[project]?.[base];
+      if (byProjectBase !== undefined) return json(byProjectBase);
       const byProject = script.quotaByProject?.[project];
       if (byProject !== undefined) return json(byProject);
       const byBase = script.quotaByBase?.[base];
@@ -1525,8 +1532,15 @@ describe("Antigravity companion project for consumer accounts", () => {
     ).toEqual(["proj-companion", "aicode-consumers", "none"]);
   });
 
-  const ownAndOtherCompanions = (quotaByProject: Record<string, unknown>) =>
+  const ownAndOtherCompanions = (
+    quotaByProject: Record<string, unknown>,
+    mixed: {
+      quotaByProjectBase?: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+      quotaFailureByProjectBase?: Record<string, Partial<Record<"prod" | "daily", number>>>;
+    } = {},
+  ) =>
     fakeCodeAssist({
+      ...mixed,
       loads: [LIVE_AGY_DAILY],
       loadsByBase: {
         daily: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-own" }],
@@ -1646,6 +1660,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       "proj-own": THIRD_PARTY_ONLY,
       "proj-other": THIRD_PARTY_ONLY,
       "proj-token": THIRD_PARTY_ONLY,
+      "": THIRD_PARTY_ONLY,
     });
     const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
     await google.adapter.refreshUsage(
@@ -1700,6 +1715,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       "proj-own": THIRD_PARTY_ONLY,
       "proj-other": THIRD_PARTY_ONLY,
       "proj-token": THIRD_PARTY_ONLY,
+      "proj-live-agy": THIRD_PARTY_ONLY,
       "": THIRD_PARTY_ONLY,
     });
     const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
@@ -1721,8 +1737,23 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
   });
 
-  type CandidateState = "fails" | "empty" | "third-party" | "gemini" | "both";
-  const CANDIDATE_STATES: CandidateState[] = ["fails", "empty", "third-party", "gemini", "both"];
+  type CandidateState =
+    | "fails"
+    | "empty"
+    | "third-party"
+    | "gemini"
+    | "both"
+    | "mixed"
+    | "mixed-3p";
+  const CANDIDATE_STATES: CandidateState[] = [
+    "fails",
+    "empty",
+    "third-party",
+    "gemini",
+    "both",
+    "mixed",
+    "mixed-3p",
+  ];
   const matrixPayload = (state: CandidateState, gemini: number, thirdParty: number) => {
     const geminiBuckets = [bucket("gemini-4-neon", gemini)];
     const groups = [
@@ -1731,8 +1762,8 @@ describe("Antigravity companion project for consumer accounts", () => {
         buckets: [bucket("3p-5h", thirdParty), bucket("3p-weekly", thirdParty - 0.1)],
       },
     ];
-    if (state === "empty") return { buckets: [] };
-    if (state === "third-party") return { groups };
+    if (state === "empty" || state === "mixed") return { buckets: [] };
+    if (state === "third-party" || state === "mixed-3p") return { groups };
     if (state === "gemini") return { buckets: geminiBuckets };
     if (state === "both") return { buckets: geminiBuckets, groups };
     return undefined;
@@ -1755,23 +1786,43 @@ describe("Antigravity companion project for consumer accounts", () => {
         "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
       };
       stores.quotas.putModelWeekly(account.id, staleDisplay);
-      const byProject: Record<string, unknown> = {};
-      const aPayload = matrixPayload(a, 0.3, 0.9);
-      const bPayload = matrixPayload(b, 0.1, 0.6);
-      if (aPayload !== undefined) byProject["proj-own"] = aPayload;
-      if (bPayload !== undefined) byProject["proj-other"] = bPayload;
-      const google = ownAndOtherCompanions(byProject);
+      const byProject: Record<string, unknown> = {
+        "proj-token": { buckets: [] },
+        "proj-live-agy": { buckets: [] },
+        "": { buckets: [] },
+      };
+      const mixedAnswers: {
+        quotaByProjectBase: Record<string, Partial<Record<"prod" | "daily", unknown>>>;
+        quotaFailureByProjectBase: Record<string, Partial<Record<"prod" | "daily", number>>>;
+      } = { quotaByProjectBase: {}, quotaFailureByProjectBase: {} };
+      for (const [project, state, gemini, thirdParty] of [
+        ["proj-own", a, 0.3, 0.9],
+        ["proj-other", b, 0.1, 0.6],
+      ] as const) {
+        const payload = matrixPayload(state, gemini, thirdParty);
+        if (state === "mixed" || state === "mixed-3p") {
+          mixedAnswers.quotaFailureByProjectBase[project] = { daily: 503 };
+          mixedAnswers.quotaByProjectBase[project] = { prod: payload };
+        } else if (payload !== undefined) byProject[project] = payload;
+      }
+      const google = ownAndOtherCompanions(byProject, mixedAnswers);
       const live = (await stores.accounts.get(account.id)) ?? account;
       const run = google.adapter.refreshUsage(
         usageContext(stores, live, google.fetch, () => NOW + 60_000),
       );
       const hasGemini = (state: CandidateState) => state === "gemini" || state === "both";
-      const hasThirdParty = (state: CandidateState) => state === "third-party" || state === "both";
-      const read = (state: CandidateState) => state !== "fails";
+      const hasThirdParty = (state: CandidateState) =>
+        state === "third-party" || state === "both" || state === "mixed-3p";
+      const rejects = (state: CandidateState) =>
+        state === "fails" || state === "mixed" || state === "mixed-3p";
       const winner = hasGemini(a) ? "a" : hasGemini(b) ? "b" : null;
-      if (!read(a) && !read(b)) {
+      const visitedRejected = rejects(a) || (!hasGemini(a) && rejects(b));
+      if (winner === null && visitedRejected) {
         await expect(run).rejects.toBeDefined();
-        expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+        const kept = stores.quotas.get(account.id);
+        expect(kept.limitWindows).toEqual(seeded.limitWindows);
+        expect(kept.observedAt).toBe(seeded.observedAt);
+        expect(kept.error).toBe("OAuth refresh failed with HTTP 500.");
         expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
         expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
         return;
@@ -1779,6 +1830,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       await run;
       const quota = stores.quotas.get(account.id);
       expect(quota.error).toBeNull();
+      expect(quota.observedAt).toBe(NOW + 60_000);
       if (winner === null)
         expect(quota.limitWindows).toEqual(
           hasThirdParty(a) || hasThirdParty(b) ? seeded.limitWindows : [],
