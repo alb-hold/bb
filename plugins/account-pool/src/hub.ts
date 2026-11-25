@@ -1,4 +1,5 @@
 import type { ImportedProviderAccount } from "./provider-adapter.js";
+import { writeQuotaIfCurrent, type QuotaWriteGuard } from "./store.js";
 import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
@@ -476,13 +477,17 @@ export class AccountPoolHub {
         );
         continue;
       }
+      const capturedAccount = this.options.accounts
+        .get(accountId)
+        .catch(() => null);
       const flight: SecretFlight = {
         kind: "replacement",
         result: writeSecret()
           .then(async () => {
             this.refreshBackoffs.delete(accountId);
             await this.options.accounts.clearRejectedRefresh(accountId);
-            this.setError(accountId, null);
+            const captured = await capturedAccount;
+            if (captured !== null) await this.setError(captured, null);
           })
           .finally(() => {
             if (this.refreshes.get(accountId) === flight)
@@ -1009,13 +1014,13 @@ export class AccountPoolHub {
             recover,
             profileSignal,
             true,
-          ).catch((error: unknown) => {
+          ).catch(async (error: unknown) => {
             if (
               !profileSignal.aborted &&
               (recover || error instanceof OAuthRefreshError) &&
               !(error instanceof TransientOAuthRefreshError)
             )
-              this.setError(account.id, errorMessage(error), account.createdAt);
+              await this.setError(account, errorMessage(error));
             throw error;
           }),
         accounts: this.options.accounts,
@@ -1502,11 +1507,7 @@ export class AccountPoolHub {
           if (error instanceof TransientOAuthRefreshError) {
             failure = { status: 503, message: error.message, headers: {} };
           } else {
-            this.setError(
-              selected.account.id,
-              errorMessage(error),
-              selected.account.createdAt,
-            );
+            await this.setError(selected.account, errorMessage(error));
           }
           continue;
         }
@@ -1583,7 +1584,7 @@ export class AccountPoolHub {
               family,
               this.options.now(),
             );
-          this.putObservedQuota(selected.account, observe);
+          await this.putObservedQuota(selected.account, observe);
           if (pacing !== null && !response.ok) {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
@@ -1606,7 +1607,7 @@ export class AccountPoolHub {
                 this.options.now(),
               );
               if (rejection !== null) {
-                this.putObservedQuota(selected.account, (stored) => ({
+                await this.putObservedQuota(selected.account, (stored) => ({
                   ...observe(stored),
                   usageRestriction: {
                     reason: rejection.reason,
@@ -1627,7 +1628,7 @@ export class AccountPoolHub {
               this.options.now(),
             );
             const heldUntil = this.options.now() + waitMs;
-            this.putObservedQuota(selected.account, (stored) => ({
+            await this.putObservedQuota(selected.account, (stored) => ({
               ...observe(stored),
               heldUntil,
             }));
@@ -1711,12 +1712,7 @@ export class AccountPoolHub {
                     selected.account,
                     secret,
                     signal,
-                    () =>
-                      this.setError(
-                        selected.account.id,
-                        message,
-                        selected.account.createdAt,
-                      ),
+                    () => this.setError(selected.account, message),
                   );
                 }
                 break;
@@ -1751,12 +1747,7 @@ export class AccountPoolHub {
                 selected.account,
                 secret,
                 signal,
-                () =>
-                  this.setError(
-                    selected.account.id,
-                    message,
-                    selected.account.createdAt,
-                  ),
+                () => this.setError(selected.account, message),
               );
             }
             break;
@@ -1769,11 +1760,12 @@ export class AccountPoolHub {
               response: adapter.transformResponse(response, {
                 url: requestUrl,
                 account: selected.account,
-                onQuotaRejection: ({ reason, resetAt }) =>
-                  this.putObservedQuota(selected.account, (stored) => ({
+                onQuotaRejection: ({ reason, resetAt }) => {
+                  void this.putObservedQuota(selected.account, (stored) => ({
                     ...stored,
                     usageRestriction: { reason, resetAt },
-                  })),
+                  })).catch(() => undefined);
+                },
               }),
             };
           }
@@ -1855,10 +1847,10 @@ export class AccountPoolHub {
     account: Account,
     rejected: AccountSecret,
     signal: AbortSignal,
-    apply: () => void,
+    apply: () => void | Promise<void>,
   ): Promise<void> {
     if (rejected.kind !== "oauth") {
-      apply();
+      await apply();
       return;
     }
     while (true) {
@@ -1878,7 +1870,7 @@ export class AccountPoolHub {
         kind: "rejection-check",
         result: this.options.accounts
           .readSecret(account.id)
-          .then((current) => {
+          .then(async (current) => {
             const backoff = this.refreshBackoffs.get(account.id);
             if (
               !signal.aborted &&
@@ -1890,7 +1882,7 @@ export class AccountPoolHub {
                 backoff.accessToken === current.accessToken
               )
             ) {
-              apply();
+              await apply();
             }
           })
           .finally(() => {
@@ -2297,7 +2289,7 @@ export class AccountPoolHub {
                   storedError === null ||
                   adapter.isTransientUsageError?.(storedError) !== true
                 )
-                  this.setError(account.id, null, account.createdAt);
+                  await this.setError(account, null);
               }
               if (rejection !== null)
                 await this.options.accounts.clearRejectedRefresh(account.id);
@@ -2741,10 +2733,19 @@ export class AccountPoolHub {
     { project: string; createdAt: number }
   >();
 
-  private putObservedQuota(
+  private guardOf(account: Account): QuotaWriteGuard {
+    return {
+      id: account.id,
+      createdAt: account.createdAt,
+      project:
+        account.provider === "gemini" ? (account.geminiProject ?? null) : undefined,
+    };
+  }
+
+  private async putObservedQuota(
     sentOn: Account,
     change: (stored: AccountQuota) => AccountQuota,
-  ): void {
+  ): Promise<void> {
     const stored = this.options.quotas.get(sentOn.id);
     if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
     const generation = this.generations.get(sentOn.id);
@@ -2760,21 +2761,29 @@ export class AccountPoolHub {
       committed.project !== sentOn.geminiProject
     )
       return;
-    this.putQuota(change(stored));
+    await writeQuotaIfCurrent(this.options.accounts, this.guardOf(sentOn), () => {
+      const current = this.options.quotas.get(sentOn.id);
+      if (current.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
+      this.putQuota(change(current));
+    });
   }
 
-  private setError(
-    accountId: string,
+  private async setError(
+    captured: Account,
     message: string | null,
-    createdAt?: number,
-  ): void {
-    if (createdAt !== undefined && !this.isCurrentInstance(accountId, createdAt))
-      return;
-    const quota = this.options.quotas.get(accountId);
-    const error = message?.slice(0, 1_000) ?? null;
-    if (quota.error === error) return;
-    this.putQuota({ ...quota, error });
-    this.options.onAccountsChanged();
+  ): Promise<void> {
+    if (!this.isCurrentInstance(captured.id, captured.createdAt)) return;
+    await writeQuotaIfCurrent(
+      this.options.accounts,
+      { id: captured.id, createdAt: captured.createdAt },
+      () => {
+        const quota = this.options.quotas.get(captured.id);
+        const error = message?.slice(0, 1_000) ?? null;
+        if (quota.error === error) return;
+        this.putQuota({ ...quota, error });
+        this.options.onAccountsChanged();
+      },
+    );
   }
 
   private releasePacing(accountId: string, pacing: PacingFlight): void {

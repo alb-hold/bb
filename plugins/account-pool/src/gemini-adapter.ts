@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { modelWeeklySchema } from "./display.js";
 import { quotaSchema } from "./contracts.js";
+import { writeQuotaIfCurrent } from "./store.js";
 import type {
   Account,
   AccountQuota,
@@ -1516,13 +1517,24 @@ export function createGeminiAdapter(options: {
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const stale = new Error("The account instance changed.");
-      const storeHolds = async (): Promise<boolean> =>
+      const writeIfCurrent = async (
+        write: () => void,
+        project?: string | null,
+      ): Promise<boolean> =>
         context.stillCurrent() &&
-        (await context.accounts.get(context.account.id))?.createdAt ===
-          context.account.createdAt &&
-        context.stillCurrent();
+        (await writeQuotaIfCurrent(
+          context.accounts,
+          {
+            id: context.account.id,
+            createdAt: context.account.createdAt,
+            project,
+          },
+          () => {
+            if (context.stillCurrent()) write();
+          },
+        ));
       const agent = await userAgent().catch(async (error: unknown) => {
-        if (await storeHolds()) {
+        await writeIfCurrent(() => {
           const previous = context.quotas.get(context.account.id);
           if (
             previous.error === null ||
@@ -1532,7 +1544,7 @@ export function createGeminiAdapter(options: {
               ...previous,
               error: `${GEMINI_RUNTIME_REFRESH_ERROR_PREFIX}${errorMessage(error)}`,
             });
-        }
+        });
         throw error;
       });
       const secret = await context.freshSecret(context.signal);
@@ -1721,8 +1733,7 @@ export function createGeminiAdapter(options: {
         const previousProject = context.account.geminiProject;
         const newProject =
           found && quotaProject !== previousProject ? quotaProject : null;
-        if (newProject !== null && !(await storeHolds())) throw stale;
-        const rowBeforeMarker = context.quotas.get(context.account.id);
+        let rowBeforeMarker = context.quotas.get(context.account.id);
         const marker =
           newProject === null
             ? null
@@ -1730,8 +1741,14 @@ export function createGeminiAdapter(options: {
                 0,
                 1_000,
               );
-        if (marker !== null)
-          context.quotas.put({ ...rowBeforeMarker, error: marker });
+        if (
+          marker !== null &&
+          !(await writeIfCurrent(() => {
+            rowBeforeMarker = context.quotas.get(context.account.id);
+            context.quotas.put({ ...rowBeforeMarker, error: marker });
+          }, previousProject ?? null))
+        )
+          throw stale;
         const dropMarker = (): void => {
           const row = context.quotas.get(context.account.id);
           if (marker !== null && row.error === marker)
@@ -1779,17 +1796,26 @@ export function createGeminiAdapter(options: {
             throw stale;
           }
         }
-        if (!(await storeHolds())) {
+        const outcome: { failed: boolean; error?: unknown } = {
+          failed: false,
+        };
+        const committed = await writeIfCurrent(() => {
+          try {
+            context.quotas.commitReading(readingToStore, displayToStore);
+            if (newProject !== null)
+              context.onProjectCommitted?.(context.account.id, newProject);
+          } catch (error) {
+            outcome.failed = true;
+            outcome.error = error;
+          }
+        }, newProject ?? previousProject ?? null);
+        if (!committed) {
           dropMarker();
           throw stale;
         }
-        try {
-          context.quotas.commitReading(readingToStore, displayToStore);
-          if (newProject !== null)
-            context.onProjectCommitted?.(context.account.id, newProject);
-        } catch (error) {
-          if (newProject !== null) return await restoreProject(error);
-          throw error;
+        if (outcome.failed) {
+          if (newProject !== null) return await restoreProject(outcome.error);
+          throw outcome.error;
         }
       } catch (error) {
         if (error === stale) return;
@@ -1800,14 +1826,16 @@ export function createGeminiAdapter(options: {
             .error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true
         )
           throw error;
-        if (context.signal?.aborted !== true && (await storeHolds()))
-          context.quotas.put({
-            ...context.quotas.get(context.account.id),
-            error:
-              `${GEMINI_QUOTA_READ_ERROR_PREFIX}${errorMessage(error)}`.slice(
-                0,
-                1_000,
-              ),
+        if (context.signal?.aborted !== true)
+          await writeIfCurrent(() => {
+            context.quotas.put({
+              ...context.quotas.get(context.account.id),
+              error:
+                `${GEMINI_QUOTA_READ_ERROR_PREFIX}${errorMessage(error)}`.slice(
+                  0,
+                  1_000,
+                ),
+            });
           });
         throw error;
       }

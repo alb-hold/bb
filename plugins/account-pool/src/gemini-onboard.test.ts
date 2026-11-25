@@ -1683,16 +1683,18 @@ describe("Antigravity companion project for consumer accounts", () => {
       "proj-own": THIRD_PARTY_ONLY,
       "proj-other": THIRD_PARTY_ONLY,
       "proj-token": THIRD_PARTY_ONLY,
+      "proj-live-agy": THIRD_PARTY_ONLY,
       "": THIRD_PARTY_ONLY,
     });
     const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    const current = (await stores.accounts.get(account.id)) ?? account;
     await google.adapter.refreshUsage(
-      usageContext(stores, account, google.fetch, () => NOW),
+      usageContext(stores, current, google.fetch, () => NOW),
     );
     expect(stores.quotas.get(account.id).limitWindows).toEqual(before);
     expect(setProject).not.toHaveBeenCalled();
     expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
-    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-token", "none"]);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other", "proj-live-agy", "none"]);
   });
 
   it("applies the no-project answer's Gemini windows when every project returns only Claude and GPT buckets, and leaves the stored project alone", async () => {

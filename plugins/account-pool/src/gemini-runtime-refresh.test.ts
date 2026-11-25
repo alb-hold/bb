@@ -1547,6 +1547,66 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect(pool.quotas.get(pool.account.id).error).toBeNull();
   });
 
+  it("drops a gated Retry-After 429 from the old instance after a same-id replacement with no removal event, request or sync", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...RETRY_AFTER_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    await reAddSameId(pool, "synthetic-project", true);
+    const quotaBefore = pool.quotas.get(pool.account.id);
+    const displayBefore = pool.quotas.modelWeekly(pool.account.id);
+    body.release();
+    await served;
+    await flush();
+
+    const stored = pool.quotas.get(pool.account.id);
+    expect(stored.heldUntil).toBeNull();
+    expect(stored.usageRestriction).toBeNull();
+    expect(stored).toEqual(quotaBefore);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(displayBefore);
+  });
+
+  it("drops a gated 200 response carrying a quota rejection from the old instance after a same-id replacement with no removal event, request or sync", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ status: 200, body: `data: ${QUOTA_EXHAUSTED_BODY}\n\n`, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    await reAddSameId(pool, "synthetic-project", true);
+    const quotaBefore = pool.quotas.get(pool.account.id);
+    const displayBefore = pool.quotas.modelWeekly(pool.account.id);
+    body.release();
+    await served;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
+    expect(pool.quotas.get(pool.account.id)).toEqual(quotaBefore);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(displayBefore);
+  });
+
+  it("still writes the hold of a gated Retry-After 429 on the current instance", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...RETRY_AFTER_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    body.release();
+    await served;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+  });
+
   it("rejects a project write that lands after its account was removed and re-added", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();

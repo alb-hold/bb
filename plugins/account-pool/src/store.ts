@@ -1213,6 +1213,28 @@ const EMPTY_QUOTA = {
   error: null,
 };
 
+export interface QuotaWriteGuard {
+  id: string;
+  createdAt: number;
+  project?: string | null;
+}
+
+export async function writeQuotaIfCurrent(
+  accounts: Pick<AccountStore, "get">,
+  captured: QuotaWriteGuard,
+  write: () => void,
+): Promise<boolean> {
+  const stored = await accounts.get(captured.id);
+  if (stored === null || stored.createdAt !== captured.createdAt) return false;
+  if (
+    captured.project !== undefined &&
+    (stored.geminiProject ?? null) !== captured.project
+  )
+    return false;
+  write();
+  return true;
+}
+
 export class QuotaStore {
   modelWeekly(accountId: string): ModelWeekly | undefined {
     const row = z

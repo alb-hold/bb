@@ -1,3 +1,4 @@
+import { writeQuotaIfCurrent } from "./store.js";
 import { z } from "zod";
 import { parseCodexRequestBody } from "./request-body.js";
 import {
@@ -552,7 +553,14 @@ export function createCodexAdapter(options: {
       if (quota === null)
         throw new Error("Usage refresh returned unreadable data.");
       signal.throwIfAborted();
-      context.quotas.put(quota);
+      await writeQuotaIfCurrent(
+        context.accounts,
+        { id: context.account.id, createdAt: context.account.createdAt },
+        () => {
+          signal.throwIfAborted();
+          context.quotas.put(quota);
+        },
+      );
     },
     errorResponse(status, message, headers) {
       return Response.json(
