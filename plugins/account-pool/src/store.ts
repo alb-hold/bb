@@ -567,7 +567,7 @@ export class AccountStore {
 
   async setGeminiProject(
     id: string,
-    geminiProject: string,
+    geminiProject: string | undefined,
     signal?: AbortSignal,
   ): Promise<Account | null> {
     return this.update(
@@ -1228,6 +1228,15 @@ export class QuotaStore {
   }
 
   constructor(private readonly db: Database.Database) {}
+
+  commitReading(quota: AccountQuota, windows: ModelWeekly): void {
+    const value = quotaSchema.parse(quota);
+    const display = modelWeeklySchema.parse(windows);
+    this.db.transaction(() => {
+      this.putModelWeekly(value.accountId, display);
+      this.put(value);
+    })();
+  }
 
   get(accountId: string): AccountQuota {
     const row = quotaRowSchema

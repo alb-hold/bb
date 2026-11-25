@@ -2119,6 +2119,182 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
   });
 
+  describe("the commit step is all-or-nothing", () => {
+    const COMMIT_PREFIX = "Gemini usage refresh stopped (commit): ";
+    const WINNER_WITH_THIRD_PARTY = {
+      buckets: [bucket("gemini-4-neon", 0.1)],
+      groups: [
+        {
+          displayName: "Claude and GPT models",
+          buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+        },
+      ],
+    };
+    const seededForRollback = async () => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-token");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const google = ownAndOtherCompanions({ "proj-own": WINNER_WITH_THIRD_PARTY });
+      return {
+        stores,
+        account: live,
+        google,
+        staleDisplay,
+        seeded: stores.quotas.get(account.id),
+        storedProject: live.geminiProject,
+      };
+    };
+
+    it.each(["putModelWeekly", "put"] as const)(
+      "restores the old project and keeps the old quota and 3p display when %s throws after the project changed",
+      async (failing) => {
+        const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+        expect(storedProject).not.toBe("proj-own");
+        const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+        vi.spyOn(stores.quotas, failing).mockImplementationOnce(() => {
+          throw new Error("disk full");
+        });
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("disk full");
+        expect(setProject.mock.calls.map((call) => call[1])).toEqual(["proj-own", storedProject]);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+        expect(stores.quotas.get(account.id)).toEqual({
+          ...seeded,
+          error: `${QUOTA_READ_PREFIX}disk full`,
+        });
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      },
+    );
+
+    it("restores a project that was unset before the refresh", async () => {
+      const { stores, google } = await seededForRollback();
+      const bare = await storedAccount(stores, "proj-token");
+      await stores.accounts.setGeminiProject(bare.id, undefined);
+      const account = (await stores.accounts.get(bare.id)) ?? bare;
+      expect(account.geminiProject).toBeUndefined();
+      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow("disk full");
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBeUndefined();
+    });
+
+    it("writes nothing, not even the project, when the reading does not validate", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+      const putDisplay = vi.spyOn(stores.quotas, "putModelWeekly");
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      expect(setProject).not.toHaveBeenCalled();
+      expect(putDisplay).not.toHaveBeenCalled();
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      const kept = stores.quotas.get(account.id);
+      expect(kept.error).toMatch(QUOTA_READ_ERROR);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("writes no quota when only the 3p display does not validate", async () => {
+      const { stores, account, staleDisplay, seeded } = await seededForRollback();
+      const google = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: DAILY_WITHOUT_GEMINI });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      const kept = stores.quotas.get(account.id);
+      expect(kept.error).toMatch(QUOTA_READ_ERROR);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
+    it("records a blocking commit error when the restore fails too, and the next successful commit clears it", async () => {
+      const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+      const setProject = vi
+        .spyOn(stores.accounts, "setGeminiProject")
+        .mockImplementationOnce(original)
+        .mockRejectedValueOnce(new Error("restore failed"));
+      vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow(COMMIT_PREFIX);
+      expect(setProject).toHaveBeenCalledTimes(2);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+      const stored = stores.quotas.get(account.id);
+      expect(stored.error).toBe(
+        `${COMMIT_PREFIX}disk full; the previous project could not be restored: restore failed`,
+      );
+      expect({ ...stored, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+      expect(storedProject).not.toBe("proj-own");
+      expect(google.adapter.isTransientUsageError?.(stored.error ?? "")).toBe(true);
+      expect(google.adapter.isNonBlockingUsageError?.(stored.error ?? "")).toBe(false);
+      setProject.mockRestore();
+      await google.adapter.refreshUsage(
+        usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+      );
+      expect(stores.quotas.get(account.id).error).toBeNull();
+      expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
+      expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    });
+
+    it.each([
+      ["a failed load", "quota_read"],
+      ["a failed version lookup", "runtime_version"],
+    ] as const)(
+      "changes nothing and surfaces the write error when recording the error of %s throws",
+      async (_name, kind) => {
+        const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+        const google =
+          kind === "quota_read"
+            ? fakeCodeAssist({ loads: [], loadFailureByBase: { daily: { status: 503 } }, quota: ONE_WINDOW })
+            : fakeCodeAssist({
+                loads: [LIVE_AGY_DAILY],
+                quota: ONE_WINDOW,
+                runtimeUserAgent: () => Promise.reject(new Error(RUNTIME_VERSION_FAILURE)),
+              });
+        vi.spyOn(stores.quotas, "put").mockImplementationOnce(() => {
+          throw new Error("error record failed");
+        });
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("error record failed");
+        expect(stores.quotas.get(account.id)).toEqual(seeded);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      },
+    );
+
+    it.each([
+      ["endpoint", "setGeminiEndpoint", [{ ...LIVE_AGY_DAILY, paidTier: { id: "enterprise-tier", usesGcpTos: true } }]],
+      ["tier", "setSubscriptionType", [{ ...LIVE_AGY_DAILY, paidTier: { id: "g1-ultra-tier" } }]],
+    ] as const)(
+      "stores the %s error and writes no quota, display or project when the %s write throws",
+      async (_name, method, script) => {
+        const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+        const google = fakeCodeAssist({ loads: [...script], quota: ONE_WINDOW });
+        vi.spyOn(stores.accounts, method).mockRejectedValueOnce(new Error("disk full"));
+        await expect(
+          google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+        ).rejects.toThrow("disk full");
+        expect(stores.quotas.get(account.id)).toEqual({ ...seeded, error: `${QUOTA_READ_PREFIX}disk full` });
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+      },
+    );
+  });
+
   it("stores a changed tier on a refresh when the endpoint is unchanged, and leaves the endpoint alone", async () => {
     const stores = await usageStores();
     const account = await storedAccount(stores, "proj-live-agy");

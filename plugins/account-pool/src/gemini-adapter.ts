@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { modelWeeklySchema } from "./display.js";
+import { quotaSchema } from "./contracts.js";
 import type {
   Account,
   AccountQuota,
@@ -66,6 +68,9 @@ const USER_AGENT_TTL_MS = 10 * 60 * 1_000;
 const GEMINI_USAGE_REFRESH_ERROR_PREFIX = "Gemini usage refresh stopped (";
 export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}runtime_version): `;
 export const GEMINI_QUOTA_READ_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}quota_read): `;
+export const GEMINI_COMMIT_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}commit): `;
+
+class GeminiCommitError extends Error {}
 
 export function isGeminiQuotaReadError(error: string): boolean {
   return error.startsWith(GEMINI_QUOTA_READ_ERROR_PREFIX);
@@ -1688,19 +1693,49 @@ export function createGeminiAdapter(options: {
           observedAt: keepStored ? previous.observedAt : now,
           error: null,
         };
+        const readingToStore = quotaSchema.parse(quota);
+        const displayToStore = modelWeeklySchema.parse(thirdParty);
         context.signal?.throwIfAborted();
-        if (
-          found &&
-          quotaProject !== null &&
-          quotaProject !== context.account.geminiProject
-        )
+        const previousProject = context.account.geminiProject;
+        const newProject =
+          found && quotaProject !== previousProject ? quotaProject : null;
+        const projectChanged = newProject !== null;
+        if (newProject !== null)
           await context.accounts.setGeminiProject(
             context.account.id,
-            quotaProject,
+            newProject,
           );
-        context.quotas.putModelWeekly(context.account.id, thirdParty);
-        context.quotas.put(quota);
+        try {
+          context.quotas.commitReading(
+            readingToStore,
+            displayToStore,
+          );
+        } catch (error) {
+          if (projectChanged) {
+            try {
+              await context.accounts.setGeminiProject(
+                context.account.id,
+                previousProject,
+              );
+            } catch (restoreError) {
+              const message =
+                `${GEMINI_COMMIT_ERROR_PREFIX}${errorMessage(error)}; the previous project could not be restored: ${errorMessage(restoreError)}`.slice(
+                  0,
+                  1_000,
+                );
+              try {
+                context.quotas.put({
+                  ...context.quotas.get(context.account.id),
+                  error: message,
+                });
+              } catch {}
+              throw new GeminiCommitError(message);
+            }
+          }
+          throw error;
+        }
       } catch (error) {
+        if (error instanceof GeminiCommitError) throw error;
         if (context.signal?.aborted !== true)
           context.quotas.put({
             ...context.quotas.get(context.account.id),

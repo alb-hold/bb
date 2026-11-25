@@ -2422,6 +2422,107 @@ describe("Gemini account pool", () => {
     },
   );
 
+  describe("after a quota write fails once the project changed", () => {
+    const setup = async () => {
+      const projects = { "tok-a": "proj-a" };
+      const google = await startGoogle({
+        projects,
+        quotaFraction: {},
+        stream: () => ({ status: 200, body: OK_BODY }),
+      });
+      upstreams.push(google.close);
+      const fixture = await createGeminiFixture(google, {
+        "/homes/a": creds("tok-a"),
+      });
+      const a = await addGemini(fixture.host, "/homes/a", 0);
+      const env = await geminiEnv(fixture.host);
+      const post = (sessionId: string) =>
+        runtimeCall(fixture.host, env.token, {
+          body: { contents: [], sessionId },
+        });
+      const streamProjects = () =>
+        google.calls
+          .filter((call) => call.method === "streamGenerateContent")
+          .map((call) => call.project);
+      const read = async () =>
+        statusSchema
+          .parse(await fixture.host.harness.behavior.callRpc("status.get", null))
+          .accounts.find((account) => account.id === a.id);
+      await post("session-1");
+      const database = fixture.host.bb.storage.database();
+      const prepare = database.prepare.bind(database);
+      const failWrite = (table: string, times = 1) => {
+        let left = times;
+        return vi.spyOn(database, "prepare").mockImplementation((sql: string) => {
+          if (left > 0 && sql.includes(`INTO ${table}`)) {
+            left -= 1;
+            throw new Error("disk full");
+          }
+          return prepare(sql);
+        });
+      };
+      return { projects, google, fixture, a, post, streamProjects, read, failWrite };
+    };
+
+    it.each(["pool_model_weekly", "account_quota"] as const)(
+      "keeps the old project, quota and display, and sends the next request with the old project, when the %s write throws",
+      async (table) => {
+        const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
+        const before = await read();
+        projects["tok-a"] = "proj-new";
+        const failing = failWrite(table);
+        await expect(
+          fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+            accountId: a.id,
+          }),
+        ).rejects.toThrow();
+        failing.mockRestore();
+        const after = await read();
+        expect(after?.limitWindows).toEqual(before?.limitWindows);
+        expect(after?.observedAt).toBe(before?.observedAt);
+        expect(after?.usageRestriction).toEqual(before?.usageRestriction);
+        const sent = streamProjects().length;
+        const response = await post("session-2");
+        expect(response.status).toBe(200);
+        expect(streamProjects().slice(sent)).toEqual(["proj-a"]);
+        expect(streamProjects()).not.toContain("proj-new");
+      },
+    );
+
+    it("refuses requests while the restore also failed, and serves again after the next successful refresh", async () => {
+      const { projects, fixture, a, post, streamProjects, read, failWrite } = await setup();
+      projects["tok-a"] = "proj-new";
+      const kv = fixture.host.bb.storage.kv;
+      const set = kv.set.bind(kv);
+      let accountWrites = 0;
+      const restoring = vi.spyOn(kv, "set").mockImplementation(async (key, value) => {
+        if (JSON.stringify(value).includes("proj-a") && accountWrites > 0)
+          throw new Error("restore failed");
+        if (JSON.stringify(value).includes("proj-new")) accountWrites += 1;
+        return set(key, value);
+      });
+      const failing = failWrite("pool_model_weekly");
+      await expect(
+        fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+          accountId: a.id,
+        }),
+      ).rejects.toThrow();
+      failing.mockRestore();
+      restoring.mockRestore();
+      const sent = streamProjects().length;
+      const refused = await post("session-2");
+      expect(refused.status).not.toBe(200);
+      expect(streamProjects().slice(sent)).toEqual([]);
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: a.id,
+      });
+      expect((await read())?.usageRestriction ?? null).toBeNull();
+      const served = await post("session-3");
+      expect(served.status).toBe(200);
+      expect(streamProjects().slice(sent)).toEqual(["proj-new"]);
+    });
+  });
+
   it("reports unknown-only quota buckets as a failed refresh through RPC and CLI", async () => {
     const { fixture, ids } = await twoAccounts(
       () => ({ status: 200, body: OK_BODY }),
