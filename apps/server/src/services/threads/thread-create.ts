@@ -867,7 +867,13 @@ export async function createThreadFromRequest(
       );
     }
     const decision = outcome.decision;
-    if (decision !== null && decision.providerId !== providerId) {
+    const providerChanged =
+      decision !== null && decision.providerId !== providerId;
+    const modelChanged =
+      decision !== null &&
+      decision.model !== null &&
+      decision.model !== (requestedModel ?? inheritedDefaultModel);
+    if (decision !== null && (providerChanged || modelChanged)) {
       let rejection: string | null = null;
       if (deps.providerRegistry.get(decision.providerId) === null) {
         rejection = "unknown provider";
@@ -890,9 +896,11 @@ export async function createThreadFromRequest(
       } else {
         providerId = decision.providerId;
         requestedModel = decision.model;
-        inheritedDefaultModel = null;
-        routedReasoningLevel = undefined;
-        routedSessionOptions = undefined;
+        if (providerChanged) {
+          inheritedDefaultModel = null;
+          routedReasoningLevel = undefined;
+          routedSessionOptions = undefined;
+        }
         providerRerouted = true;
         deps.logger.info(
           {

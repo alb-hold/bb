@@ -12,6 +12,7 @@ import {
 } from "../../src/services/plugins/plugin-hook-registry.js";
 import type { ThreadCreateServiceRequestInput } from "../../src/services/threads/thread-create-request.js";
 import { createThreadFromRequest } from "../../src/services/threads/thread-create.js";
+import { waitForQueuedCommand } from "../helpers/commands.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -126,6 +127,36 @@ describe("experimental_thread.route", () => {
       expect(lines).toContain("codex -> claude-code");
       expect(lines).not.toContain("Secret title");
       expect(lines).not.toContain("route me");
+    });
+  });
+
+  it("applies a model-only decision that keeps the provider", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, request } = await seedCreateTarget(harness);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({ model: "codex-model" }),
+          availableModelFixture({ model: "codex-other-model" }),
+        ],
+      });
+      installRouteHook(() => ({
+        providerId: "codex",
+        model: "codex-other-model",
+        reason: "cheaper",
+      }));
+      const thread = await createThreadFromRequest(harness.deps, request);
+      expect(thread.providerId).toBe("codex");
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === thread.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected start command");
+      }
+      expect(start.command.options.model).toBe("codex-other-model");
     });
   });
 
