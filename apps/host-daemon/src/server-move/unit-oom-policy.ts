@@ -1,26 +1,21 @@
-import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   findServiceDefinition,
   type FindServiceDefinitionArgs,
 } from "./service-definition.js";
-import { isFileNotFoundError } from "./fs.js";
+import { isFileNotFoundError, writeFileAtomically } from "./fs.js";
 import type { ServerMoveCommandRunner } from "./service-manager.js";
 
-export const OOM_POLICY_DROP_IN_NAME = "50-oom-policy.conf";
+const execFileAsync = promisify(execFile);
+const SERVICE_COMMAND_TIMEOUT_MS = 30_000;
+
+export const OOM_POLICY_DROP_IN_NAME = "50-bb-oom-policy.conf";
 export const OOM_POLICY_DROP_IN_CONTENT = "[Service]\nOOMPolicy=continue\n";
 
-const MAX_CREATE_ATTEMPTS = 5;
 const OOM_POLICY_DIRECTIVE = /^OOMPolicy\s*=/u;
-
-function isFileExistsError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "EEXIST"
-  );
-}
 const SECTION_HEADER = /^\[([^\]]*)\]\s*$/u;
 
 function setsServiceOomPolicy(text: string): boolean {
@@ -42,36 +37,44 @@ function setsServiceOomPolicy(text: string): boolean {
 export type UnitOomPolicyOutcome =
   "not-applicable" | "already-current" | "migrated";
 
+export type CommandOutputReader = (
+  command: string,
+  args: readonly string[],
+) => Promise<string>;
+
+export const defaultCommandOutputReader: CommandOutputReader = async (
+  command,
+  args,
+) => {
+  const { stdout } = await execFileAsync(command, [...args], {
+    env: process.env,
+    timeout: SERVICE_COMMAND_TIMEOUT_MS,
+  });
+  return stdout;
+};
+
 export interface EnsureUnitOomPolicyArgs extends FindServiceDefinitionArgs {
   runCommand: ServerMoveCommandRunner;
+  readCommandOutput: CommandOutputReader;
 }
 
-interface DropInScan {
-  names: ReadonlySet<string>;
-  setsOomPolicy: boolean;
-}
-
-async function scanDropIns(
-  dropInDir: string,
-  ignoredName: string | null = null,
-): Promise<DropInScan> {
+async function otherDropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
   let names: string[];
   try {
     names = await readdir(dropInDir);
   } catch (error) {
     if (isFileNotFoundError(error)) {
-      return { names: new Set(), setsOomPolicy: false };
+      return false;
     }
     throw error;
   }
   for (const name of names) {
-    if (!name.endsWith(".conf") || name === ignoredName) {
+    if (!name.endsWith(".conf") || name === OOM_POLICY_DROP_IN_NAME) {
       continue;
     }
     try {
-      const text = await readFile(join(dropInDir, name), "utf8");
-      if (setsServiceOomPolicy(text)) {
-        return { names: new Set(names), setsOomPolicy: true };
+      if (setsServiceOomPolicy(await readFile(join(dropInDir, name), "utf8"))) {
+        return true;
       }
     } catch (error) {
       if (!isFileNotFoundError(error)) {
@@ -79,53 +82,18 @@ async function scanDropIns(
       }
     }
   }
-  return { names: new Set(names), setsOomPolicy: false };
+  return false;
 }
 
-interface CreatedDropIn {
-  path: string;
-  dev: number;
-  ino: number;
-}
-
-async function createDropInExclusively(path: string): Promise<CreatedDropIn> {
-  const handle = await open(path, "wx", 0o644);
+async function readOwnDropIn(path: string): Promise<string | null> {
   try {
-    await handle.writeFile(OOM_POLICY_DROP_IN_CONTENT, "utf8");
-    const stats = await handle.stat();
-    return { path, dev: stats.dev, ino: stats.ino };
-  } finally {
-    await handle.close();
-  }
-}
-
-async function removeIfUnchanged(created: CreatedDropIn): Promise<void> {
-  try {
-    const stats = await stat(created.path);
-    if (stats.dev !== created.dev || stats.ino !== created.ino) {
-      return;
-    }
-    const text = await readFile(created.path, "utf8");
-    if (text !== OOM_POLICY_DROP_IN_CONTENT) {
-      return;
-    }
-    await rm(created.path, { force: true });
+    return await readFile(path, "utf8");
   } catch (error) {
-    if (!isFileNotFoundError(error)) {
-      throw error;
+    if (isFileNotFoundError(error)) {
+      return null;
     }
+    throw error;
   }
-}
-
-function freeDropInName(names: ReadonlySet<string>): string {
-  if (!names.has(OOM_POLICY_DROP_IN_NAME)) {
-    return OOM_POLICY_DROP_IN_NAME;
-  }
-  let suffix = 2;
-  while (names.has(`50-oom-policy-${suffix}.conf`)) {
-    suffix += 1;
-  }
-  return `50-oom-policy-${suffix}.conf`;
 }
 
 export async function ensureUnitOomPolicy(
@@ -135,44 +103,31 @@ export async function ensureUnitOomPolicy(
   if (definition === null || definition.manager !== "systemd-user") {
     return "not-applicable";
   }
-  if (setsServiceOomPolicy(definition.content)) {
+  const dropInDir = `${definition.path}.d`;
+  if (
+    setsServiceOomPolicy(definition.content) ||
+    (await otherDropInSetsOomPolicy(dropInDir))
+  ) {
     return "already-current";
   }
-  const dropInDir = `${definition.path}.d`;
-  await mkdir(dropInDir, { recursive: true });
-  for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt += 1) {
-    const scan = await scanDropIns(dropInDir);
-    if (scan.setsOomPolicy) {
-      return "already-current";
-    }
-    const dropInName = freeDropInName(scan.names);
-    const dropInPath = join(dropInDir, dropInName);
-    let created: CreatedDropIn;
-    try {
-      created = await createDropInExclusively(dropInPath);
-    } catch (error) {
-      if (isFileExistsError(error)) {
-        continue;
-      }
-      throw error;
-    }
-    const recheck = await scanDropIns(dropInDir, dropInName).catch(
-      async (error: unknown) => {
-        await removeIfUnchanged(created);
-        throw error;
-      },
-    );
-    if (recheck.setsOomPolicy) {
-      await removeIfUnchanged(created);
-      return "already-current";
-    }
-    try {
-      await args.runCommand("systemctl", ["--user", "daemon-reload"]);
-    } catch (error) {
-      await removeIfUnchanged(created);
-      throw error;
-    }
-    return "migrated";
+  const dropInPath = join(dropInDir, OOM_POLICY_DROP_IN_NAME);
+  if ((await readOwnDropIn(dropInPath)) !== OOM_POLICY_DROP_IN_CONTENT) {
+    await writeFileAtomically({
+      path: dropInPath,
+      content: OOM_POLICY_DROP_IN_CONTENT,
+      mode: 0o644,
+    });
   }
-  throw new Error("Could not create a free OOM policy drop-in name");
+  const shown = await args.readCommandOutput("systemctl", [
+    "--user",
+    "show",
+    "-p",
+    "OOMPolicy",
+    definition.unitName,
+  ]);
+  if (shown.trim() === "OOMPolicy=continue") {
+    return "already-current";
+  }
+  await args.runCommand("systemctl", ["--user", "daemon-reload"]);
+  return "migrated";
 }

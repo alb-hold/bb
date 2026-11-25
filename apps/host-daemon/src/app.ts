@@ -88,7 +88,10 @@ import {
   defaultServerMoveServiceOptions,
   ServerMoveService,
 } from "./server-move/service.js";
-import { ensureUnitOomPolicy } from "./server-move/unit-oom-policy.js";
+import {
+  defaultCommandOutputReader,
+  ensureUnitOomPolicy,
+} from "./server-move/unit-oom-policy.js";
 
 interface SessionState {
   value: string | null;
@@ -1215,6 +1218,7 @@ export async function createHostDaemonApp(
         platform: unitDefaults.platform,
         env: unitDefaults.env,
         runCommand: unitDefaults.runCommand,
+        readCommandOutput: defaultCommandOutputReader,
       })
         .then((outcome) => {
           if (outcome === "migrated") {
