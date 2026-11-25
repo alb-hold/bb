@@ -106,6 +106,7 @@ function installDispatchHook(
     [K in PluginHookName]: PluginHookRegistration<K>[];
   } = {
     "experimental_thread.configure": [],
+    "experimental_thread.route": [],
     "message.dispatch": [
       {
         pluginId: "native-notice-admission-test",

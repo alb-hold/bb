@@ -60,6 +60,7 @@ function installHooks(
 ): void {
   const registry: HookRegistry = {
     "experimental_thread.configure": [],
+    "experimental_thread.route": [],
     "message.dispatch": handlers["message.dispatch"] ?? [],
   };
   setPluginHookProvider({

@@ -15,6 +15,7 @@ import {
   getThreadSpawner,
   setThreadExecutionOverride,
 } from "@bb/db";
+import { sliceUtf16Head } from "@bb/text-utils";
 import { randomUUID } from "node:crypto";
 import {
   describeSessionOptionConflict,
@@ -53,6 +54,10 @@ import {
 } from "./dispatch-attempt.js";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
 import { configureThreadPlugins } from "./dispatch-hooks.js";
+import {
+  THREAD_ROUTE_INPUT_TEXT_MAX_LENGTH,
+  runThreadRouteHooks,
+} from "./thread-route-hook.js";
 import {
   createThreadRecord,
   getThreadSafe,
@@ -465,6 +470,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
   args: CreateProvisioningThreadArgs & {
     environmentIntent: ThreadProvisionEnvironmentIntent;
     nativeTerminal: NativeTerminalCreate | null;
+    providerRerouted: boolean;
     sendAt: number | undefined;
   },
 ) {
@@ -654,6 +660,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
   }
   rememberProjectExecutionDefaultsForCreate(deps, {
     execution,
+    providerRerouted: args.providerRerouted,
     request: args.request,
   });
   return getThreadSafe(deps, thread.id);
@@ -818,18 +825,88 @@ export async function createThreadFromRequest(
     }
   }
   await deps.providerRegistry.whenRegistrationsSettled();
-  const {
-    defaultModel: inheritedDefaultModel,
-    providerId,
-    providerFallbackCandidates,
-    requestedModel,
-  } = resolveProjectExecutionDefaultsForCreate(deps, {
+  const resolvedDefaults = resolveProjectExecutionDefaultsForCreate(deps, {
     executionInputSources: requestInput.executionInputSources,
     model: requestInput.model,
     parentThread,
     projectId: requestInput.projectId,
     providerId: requestInput.providerId,
   });
+  const { providerFallbackCandidates } = resolvedDefaults;
+  let { defaultModel: inheritedDefaultModel, providerId, requestedModel } =
+    resolvedDefaults;
+  let providerRerouted = false;
+  let routedReasoningLevel = requestInput.reasoningLevel;
+  let routedSessionOptions = requestInput.sessionOptions;
+  if (originKind !== "fork" && requestInput.nativeTerminal !== true) {
+    const originalProviderId = providerId;
+    const inputText = requestInput.input
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    const outcome = await runThreadRouteHooks({
+      projectId: requestInput.projectId,
+      parentThreadId: parentThread?.id ?? null,
+      parentProviderId: parentThread?.providerId ?? null,
+      origin: requestInput.origin,
+      originKind: originKind ?? null,
+      originPluginId: requestInput.originPluginId ?? null,
+      title: requestInput.title ?? null,
+      inputText:
+        inputText.length === 0
+          ? null
+          : sliceUtf16Head(inputText, THREAD_ROUTE_INPUT_TEXT_MAX_LENGTH),
+      providerId,
+      model: requestedModel ?? inheritedDefaultModel,
+      explicitProvider: requestInput.providerId !== undefined,
+    });
+    for (const failure of outcome.failures) {
+      deps.logger.warn(
+        { projectId: requestInput.projectId, providerId },
+        `thread route hook failed, keeping provider: ${failure}`,
+      );
+    }
+    const decision = outcome.decision;
+    if (decision !== null && decision.providerId !== providerId) {
+      let rejection: string | null = null;
+      if (deps.providerRegistry.get(decision.providerId) === null) {
+        rejection = "unknown provider";
+      } else {
+        try {
+          requireBridgeLaunchForProviderId(deps, decision.providerId);
+        } catch (error) {
+          rejection = error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (rejection !== null) {
+        deps.logger.warn(
+          {
+            projectId: requestInput.projectId,
+            from: providerId,
+            to: decision.providerId,
+          },
+          `thread route hook named ${decision.providerId}, keeping ${providerId}: ${rejection}`,
+        );
+      } else {
+        providerId = decision.providerId;
+        requestedModel = decision.model;
+        inheritedDefaultModel = null;
+        routedReasoningLevel = undefined;
+        routedSessionOptions = undefined;
+        providerRerouted = true;
+        deps.logger.info(
+          {
+            title: requestInput.title ?? null,
+            from: originalProviderId,
+            to: providerId,
+            reason: decision.reason,
+            pluginId: decision.pluginId,
+          },
+          `thread rerouted by ${decision.pluginId}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${decision.reason})`}`,
+        );
+      }
+    }
+  }
   const provider = deps.providerRegistry.get(providerId);
   if (provider === null) {
     throw new ApiError(
@@ -887,6 +964,11 @@ export async function createThreadFromRequest(
     providerId,
     titleFallback: deriveTitleFallback(requestInput.input),
   };
+  if (providerRerouted) {
+    request.model = requestedModel ?? undefined;
+    request.reasoningLevel = routedReasoningLevel;
+    request.sessionOptions = routedSessionOptions;
+  }
   if (
     request.title === undefined &&
     request.originKind === "fork" &&
@@ -1027,6 +1109,7 @@ export async function createThreadFromRequest(
   };
   const thread = await createPendingThreadAndAttemptFirstDispatch(deps, {
     ...createArgs,
+    providerRerouted,
     sendAt: request.sendAt,
   });
   const { initiator } = resolveDispatchAuthor({

@@ -756,6 +756,27 @@ export interface PluginHookSignatures {
     context: MessageDispatchHookContext;
     decision: MessageDispatchHookDecision;
   };
+  /** Chooses the provider of a new thread before it is created. The first non-null decision wins; null keeps the resolved provider. */
+  "experimental_thread.route": {
+    context: {
+      projectId: string;
+      parentThreadId: string | null;
+      parentProviderId: string | null;
+      origin: string | null;
+      originKind: string | null;
+      originPluginId: string | null;
+      title: string | null;
+      inputText: string | null;
+      providerId: string;
+      model: string | null;
+      explicitProvider: boolean;
+    };
+    decision: null | {
+      providerId: string;
+      model?: string | null;
+      reason?: string;
+    };
+  };
 }
 
 export type PluginHookName = keyof PluginHookSignatures;
