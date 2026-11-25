@@ -63,11 +63,12 @@ export const DEFAULT_GEMINI_USERINFO_URL =
   "https://www.googleapis.com/oauth2/v3/userinfo";
 const REQUEST_TIMEOUT_MS = 15_000;
 const USER_AGENT_TTL_MS = 10 * 60 * 1_000;
-export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX =
-  "Gemini usage refresh stopped (runtime_version): ";
+const GEMINI_USAGE_REFRESH_ERROR_PREFIX = "Gemini usage refresh stopped (";
+export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}runtime_version): `;
+export const GEMINI_QUOTA_READ_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}quota_read): `;
 
-export function isGeminiRuntimeRefreshError(error: string): boolean {
-  return error.startsWith(GEMINI_RUNTIME_REFRESH_ERROR_PREFIX);
+export function isGeminiUsageRefreshError(error: string): boolean {
+  return error.startsWith(GEMINI_USAGE_REFRESH_ERROR_PREFIX);
 }
 const DEFAULT_QUOTA_HOLD_MS = 10 * 60 * 1_000;
 const SERVED_MODELS_TTL_MS = 10 * 60 * 1_000;
@@ -126,7 +127,10 @@ const onboardOperationSchema = z
     response: z
       .object({
         cloudaicompanionProject: z
-          .union([z.string(), z.object({ id: z.string().nullish() }).passthrough()])
+          .union([
+            z.string(),
+            z.object({ id: z.string().nullish() }).passthrough(),
+          ])
           .nullish(),
       })
       .passthrough()
@@ -209,7 +213,9 @@ function routesGeminiModel(name: string, group: string | null): boolean {
   );
 }
 
-export function geminiQuotaBuckets(payload: unknown): GeminiQuotaBucket[] | null {
+export function geminiQuotaBuckets(
+  payload: unknown,
+): GeminiQuotaBucket[] | null {
   const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
   if (!parsed.success) return null;
   return [
@@ -249,7 +255,9 @@ export interface GeminiProjectInfo {
   endpoint: "prod" | "daily";
 }
 
-export function parseLoadCodeAssist(payload: unknown): GeminiProjectInfo | null {
+export function parseLoadCodeAssist(
+  payload: unknown,
+): GeminiProjectInfo | null {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success) return null;
   const raw = parsed.data.cloudaicompanionProject;
@@ -286,7 +294,10 @@ export function parseGoogleDuration(value: unknown): number | null {
   return matched ? Math.round(total) : null;
 }
 
-const ACCOUNT_QUOTA_REASONS = new Set(["QUOTA_EXHAUSTED", "RATE_LIMIT_EXCEEDED"]);
+const ACCOUNT_QUOTA_REASONS = new Set([
+  "QUOTA_EXHAUSTED",
+  "RATE_LIMIT_EXCEEDED",
+]);
 
 export function geminiQuotaRejection(
   detail: string,
@@ -318,7 +329,8 @@ export function geminiQuotaRejection(
           entry.metadata !== null &&
           "quotaResetDelay" in entry.metadata
         )
-          delayMs = parseGoogleDuration(entry.metadata.quotaResetDelay) ?? delayMs;
+          delayMs =
+            parseGoogleDuration(entry.metadata.quotaResetDelay) ?? delayMs;
         if (
           "metadata" in entry &&
           typeof entry.metadata === "object" &&
@@ -425,12 +437,20 @@ export function geminiThirdPartyDisplay(
     );
     const held = best[bucket.window];
     if (held === undefined || (held.utilization ?? 0) < (utilization ?? 0))
-      best[bucket.window] = { utilization, resetAt, status, observedAt, source };
+      best[bucket.window] = {
+        utilization,
+        resetAt,
+        status,
+        observedAt,
+        source,
+      };
   }
   return Object.fromEntries(
     (["5h", "weekly"] as const).flatMap((window) => {
       const quota = best[window];
-      return quota === undefined ? [] : [[THIRD_PARTY_QUOTA_LABELS[window], quota]];
+      return quota === undefined
+        ? []
+        : [[THIRD_PARTY_QUOTA_LABELS[window], quota]];
     }),
   );
 }
@@ -447,7 +467,8 @@ export function mergeQuotaSummaries(payloads: readonly unknown[]): unknown {
     const parsed = retrieveUserQuotaSummarySchema.safeParse(payload);
     if (
       !parsed.success ||
-      (!Array.isArray(parsed.data.buckets) && !Array.isArray(parsed.data.groups))
+      (!Array.isArray(parsed.data.buckets) &&
+        !Array.isArray(parsed.data.groups))
     )
       continue;
     readable = true;
@@ -467,7 +488,10 @@ export function mergeQuotaSummaries(payloads: readonly unknown[]): unknown {
         entry.bucket.window ?? null,
       ]);
       const held = merged.get(key);
-      if (held === undefined || bucketUse(entry.bucket) > bucketUse(held.bucket))
+      if (
+        held === undefined ||
+        bucketUse(entry.bucket) > bucketUse(held.bucket)
+      )
         merged.set(key, entry);
     }
   }
@@ -480,7 +504,10 @@ export function mergeQuotaSummaries(payloads: readonly unknown[]): unknown {
   }
   return {
     buckets: ungrouped,
-    groups: [...groups].map(([displayName, buckets]) => ({ displayName, buckets })),
+    groups: [...groups].map(([displayName, buckets]) => ({
+      displayName,
+      buckets,
+    })),
   };
 }
 
@@ -636,7 +663,9 @@ const LOAD_CODE_ASSIST_BODY = { metadata: { ideType: "ANTIGRAVITY" } };
 function genaiBody(body: Uint8Array): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;
   } catch {
@@ -673,13 +702,14 @@ function offeredTierIds(payload: unknown): string {
   if (!parsed.success) return "current=none, paid=none, allowed=none";
   const current = parsed.data.currentTier?.id ?? "none";
   const paid = parsed.data.paidTier?.id ?? "none";
-  const allowed = (parsed.data.allowedTiers ?? [])
-    .flatMap((tier) =>
-      tier?.id == null
-        ? []
-        : [tier.isDefault === true ? `${tier.id}(default)` : tier.id],
-    )
-    .join(",") || "none";
+  const allowed =
+    (parsed.data.allowedTiers ?? [])
+      .flatMap((tier) =>
+        tier?.id == null
+          ? []
+          : [tier.isDefault === true ? `${tier.id}(default)` : tier.id],
+      )
+      .join(",") || "none";
   return `current=${current}, paid=${paid}, allowed=${allowed}`;
 }
 
@@ -749,7 +779,12 @@ function projectPlan(
   if (outcome.kind !== "answered") return null;
   const { project, tier } = outcome.info;
   if (project === null || tier === null) return null;
-  return { kind: "project", loadedFrom, project, info: { ...outcome.info, tier } };
+  return {
+    kind: "project",
+    loadedFrom,
+    project,
+    info: { ...outcome.info, tier },
+  };
 }
 
 function planGeminiImport(
@@ -849,12 +884,19 @@ function probeTiers(payload: unknown): {
 } {
   const parsed = loadCodeAssistSchema.safeParse(payload);
   if (!parsed.success)
-    return { currentTier: null, paidTier: null, allowedTiers: [], ineligibleTiers: [] };
+    return {
+      currentTier: null,
+      paidTier: null,
+      allowedTiers: [],
+      ineligibleTiers: [],
+    };
   return {
     currentTier: parsed.data.currentTier?.id ?? null,
     paidTier: parsed.data.paidTier?.id ?? null,
     allowedTiers: (parsed.data.allowedTiers ?? []).flatMap((tier) =>
-      tier?.id == null ? [] : [{ id: tier.id, isDefault: tier.isDefault === true }],
+      tier?.id == null
+        ? []
+        : [{ id: tier.id, isDefault: tier.isDefault === true }],
     ),
     ineligibleTiers: (parsed.data.ineligibleTiers ?? []).flatMap((tier) =>
       tier == null ? [] : [{ id: tier.tierId, reasonCode: tier.reasonCode }],
@@ -933,13 +975,20 @@ async function getCodeAssistOperation(
 }
 
 function onboardingFields(payload: unknown, prefix = "", depth = 0): string[] {
-  if (depth > 2 || payload === null || typeof payload !== "object" || Array.isArray(payload))
+  if (
+    depth > 2 ||
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  )
     return [];
-  return Object.entries(payload).slice(0, 16).flatMap(([key, value]) => {
-    if (!/^@?[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key)) return [];
-    const path = prefix + key;
-    return [path, ...onboardingFields(value, path + ".", depth + 1)];
-  });
+  return Object.entries(payload)
+    .slice(0, 16)
+    .flatMap(([key, value]) => {
+      if (!/^@?[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key)) return [];
+      const path = prefix + key;
+      return [path, ...onboardingFields(value, path + ".", depth + 1)];
+    });
 }
 
 async function onboardCodeAssist(args: {
@@ -997,7 +1046,14 @@ async function onboardCodeAssist(args: {
     await new Promise((resolve) => setTimeout(resolve, args.pollMs));
     operation = readOperation(
       name
-        ? await getCodeAssistOperation(args.doFetch, args.baseUrl, name, args.accessToken, args.tierIds, args.userAgent)
+        ? await getCodeAssistOperation(
+            args.doFetch,
+            args.baseUrl,
+            name,
+            args.accessToken,
+            args.tierIds,
+            args.userAgent,
+          )
         : await onboard(),
     );
     name = operation.name || name;
@@ -1018,7 +1074,13 @@ export function createGeminiAdapter(options: {
   fetch?: typeof fetch;
   now?: () => number;
   onModels?: (accountId: string, ids: string[], servedIds: string[]) => void;
-  savedModels?: () => Readonly<Record<string, readonly string[] | { served: readonly string[]; aliases: readonly string[] }>>;
+  savedModels?: () => Readonly<
+    Record<
+      string,
+      | readonly string[]
+      | { served: readonly string[]; aliases: readonly string[] }
+    >
+  >;
   onboarding?: { pollMs: number; timeoutMs: number };
   runtimeUserAgent: () => Promise<string>;
 }): ProviderAdapter {
@@ -1178,7 +1240,8 @@ export function createGeminiAdapter(options: {
     },
     async importAccount(importOptions) {
       const signedIn = await signIn(importOptions);
-      const { imported, accessToken, refreshToken, idToken, expiresAt } = signedIn;
+      const { imported, accessToken, refreshToken, idToken, expiresAt } =
+        signedIn;
       const email = await googleEmail(
         doFetch,
         options.userinfoUrl ?? DEFAULT_GEMINI_USERINFO_URL,
@@ -1294,7 +1357,11 @@ export function createGeminiAdapter(options: {
                 servesOn: plan.info.endpoint,
               }
             : plan.kind === "onboard"
-              ? { kind: "onboard", endpoint: plan.endpoint, tierId: plan.tierId }
+              ? {
+                  kind: "onboard",
+                  endpoint: plan.endpoint,
+                  tierId: plan.tierId,
+                }
               : { kind: "none" },
         quota,
       };
@@ -1308,7 +1375,8 @@ export function createGeminiAdapter(options: {
           parentAffinityId: null,
           upstreamMethod: "POST",
           unmetered: call?.kind === "models",
-          forAccount: (account) => encodeJson({ project: account.geminiProject }),
+          forAccount: (account) =>
+            encodeJson({ project: account.geminiProject }),
         };
       }
       const genai = genaiBody(body);
@@ -1319,12 +1387,16 @@ export function createGeminiAdapter(options: {
       const session = genai?.sessionId;
       return {
         family: "other",
-        affinityId: typeof session === "string" && session !== "" ? session : null,
+        affinityId:
+          typeof session === "string" && session !== "" ? session : null,
         parentAffinityId: null,
         async prepare(account, secret, signal) {
           if (!isKnownFamily(model)) return;
           const cached = servedModels.get(account.id);
-          if (cached !== undefined && clock() - cached.at < SERVED_MODELS_TTL_MS)
+          if (
+            cached !== undefined &&
+            clock() - cached.at < SERVED_MODELS_TTL_MS
+          )
             return;
           await refreshServed(account, secret, signal);
         },
@@ -1379,7 +1451,11 @@ export function createGeminiAdapter(options: {
       const headers = new Headers(response.headers);
       headers.delete("content-length");
       headers.delete("content-encoding");
-      if (call === null || call.kind !== "generate" || call.method === "generateContent")
+      if (
+        call === null ||
+        call.kind !== "generate" ||
+        call.method === "generateContent"
+      )
         headers.set("content-type", "application/json; charset=utf-8");
       return new Response(response.body.pipeThrough(transform), {
         status: response.status,
@@ -1427,12 +1503,15 @@ export function createGeminiAdapter(options: {
       );
       return { secret: refreshed, refreshed: true };
     },
-    isTransientUsageError: isGeminiRuntimeRefreshError,
+    isTransientUsageError: isGeminiUsageRefreshError,
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const agent = await userAgent().catch((error: unknown) => {
         const previous = context.quotas.get(context.account.id);
-        if (previous.error === null || isGeminiRuntimeRefreshError(previous.error))
+        if (
+          previous.error === null ||
+          isGeminiUsageRefreshError(previous.error)
+        )
           context.quotas.put({
             ...previous,
             error: `${GEMINI_RUNTIME_REFRESH_ERROR_PREFIX}${errorMessage(error)}`,
@@ -1440,170 +1519,197 @@ export function createGeminiAdapter(options: {
         throw error;
       });
       const stale = context.quotas.get(context.account.id);
-      if (stale.error !== null && isGeminiRuntimeRefreshError(stale.error))
+      if (stale.error !== null && isGeminiUsageRefreshError(stale.error))
         context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
-      context.signal?.throwIfAborted();
-      if (secret.kind !== "oauth")
-        throw new Error("Gemini usage refresh requires OAuth credentials.");
-      const info = parseLoadCodeAssist(
-        await codeAssistCall(
-          context.fetch,
-          baseFor(context.account),
-          "loadCodeAssist",
-          secret.accessToken,
-          LOAD_CODE_ASSIST_BODY,
-          agent,
-          context.signal,
-        ),
-      );
-      if (info === null) throw new Error("Usage refresh returned unreadable data.");
-      const stored = context.account.geminiProject ?? null;
-      let otherCompanion: Promise<string | null> | undefined;
-      const loadOtherCompanion = () =>
-        (otherCompanion ??= codeAssistCall(
-          context.fetch,
-          baseFor(context.account) === bases.daily ? bases.prod : bases.daily,
-          "loadCodeAssist",
-          secret.accessToken,
-          LOAD_CODE_ASSIST_BODY,
-          agent,
-          context.signal,
-        )
-          .then((payload) => parseLoadCodeAssist(payload)?.project ?? null)
-          .catch(() => null));
-      const candidateSources: Array<() => Promise<string | null>> = [
-        async () => info.project,
-        loadOtherCompanion,
-        async () => stored,
-      ];
-      if (info.endpoint !== context.account.geminiEndpoint)
-        await context.accounts.setGeminiEndpoint(
-          context.account.id,
-          info.endpoint,
-          context.signal,
-        );
-      if (info.tier !== null && info.tier !== context.account.subscriptionType)
-        await context.accounts.setSubscriptionType(
-          context.account.id,
-          info.tier,
-          context.signal,
-        );
-      let quotaSummary: unknown = null;
-      let quotaFailure: unknown = null;
-      let quotaFailed = false;
-      let quotaProject: string | null = null;
-      let thirdPartySummary: unknown = null;
-      let found = false;
-      const tried = new Set<string | null>();
-      const sources = [...candidateSources, async () => null];
-      for (const [index, source] of sources.entries()) {
-        const candidate = await source();
+      try {
         context.signal?.throwIfAborted();
-        if (tried.has(candidate)) continue;
-        if (candidate === null && index < sources.length - 1) continue;
-        tried.add(candidate);
-        const settled = await Promise.allSettled(
-          [...new Set([bases.daily, bases.prod])].map((base) =>
-            codeAssistCall(
-              context.fetch,
-              base,
-              "retrieveUserQuotaSummary",
-              secret.accessToken,
-              candidate === null ? {} : { project: candidate },
-              agent,
-              context.signal,
-            ),
+        if (secret.kind !== "oauth")
+          throw new Error("Gemini usage refresh requires OAuth credentials.");
+        const info = parseLoadCodeAssist(
+          await codeAssistCall(
+            context.fetch,
+            baseFor(context.account),
+            "loadCodeAssist",
+            secret.accessToken,
+            LOAD_CODE_ASSIST_BODY,
+            agent,
+            context.signal,
           ),
         );
-        context.signal?.throwIfAborted();
-        const rejection = settled.find(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-        );
-        const answers = settled.flatMap((result) =>
-          result.status === "fulfilled" ? [result.value] : [],
-        );
-        if (rejection !== undefined) {
-          quotaFailed = true;
-          quotaFailure ??= rejection.reason;
-        }
-        if (answers.some((answer) => mergeQuotaSummaries([answer]) === null))
-          quotaFailed = true;
-        const merged = mergeQuotaSummaries(answers);
-        if (merged === null) continue;
-        if (geminiWindowsFromQuota(merged, context.now()).length > 0) {
-          quotaSummary = merged;
-          quotaProject = candidate;
-          found = true;
-          break;
-        }
+        if (info === null)
+          throw new Error("Usage refresh returned unreadable data.");
+        const stored = context.account.geminiProject ?? null;
+        let otherCompanion: Promise<string | null> | undefined;
+        const loadOtherCompanion = () =>
+          (otherCompanion ??= codeAssistCall(
+            context.fetch,
+            baseFor(context.account) === bases.daily ? bases.prod : bases.daily,
+            "loadCodeAssist",
+            secret.accessToken,
+            LOAD_CODE_ASSIST_BODY,
+            agent,
+            context.signal,
+          )
+            .then((payload) => parseLoadCodeAssist(payload)?.project ?? null)
+            .catch(() => null));
+        const candidateSources: Array<() => Promise<string | null>> = [
+          async () => info.project,
+          loadOtherCompanion,
+          async () => stored,
+        ];
+        if (info.endpoint !== context.account.geminiEndpoint)
+          await context.accounts.setGeminiEndpoint(
+            context.account.id,
+            info.endpoint,
+            context.signal,
+          );
         if (
-          thirdPartySummary === null &&
-          Object.keys(geminiThirdPartyDisplay(merged, context.now())).length > 0
+          info.tier !== null &&
+          info.tier !== context.account.subscriptionType
         )
-          thirdPartySummary = merged;
-        if (quotaSummary === null || !geminiQuotaBuckets(quotaSummary)?.length)
-          quotaSummary = merged;
-      }
-      if (!found && quotaFailed)
-        throw quotaFailure ?? new Error("Usage refresh returned unreadable data.");
-      if (quotaSummary === null) {
-        throw new Error("Usage refresh returned unreadable data.");
-      }
-      const now = context.now();
-      const bucketCount = geminiQuotaBuckets(quotaSummary)?.length ?? 0;
-      const keepStored = !found && thirdPartySummary !== null;
-      const windows = keepStored
-        ? context.quotas.get(context.account.id).limitWindows
-        : geminiWindowsFromQuota(quotaSummary, now);
-      if (!keepStored && bucketCount > 0 && windows.length === 0)
-        throw new Error("Usage refresh returned no recognized quota buckets.");
-      const winnerDisplay = found
-        ? geminiThirdPartyDisplay(quotaSummary, now)
-        : {};
-      const thirdParty =
-        Object.keys(winnerDisplay).length > 0 || thirdPartySummary === null
-          ? winnerDisplay
-          : geminiThirdPartyDisplay(thirdPartySummary, now);
-      const previous = context.quotas.get(context.account.id);
-      const rejected = windows.filter((window) => window.status === "rejected");
-      const quota: AccountQuota = {
-        ...previous,
-        accountId: context.account.id,
-        limitWindows: windows,
-        usageRestriction:
-          windows.length === 0
-            ? previous.usageRestriction
-            : rejected.length === 0
-              ? null
-              : (previous.usageRestriction ?? {
-                  reason: "quota_exhausted",
-                  resetAt: rejected.reduce<number | null>(
-                    (earliest, window) =>
-                      window.resetAt === null
-                        ? earliest
-                        : earliest === null
-                          ? window.resetAt
-                          : Math.min(earliest, window.resetAt),
-                    null,
-                  ),
-                }),
-        observedAt: now,
-        error: null,
-      };
-      context.signal?.throwIfAborted();
-      context.quotas.putModelWeekly(context.account.id, thirdParty);
-      context.quotas.put(quota);
-      if (
-        found &&
-        quotaProject !== null &&
-        quotaProject !== context.account.geminiProject
-      )
-        await context.accounts.setGeminiProject(
-          context.account.id,
-          quotaProject,
+          await context.accounts.setSubscriptionType(
+            context.account.id,
+            info.tier,
+            context.signal,
+          );
+        let quotaSummary: unknown = null;
+        let quotaFailure: unknown = null;
+        let quotaFailed = false;
+        let quotaProject: string | null = null;
+        let thirdPartySummary: unknown = null;
+        let found = false;
+        const tried = new Set<string | null>();
+        const sources = [...candidateSources, async () => null];
+        for (const [index, source] of sources.entries()) {
+          const candidate = await source();
+          context.signal?.throwIfAborted();
+          if (tried.has(candidate)) continue;
+          if (candidate === null && index < sources.length - 1) continue;
+          tried.add(candidate);
+          const settled = await Promise.allSettled(
+            [...new Set([bases.daily, bases.prod])].map((base) =>
+              codeAssistCall(
+                context.fetch,
+                base,
+                "retrieveUserQuotaSummary",
+                secret.accessToken,
+                candidate === null ? {} : { project: candidate },
+                agent,
+                context.signal,
+              ),
+            ),
+          );
+          context.signal?.throwIfAborted();
+          const rejection = settled.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
+          );
+          const answers = settled.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value] : [],
+          );
+          if (rejection !== undefined) {
+            quotaFailed = true;
+            quotaFailure ??= rejection.reason;
+          }
+          if (answers.some((answer) => mergeQuotaSummaries([answer]) === null))
+            quotaFailed = true;
+          const merged = mergeQuotaSummaries(answers);
+          if (merged === null) continue;
+          if (geminiWindowsFromQuota(merged, context.now()).length > 0) {
+            quotaSummary = merged;
+            quotaProject = candidate;
+            found = true;
+            break;
+          }
+          if (
+            thirdPartySummary === null &&
+            Object.keys(geminiThirdPartyDisplay(merged, context.now())).length >
+              0
+          )
+            thirdPartySummary = merged;
+          if (
+            quotaSummary === null ||
+            !geminiQuotaBuckets(quotaSummary)?.length
+          )
+            quotaSummary = merged;
+        }
+        if (!found && quotaFailed)
+          throw (
+            quotaFailure ?? new Error("Usage refresh returned unreadable data.")
+          );
+        if (quotaSummary === null) {
+          throw new Error("Usage refresh returned unreadable data.");
+        }
+        const now = context.now();
+        const bucketCount = geminiQuotaBuckets(quotaSummary)?.length ?? 0;
+        const keepStored = !found && thirdPartySummary !== null;
+        const windows = keepStored
+          ? context.quotas.get(context.account.id).limitWindows
+          : geminiWindowsFromQuota(quotaSummary, now);
+        if (!keepStored && bucketCount > 0 && windows.length === 0)
+          throw new Error(
+            "Usage refresh returned no recognized quota buckets.",
+          );
+        const winnerDisplay = found
+          ? geminiThirdPartyDisplay(quotaSummary, now)
+          : {};
+        const thirdParty =
+          Object.keys(winnerDisplay).length > 0 || thirdPartySummary === null
+            ? winnerDisplay
+            : geminiThirdPartyDisplay(thirdPartySummary, now);
+        const previous = context.quotas.get(context.account.id);
+        const rejected = windows.filter(
+          (window) => window.status === "rejected",
         );
+        const quota: AccountQuota = {
+          ...previous,
+          accountId: context.account.id,
+          limitWindows: windows,
+          usageRestriction:
+            windows.length === 0
+              ? previous.usageRestriction
+              : rejected.length === 0
+                ? null
+                : (previous.usageRestriction ?? {
+                    reason: "quota_exhausted",
+                    resetAt: rejected.reduce<number | null>(
+                      (earliest, window) =>
+                        window.resetAt === null
+                          ? earliest
+                          : earliest === null
+                            ? window.resetAt
+                            : Math.min(earliest, window.resetAt),
+                      null,
+                    ),
+                  }),
+          observedAt: now,
+          error: null,
+        };
+        context.signal?.throwIfAborted();
+        context.quotas.putModelWeekly(context.account.id, thirdParty);
+        context.quotas.put(quota);
+        if (
+          found &&
+          quotaProject !== null &&
+          quotaProject !== context.account.geminiProject
+        )
+          await context.accounts.setGeminiProject(
+            context.account.id,
+            quotaProject,
+          );
+      } catch (error) {
+        if (context.signal?.aborted !== true)
+          context.quotas.put({
+            ...context.quotas.get(context.account.id),
+            error:
+              `${GEMINI_QUOTA_READ_ERROR_PREFIX}${errorMessage(error)}`.slice(
+                0,
+                1_000,
+              ),
+          });
+        throw error;
+      }
     },
     errorResponse(status, message, headers) {
       try {
@@ -1616,8 +1722,7 @@ export function createGeminiAdapter(options: {
           parsed.error !== null
         )
           return Response.json(parsed, { status, headers });
-      } catch {
-      }
+      } catch {}
       return Response.json(
         {
           error: { code: status, message, status: googleStatusName(status) },

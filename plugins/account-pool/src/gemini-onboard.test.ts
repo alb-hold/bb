@@ -1316,6 +1316,8 @@ describe("Gemini Neon quota", () => {
 });
 
 const NOW = Date.parse("2026-11-25T12:00:00Z");
+const QUOTA_READ_PREFIX = "Gemini usage refresh stopped (quota_read): ";
+const QUOTA_READ_ERROR = /^Gemini usage refresh stopped \(quota_read\): ./u;
 const FUTURE = "2100-01-01T00:00:00Z";
 const bucket = (bucketId: string, remainingFraction: number) => ({
   bucketId,
@@ -1844,7 +1846,7 @@ describe("Antigravity companion project for consumer accounts", () => {
         const kept = stores.quotas.get(account.id);
         expect(kept.limitWindows).toEqual(seeded.limitWindows);
         expect(kept.observedAt).toBe(seeded.observedAt);
-        expect(kept.error).toBe("OAuth refresh failed with HTTP 500.");
+        expect(kept.error).toMatch(QUOTA_READ_ERROR);
         expect(kept.usageRestriction).toEqual(seededRestriction);
         expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
         expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
@@ -1913,6 +1915,26 @@ describe("Antigravity companion project for consumer accounts", () => {
     return { stores, account: live, seeded, storedProject, google };
   };
 
+  it("records no error when the refresh is cancelled during the quota read, since a cancel is not a failed read", async () => {
+    const { stores, account, seeded, google } = await seededForCommit();
+    stores.quotas.put({ ...seeded, error: "OAuth refresh failed with HTTP 500." });
+    const controller = new AbortController();
+    const abortingFetch: typeof fetch = async (input, init) => {
+      if (String(input).endsWith(":retrieveUserQuotaSummary")) controller.abort();
+      return google.fetch(input, init);
+    };
+    await expect(
+      google.adapter.refreshUsage({
+        ...abortingContext(stores, account, google, controller, () => NOW + 60_000),
+        fetch: abortingFetch,
+      }),
+    ).rejects.toBeDefined();
+    const kept = stores.quotas.get(account.id);
+    expect(kept.error).toBe("OAuth refresh failed with HTTP 500.");
+    expect(kept.limitWindows).toEqual(seeded.limitWindows);
+    expect(kept.observedAt).toBe(seeded.observedAt);
+  });
+
   it("never mixes the new project with the old windows when the refresh is aborted right after the project commits", async () => {
     const { stores, account, seeded, google } = await seededForCommit();
     const controller = new AbortController();
@@ -1979,7 +2001,9 @@ describe("Antigravity companion project for consumer accounts", () => {
     ).rejects.toThrow("disk full");
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
     expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
-    expect(stores.quotas.get(account.id).error).toBeNull();
+    expect(stores.quotas.get(account.id).error).toBe(
+      `${QUOTA_READ_PREFIX}disk full`,
+    );
     spy.mockRestore();
     await google.adapter.refreshUsage(
       usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
@@ -2061,12 +2085,13 @@ describe("Antigravity companion project for consumer accounts", () => {
       const outcomes = [daily, prod];
       const hasData = outcomes.includes("data");
       const anyFailed = outcomes.includes("failed") || outcomes.includes("unreadable");
-      const quota = stores.quotas.get(account.id);
       if (!hasData && anyFailed) {
         await expect(run).rejects.toBeDefined();
-        expect(quota.limitWindows).toEqual(seeded.limitWindows);
-        expect(quota.observedAt).toBe(seeded.observedAt);
-        expect(quota.error).toBe(seededError);
+        const kept = stores.quotas.get(account.id);
+        expect(kept.limitWindows).toEqual(seeded.limitWindows);
+        expect(kept.observedAt).toBe(seeded.observedAt);
+        expect(kept.error).toMatch(QUOTA_READ_ERROR);
+        expect(kept.error).not.toBe(seededError);
         expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
         return;
       }
