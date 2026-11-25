@@ -3,21 +3,34 @@ import type { UsageMachine, UsageProvider } from "./usage-schema.js";
 
 const combinedLocationId = "combined";
 
+export function isCombinedPooledProvider(provider: UsageProvider): boolean {
+  return provider.providerId !== "codex";
+}
+
 function isSource(machine: UsageMachine): boolean {
   return machine.id.startsWith("source:");
 }
 
-function shouldKeepHostClaude(
+function shouldKeepHostProvider(
   provider: UsageProvider,
-  pooledClaude: UsageProvider[],
+  pooled: UsageProvider[],
 ): boolean {
-  if (pooledClaude.length === 0) return true;
+  const samePool = pooled.filter(
+    (candidate) => candidate.providerId === provider.providerId,
+  );
+  if (samePool.length === 0) return true;
+  if (provider.providerId !== "claude-code") {
+    return (
+      provider.accountKey == null ||
+      !samePool.some(
+        (candidate) => candidate.accountKey === provider.accountKey,
+      )
+    );
+  }
   if (provider.accountKey == null) return false;
-  if (pooledClaude.some((pooled) => pooled.accountKey == null)) return false;
-  return !pooledClaude.some(
-    (pooled) =>
-      pooled.providerId === provider.providerId &&
-      pooled.accountKey === provider.accountKey,
+  if (samePool.some((candidate) => candidate.accountKey == null)) return false;
+  return !samePool.some(
+    (candidate) => candidate.accountKey === provider.accountKey,
   );
 }
 
@@ -30,15 +43,15 @@ export function combinedUsageSelection(machines: UsageMachine[]): {
   providers: UsageProvider[];
   refreshTargets: UsageRefreshTarget[];
 } {
-  const sourceClaude = machines
+  const sourcePooled = machines
     .filter(isSource)
     .flatMap((machine) =>
       machine.providers
-        .filter((provider) => provider.providerId === "claude-code")
+        .filter(isCombinedPooledProvider)
         .map((provider) => ({ machine, provider })),
     );
   const seenPooled = new Set<string>();
-  const pooledClaude = sourceClaude.filter(({ provider }) => {
+  const pooled = sourcePooled.filter(({ provider }) => {
     if (provider.accountKey == null) return true;
     const identity = JSON.stringify([provider.providerId, provider.accountKey]);
     if (seenPooled.has(identity)) return false;
@@ -46,16 +59,13 @@ export function combinedUsageSelection(machines: UsageMachine[]): {
     return true;
   });
   const host = machines.find((machine) => !isSource(machine));
-  const hasPooledClaude = pooledClaude.length > 0;
-  const pooledProviders = pooledClaude.map(({ provider }) => provider);
+  const hasPooled = pooled.length > 0;
+  const pooledProviders = pooled.map(({ provider }) => provider);
   const hostProviders =
-    host?.providers.filter(
-      (provider) =>
-        provider.providerId !== "claude-code" ||
-        !hasPooledClaude ||
-        shouldKeepHostClaude(provider, pooledProviders),
+    host?.providers.filter((provider) =>
+      shouldKeepHostProvider(provider, pooledProviders),
     ) ?? [];
-  const providers = hasPooledClaude
+  const providers = hasPooled
     ? [...pooledProviders, ...hostProviders]
     : hostProviders;
   const targetsByMachine = new Map<UsageMachine, Set<string>>();
@@ -64,8 +74,9 @@ export function combinedUsageSelection(machines: UsageMachine[]): {
     providerIds.add(providerId);
     targetsByMachine.set(machine, providerIds);
   };
-  if (hasPooledClaude) {
-    for (const { machine } of pooledClaude) addTarget(machine, "claude-code");
+  if (hasPooled) {
+    for (const { machine, provider } of pooled)
+      addTarget(machine, provider.providerId);
     for (const provider of hostProviders) {
       if (host !== undefined) addTarget(host, provider.providerId);
     }
@@ -86,23 +97,20 @@ export function combinedUsageMachine(
   displayName = "Combined",
 ): UsageMachine | null {
   const { providers } = combinedUsageSelection(machines);
-  const sourceClaude = machines.filter(
+  const pooledSources = machines.filter(
     (machine) =>
-      isSource(machine) &&
-      machine.providers.some(
-        (provider) => provider.providerId === "claude-code",
-      ),
+      isSource(machine) && machine.providers.some(isCombinedPooledProvider),
   );
   const host = machines.find((machine) => !isSource(machine));
-  const hasPooledClaude = sourceClaude.length > 0;
-  const sourceError = [...sourceClaude, host].some(
+  const hasPooled = pooledSources.length > 0;
+  const sourceError = [...pooledSources, host].some(
     (machine) => machine !== undefined && machine.error !== null,
   );
-  if (host === undefined && sourceClaude.length === 0) return null;
+  if (host === undefined && pooledSources.length === 0) return null;
   return {
     id: combinedLocationId,
     displayName,
-    status: hasPooledClaude ? "connected" : (host?.status ?? "connected"),
+    status: hasPooled ? "connected" : (host?.status ?? "connected"),
     providers,
     error:
       sourceError && !hasReportedUsage(providers)
