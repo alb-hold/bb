@@ -596,6 +596,10 @@ export function createAccountPoolPlugin(
         bb.log.warn(
           `Account Pooler ${provider} transport failed: ${transportErrorCode(error)}.`,
         ),
+      onStreamCut: (cut) =>
+        bb.log.warn(
+          `Account Pooler ${cut.provider} stream ${cut.kind} at=${new Date(cut.at).toISOString()} account=${JSON.stringify(cut.accountLabel)} model=${cut.model ?? "unknown"} request_id=${cut.requestId ?? "none"} bytes=${cut.bytes} events=${cut.events} elapsed_ms=${cut.elapsedMs} error=${cut.errorName ?? "none"} cause_code=${cut.causeCode ?? "none"} cause_message=${JSON.stringify(cut.causeMessage)} client_aborted=${cut.clientAborted} upstream_streaming=${cut.upstreamStreaming}`,
+        ),
       onAccountsChanged: () =>
         bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
       onOAuthRelay: ({ method, route, upstream, durationMs }) =>

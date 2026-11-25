@@ -138,6 +138,7 @@ interface HubOptions {
     actorId: string;
   }) => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
+  onStreamCut: (cut: StreamCut) => void;
   onClientRefused: (
     provider: PoolProvider,
     hostId: string,
@@ -205,7 +206,37 @@ interface UpstreamResult {
   response: Response;
   controller: AbortController;
   release: () => void;
+  trace?: StreamTrace;
 }
+
+interface StreamTrace {
+  provider: PoolProvider;
+  accountLabel: string;
+  model: string | null;
+  clientSignal: AbortSignal;
+}
+
+export interface StreamCut {
+  provider: PoolProvider;
+  accountLabel: string;
+  model: string | null;
+  at: number;
+  requestId: string | null;
+  bytes: number;
+  events: number;
+  elapsedMs: number;
+  kind: "error" | "ended-early" | "client-closed";
+  upstreamStreaming: boolean;
+  errorName: string | null;
+  causeCode: string | null;
+  causeMessage: string | null;
+  clientAborted: boolean;
+}
+
+const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, readonly string[]>> = {
+  claude: ["message_stop"],
+  codex: ["response.completed", "response.failed", "response.incomplete"],
+};
 
 interface RefreshBackoff {
   kind: "proactive" | "rejected" | "upstream";
@@ -627,6 +658,12 @@ export class AccountPoolHub {
           }),
           controller,
           release,
+          trace: {
+            provider: "claude",
+            accountLabel: account.label,
+            model: null,
+            clientSignal: request.signal,
+          },
         });
       }
     } catch (error) {
@@ -738,7 +775,17 @@ export class AccountPoolHub {
             cause,
           });
         });
-      return this.clientResponse({ response, controller, release });
+      return this.clientResponse({
+        response,
+        controller,
+        release,
+        trace: {
+          provider: adapter.provider,
+          accountLabel: "parent pool",
+          model: null,
+          clientSignal: request.signal,
+        },
+      });
     } catch (error) {
       release();
       if (request.signal.aborted)
@@ -1632,7 +1679,15 @@ export class AccountPoolHub {
               }),
             };
           }
-          return this.clientResponse(upstream);
+          return this.clientResponse({
+            ...upstream,
+            trace: {
+              provider: adapter.provider,
+              accountLabel: selected.account.label,
+              model: family,
+              clientSignal: request.signal,
+            },
+          });
         }
       }
       signal.throwIfAborted();
@@ -2269,15 +2324,73 @@ export class AccountPoolHub {
         ?.split(";", 1)[0]
         ?.trim()
         .toLowerCase() === "text/event-stream";
+    const trace = upstream.trace;
+    const requestId =
+      upstream.response.headers.get("request-id") ??
+      upstream.response.headers.get("x-request-id");
+    const markers =
+      trace === undefined ? undefined : FINAL_EVENT_MARKERS[trace.provider];
+    const startedAt = this.options.now();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let events = 0;
+    let finalSeen = false;
+    let tail = "";
+    let finished = false;
+    const reportCut = (
+      kind: StreamCut["kind"],
+      error: unknown,
+      upstreamStreaming: boolean,
+    ) => {
+      if (trace === undefined) return;
+      const cause =
+        error instanceof Error && error.cause instanceof Error
+          ? error.cause
+          : undefined;
+      const now = this.options.now();
+      this.options.onStreamCut({
+        provider: trace.provider,
+        accountLabel: trace.accountLabel,
+        model: trace.model,
+        at: now,
+        requestId,
+        bytes,
+        events,
+        elapsedMs: now - startedAt,
+        kind,
+        upstreamStreaming,
+        errorName: error instanceof Error ? error.name : null,
+        causeCode:
+          (error instanceof Error ? errorCode(error) : null) ??
+          (cause === undefined ? null : errorCode(cause)),
+        causeMessage: cause?.message ?? null,
+        clientAborted: trace.clientSignal.aborted,
+      });
+    };
     const body = new ReadableStream<Uint8Array>({
-      async pull(controller) {
+      pull: async (controller) => {
         try {
           const chunk = await reader.read();
           if (chunk.done) {
+            if (eventStream && markers !== undefined && !finalSeen)
+              reportCut("ended-early", undefined, false);
+            finished = true;
             upstream.release();
             controller.close();
-          } else controller.enqueue(chunk.value);
+          } else {
+            bytes += chunk.value.byteLength;
+            if (eventStream && markers !== undefined) {
+              const text = tail + decoder.decode(chunk.value, { stream: true });
+              events += text.split("\n\n").length - 1;
+              if (markers.some((marker) => text.includes(marker)))
+                finalSeen = true;
+              tail = text.slice(-32);
+            }
+            controller.enqueue(chunk.value);
+          }
         } catch (error) {
+          finished = true;
+          reportCut("error", error, false);
           upstream.release();
           if (!eventStream) {
             controller.error(
@@ -2293,7 +2406,13 @@ export class AccountPoolHub {
           controller.close();
         }
       },
-      async cancel() {
+      async cancel(reason: unknown) {
+        if (!finished && !finalSeen)
+          reportCut(
+            "client-closed",
+            reason ?? trace?.clientSignal.reason,
+            true,
+          );
         upstream.controller.abort();
         await reader.cancel().catch(() => undefined);
         upstream.release();
@@ -2496,6 +2615,7 @@ export function createHub(options: {
   onAccountsChanged?: () => void;
   onActorRequest?: HubOptions["onActorRequest"];
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
+  onStreamCut?: HubOptions["onStreamCut"];
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
   onOAuthRelay?: HubOptions["onOAuthRelay"];
   onClientRefused?: HubOptions["onClientRefused"];
@@ -2565,6 +2685,7 @@ export function createHub(options: {
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onActorRequest: options.onActorRequest ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
+    onStreamCut: options.onStreamCut ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
     onOAuthRelay: options.onOAuthRelay ?? (() => {}),
     onClientRefused: options.onClientRefused ?? (() => {}),
@@ -2588,6 +2709,11 @@ function accessTokenUnexpired(
   now: number,
 ): boolean {
   return secret.expiresAt === null || secret.expiresAt > now;
+}
+
+function errorCode(error: Error): string | null {
+  const code: unknown = Reflect.get(error, "code");
+  return typeof code === "string" ? code : null;
 }
 
 function errorMessage(error: unknown): string {

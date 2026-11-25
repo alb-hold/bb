@@ -4717,6 +4717,111 @@ describe("Account Pool plugin", () => {
     expect(attempts).toBe(1);
   });
 
+  it("logs why a committed SSE stream was cut and still gives the client the same error event", async () => {
+    let failStream = () => {};
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    "event: message_start\ndata: {}\n\nevent: ping\ndata: {}\n\n",
+                  ),
+                );
+                failStream = () =>
+                  controller.error(
+                    new TypeError("terminated", {
+                      cause: Object.assign(new Error("other side closed"), {
+                        code: "UND_ERR_SOCKET",
+                      }),
+                    }),
+                  );
+              },
+            }),
+            {
+              headers: {
+                "content-type": "text/event-stream",
+                "request-id": "req_cut_1",
+              },
+            },
+          ),
+      },
+    });
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/messages",
+      {
+        headers: authHeaders(fixture.key),
+        body: JSON.stringify({ model: "claude-fable-5" }),
+      },
+    );
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error("Missing SSE stream.");
+    await reader.read();
+    failStream();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toBe(
+      `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "terminated" } })}\n\n`,
+    );
+    expect((await reader.read()).done).toBe(true);
+    const cut = fixture.host.harness.inspection.logEntries.find(({ message }) =>
+      message.includes("stream error"),
+    );
+    expect(cut?.level).toBe("warn");
+    expect(cut?.message).toMatch(
+      /^Account Pooler claude stream error at=\d{4}-\d\d-\d\dT[\d:.]+Z account=".+" model=\S+ request_id=req_cut_1 bytes=\d+ events=2 elapsed_ms=\d+ error=TypeError cause_code=UND_ERR_SOCKET cause_message="other side closed" client_aborted=false upstream_streaming=false$/u,
+    );
+    expect(cut?.message).not.toMatch(/sk-|bearer/iu);
+  });
+
+  it("logs the downstream error code when the client socket closes while upstream is still streaming", async () => {
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode("event: message_start\ndata: {}\n\n"),
+                );
+              },
+            }),
+            {
+              headers: {
+                "content-type": "text/event-stream",
+                "request-id": "req_cut_2",
+              },
+            },
+          ),
+      },
+    });
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/messages",
+      {
+        headers: authHeaders(fixture.key),
+        body: JSON.stringify({ model: "claude-fable-5" }),
+      },
+    );
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error("Missing SSE stream.");
+    await reader.read();
+    await reader.cancel(
+      Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+    );
+    const cut = fixture.host.harness.inspection.logEntries.find(({ message }) =>
+      message.includes("stream client-closed"),
+    );
+    expect(cut?.level).toBe("warn");
+    expect(cut?.message).toMatch(
+      /request_id=req_cut_2 bytes=\d+ events=1 elapsed_ms=\d+ error=Error cause_code=ECONNRESET cause_message=null client_aborted=\w+ upstream_streaming=true$/u,
+    );
+  });
+
   describe("session affinity", () => {
     const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const claudeBody = (id: string, model = "claude-fable-5") =>
