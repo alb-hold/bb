@@ -2329,7 +2329,15 @@ export function NewThreadComposer({
                     </Button>
                   }
                 />
-              ) : setupRequiredProvider === null ? null : (
+              ) : setupRequiredProvider === null ? (
+                nativeTerminalSupport === false && nativeTerminalRequested ? (
+                  <ProviderRequirementBanner
+                    title={`${selectedProviderDisplayName} has no Terminal mode yet`}
+                    description="This starts a chat thread."
+                    action={null}
+                  />
+                ) : null
+              ) : (
                 <ProviderRequirementBanner
                   title={`${setupRequiredProvider.displayName} needs configuration`}
                   description={environmentSetupRequiredReason}
@@ -2498,6 +2506,7 @@ export function NewThreadComposer({
       nativeTerminal,
       nativeTerminalRequested,
       nativeTerminalSupport,
+      selectedProviderDisplayName,
       handleNativeTerminalChange,
       pickerSessionOptionSections,
       placedSessionOptions.footer,

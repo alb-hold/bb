@@ -1788,15 +1788,39 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(submitted[0]).toMatchObject({ nativeTerminal: true });
   });
 
-  it("submits a regular thread without a terminal flag when the provider is known not to support Terminal", async () => {
+  it.each([
+    {
+      name: "shows a notice and submits a chat thread when the provider has no Terminal mode and Terminal is on",
+      supported: false,
+      stored: undefined,
+      notice: true,
+      flag: false,
+    },
+    {
+      name: "shows no notice when the provider has no Terminal mode and Chat is chosen",
+      supported: false,
+      stored: "false",
+      notice: false,
+      flag: false,
+    },
+    {
+      name: "shows no notice and sends the terminal flag when the provider supports Terminal",
+      supported: true,
+      stored: undefined,
+      notice: false,
+      flag: true,
+    },
+  ])("$name", async ({ supported, stored, notice, flag }) => {
+    if (stored !== undefined)
+      window.localStorage.setItem("bb.composer.nativeTerminal", stored);
     mocks.systemProviders = [
-      { id: "codex", capabilities: { supportsNativeTerminal: false } },
+      { id: "codex", capabilities: { supportsNativeTerminal: supported } },
     ];
     const submitted: NewThreadRequest[] = [];
     render(
       <MemoryRouter>
         <PluginNewThreadComposer
-          draftKey="native-terminal-unsupported"
+          draftKey="native-terminal-notice"
           defaultProjectId="proj_1"
           initialPrompt="hello"
           onSubmit={(request) => {
@@ -1807,13 +1831,21 @@ describe("PluginNewThreadComposer seeding", () => {
     );
     await waitFor(() => {
       expect(latestPromptBoxProps().execution.nativeTerminal.disabled).toBe(
-        true,
+        !supported,
       );
     });
+    const noticeText = screen.queryByText(/has no Terminal mode yet/);
+    if (notice) {
+      expect(noticeText).not.toBeNull();
+      expect(screen.getByText("This starts a chat thread.")).toBeTruthy();
+    } else {
+      expect(noticeText).toBeNull();
+    }
     await submit();
 
     expect(submitted).toHaveLength(1);
-    expect(submitted[0]).not.toHaveProperty("nativeTerminal");
+    if (flag) expect(submitted[0]).toMatchObject({ nativeTerminal: true });
+    else expect(submitted[0]).not.toHaveProperty("nativeTerminal");
   });
 
   it("defaults to Terminal and preserves an explicit Chat choice", async () => {
