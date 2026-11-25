@@ -1463,6 +1463,7 @@ describe("PluginNewThreadComposer seeding", () => {
 
 
   it("round-trips a stored request submitted untouched", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     const submitted: NewThreadRequest[] = [];
     renderComposer(
       STORED_REQUEST,
@@ -1602,6 +1603,7 @@ describe("PluginNewThreadComposer seeding", () => {
 
 
   it("puts declared agent options in the picker, keeps the mode in the footer and submits what the user chose", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     mocks.modelSessionOptions = [
       { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
       {
@@ -1761,6 +1763,59 @@ describe("PluginNewThreadComposer seeding", () => {
   );
 
 
+  it("requests Terminal on submit with fresh storage while provider support is still unknown", async () => {
+    expect(window.localStorage.getItem("bb.composer.nativeTerminal")).toBeNull();
+    mocks.systemProviders = undefined;
+    const submitted: NewThreadRequest[] = [];
+    render(
+      <MemoryRouter>
+        <PluginNewThreadComposer
+          draftKey="native-terminal-pending-catalog"
+          defaultProjectId="proj_1"
+          initialPrompt="hello"
+          onSubmit={(request) => {
+            submitted.push(request);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await submit();
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ nativeTerminal: true });
+  });
+
+  it("submits a regular thread without a terminal flag when the provider is known not to support Terminal", async () => {
+    mocks.systemProviders = [
+      { id: "codex", capabilities: { supportsNativeTerminal: false } },
+    ];
+    const submitted: NewThreadRequest[] = [];
+    render(
+      <MemoryRouter>
+        <PluginNewThreadComposer
+          draftKey="native-terminal-unsupported"
+          defaultProjectId="proj_1"
+          initialPrompt="hello"
+          onSubmit={(request) => {
+            submitted.push(request);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().execution.nativeTerminal.disabled).toBe(
+        true,
+      );
+    });
+    await submit();
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).not.toHaveProperty("nativeTerminal");
+  });
+
   it("defaults to Terminal and preserves an explicit Chat choice", async () => {
     mocks.systemProviders = [
       { id: "codex", capabilities: { supportsNativeTerminal: true } },
@@ -1803,6 +1858,7 @@ describe("PluginNewThreadComposer seeding", () => {
 
 
   it("submits a draft populated after an empty composer unmounts", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     const submitted: NewThreadRequest[] = [];
     const view = renderComposer(
       STORED_REQUEST,
@@ -2085,6 +2141,7 @@ describe("PluginNewThreadComposer seeding", () => {
 
 
   it("re-seeds every selection when the seed props change, even after a user pick", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     const submitted: NewThreadRequest[] = [];
     const view = renderComposer(
       STORED_REQUEST,
@@ -2144,6 +2201,7 @@ describe("PluginNewThreadComposer seeding", () => {
 
 
   it("re-seeds the provider inputs when the next record differs only by project", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     const submitted: NewThreadRequest[] = [];
     const onSubmit = (request: NewThreadRequest) => {
       submitted.push(request);

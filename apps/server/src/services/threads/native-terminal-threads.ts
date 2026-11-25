@@ -175,7 +175,7 @@ export function requireNativeTerminalProvider(
     throw new ApiError(
       400,
       "invalid_request",
-      `Provider ${providerId} does not declare a native terminal`,
+      `Provider ${providerId} does not support Terminal mode. Turn Terminal off to create a regular thread.`,
     );
   }
   return provider;

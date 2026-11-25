@@ -160,10 +160,6 @@ import {
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { resolveRootComposeThreadEnvironment } from "@/views/root-compose-thread-environment";
 import {
-  nativeTerminalPreferenceStored,
-  nativeTerminalSupportPendingReason,
-} from "./native-terminal-submit";
-import {
   MACHINE_SERVER_ACCESS_TITLE,
   machineServerAccessBlockedReason,
 } from "@/components/machines/machine-server-access";
@@ -280,10 +276,8 @@ export interface NewThreadComposerState {
   renderPromptBox: (options: NewThreadComposerPromptOptions) => ReactNode;
 }
 
-const NATIVE_TERMINAL_PREFERENCE_KEY = "bb.composer.nativeTerminal";
-
 const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
-  NATIVE_TERMINAL_PREFERENCE_KEY,
+  "bb.composer.nativeTerminal",
   true,
   createJsonLocalStorage<boolean>(
     (value): value is boolean => typeof value === "boolean",
@@ -1974,13 +1968,11 @@ export function NewThreadComposer({
   });
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
-  const nativeTerminalPendingReason = nativeTerminalSupportPendingReason(
-    nativeTerminalRequested,
-    nativeTerminalPreferenceStored(NATIVE_TERMINAL_PREFERENCE_KEY),
-    nativeTerminalSupport,
-  );
-  const submitDisabledReason =
-    submissionReadinessReason ?? nativeTerminalPendingReason;
+  const submitDisabledReason = submissionReadinessReason;
+  const nativeTerminalSubmitted =
+    nativeTerminalSupport === undefined
+      ? nativeTerminalRequested
+      : nativeTerminal;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
@@ -1992,8 +1984,7 @@ export function NewThreadComposer({
       if (
         blockedReason !== null ||
         submissionReadinessReason !== null ||
-        nativeTerminalPendingReason !== null ||
-        (input.length === 0 && !nativeTerminal) ||
+        (input.length === 0 && !nativeTerminalSubmitted) ||
         isSubmittingRef.current ||
         projectDefaultsUnavailable ||
         submissionEnvironment === null ||
@@ -2003,7 +1994,6 @@ export function NewThreadComposer({
         throw new Error(
           blockedReason ??
             submissionReadinessReason ??
-            nativeTerminalPendingReason ??
             (input.length === 0
               ? "Type a message first."
               : "This composer is not ready to submit yet."),
@@ -2021,11 +2011,12 @@ export function NewThreadComposer({
         projectId,
         providerId: selectedProviderId,
         model: selectedThreadModel,
-        ...(nativeTerminal ? { nativeTerminal: true } : {}),
+        ...(nativeTerminalSubmitted ? { nativeTerminal: true } : {}),
         reasoningLevel,
         permissionMode,
         ...(supportsServiceTier && serviceTier ? { serviceTier } : {}),
-        ...(!nativeTerminal && Object.keys(sessionOptionSelections).length > 0
+        ...(!nativeTerminalSubmitted &&
+        Object.keys(sessionOptionSelections).length > 0
           ? { sessionOptions: sessionOptionSelections }
           : {}),
         executionInputSources: resolveSubmittedExecutionSources(
@@ -2055,8 +2046,7 @@ export function NewThreadComposer({
     [
       clearReuseEnvironment,
       executionInputSources,
-      nativeTerminal,
-      nativeTerminalPendingReason,
+      nativeTerminalSubmitted,
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,
