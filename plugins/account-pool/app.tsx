@@ -335,6 +335,7 @@ function StateWord({ state }: { state: SubscriptionState }) {
 
 import {
   displayPlanLabel,
+  modelRowLabel,
   modelWeeklyRows,
   type ModelWeekly,
   type PoolDisplay,
@@ -2327,11 +2328,7 @@ function AccountDialog({
         {modelWeeklyRows(account, weekly).map(({ name, quota }) => (
           <QuotaDetail
             key={name}
-            label={
-              weekly === undefined
-                ? `${name.charAt(0).toUpperCase() + name.slice(1)} 7 day`
-                : `7d · ${name}`
-            }
+            label={modelRowLabel(account, name, weekly !== undefined)}
             quota={quota}
             threshold={threshold}
           />

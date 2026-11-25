@@ -2450,7 +2450,7 @@ describe("Gemini account pool", () => {
             .map((call) => `${call.bearer} ${call.endpoint}`),
         ),
       ].sort(),
-    ).toEqual(["tok-a daily", "tok-e daily"]);
+    ).toEqual(["tok-a daily", "tok-a prod", "tok-e daily", "tok-e prod"]);
   });
 
   it("reads a prod-served account's usage from the daily quota summary", async () => {
@@ -2477,6 +2477,7 @@ describe("Gemini account pool", () => {
       "loadCodeAssist daily",
       "loadCodeAssist prod",
       "retrieveUserQuotaSummary daily",
+      "retrieveUserQuotaSummary prod",
     ]);
     const quotaCalls = codeAssist.filter(
       (call) => call.method === "retrieveUserQuotaSummary",

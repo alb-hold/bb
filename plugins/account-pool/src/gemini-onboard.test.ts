@@ -35,6 +35,9 @@ function fakeCodeAssist(script: {
   operations?: unknown[];
   onboardFailure?: { status: number } | { error: Error };
   quota?: unknown;
+  quotaByBase?: Partial<Record<"prod" | "daily", unknown>>;
+  quotaFailureByBase?: Partial<Record<"prod" | "daily", number>>;
+  quotaByProject?: Record<string, unknown>;
   runtimeUserAgent?: () => Promise<string>;
   unrecognizedClientLoad?: unknown;
   now?: () => number;
@@ -85,6 +88,14 @@ function fakeCodeAssist(script: {
     }
     if (rest === "/v1internal:retrieveUserQuotaSummary") {
       calls.push({ method: "retrieveUserQuotaSummary", base, body, userAgent });
+      const failureStatus = script.quotaFailureByBase?.[base];
+      if (failureStatus !== undefined)
+        return new Response("{}", { status: failureStatus });
+      const project = typeof body?.project === "string" ? body.project : "";
+      const byProject = script.quotaByProject?.[project];
+      if (byProject !== undefined) return json(byProject);
+      const byBase = script.quotaByBase?.[base];
+      if (byBase !== undefined) return json(byBase);
       return script.quota === undefined
         ? new Response("{}", { status: 404 })
         : json(script.quota);
@@ -1136,7 +1147,11 @@ describe("the live Antigravity daily shape", () => {
     expect(quota.error).toBeNull();
     expect(quota.limitWindows).toHaveLength(1);
     expect(google.calls.some((call) => call.method === "onboardUser")).toBe(false);
-    expect(google.calls.some((call) => call.base === "prod")).toBe(false);
+    expect(
+      google.calls.some(
+        (call) => call.base === "prod" && call.method !== "retrieveUserQuotaSummary",
+      ),
+    ).toBe(false);
     expect(google.calls.every((call) => call.userAgent === AGY_AGENT)).toBe(true);
     const dryRun = fakeCodeAssist({
       loads: [LIVE_AGY_DAILY],
@@ -1202,6 +1217,7 @@ describe("the live Antigravity daily shape", () => {
     expect(quota.limitWindows).toHaveLength(1);
     expect(google.calls.map(({ method, userAgent }) => [method, userAgent])).toEqual([
       ["loadCodeAssist", AGY_AGENT],
+      ["retrieveUserQuotaSummary", AGY_AGENT],
       ["retrieveUserQuotaSummary", AGY_AGENT],
     ]);
   });
@@ -1290,4 +1306,179 @@ describe("Gemini Neon quota", () => {
       expect(geminiWindowsFromQuota(payload, 1_000)).toEqual([]);
     },
   );
+});
+
+const NOW = Date.parse("2026-11-25T12:00:00Z");
+const FUTURE = "2100-01-01T00:00:00Z";
+const bucket = (bucketId: string, remainingFraction: number) => ({
+  bucketId,
+  remainingFraction,
+  resetTime: FUTURE,
+});
+const DAILY_WITHOUT_GEMINI = {
+  groups: [
+    {
+      displayName: "Claude and GPT models",
+      buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+    },
+  ],
+};
+const PROD_WITH_GEMINI = {
+  groups: [
+    {
+      displayName: "Gemini models",
+      buckets: [bucket("gemini-5h", 0.4), bucket("gemini-weekly", 0.7)],
+    },
+    {
+      displayName: "Claude and GPT models",
+      buckets: [bucket("3p-5h", 0.6), bucket("3p-weekly", 0.95)],
+    },
+  ],
+};
+
+async function refreshed(
+  google: ReturnType<typeof fakeCodeAssist>,
+  account: Account = pooledLiveAccount(),
+) {
+  const stores = await usageStores();
+  await google.adapter.refreshUsage(
+    usageContext(stores, account, google.fetch, () => NOW),
+  );
+  return { stores, account, quota: stores.quotas.get(account.id) };
+}
+
+describe("Antigravity quota across the daily and prod endpoints", () => {
+  afterEach(async () => {
+    while (usageDirs.length > 0)
+      await fs.rm(usageDirs.pop() ?? "", { recursive: true, force: true });
+  });
+
+  it("merges prod's Gemini group into a daily answer that lacks it, and the higher reading wins per bucket", async () => {
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaByBase: { daily: DAILY_WITHOUT_GEMINI, prod: PROD_WITH_GEMINI },
+    });
+    const { stores, account, quota } = await refreshed(google);
+    expect(quota.error).toBeNull();
+    expect(
+      quota.limitWindows.map((window) => [window.slot, window.utilization]),
+    ).toEqual([
+      ["primary", expect.closeTo(0.6)],
+      ["secondary", expect.closeTo(0.3)],
+    ]);
+    const display = stores.quotas.modelWeekly(account.id);
+    expect(display?.["Claude and GPT models · 5 hour"]?.utilization).toBeCloseTo(0.4);
+    expect(display?.["Claude and GPT models · 7 day"]?.utilization).toBeCloseTo(0.2);
+    expect(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .map((call) => call.base)
+        .sort(),
+    ).toEqual(["daily", "prod"]);
+  });
+
+  it("keeps the other endpoint's buckets when one endpoint errors or answers empty", async () => {
+    for (const script of [
+      { quotaFailureByBase: { daily: 500 }, quotaByBase: { prod: ONE_WINDOW } },
+      { quotaFailureByBase: { prod: 503 }, quotaByBase: { daily: ONE_WINDOW } },
+      { quotaByBase: { daily: { buckets: [] }, prod: ONE_WINDOW } },
+    ] as const) {
+      const google = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], ...script });
+      const { quota } = await refreshed(google);
+      expect(quota.error).toBeNull();
+      expect(quota.limitWindows).toHaveLength(1);
+      expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    }
+  });
+
+  it("leaves the stored quota alone when every endpoint fails", async () => {
+    const stores = await usageStores();
+    const account = pooledLiveAccount();
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const failing = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaFailureByBase: { daily: 500, prod: 500 },
+    });
+    await expect(
+      failing.adapter.refreshUsage(
+        usageContext(stores, account, failing.fetch, () => NOW),
+      ),
+    ).rejects.toThrow(/HTTP 500/u);
+    expect(stores.quotas.get(account.id).limitWindows).toHaveLength(1);
+  });
+
+  it("keeps Claude and GPT buckets out of routing input and in the display model", async () => {
+    expect(geminiWindowsFromQuota(DAILY_WITHOUT_GEMINI, NOW)).toEqual([]);
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quotaByBase: { daily: DAILY_WITHOUT_GEMINI, prod: PROD_WITH_GEMINI },
+    });
+    const { quota } = await refreshed(google);
+    expect(quota.limitWindows).toHaveLength(2);
+    expect(quota.limitWindows.map((window) => window.utilization)).not.toContain(0.4);
+    expect(quota.limitWindows.map((window) => window.utilization)).not.toContain(0.2);
+  });
+});
+
+describe("Antigravity companion project for consumer accounts", () => {
+  afterEach(async () => {
+    while (usageDirs.length > 0)
+      await fs.rm(usageDirs.pop() ?? "", { recursive: true, force: true });
+  });
+
+  const consumerAccount = () => ({
+    ...pooledLiveAccount(),
+    geminiProject: "aicode-consumers",
+  });
+  const NO_PROJECT_DAILY = {
+    currentTier: { id: "free-tier" },
+    paidTier: { id: "g1-ultra-lite-tier" },
+  };
+
+  it("uses the companion project loadCodeAssist returns instead of the consumer token project", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      loadsByBase: {
+        daily: [NO_PROJECT_DAILY],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      },
+      quotaByProject: {
+        "proj-companion": ONE_WINDOW,
+        "aicode-consumers": { buckets: [] },
+      },
+    });
+    const { quota } = await refreshed(google, consumerAccount());
+    expect(quota.limitWindows).toHaveLength(1);
+    const projects = google.calls
+      .filter((call) => call.method === "retrieveUserQuotaSummary")
+      .map((call) => call.body?.project);
+    expect(new Set(projects)).toEqual(new Set(["proj-companion"]));
+    const load = google.calls.find((call) => call.method === "loadCodeAssist");
+    expect(load?.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
+  });
+
+  it("falls back from the companion project to the token project, then to none", async () => {
+    const google = fakeCodeAssist({
+      loads: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      quotaByProject: {
+        "proj-companion": { buckets: [] },
+        "aicode-consumers": { buckets: [] },
+        "": ONE_WINDOW,
+      },
+    });
+    const { quota } = await refreshed(google, consumerAccount());
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(
+      [
+        ...new Set(
+          google.calls
+            .filter((call) => call.method === "retrieveUserQuotaSummary")
+            .map((call) => call.body?.project ?? "none"),
+        ),
+      ],
+    ).toEqual(["proj-companion", "aicode-consumers", "none"]);
+  });
 });
