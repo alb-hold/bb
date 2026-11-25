@@ -1113,6 +1113,7 @@ function usageContext(
 ): AdapterUsageContext {
   return {
     account,
+    stillCurrent: () => true,
     freshSecret: async () => ({
       kind: "oauth",
       accessToken: TOKEN,
@@ -1646,7 +1647,12 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
     expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
     expect(setProject).toHaveBeenCalledTimes(1);
-    expect(setProject).toHaveBeenCalledWith(account.id, "proj-other");
+    expect(setProject).toHaveBeenCalledWith(
+      account.id,
+      "proj-other",
+      undefined,
+      account.createdAt,
+    );
   });
 
   it("saves the Claude and GPT display, keeps the stored windows and project, and does not throw when no candidate has Gemini buckets", async () => {

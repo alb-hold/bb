@@ -73,6 +73,7 @@ export interface AdapterUsageContext {
   signal?: AbortSignal;
   background?: boolean;
   account: Account;
+  stillCurrent: () => boolean;
   freshSecret: (signal?: AbortSignal) => Promise<AccountSecret>;
   accounts: AccountStore;
   quotas: QuotaStore;

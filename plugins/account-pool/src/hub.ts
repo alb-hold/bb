@@ -331,6 +331,7 @@ export class AccountPoolHub {
   private affinityBindings = new Map<string, AccountBinding>();
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
   private readonly usageRefreshes = new Map<string, Promise<boolean>>();
+  private readonly usageAborts = new Map<string, Set<AbortController>>();
   private readonly lastUsageRefreshAt = new Map<string, number>();
   private readonly transientUsageRetries = new Map<
     string,
@@ -346,6 +347,12 @@ export class AccountPoolHub {
         removed: true,
       });
       this.committedProjects.delete(accountId);
+      const aborts = this.usageAborts.get(accountId);
+      this.usageAborts.delete(accountId);
+      for (const controller of aborts ?? [])
+        controller.abort(new Error("The account was removed."));
+      this.usageRefreshes.delete(accountId);
+      this.lastUsageRefreshAt.delete(accountId);
     });
   }
 
@@ -964,11 +971,14 @@ export class AccountPoolHub {
     recoverError = false,
     callerSignal?: AbortSignal,
   ): Promise<boolean> {
+    const controller = new AbortController();
     const signal = AbortSignal.any([
       this.stopped.signal,
+      controller.signal,
       ...(callerSignal === undefined ? [] : [callerSignal]),
     ]);
     signal.throwIfAborted();
+    this.observeAccount(account);
     const adapter = this.adapter(account.provider);
     if (
       adapter.usageFromResponses &&
@@ -983,10 +993,14 @@ export class AccountPoolHub {
     this.lastUsageRefreshAt.set(account.id, now);
     const recover =
       recoverError && this.options.quotas.get(account.id).error !== null;
-    const refresh = adapter
+    const aborts = this.usageAborts.get(account.id) ?? new Set();
+    aborts.add(controller);
+    this.usageAborts.set(account.id, aborts);
+    const refresh: Promise<boolean> = adapter
       .refreshUsage({
         signal,
         account,
+        stillCurrent: () => this.isCurrentInstance(account.id, account.createdAt),
         freshSecret: (profileSignal = signal) =>
           this.freshSecret(
             account,
@@ -1001,7 +1015,7 @@ export class AccountPoolHub {
               (recover || error instanceof OAuthRefreshError) &&
               !(error instanceof TransientOAuthRefreshError)
             )
-              this.setError(account.id, errorMessage(error));
+              this.setError(account.id, errorMessage(error), account.createdAt);
             throw error;
           }),
         accounts: this.options.accounts,
@@ -1018,7 +1032,13 @@ export class AccountPoolHub {
         () => true,
         () => false,
       )
-      .finally(() => this.usageRefreshes.delete(account.id));
+      .finally(() => {
+        aborts.delete(controller);
+        if (aborts.size === 0 && this.usageAborts.get(account.id) === aborts)
+          this.usageAborts.delete(account.id);
+        if (this.usageRefreshes.get(account.id) === refresh)
+          this.usageRefreshes.delete(account.id);
+      });
     this.usageRefreshes.set(account.id, refresh);
     return refresh;
   }
@@ -1106,6 +1126,8 @@ export class AccountPoolHub {
           account,
           signal,
           background: true,
+          stillCurrent: () =>
+            this.isCurrentInstance(account.id, account.createdAt),
           freshSecret: (profileSignal = signal) =>
             this.options.accounts.readSecret(account.id, profileSignal),
           accounts: this.options.accounts,
@@ -1480,7 +1502,11 @@ export class AccountPoolHub {
           if (error instanceof TransientOAuthRefreshError) {
             failure = { status: 503, message: error.message, headers: {} };
           } else {
-            this.setError(selected.account.id, errorMessage(error));
+            this.setError(
+              selected.account.id,
+              errorMessage(error),
+              selected.account.createdAt,
+            );
           }
           continue;
         }
@@ -1685,7 +1711,12 @@ export class AccountPoolHub {
                     selected.account,
                     secret,
                     signal,
-                    () => this.setError(selected.account.id, message),
+                    () =>
+                      this.setError(
+                        selected.account.id,
+                        message,
+                        selected.account.createdAt,
+                      ),
                   );
                 }
                 break;
@@ -1720,7 +1751,12 @@ export class AccountPoolHub {
                 selected.account,
                 secret,
                 signal,
-                () => this.setError(selected.account.id, message),
+                () =>
+                  this.setError(
+                    selected.account.id,
+                    message,
+                    selected.account.createdAt,
+                  ),
               );
             }
             break;
@@ -2261,7 +2297,7 @@ export class AccountPoolHub {
                   storedError === null ||
                   adapter.isTransientUsageError?.(storedError) !== true
                 )
-                  this.setError(account.id, null);
+                  this.setError(account.id, null, account.createdAt);
               }
               if (rejection !== null)
                 await this.options.accounts.clearRejectedRefresh(account.id);
@@ -2662,6 +2698,25 @@ export class AccountPoolHub {
     { createdAt: number; removed: boolean }
   >();
 
+  private observeAccount(account: Account): void {
+    const known = this.generations.get(account.id);
+    if (
+      known === undefined ||
+      (known.removed && known.createdAt !== account.createdAt)
+    )
+      this.generations.set(account.id, {
+        createdAt: account.createdAt,
+        removed: false,
+      });
+  }
+
+  private isCurrentInstance(accountId: string, createdAt: number): boolean {
+    const known = this.generations.get(accountId);
+    return (
+      known === undefined || (!known.removed && known.createdAt === createdAt)
+    );
+  }
+
   private syncGenerations(accounts: readonly Account[]): void {
     const present = new Set<string>();
     for (const account of accounts) {
@@ -2708,7 +2763,13 @@ export class AccountPoolHub {
     this.putQuota(change(stored));
   }
 
-  private setError(accountId: string, message: string | null): void {
+  private setError(
+    accountId: string,
+    message: string | null,
+    createdAt?: number,
+  ): void {
+    if (createdAt !== undefined && !this.isCurrentInstance(accountId, createdAt))
+      return;
     const quota = this.options.quotas.get(accountId);
     const error = message?.slice(0, 1_000) ?? null;
     if (quota.error === error) return;

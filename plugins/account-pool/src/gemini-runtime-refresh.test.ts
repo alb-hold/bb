@@ -760,7 +760,12 @@ describe("Gemini usage refresh results", () => {
       expect(await pool.hub.refreshUsage()).toBe(false);
 
       expect(write).toHaveBeenCalledTimes(2);
-      expect(write).toHaveBeenLastCalledWith(pool.account.id, "synthetic-project");
+      expect(write).toHaveBeenLastCalledWith(
+        pool.account.id,
+        "synthetic-project",
+        undefined,
+        pool.account.createdAt,
+      );
       expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe(
         "synthetic-project",
       );
@@ -1338,8 +1343,13 @@ describe("Gemini usage refresh writes in the hub", () => {
   const reAddSameId = async (
     pool: Awaited<ReturnType<typeof createGeminiPool>>,
     geminiProject: string,
+    quiet = false,
   ) => {
-    expect(await pool.operations.remove(pool.account.id)).toBe(true);
+    expect(
+      await (quiet
+        ? pool.accounts.remove(pool.account.id)
+        : pool.operations.remove(pool.account.id)),
+    ).toBe(true);
     await pool.kv.set("accounts:gemini:v1", [
       { ...pool.account, createdAt: pool.account.createdAt + 1, geminiProject },
     ]);
@@ -1445,6 +1455,105 @@ describe("Gemini usage refresh writes in the hub", () => {
 
     expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
     expect(pool.quotas.get(pool.account.id).observedAt).toBeNull();
+  });
+
+  const QUOTA_CALL = "/v1internal:retrieveUserQuotaSummary";
+  const holdUsageRefresh = async (pool: Awaited<ReturnType<typeof createGeminiPool>>) => {
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    const held = pool.hold(QUOTA_CALL);
+    const refresh = pool.hub.refreshUsage(undefined, true);
+    await held.reached;
+    return { held, refresh };
+  };
+
+  it("writes nothing from a usage refresh held across a removal and a same-id re-add", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+
+    await reAddSameId(pool, "synthetic-project");
+    const before = pool.quotas.get(pool.account.id);
+    held.release();
+    await refresh;
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    pool.setQuotaMode("normal");
+    expect(await pool.eligible()).toBe(true);
+    expect(await pool.request()).toBe(200);
+  });
+
+  it("writes no commit marker or project from a usage refresh whose account was replaced without an abort", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+
+    await reAddSameId(pool, "synthetic-project", true);
+    expect(await pool.request()).toBe(200);
+    const before = pool.quotas.get(pool.account.id);
+    held.release();
+    await refresh;
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+  });
+
+  it("writes no error from a usage refresh that fails after its account was replaced", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+
+    await reAddSameId(pool, "synthetic-project", true);
+    expect(await pool.request()).toBe(200);
+    const before = pool.quotas.get(pool.account.id);
+    pool.setQuotaMode("http");
+    held.release();
+    await refresh;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it("rejects a project write that lands after its account was removed and re-added", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    const original = pool.accounts.setGeminiProject.bind(pool.accounts);
+    const gate = pool.gatedBody();
+    let reached: () => void = () => {};
+    const atWrite = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    vi.spyOn(pool.accounts, "setGeminiProject").mockImplementationOnce(async (...args) => {
+      reached();
+      await gate.gate;
+      return original(...args);
+    });
+    const refresh = pool.hub.refreshUsage(undefined, true);
+    await atWrite;
+
+    await reAddSameId(pool, "synthetic-project");
+    const before = pool.quotas.get(pool.account.id);
+    gate.release();
+    await refresh;
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+  });
+
+  it("still commits a usage refresh that is held and released with no removal", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+    held.release();
+    expect(await refresh).toBe(true);
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+    expect(await pool.eligible()).toBe(true);
   });
 
   it("writes the response of a new instance after a same-id re-add", async () => {

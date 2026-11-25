@@ -302,11 +302,13 @@ export class AccountStore {
     id: string,
     subscriptionType: string,
     signal?: AbortSignal,
+    expectedCreatedAt?: number,
   ): Promise<Account | null> {
     return this.update(
       id,
       (account) => ({ ...account, subscriptionType }),
       signal,
+      expectedCreatedAt,
     );
   }
 
@@ -569,6 +571,7 @@ export class AccountStore {
     id: string,
     geminiProject: string | undefined,
     signal?: AbortSignal,
+    expectedCreatedAt?: number,
   ): Promise<Account | null> {
     return this.update(
       id,
@@ -577,6 +580,7 @@ export class AccountStore {
           ? account
           : { ...account, geminiProject },
       signal,
+      expectedCreatedAt,
     );
   }
 
@@ -584,6 +588,7 @@ export class AccountStore {
     id: string,
     geminiEndpoint: "prod" | "daily",
     signal?: AbortSignal,
+    expectedCreatedAt?: number,
   ): Promise<Account | null> {
     return this.update(
       id,
@@ -592,6 +597,7 @@ export class AccountStore {
           ? account
           : { ...account, geminiEndpoint },
       signal,
+      expectedCreatedAt,
     );
   }
 
@@ -627,6 +633,7 @@ export class AccountStore {
     id: string,
     change: (account: Account) => Account,
     signal?: AbortSignal,
+    expectedCreatedAt?: number,
   ): Promise<Account | null> {
     return this.serialized(async () => {
       const accounts = await this.list();
@@ -634,6 +641,11 @@ export class AccountStore {
       const current = accounts[index];
       if (index < 0 || current === undefined) return null;
       if (signal?.aborted) return null;
+      if (
+        expectedCreatedAt !== undefined &&
+        current.createdAt !== expectedCreatedAt
+      )
+        return null;
       const updated = accountSchema.parse(change(current));
       accounts[index] = updated;
       await this.writeAccounts(accounts);

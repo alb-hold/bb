@@ -7920,6 +7920,7 @@ describe("Account Pool plugin", () => {
         signal?: AbortSignal,
       ) =>
         adapter.refreshProfile!({
+          stillCurrent: () => true,
           account,
           signal,
           accounts: store,
@@ -8816,6 +8817,7 @@ describe("Account Pool plugin", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let finished = false;
     const pending = adapter.refreshProfile!({
+      stillCurrent: () => true,
       account: accounts[0]!,
       accounts: store,
       quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9196,6 +9198,7 @@ describe("Account Pool plugin", () => {
     });
     const pending = accounts.slice(0, 3).map((account) =>
       adapter.refreshProfile!({
+        stillCurrent: () => true,
         account,
         accounts: store,
         quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9208,6 +9211,7 @@ describe("Account Pool plugin", () => {
     await arrived.promise;
     pending.push(
       adapter.refreshProfile!({
+        stillCurrent: () => true,
         account: accounts[3]!,
         accounts: store,
         quotas: new QuotaStore(fixture.host.bb.storage.database()),
@@ -9583,7 +9587,7 @@ describe("Account Pool plugin", () => {
         });
       } finally {
         release.resolve();
-        await refresh;
+        await refresh.catch(() => undefined);
       }
       const quotas = new QuotaStore(fixture.host.bb.storage.database());
       expect({

@@ -1518,8 +1518,9 @@ export function createGeminiAdapter(options: {
       const agent = await userAgent().catch((error: unknown) => {
         const previous = context.quotas.get(context.account.id);
         if (
-          previous.error === null ||
-          isGeminiUsageRefreshError(previous.error)
+          context.stillCurrent() &&
+          (previous.error === null ||
+            isGeminiUsageRefreshError(previous.error))
         )
           context.quotas.put({
             ...previous,
@@ -1565,21 +1566,27 @@ export function createGeminiAdapter(options: {
           loadOtherCompanion,
           async () => stored,
         ];
-        if (info.endpoint !== context.account.geminiEndpoint)
+        if (info.endpoint !== context.account.geminiEndpoint) {
+          if (!context.stillCurrent()) return;
           await context.accounts.setGeminiEndpoint(
             context.account.id,
             info.endpoint,
             context.signal,
+            context.account.createdAt,
           );
+        }
         if (
           info.tier !== null &&
           info.tier !== context.account.subscriptionType
-        )
+        ) {
+          if (!context.stillCurrent()) return;
           await context.accounts.setSubscriptionType(
             context.account.id,
             info.tier,
             context.signal,
+            context.account.createdAt,
           );
+        }
         let quotaSummary: unknown = null;
         let quotaFailure: unknown = null;
         let quotaFailed = false;
@@ -1699,6 +1706,7 @@ export function createGeminiAdapter(options: {
         const previousProject = context.account.geminiProject;
         const newProject =
           found && quotaProject !== previousProject ? quotaProject : null;
+        if (!context.stillCurrent()) return;
         if (newProject !== null)
           context.quotas.put({
             ...context.quotas.get(context.account.id),
@@ -1713,6 +1721,8 @@ export function createGeminiAdapter(options: {
             await context.accounts.setGeminiProject(
               context.account.id,
               previousProject,
+              undefined,
+              context.account.createdAt,
             );
             projectRestored = true;
           } catch (restoreError) {
@@ -1730,11 +1740,14 @@ export function createGeminiAdapter(options: {
             await context.accounts.setGeminiProject(
               context.account.id,
               newProject,
+              undefined,
+              context.account.createdAt,
             );
           } catch (error) {
             return await restoreProject(error);
           }
         }
+        if (!context.stillCurrent()) return;
         try {
           context.quotas.commitReading(readingToStore, displayToStore);
           if (newProject !== null)
@@ -1751,7 +1764,7 @@ export function createGeminiAdapter(options: {
             .error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true
         )
           throw error;
-        if (context.signal?.aborted !== true)
+        if (context.signal?.aborted !== true && context.stillCurrent())
           context.quotas.put({
             ...context.quotas.get(context.account.id),
             error:
