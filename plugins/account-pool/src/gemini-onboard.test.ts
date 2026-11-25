@@ -1679,4 +1679,45 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(setProject).not.toHaveBeenCalled();
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-token");
   });
+
+  it("completes a Claude and GPT only refresh like any success: clears a recoverable error and a stale restriction, stamps the read, keeps the stored windows and project", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await good.adapter.refreshUsage(
+      usageContext(stores, account, good.fetch, () => NOW),
+    );
+    const seeded = stores.quotas.get(account.id);
+    const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+    expect(storedProject).toBe("proj-live-agy");
+    expect(seeded.limitWindows).toHaveLength(1);
+    stores.quotas.put({
+      ...seeded,
+      error: "OAuth refresh failed with HTTP 500.",
+      usageRestriction: { reason: "quota_exhausted", resetAt: NOW + 1 },
+    });
+    const google = ownAndOtherCompanions({
+      "proj-own": THIRD_PARTY_ONLY,
+      "proj-other": THIRD_PARTY_ONLY,
+      "proj-token": THIRD_PARTY_ONLY,
+      "": THIRD_PARTY_ONLY,
+    });
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    await google.adapter.refreshUsage(
+      usageContext(
+        stores,
+        (await stores.accounts.get(account.id)) ?? account,
+        google.fetch,
+        () => NOW + 60_000,
+      ),
+    );
+    const quota = stores.quotas.get(account.id);
+    expect(quota.error).toBeNull();
+    expect(quota.usageRestriction).toBeNull();
+    expect(quota.observedAt).toBe(NOW + 60_000);
+    expect(quota.limitWindows).toEqual(seeded.limitWindows);
+    expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+  });
 });

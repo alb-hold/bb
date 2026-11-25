@@ -1540,29 +1540,26 @@ export function createGeminiAdapter(options: {
         if (quotaSummary === null || !geminiQuotaBuckets(quotaSummary)?.length)
           quotaSummary = merged;
       }
-      if (!found && thirdPartySummary !== null) {
-        context.quotas.putModelWeekly(
-          context.account.id,
-          geminiThirdPartyDisplay(thirdPartySummary, context.now()),
-        );
-        return;
-      }
       if (found && quotaProject !== null && quotaProject !== context.account.geminiProject)
         await context.accounts.setGeminiProject(
           context.account.id,
           quotaProject,
           context.signal,
         );
-      if (quotaSummary === null) {
+      const thirdPartyOnly = !found && thirdPartySummary !== null;
+      const displaySummary = thirdPartyOnly ? thirdPartySummary : quotaSummary;
+      if (displaySummary === null) {
         if (quotaFailure !== null) throw quotaFailure;
         throw new Error("Usage refresh returned unreadable data.");
       }
       const now = context.now();
-      const windows = geminiWindowsFromQuota(quotaSummary, now);
-      const bucketCount = geminiQuotaBuckets(quotaSummary)?.length ?? 0;
-      if (bucketCount > 0 && windows.length === 0)
+      const windows = thirdPartyOnly
+        ? context.quotas.get(context.account.id).limitWindows
+        : geminiWindowsFromQuota(displaySummary, now);
+      const bucketCount = geminiQuotaBuckets(displaySummary)?.length ?? 0;
+      if (!thirdPartyOnly && bucketCount > 0 && windows.length === 0)
         throw new Error("Usage refresh returned no recognized quota buckets.");
-      const thirdParty = geminiThirdPartyDisplay(quotaSummary, now);
+      const thirdParty = geminiThirdPartyDisplay(displaySummary, now);
       if (Object.keys(thirdParty).length > 0)
         context.quotas.putModelWeekly(context.account.id, thirdParty);
       context.signal?.throwIfAborted();
