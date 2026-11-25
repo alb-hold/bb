@@ -1751,6 +1751,10 @@ describe("Antigravity companion project for consumer accounts", () => {
       const seeded = stores.quotas.get(account.id);
       const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
       stores.quotas.put({ ...seeded, error: "OAuth refresh failed with HTTP 500." });
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
       const byProject: Record<string, unknown> = {};
       const aPayload = matrixPayload(a, 0.3, 0.9);
       const bPayload = matrixPayload(b, 0.1, 0.6);
@@ -1769,6 +1773,7 @@ describe("Antigravity companion project for consumer accounts", () => {
         await expect(run).rejects.toBeDefined();
         expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
         expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
         return;
       }
       await run;
@@ -1783,6 +1788,7 @@ describe("Antigravity companion project for consumer accounts", () => {
         expect(quota.limitWindows[0]?.utilization).toBeCloseTo(winner === "a" ? 0.7 : 0.9);
       }
       const display = stores.quotas.modelWeekly(account.id) ?? {};
+      expect(Object.keys(display)).not.toContain("Stale 3p");
       const winnerState = winner === "a" ? a : winner === "b" ? b : null;
       const displaySource =
         winnerState !== null && hasThirdParty(winnerState)
@@ -1881,5 +1887,24 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
     expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
     expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
+  });
+
+  it("keeps the old project when the project write fails after the quota write, and the next refresh repairs it", async () => {
+    const { stores, account, storedProject, google } = await seededForCommit();
+    const spy = vi
+      .spyOn(stores.accounts, "setGeminiProject")
+      .mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
+    ).rejects.toThrow("disk full");
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+    expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
+    expect(stores.quotas.get(account.id).error).toBeNull();
+    spy.mockRestore();
+    await google.adapter.refreshUsage(
+      usageContext(stores, (await stores.accounts.get(account.id)) ?? account, google.fetch, () => NOW + 120_000),
+    );
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
+    expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
   });
 });

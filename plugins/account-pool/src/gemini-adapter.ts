@@ -1586,8 +1586,7 @@ export function createGeminiAdapter(options: {
         error: null,
       };
       context.signal?.throwIfAborted();
-      if (Object.keys(thirdParty).length > 0)
-        context.quotas.putModelWeekly(context.account.id, thirdParty);
+      context.quotas.putModelWeekly(context.account.id, thirdParty);
       context.quotas.put(quota);
       if (
         found &&
