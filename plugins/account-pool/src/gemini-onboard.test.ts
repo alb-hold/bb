@@ -1105,6 +1105,20 @@ function pooledLiveAccount(): Account {
   });
 }
 
+async function storeLive(
+  stores: Awaited<ReturnType<typeof usageStores>>,
+  account: Account,
+): Promise<Account> {
+  const { id: _id, createdAt: _c, lastUsedAt: _l, lastUsedHostId: _h, ...input } =
+    account;
+  return stores.accounts.add(input, {
+    kind: "oauth",
+    accessToken: TOKEN,
+    refreshToken: "refresh-onboard",
+    expiresAt: null,
+  });
+}
+
 function usageContext(
   stores: Awaited<ReturnType<typeof usageStores>>,
   account: Account,
@@ -1149,7 +1163,7 @@ describe("the live Antigravity daily shape", () => {
       ["loadCodeAssist", "daily"],
     ]);
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now));
     const quota = stores.quotas.get(account.id);
     expect(quota.error).toBeNull();
@@ -1212,7 +1226,7 @@ describe("the live Antigravity daily shape", () => {
       },
     });
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     const context = usageContext(stores, account, google.fetch, () => time);
     await google.adapter.refreshUsage(context);
     failing = true;
@@ -1239,7 +1253,7 @@ describe("the live Antigravity daily shape", () => {
       },
     });
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     await expect(
       google.adapter.refreshUsage(usageContext(stores, account, google.fetch, Date.now)),
     ).rejects.toThrow(RUNTIME_VERSION_FAILURE);
@@ -1351,10 +1365,11 @@ async function refreshed(
   account: Account = pooledLiveAccount(),
 ) {
   const stores = await usageStores();
+  const stored = await storeLive(stores, account);
   await google.adapter.refreshUsage(
-    usageContext(stores, account, google.fetch, () => NOW),
+    usageContext(stores, stored, google.fetch, () => NOW),
   );
-  return { stores, account, quota: stores.quotas.get(account.id) };
+  return { stores, account: stored, quota: stores.quotas.get(stored.id) };
 }
 
 describe("Antigravity quota across the daily and prod endpoints", () => {
@@ -1403,7 +1418,7 @@ describe("Antigravity quota across the daily and prod endpoints", () => {
 
   it("leaves the stored quota alone when every endpoint fails", async () => {
     const stores = await usageStores();
-    const account = pooledLiveAccount();
+    const account = await storeLive(stores, pooledLiveAccount());
     const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
     await good.adapter.refreshUsage(
       usageContext(stores, account, good.fetch, () => NOW),

@@ -1500,6 +1500,37 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect(pool.quotas.get(pool.account.id)).toEqual(before);
   });
 
+  it("treats a refused project compare-and-set as stale when no removal event, request or sync happened", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+
+    await reAddSameId(pool, "synthetic-project", true);
+    const quotaBefore = pool.quotas.get(pool.account.id);
+    const displayBefore = pool.quotas.modelWeekly(pool.account.id);
+    held.release();
+    await refresh;
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id)).toEqual(quotaBefore);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(displayBefore);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it("writes no error from a usage refresh that fails after a same-id replacement with no sync", async () => {
+    const pool = await createGeminiPool(0);
+    const { held, refresh } = await holdUsageRefresh(pool);
+
+    await reAddSameId(pool, "synthetic-project", true);
+    const before = pool.quotas.get(pool.account.id);
+    pool.setQuotaMode("http");
+    held.release();
+    await refresh;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+  });
+
   it("writes no error from a usage refresh that fails after its account was replaced", async () => {
     const pool = await createGeminiPool(0);
     const { held, refresh } = await holdUsageRefresh(pool);
