@@ -24,35 +24,86 @@ export interface ThreadRouteDecision {
   reason: string | null;
 }
 
+export type ThreadRouteFailureKind =
+  | "timeout"
+  | "threw"
+  | "invalid_decision"
+  | "host_error";
+
+export interface ThreadRouteFailure {
+  pluginId: string;
+  kind: ThreadRouteFailureKind;
+  errorName: string | null;
+}
+
 export interface ThreadRouteOutcome {
   decision: ThreadRouteDecision | null;
-  failures: string[];
+  failures: ThreadRouteFailure[];
 }
+
+const SAFE_LOG_TOKEN = /^[a-z0-9_.:-]{1,64}$/i;
+
+export function safeHookLogToken(value: string): string {
+  return SAFE_LOG_TOKEN.test(value) ? value : `[redacted len=${value.length}]`;
+}
+
+type HandlerResult =
+  | { threw: false; value: unknown }
+  | { threw: true; errorName: string };
 
 export async function runThreadRouteHooks(
   context: RouteContext,
 ): Promise<ThreadRouteOutcome> {
   const provider = pluginHookProvider();
-  const failures: string[] = [];
+  const failures: ThreadRouteFailure[] = [];
   if (provider === undefined) return { decision: null, failures };
   for (const hook of provider.listHooks("experimental_thread.route")) {
     const invocation = await provider.invokeHook(hook, "thread route", () =>
       decideWithinBox(
-        async () => hook.handler(context),
+        async (): Promise<HandlerResult> => {
+          try {
+            return { threw: false, value: await hook.handler(context) };
+          } catch (error) {
+            return {
+              threw: true,
+              errorName: error instanceof Error ? error.name : "NonError",
+            };
+          }
+        },
         Math.min(provider.decisionTimeoutMs, THREAD_ROUTE_HOOK_TIMEOUT_MS),
       ),
     );
     if (!invocation.ok) {
-      failures.push(`${hook.pluginId}: ${invocation.error}`);
+      failures.push({
+        pluginId: hook.pluginId,
+        kind: "host_error",
+        errorName: null,
+      });
       continue;
     }
     if (!invocation.value.ok) {
-      failures.push(`${hook.pluginId}: ${invocation.value.error}`);
+      failures.push({
+        pluginId: hook.pluginId,
+        kind: "timeout",
+        errorName: null,
+      });
       continue;
     }
-    const parsed = routeDecisionSchema.safeParse(invocation.value.value);
+    if (invocation.value.value.threw) {
+      failures.push({
+        pluginId: hook.pluginId,
+        kind: "threw",
+        errorName: invocation.value.value.errorName,
+      });
+      continue;
+    }
+    const parsed = routeDecisionSchema.safeParse(invocation.value.value.value);
     if (!parsed.success) {
-      failures.push(`${hook.pluginId}: returned an invalid decision`);
+      failures.push({
+        pluginId: hook.pluginId,
+        kind: "invalid_decision",
+        errorName: null,
+      });
       continue;
     }
     if (parsed.data === null) continue;

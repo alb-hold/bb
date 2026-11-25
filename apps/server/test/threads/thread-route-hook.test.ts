@@ -247,6 +247,33 @@ describe("experimental_thread.route", () => {
     }
   });
 
+  it.each([
+    ["throws the title", "title", "threw"],
+    ["throws the input text", "input", "threw"],
+    ["returns an error object carrying the title", "object", "invalid_decision"],
+  ] as const)("never logs hook failure text when a hook %s", async (_name, mode, kind) => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      const title = "Patient Jane Doe needs a refill";
+      installRouteHook((context) => {
+        if (mode === "title") throw new Error(context.title ?? "");
+        if (mode === "input") throw new Error(context.inputText ?? "");
+        return { error: context.title } as never;
+      });
+      const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, {
+        ...request,
+        title,
+      });
+      expect(thread.providerId).toBe("codex");
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+      expect(lines).not.toContain(title);
+      expect(lines).not.toContain("route me");
+      expect(lines).toContain(kind);
+    });
+  });
+
   it("logs a benign reason", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);

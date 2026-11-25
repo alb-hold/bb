@@ -57,6 +57,7 @@ import { configureThreadPlugins } from "./dispatch-hooks.js";
 import {
   THREAD_ROUTE_INPUT_TEXT_MAX_LENGTH,
   runThreadRouteHooks,
+  safeHookLogToken,
 } from "./thread-route-hook.js";
 import {
   createThreadRecord,
@@ -174,12 +175,6 @@ async function loadCatalogDefaultForProvider(
     );
   }
   return { model: defaultModel.model, providerId: args.providerId };
-}
-
-const SAFE_LOG_TOKEN = /^[a-z0-9_.:-]{1,64}$/i;
-
-function safeHookLogToken(value: string): string {
-  return SAFE_LOG_TOKEN.test(value) ? value : `[redacted len=${value.length}]`;
 }
 
 type RoutedModelCheck = "known" | "unknown" | "unreadable";
@@ -923,8 +918,17 @@ export async function createThreadFromRequest(
     });
     for (const failure of outcome.failures) {
       deps.logger.warn(
-        { projectId: requestInput.projectId, providerId },
-        `thread route hook failed, keeping provider: ${failure}`,
+        {
+          projectId: requestInput.projectId,
+          providerId,
+          pluginId: safeHookLogToken(failure.pluginId),
+          kind: failure.kind,
+          errorName:
+            failure.errorName === null
+              ? null
+              : safeHookLogToken(failure.errorName),
+        },
+        "thread route hook failed, keeping provider",
       );
     }
     const decision = outcome.decision;
@@ -988,9 +992,9 @@ export async function createThreadFromRequest(
               decision.reason === null
                 ? null
                 : safeHookLogToken(decision.reason),
-            pluginId: decision.pluginId,
+            pluginId: safeHookLogToken(decision.pluginId),
           },
-          `thread rerouted by ${decision.pluginId}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${safeHookLogToken(decision.reason)})`}`,
+          `thread rerouted by ${safeHookLogToken(decision.pluginId)}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${safeHookLogToken(decision.reason)})`}`,
         );
       }
     }
