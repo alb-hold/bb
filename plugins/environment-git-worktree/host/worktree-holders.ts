@@ -1241,11 +1241,9 @@ async function scanLinuxPaths(
       vouchable: false,
     };
   }
-  if (
-    (await unreadableCause(proc, pid, await context.ownCapabilities())) ===
-      "it is non-dumpable" &&
-    (await isSessionProcess(proc, pid, self.uid))
-  )
+  const ownCapabilities = await context.ownCapabilities();
+  const cause = await unreadableCause(proc, pid, ownCapabilities);
+  if (await isSessionProcess(proc, pid, self, cause, ownCapabilities))
     return { sessionProcess: true };
   return {
     unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
@@ -1713,10 +1711,19 @@ async function unreadableCause(
   return null;
 }
 
+const CAP_WAKE_ALARM = 1n << 35n;
+const SD_PAM_MAX_START_DELTA_TICKS = 200n;
+const SSH_AGENT_BINARY = "/usr/bin/ssh-agent";
+const FILE_TYPE_MASK = 0o170000;
+const REGULAR_FILE_TYPE = 0o100000;
+const SETGID_BIT = 0o2000;
+
 interface SessionFacts {
   comm: string;
   parent: number;
   uids: number[];
+  gids: number[] | null;
+  permitted: bigint | null;
 }
 
 async function sessionFacts(
@@ -1728,26 +1735,149 @@ async function sessionFacts(
   if (!("value" in status) || !("value" in comm)) return null;
   const parent = parseStatusNumbers(status.value, "PPid")?.[0];
   const uids = parseStatusNumbers(status.value, "Uid");
+  const gids = parseStatusNumbers(status.value, "Gid");
   if (parent === undefined || uids === null || uids.length !== 4) return null;
-  return { comm: comm.value.replace(/\n$/u, ""), parent, uids };
+  return {
+    comm: comm.value.replace(/\n$/u, ""),
+    parent,
+    uids,
+    gids: gids !== null && gids.length === 4 ? gids : null,
+    permitted: permittedCapabilities(status.value),
+  };
 }
 
 function ownedBy(facts: SessionFacts, uid: number): boolean {
   return facts.uids.every((value) => value === uid);
 }
 
-async function isSessionProcess(
+async function sshAgentSetgidGid(proc: ProcReader): Promise<number | null> {
+  const binary = await readOptional(() => proc.statAccess(SSH_AGENT_BINARY));
+  if (!("value" in binary)) return null;
+  const { uid, gid, mode } = binary.value;
+  if (
+    uid !== 0 ||
+    (mode & FILE_TYPE_MASK) !== REGULAR_FILE_TYPE ||
+    (mode & SETGID_BIT) === 0
+  )
+    return null;
+  return gid;
+}
+
+function hasForeignSavedGid(
+  facts: SessionFacts,
+  ownGids: readonly number[],
+  expectedGid: number,
+): boolean {
+  if (facts.gids === null || ownGids.length === 0) return false;
+  const realGid = facts.gids[0];
+  const savedGid = facts.gids[2];
+  return (
+    realGid !== undefined &&
+    savedGid !== undefined &&
+    savedGid === expectedGid &&
+    savedGid !== realGid &&
+    !ownGids.includes(savedGid)
+  );
+}
+
+async function processStartTicks(
   proc: ProcReader,
   pid: number,
+): Promise<bigint | null> {
+  const stat = await readOptional(() => proc.readFile(`/proc/${pid}/stat`));
+  if (!("value" in stat)) return null;
+  const start = processStartFromStat(stat.value);
+  return start === null ? null : BigInt(start);
+}
+
+async function startedWithinWindow(
+  proc: ProcReader,
+  pid: number,
+  parentPid: number,
+  maxDeltaTicks: bigint,
+): Promise<boolean> {
+  const [childStart, parentStart] = await Promise.all([
+    processStartTicks(proc, pid),
+    processStartTicks(proc, parentPid),
+  ]);
+  if (childStart === null || parentStart === null) return false;
+  const delta = childStart - parentStart;
+  return delta >= 0n && delta <= maxDeltaTicks;
+}
+
+function isUserSystemd(
+  facts: SessionFacts,
+  uid: number,
+  ownCapabilities: bigint | null,
+): boolean {
+  return (
+    facts.comm === "systemd" &&
+    ownedBy(facts, uid) &&
+    facts.parent === 1 &&
+    facts.permitted !== null &&
+    ownCapabilities !== null &&
+    (facts.permitted & ~ownCapabilities) === CAP_WAKE_ALARM
+  );
+}
+
+async function isSshdSession(
+  proc: ProcReader,
+  facts: SessionFacts,
   uid: number,
 ): Promise<boolean> {
-  const facts = await sessionFacts(proc, pid);
-  if (facts === null || facts.comm !== "sshd-session" || !ownedBy(facts, uid))
-    return false;
+  if (facts.comm !== "sshd-session" || !ownedBy(facts, uid)) return false;
   const parent = await sessionFacts(proc, facts.parent);
   return (
     parent !== null && parent.comm === "sshd-session" && ownedBy(parent, 0)
   );
+}
+
+async function isSessionProcess(
+  proc: ProcReader,
+  pid: number,
+  self: LinuxProcessIdentity,
+  cause: string | null,
+  ownCapabilities: bigint | null,
+): Promise<boolean> {
+  if (
+    cause !== "it is non-dumpable" &&
+    cause !== "its capabilities exceed the daemon's"
+  )
+    return false;
+  const facts = await sessionFacts(proc, pid);
+  if (facts === null || !ownedBy(facts, self.uid)) return false;
+  if (cause === "its capabilities exceed the daemon's")
+    return isUserSystemd(facts, self.uid, ownCapabilities);
+  if (facts.comm === "sshd-session") return isSshdSession(proc, facts, self.uid);
+  if (facts.comm === "(sd-pam)") {
+    const parent = await sessionFacts(proc, facts.parent);
+    return (
+      parent !== null &&
+      isUserSystemd(parent, self.uid, ownCapabilities) &&
+      (await startedWithinWindow(
+        proc,
+        pid,
+        facts.parent,
+        SD_PAM_MAX_START_DELTA_TICKS,
+      ))
+    );
+  }
+  if (facts.comm === "ssh-agent") {
+    const expectedGid = await sshAgentSetgidGid(proc);
+    if (
+      expectedGid === null ||
+      !hasForeignSavedGid(facts, self.gids, expectedGid)
+    )
+      return false;
+    if (facts.parent === 1) return true;
+    const parent = await sessionFacts(proc, facts.parent);
+    if (parent === null) return false;
+    return (
+      isUserSystemd(parent, self.uid, ownCapabilities) ||
+      (await isSshdSession(proc, parent, self.uid))
+    );
+  }
+  return false;
 }
 
 async function processName(proc: ProcReader, pid: number): Promise<string> {

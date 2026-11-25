@@ -1937,7 +1937,7 @@ describe("a refusal that names the processes it could not inspect", () => {
     });
     const capabilities: Record<string, string> = {
       "/proc/self/status": "0000000000000000",
-      "/proc/300/status": "0000000800000000",
+      "/proc/300/status": "0000000800000001",
       "/proc/301/status": "0000000000000000",
     };
     const proc: ProcReader = {
@@ -1962,7 +1962,7 @@ describe("a refusal that names the processes it could not inspect", () => {
           pid: 300,
           identity: {
             start: "0",
-            credentials: "1000,1000,1000,1000 0000000800000000",
+            credentials: "1000,1000,1000,1000 0000000800000001",
           },
         },
         {

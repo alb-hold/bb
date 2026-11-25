@@ -2026,6 +2026,116 @@ time.sleep(120)`,
       process.kill(child, "SIGKILL");
     }
   });
+
+  it("keeps the worktree when a forged non-dumpable orphaned ssh-agent holds a file open", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const directory = await worktree();
+    const launcher = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, os, sys, time
+libc = ctypes.CDLL(None)
+r, w = os.pipe()
+pid1 = os.fork()
+if pid1 == 0:
+    os.close(r)
+    fork1 = os.getpid()
+    pid2 = os.fork()
+    if pid2 == 0:
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        held = open(os.path.join(${JSON.stringify(directory)}, "held"), "w")
+        libc.prctl(4, 0, 0, 0, 0)
+        libc.prctl(15, b"ssh-agent", 0, 0, 0)
+        deadline = time.monotonic() + 5.0
+        while os.getppid() == fork1:
+            if time.monotonic() >= deadline:
+                os.write(w, f"timeout {os.getpid()} {fork1} {os.getppid()}".encode())
+                os.close(w)
+                held.close()
+                os._exit(2)
+            time.sleep(0.01)
+        os.write(w, f"{os.getpid()} {fork1}".encode())
+        os.close(w)
+        time.sleep(120)
+        held.close()
+        os._exit(0)
+    os._exit(0)
+os.close(w)
+os.waitpid(pid1, 0)
+data = os.read(r, 64).decode().strip()
+os.close(r)
+if not data or data.startswith("timeout"):
+    print(data or "empty", file=sys.stderr, flush=True)
+    sys.exit(2)
+print(data, flush=True)`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    children.push(launcher);
+    const [exitCode, stdout, stderr] = await new Promise<
+      [number | null, string, string]
+    >((resolve, reject) => {
+      let out = "";
+      let err = "";
+      launcher.stdout?.on("data", (chunk) => {
+        out += String(chunk);
+      });
+      launcher.stderr?.on("data", (chunk) => {
+        err += String(chunk);
+      });
+      launcher.once("error", reject);
+      launcher.once("close", (code) => {
+        resolve([code, out.trim(), err.trim()]);
+      });
+    });
+    const [forgedRaw, fork1Raw] = stdout.split(/\s+/u);
+    const forged = Number.parseInt(forgedRaw ?? "", 10);
+    const fork1 = Number.parseInt(fork1Raw ?? "", 10);
+    try {
+      expect({ exitCode, stdout, stderr }).toMatchObject({ exitCode: 0 });
+      expect(Number.isInteger(forged) && forged > 1).toBe(true);
+      expect(Number.isInteger(fork1) && fork1 > 1).toBe(true);
+      skip(
+        !(await nonDumpable(forged)),
+        "the kernel lets this user read it",
+      );
+      const status = await hostProc.readFile(`/proc/${forged}/status`);
+      const ppidMatch = /^PPid:\s+(\d+)$/mu.exec(status);
+      expect(ppidMatch).not.toBeNull();
+      const ppid = Number.parseInt(ppidMatch?.[1] ?? "", 10);
+      expect(ppid).toBeGreaterThan(0);
+      expect(ppid).not.toBe(fork1);
+      const only: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? ["self", String(forged)] : hostProc.readdir(target),
+      };
+      const scan = await scanLinux(directory, only);
+      expect(scan.status).not.toBe("clear");
+      expect(scan).toMatchObject({
+        status: "unknown",
+        blockingProcesses: expect.arrayContaining([
+          expect.objectContaining({ pid: forged }),
+        ]),
+        reason: expect.stringContaining(
+          `process ${forged} (ssh-agent) has an unreadable holder path`,
+        ),
+      });
+    } finally {
+      if (Number.isInteger(forged) && forged > 1) {
+        try {
+          process.kill(forged, "SIGKILL");
+        } catch {
+        }
+      }
+    }
+  });
 });
 
 describe("a faked non-dumpable sshd-session", () => {
@@ -2099,4 +2209,763 @@ describe("a faked non-dumpable sshd-session", () => {
       holders: [{ pid: 101, through: "working folder" }],
     });
   });
+});
+
+describe("faked session processes (systemd, (sd-pam), ssh-agent)", () => {
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+
+  interface AncestorSpec {
+    pid: number;
+    comm: string;
+    ppid: number;
+    uids: string;
+    gids?: string;
+    capPrm?: string;
+    startTicks?: number | null;
+  }
+
+  interface SessionCase {
+    comm: string;
+    ppid: number;
+    uids?: string;
+    gids?: string;
+    ownGroups?: string;
+    capPrm?: string;
+    ownCapPrm?: string | null;
+    fdOwner?: number;
+    startTicks?: number | null;
+    sshAgentBinary?:
+      | { uid: number; gid: number; mode: number }
+      | "missing"
+      | "error";
+    ancestors?: readonly AncestorSpec[];
+    aliasCwd?: string;
+  }
+
+  function fakeStat(pid: number, comm: string, ppid: number, startTicks: number): string {
+    return `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 4194624 0 0 0 0 0 0 0 0 20 0 1 0 ${startTicks} 0 0 0`;
+  }
+
+  const validSystemdParent: AncestorSpec = {
+    pid: 200,
+    comm: "systemd",
+    ppid: 1,
+    uids: "1000\t1000\t1000\t1000",
+    capPrm: "0000000800000000",
+    startTicks: 174,
+  };
+
+  const validSshdUserParent: AncestorSpec = {
+    pid: 200,
+    comm: "sshd-session",
+    ppid: 201,
+    uids: "1000\t1000\t1000\t1000",
+    capPrm: "0000000000000000",
+  };
+
+  const validSshdRootParent: AncestorSpec = {
+    pid: 201,
+    comm: "sshd-session",
+    ppid: 1,
+    uids: "0\t0\t0\t0",
+    capPrm: "000001ffffffffff",
+  };
+
+  function buildProc(spec: SessionCase): ProcReader {
+    const base = mountAliasProc("/work/tree", "plain", 1000);
+    const own = (target: string) => target.startsWith("/proc/101/");
+    const ancestors = new Map(
+      (spec.ancestors ?? []).map((entry) => [entry.pid, entry]),
+    );
+    return {
+      ...base,
+      readlink: async (target) => {
+        if (spec.aliasCwd !== undefined && target === "/proc/101/cwd")
+          return spec.aliasCwd;
+        return own(target) ? denied() : base.readlink(target);
+      },
+      readdir: async (target) =>
+        own(target) ? denied() : base.readdir(target),
+      statId: async (target) => (own(target) ? denied() : base.statId(target)),
+      statAccess: async (target) => {
+        if (target === "/proc/101/fd")
+          return { uid: spec.fdOwner ?? 0, gid: 0, mode: 0o40500 };
+        if (target === "/usr/bin/ssh-agent") {
+          const binary = spec.sshAgentBinary ?? {
+            uid: 0,
+            gid: 102,
+            mode: 0o102755,
+          };
+          if (binary === "missing")
+            throw Object.assign(new Error("missing"), { code: "ENOENT" });
+          if (binary === "error")
+            throw Object.assign(new Error("io error"), { code: "EIO" });
+          return binary;
+        }
+        return base.statAccess(target);
+      },
+      readFile: async (target) => {
+        if (target === "/proc/self/status") {
+          const cap =
+            spec.ownCapPrm === null
+              ? ""
+              : `CapPrm:\t${spec.ownCapPrm ?? "0000000000000000"}\n`;
+          const groups = spec.ownGroups ?? "4 24 27 30 46 100 1000";
+          return `NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t${groups}\n${cap}`;
+        }
+        if (target === "/proc/101/status") {
+          const uids = spec.uids ?? "1000\t1000\t1000\t1000";
+          const gids = spec.gids ?? "1000\t1000\t1000\t1000";
+          const cap = spec.capPrm ?? "0000000000000000";
+          return `Name:\t${spec.comm}\nState:\tS (sleeping)\nPPid:\t${spec.ppid}\nUid:\t${uids}\nGid:\t${gids}\nCapPrm:\t${cap}\n`;
+        }
+        if (target === "/proc/101/comm") return `${spec.comm}\n`;
+        if (target === "/proc/101/stat") {
+          if (spec.startTicks === null) return denied();
+          return fakeStat(101, spec.comm, spec.ppid, spec.startTicks ?? 176);
+        }
+        const match = /^\/proc\/(\d+)\/(status|comm|stat)$/u.exec(target);
+        if (match !== null) {
+          const entry = ancestors.get(Number(match[1]));
+          if (entry !== undefined) {
+            if (match[2] === "comm") return `${entry.comm}\n`;
+            if (match[2] === "stat") {
+              if (entry.startTicks === null) return denied();
+              return fakeStat(
+                entry.pid,
+                entry.comm,
+                entry.ppid,
+                entry.startTicks ?? 174,
+              );
+            }
+            const cap = entry.capPrm ?? "0000000000000000";
+            const gids = entry.gids ?? "1000\t1000\t1000\t1000";
+            return `Name:\t${entry.comm}\nState:\tS (sleeping)\nPPid:\t${entry.ppid}\nUid:\t${entry.uids}\nGid:\t${gids}\nCapPrm:\t${cap}\n`;
+          }
+        }
+        return own(target) ? denied() : base.readFile(target);
+      },
+    };
+  }
+
+  it.for([
+    [
+      "systemd with wake-alarm only and parent pid 1",
+      "clear",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd lookalike name systemdx",
+      "unknown",
+      {
+        comm: "systemdx",
+        ppid: 1,
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd prefix name system",
+      "unknown",
+      {
+        comm: "system",
+        ppid: 1,
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd with saved uid root",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        uids: "1000\t1000\t0\t1000",
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd with non-1 parent",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 200,
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd with an extra capability bit beyond wake-alarm",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000800000001",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd with a non-wake-alarm capability bit",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000000000002",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd that is dumpable without exceeding capabilities",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000000000000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "systemd that is non-dumpable without wake-alarm",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000000000000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "systemd when daemon capabilities are unreadable",
+      "unknown",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000800000000",
+        ownCapPrm: null,
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "(sd-pam) non-dumpable under user systemd",
+      "clear",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) at lower start window edge (0 ticks after systemd)",
+      "clear",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 174,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) before lower start window edge (-1 tick before systemd)",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 173,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) at upper start window edge (200 ticks after systemd)",
+      "clear",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 374,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) past upper start window edge (201 ticks after systemd)",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 375,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "forged (sd-pam) under user systemd started 5 seconds later",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 674,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) with unreadable stat",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: null,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) whose systemd parent has unreadable stat",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, startTicks: null }],
+      },
+    ],
+    [
+      "(sd-pam) lookalike name (sd-pam)x",
+      "unknown",
+      {
+        comm: "(sd-pam)x",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) with saved uid root",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        uids: "1000\t1000\t0\t1000",
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) whose parent is a lookalike systemd",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, comm: "systemdx" }],
+      },
+    ],
+    [
+      "(sd-pam) whose systemd parent has a non-1 parent",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, ppid: 300 }],
+      },
+    ],
+    [
+      "(sd-pam) whose systemd parent has wrong uid",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, uids: "0\t0\t0\t0" }],
+      },
+    ],
+    [
+      "(sd-pam) whose systemd parent lacks wake-alarm",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, capPrm: "0000000000000000" }],
+      },
+    ],
+    [
+      "(sd-pam) whose systemd parent has an extra capability bit",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [{ ...validSystemdParent, capPrm: "0000000800000001" }],
+      },
+    ],
+    [
+      "(sd-pam) whose parent cannot be read",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+      },
+    ],
+    [
+      "(sd-pam) that is dumpable",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 1000,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "(sd-pam) whose capabilities exceed the daemon",
+      "unknown",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        capPrm: "0000000800000000",
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "ssh-agent non-dumpable with parent pid 1 and saved gid _ssh",
+      "clear",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "ssh-agent non-dumpable under user systemd",
+      "clear",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "ssh-agent non-dumpable under valid sshd-session",
+      "clear",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        ancestors: [validSshdUserParent, validSshdRootParent],
+      },
+    ],
+    [
+      "forged ssh-agent (saved GID = real GID) with parent 1",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t1000\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "forged ssh-agent (saved GID = real GID) under user systemd",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t1000\t1000",
+        fdOwner: 0,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "forged ssh-agent (saved GID = real GID) under valid sshd-session",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t1000\t1000",
+        fdOwner: 0,
+        ancestors: [validSshdUserParent, validSshdRootParent],
+      },
+    ],
+    [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) with parent 1",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) under user systemd",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) under valid sshd-session",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+        ancestors: [validSshdUserParent, validSshdRootParent],
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is missing",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: "missing",
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not setgid",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 102, mode: 0o100755 },
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not root-owned",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 1000, gid: 102, mode: 0o102755 },
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not a regular file",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 102, mode: 0o042755 },
+      },
+    ],
+    [
+      "ssh-agent when stat on /usr/bin/ssh-agent fails",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: "error",
+      },
+    ],
+    [
+      "ssh-agent whose saved GID is in the daemon's groups",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t27\t1000",
+        ownGroups: "4 24 27 30 46 100 1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 27, mode: 0o102755 },
+      },
+    ],
+    [
+      "ssh-agent lookalike name ssh-agent-fake",
+      "unknown",
+      {
+        comm: "ssh-agent-fake",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "ssh-agent with saved uid root",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        uids: "1000\t1000\t0\t1000",
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "ssh-agent with bash parent",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        ancestors: [
+          {
+            pid: 200,
+            comm: "bash",
+            ppid: 1,
+            uids: "1000\t1000\t1000\t1000",
+          },
+        ],
+      },
+    ],
+    [
+      "ssh-agent with lookalike systemd parent",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        ancestors: [{ ...validSystemdParent, comm: "systemdx" }],
+      },
+    ],
+    [
+      "ssh-agent whose sshd-session parent has a non-root parent",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        ancestors: [
+          validSshdUserParent,
+          { ...validSshdRootParent, uids: "1000\t1000\t1000\t1000" },
+        ],
+      },
+    ],
+    [
+      "ssh-agent whose parent cannot be read",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "ssh-agent that is dumpable",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 1000,
+      },
+    ],
+    [
+      "ssh-agent whose capabilities exceed the daemon",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        capPrm: "0000000800000000",
+        fdOwner: 0,
+      },
+    ],
+  ] as const)("%s -> %s", async ([, expected, spec]) => {
+    const scan = await scanLinux("/work/tree", buildProc(spec), 4242);
+    if (expected === "clear") {
+      expect(scan).toMatchObject({ status: "clear" });
+      return;
+    }
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [{ pid: 101 }],
+      reason: expect.stringContaining(
+        `process 101 (${spec.comm}) has an unreadable holder path`,
+      ),
+    });
+  });
+
+  it.for([
+    [
+      "systemd",
+      {
+        comm: "systemd",
+        ppid: 1,
+        capPrm: "0000000800000000",
+        fdOwner: 1000,
+        aliasCwd: "/work/tree",
+      },
+    ],
+    [
+      "(sd-pam)",
+      {
+        comm: "(sd-pam)",
+        ppid: 200,
+        fdOwner: 0,
+        startTicks: 176,
+        ancestors: [validSystemdParent],
+        aliasCwd: "/work/tree",
+      },
+    ],
+    [
+      "ssh-agent",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        aliasCwd: "/work/tree",
+      },
+    ],
+  ] as const)(
+    "reports %s as held when the mount alias scan finds its working folder in the worktree",
+    async ([, spec]) => {
+      expect(
+        await scanLinux("/work/tree", buildProc(spec), 4242),
+      ).toMatchObject({
+        status: "held",
+        holders: [{ pid: 101, through: "working folder" }],
+      });
+    },
+  );
 });
