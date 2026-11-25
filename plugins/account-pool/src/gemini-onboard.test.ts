@@ -1744,7 +1744,9 @@ describe("Antigravity companion project for consumer accounts", () => {
     | "gemini"
     | "both"
     | "mixed"
-    | "mixed-3p";
+    | "mixed-3p"
+    | "unreadable"
+    | "mixed-unreadable";
   const CANDIDATE_STATES: CandidateState[] = [
     "fails",
     "empty",
@@ -1753,6 +1755,8 @@ describe("Antigravity companion project for consumer accounts", () => {
     "both",
     "mixed",
     "mixed-3p",
+    "unreadable",
+    "mixed-unreadable",
   ];
   const matrixPayload = (state: CandidateState, gemini: number, thirdParty: number) => {
     const geminiBuckets = [bucket("gemini-4-neon", gemini)];
@@ -1766,6 +1770,7 @@ describe("Antigravity companion project for consumer accounts", () => {
     if (state === "third-party" || state === "mixed-3p") return { groups };
     if (state === "gemini") return { buckets: geminiBuckets };
     if (state === "both") return { buckets: geminiBuckets, groups };
+    if (state === "unreadable") return { buckets: "none" };
     return undefined;
   };
   const matrixRows = CANDIDATE_STATES.flatMap((a) =>
@@ -1781,7 +1786,15 @@ describe("Antigravity companion project for consumer accounts", () => {
       await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
       const seeded = stores.quotas.get(account.id);
       const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
-      stores.quotas.put({ ...seeded, error: "OAuth refresh failed with HTTP 500." });
+      const seededRestriction = {
+        reason: "quota_exhausted" as const,
+        resetAt: NOW + 3_600_000,
+      };
+      stores.quotas.put({
+        ...seeded,
+        error: "OAuth refresh failed with HTTP 500.",
+        usageRestriction: seededRestriction,
+      });
       const staleDisplay = {
         "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
       };
@@ -1803,6 +1816,11 @@ describe("Antigravity companion project for consumer accounts", () => {
         if (state === "mixed" || state === "mixed-3p") {
           mixedAnswers.quotaFailureByProjectBase[project] = { daily: 503 };
           mixedAnswers.quotaByProjectBase[project] = { prod: payload };
+        } else if (state === "mixed-unreadable") {
+          mixedAnswers.quotaByProjectBase[project] = {
+            daily: { buckets: "none" },
+            prod: { buckets: [] },
+          };
         } else if (payload !== undefined) byProject[project] = payload;
       }
       const google = ownAndOtherCompanions(byProject, mixedAnswers);
@@ -1814,7 +1832,11 @@ describe("Antigravity companion project for consumer accounts", () => {
       const hasThirdParty = (state: CandidateState) =>
         state === "third-party" || state === "both" || state === "mixed-3p";
       const rejects = (state: CandidateState) =>
-        state === "fails" || state === "mixed" || state === "mixed-3p";
+        state === "fails" ||
+        state === "mixed" ||
+        state === "mixed-3p" ||
+        state === "unreadable" ||
+        state === "mixed-unreadable";
       const winner = hasGemini(a) ? "a" : hasGemini(b) ? "b" : null;
       const visitedRejected = rejects(a) || (!hasGemini(a) && rejects(b));
       if (winner === null && visitedRejected) {
@@ -1823,6 +1845,7 @@ describe("Antigravity companion project for consumer accounts", () => {
         expect(kept.limitWindows).toEqual(seeded.limitWindows);
         expect(kept.observedAt).toBe(seeded.observedAt);
         expect(kept.error).toBe("OAuth refresh failed with HTTP 500.");
+        expect(kept.usageRestriction).toEqual(seededRestriction);
         expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
         expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
         return;
@@ -1831,6 +1854,11 @@ describe("Antigravity companion project for consumer accounts", () => {
       const quota = stores.quotas.get(account.id);
       expect(quota.error).toBeNull();
       expect(quota.observedAt).toBe(NOW + 60_000);
+      expect(quota.usageRestriction).toEqual(
+        winner === null && !hasThirdParty(a) && !hasThirdParty(b)
+          ? seededRestriction
+          : null,
+      );
       if (winner === null)
         expect(quota.limitWindows).toEqual(
           hasThirdParty(a) || hasThirdParty(b) ? seeded.limitWindows : [],
@@ -1979,8 +2007,8 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(setEndpoint).not.toHaveBeenCalled();
   });
 
-  type EndpointOutcome = "data" | "empty" | "failed";
-  const ENDPOINT_OUTCOMES: EndpointOutcome[] = ["data", "empty", "failed"];
+  type EndpointOutcome = "data" | "empty" | "failed" | "unreadable";
+  const ENDPOINT_OUTCOMES: EndpointOutcome[] = ["data", "empty", "failed", "unreadable"];
   const endpointRows = ENDPOINT_OUTCOMES.flatMap((daily) =>
     ENDPOINT_OUTCOMES.map((prod) => [daily, prod] as const),
   );
@@ -1996,7 +2024,9 @@ describe("Antigravity companion project for consumer accounts", () => {
               },
             ],
           }
-        : { buckets: [] };
+        : outcome === "unreadable"
+          ? { buckets: "none" }
+          : { buckets: [] };
     const quotaByBase: Partial<Record<"daily" | "prod", unknown>> = {};
     const quotaFailureByBase: Partial<Record<"daily" | "prod", number>> = {};
     for (const [base, outcome] of [["daily", daily], ["prod", prod]] as const) {
@@ -2007,7 +2037,7 @@ describe("Antigravity companion project for consumer accounts", () => {
   };
 
   it.each(endpointRows)(
-    "refreshes with the daily endpoint %s and the prod endpoint %s: an empty answer is real only when no endpoint failed",
+    "refreshes with the daily endpoint %s and the prod endpoint %s: an empty answer is real only when no endpoint failed or was unreadable",
     async (daily, prod) => {
       const stores = await usageStores();
       const account = await storedAccount(stores, "proj-live-agy");
@@ -2030,7 +2060,7 @@ describe("Antigravity companion project for consumer accounts", () => {
       );
       const outcomes = [daily, prod];
       const hasData = outcomes.includes("data");
-      const anyFailed = outcomes.includes("failed");
+      const anyFailed = outcomes.includes("failed") || outcomes.includes("unreadable");
       const quota = stores.quotas.get(account.id);
       if (!hasData && anyFailed) {
         await expect(run).rejects.toBeDefined();

@@ -1521,15 +1521,16 @@ export function createGeminiAdapter(options: {
           (result): result is PromiseRejectedResult =>
             result.status === "rejected",
         );
-        if (rejection !== undefined && !quotaFailed) {
-          quotaFailed = true;
-          quotaFailure = rejection.reason;
-        }
-        const merged = mergeQuotaSummaries(
-          settled.flatMap((result) =>
-            result.status === "fulfilled" ? [result.value] : [],
-          ),
+        const answers = settled.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
         );
+        if (rejection !== undefined) {
+          quotaFailed = true;
+          quotaFailure ??= rejection.reason;
+        }
+        if (answers.some((answer) => mergeQuotaSummaries([answer]) === null))
+          quotaFailed = true;
+        const merged = mergeQuotaSummaries(answers);
         if (merged === null) continue;
         if (geminiWindowsFromQuota(merged, context.now()).length > 0) {
           quotaSummary = merged;
@@ -1545,7 +1546,8 @@ export function createGeminiAdapter(options: {
         if (quotaSummary === null || !geminiQuotaBuckets(quotaSummary)?.length)
           quotaSummary = merged;
       }
-      if (!found && quotaFailed) throw quotaFailure;
+      if (!found && quotaFailed)
+        throw quotaFailure ?? new Error("Usage refresh returned unreadable data.");
       if (quotaSummary === null) {
         throw new Error("Usage refresh returned unreadable data.");
       }
