@@ -18,6 +18,11 @@ import {
   codexLoginPollInputSchema,
   codexLoginPollSchema,
   codexLoginStartSchema,
+  geminiLoginCancelSchema,
+  geminiLoginSessionInputSchema,
+  geminiLoginStartInputSchema,
+  geminiLoginStartSchema,
+  geminiLoginWaitSchema,
   hubTokenSummarySchema,
   importProbeSchema,
   localLoginSchema,
@@ -42,6 +47,7 @@ import { poolDisplaySchema } from "./display.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
+import type { GeminiLogin } from "./gemini-login.js";
 
 export const accountPoolRpcContract = defineRpcContract({
   "display.get": { input: z.null(), output: poolDisplaySchema },
@@ -123,6 +129,18 @@ export const accountPoolRpcContract = defineRpcContract({
     input: loginStartInputSchema,
     output: codexLoginStartSchema,
   },
+  "geminiLogin.start": {
+    input: geminiLoginStartInputSchema,
+    output: geminiLoginStartSchema,
+  },
+  "geminiLogin.wait": {
+    input: geminiLoginSessionInputSchema,
+    output: geminiLoginWaitSchema,
+  },
+  "geminiLogin.cancel": {
+    input: geminiLoginSessionInputSchema,
+    output: geminiLoginCancelSchema,
+  },
   "local.logins": {
     input: z.null(),
     output: z.array(localLoginSchema),
@@ -192,6 +210,7 @@ export function createRpcHandlers(
   operations: PoolOperations,
   login: ClaudeOAuthLogin,
   codexLogin: CodexDeviceLogin,
+  geminiLogin: GeminiLogin,
   config: AccountPoolConfigController,
 ): PluginRpcHandlers<typeof accountPoolRpcContract> {
   return {
@@ -244,6 +263,40 @@ export function createRpcHandlers(
       if (input !== null && "accountId" in input)
         await operations.requireReauthorizable(input.accountId, "codex");
       return codexLogin.start(input);
+    },
+    "geminiLogin.start": async ({ label, accountId }) => {
+      if (accountId !== undefined)
+        await operations.requireReauthorizable(accountId, "gemini");
+      const started = await geminiLogin.start({
+        label: label ?? null,
+        ...(accountId === undefined ? {} : { accountId }),
+      });
+      return {
+        sessionId: started.sessionId,
+        expiresAt: started.expiresAt,
+      };
+    },
+    "geminiLogin.wait": async ({ sessionId }) => {
+      const result = await geminiLogin.wait(sessionId);
+      if (result.status === "error")
+        return {
+          status: "error" as const,
+          reason: result.reason,
+          message: result.message,
+        };
+      const summary = (await operations.list()).find(
+        (item) => item.id === result.account.id,
+      );
+      return {
+        status: "complete" as const,
+        account: { id: result.account.id, label: result.account.label },
+        email: summary?.email ?? null,
+      };
+    },
+    "geminiLogin.cancel": ({ sessionId }) => {
+      const pending = geminiLogin.pending() === sessionId;
+      geminiLogin.cancel(sessionId);
+      return { cancelled: pending };
     },
     "local.logins": () => operations.localLogins(),
     "codexLogin.poll": async ({ sessionId, label }) => {

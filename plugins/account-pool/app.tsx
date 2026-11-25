@@ -76,6 +76,8 @@ import type {
 } from "./src/rpc.js";
 import type { OAuthLoginStart } from "./src/oauth-login.js";
 import type { CodexDeviceLoginStart } from "./src/codex-device-login.js";
+import type { z } from "zod";
+import type { geminiLoginStartSchema } from "./src/contracts.js";
 import {
   CLAUDE_OAUTH_REDIRECT_URI,
   DEFAULT_ACCOUNT_POOL_CONFIG,
@@ -96,7 +98,10 @@ import {
 
 type DialogState =
   | { kind: "account" | "priority" | "remove" | "turn-off"; accountId: string }
-  | { kind: "claude-login" | "codex-login"; accountId: string | null }
+  | {
+      kind: "claude-login" | "codex-login" | "gemini-login";
+      accountId: string | null;
+    }
   | { kind: "api-key" }
   | null;
 
@@ -456,8 +461,7 @@ function SubscriptionRow({
   const [draft, setDraft] = useState(account.label);
   const plan = planBadge(account, displayName);
   const email = secondaryEmail(account);
-  const canSignInAgain =
-    account.kind === "oauth" && account.provider !== "gemini";
+  const canSignInAgain = account.kind === "oauth";
   const signInAgain = account.signInExpired && canSignInAgain;
   const {
     attributes,
@@ -901,6 +905,13 @@ function AddSubscriptionMenu({
           "Import this Mac's Antigravity login",
           "The Antigravity login, if it isn't pooled yet",
         )}
+        {item(
+          "gemini",
+          "login",
+          "UserRound",
+          "Add Antigravity account",
+          "Opens Google in a separate window",
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1212,6 +1223,9 @@ function AccountPoolSettings() {
   const [codexStep, setCodexStep] = useState<CodexDeviceLoginStart | null>(
     null,
   );
+  const [geminiStep, setGeminiStep] = useState<z.infer<
+    typeof geminiLoginStartSchema
+  > | null>(null);
   const [loginDone, setLoginDone] = useState<string | null>(null);
   const [cleanWindow, setCleanWindow] = useState(false);
   const [pastedCode, setPastedCode] = useState("");
@@ -1225,6 +1239,7 @@ function AccountPoolSettings() {
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
   const signInWindow = useRef<ExperimentalSignInWindow | null>(null);
+  const geminiAttempt = useRef(0);
   const threshold =
     config?.switchThreshold ?? DEFAULT_ACCOUNT_POOL_CONFIG.switchThreshold;
   const applyConfig = useCallback((next: AccountPoolConfig) => {
@@ -1294,15 +1309,36 @@ function AccountPoolSettings() {
     void refreshConfig();
   });
   useEffect(() => {
-    if (codexStep === null || loginDone !== null) return;
+    const expiresAt = codexStep?.expiresAt ?? geminiStep?.expiresAt;
+    if (expiresAt === undefined || loginDone !== null) return;
     const update = () =>
-      setCountdown(
-        Math.max(0, Math.ceil((codexStep.expiresAt - Date.now()) / 1_000)),
-      );
+      setCountdown(Math.max(0, Math.ceil((expiresAt - Date.now()) / 1_000)));
     update();
     const interval = window.setInterval(update, 1_000);
     return () => window.clearInterval(interval);
-  }, [codexStep, loginDone]);
+  }, [codexStep, geminiStep, loginDone]);
+  useEffect(() => {
+    if (geminiStep === null || loginDone !== null) return;
+    let cancelled = false;
+    void rpc
+      .call("geminiLogin.wait", { sessionId: geminiStep.sessionId })
+      .then(async (result) => {
+        if (cancelled) return;
+        setGeminiStep(null);
+        if (result.status === "complete") {
+          setLoginDone(result.account.label);
+          await refresh();
+        } else setError(result.message);
+      })
+      .catch((waitError: unknown) => {
+        if (cancelled) return;
+        setGeminiStep(null);
+        setError(errorText(waitError));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [geminiStep, loginDone, refresh, rpc]);
   useEffect(() => {
     if (codexStep === null || loginDone !== null) return;
     let cancelled = false;
@@ -1489,6 +1525,35 @@ function AccountPoolSettings() {
       openAuthorization({ url: started.verificationUri });
     });
   }
+  async function startGemini(
+    target: AccountSummary | null = null,
+  ): Promise<void> {
+    if (pending.size > 0) return;
+    const attempt = ++geminiAttempt.current;
+    setDialog({ kind: "gemini-login", accountId: target?.id ?? null });
+    setLoginDone(null);
+    setGeminiStep(null);
+    await run("gemini-login", async () => {
+      setAccountLabel("");
+      let started: z.infer<typeof geminiLoginStartSchema>;
+      try {
+        started = await rpc.call(
+          "geminiLogin.start",
+          target === null ? {} : { accountId: target.id },
+        );
+      } catch (startError) {
+        if (attempt !== geminiAttempt.current) return;
+        throw startError;
+      }
+      if (attempt !== geminiAttempt.current) {
+        void rpc
+          .call("geminiLogin.cancel", { sessionId: started.sessionId })
+          .catch(() => undefined);
+        return;
+      }
+      setGeminiStep(started);
+    });
+  }
   function closeSignInWindow(): void {
     const open = signInWindow.current;
     signInWindow.current = null;
@@ -1542,6 +1607,7 @@ function AccountPoolSettings() {
   ): Promise<void> {
     if (choice === "login") {
       if (provider === "claude") await startClaude();
+      else if (provider === "gemini") await startGemini();
       else await startCodex();
       return;
     }
@@ -1585,6 +1651,7 @@ function AccountPoolSettings() {
     }
     if (action === "sign-in") {
       if (account.provider === "claude") await startClaude(account);
+      else if (account.provider === "gemini") await startGemini(account);
       else await startCodex(account);
       return;
     }
@@ -1637,9 +1704,17 @@ function AccountPoolSettings() {
     closeSignInWindow();
     if (dialog?.kind === "codex-login" && codexStep !== null)
       void rpc.call("codexLogin.cancel", { sessionId: codexStep.sessionId });
+    if (dialog?.kind === "gemini-login") {
+      geminiAttempt.current += 1;
+      if (geminiStep !== null)
+        void rpc.call("geminiLogin.cancel", {
+          sessionId: geminiStep.sessionId,
+        });
+    }
     setDialog(null);
     setLoginStep(null);
     setCodexStep(null);
+    setGeminiStep(null);
     setLoginDone(null);
     setPastedCode("");
     setAccountLabel("");
@@ -2215,6 +2290,7 @@ function AccountPoolSettings() {
             target={selectedAccount}
             loginStep={loginStep}
             codexStep={null}
+            geminiStep={null}
             loginDone={loginDone}
             pending={
               pending.has("claude-login") || pending.has("complete-claude")
@@ -2241,6 +2317,7 @@ function AccountPoolSettings() {
             target={selectedAccount}
             loginStep={null}
             codexStep={codexStep}
+            geminiStep={null}
             loginDone={loginDone}
             pending={pending.has("codex-login")}
             pastedCode=""
@@ -2254,6 +2331,28 @@ function AccountPoolSettings() {
             setAccountLabel={setAccountLabel}
             complete={() => {}}
             restart={() => void startCodex(selectedAccount)}
+          />
+        ) : null}
+        {dialog?.kind === "gemini-login" ? (
+          <LoginDialog
+            provider="gemini"
+            target={selectedAccount}
+            loginStep={null}
+            codexStep={null}
+            geminiStep={geminiStep}
+            loginDone={loginDone}
+            pending={pending.has("gemini-login")}
+            pastedCode=""
+            countdown={countdown}
+            error={error}
+            close={closeDialog}
+            openUrl={openAuthorizationUrl}
+            cleanWindow={true}
+            setPastedCode={() => {}}
+            accountLabel={accountLabel}
+            setAccountLabel={setAccountLabel}
+            complete={() => {}}
+            restart={() => void startGemini(selectedAccount)}
           />
         ) : null}
       </Dialog>
@@ -2346,7 +2445,7 @@ function AccountDialog({
         <dt className="text-muted-foreground">Kind</dt>
         <dd>
           {account.kind === "oauth"
-            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : account.provider === "gemini" ? "Google" : "ChatGPT"}`
+            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : account.provider === "gemini" ? "Antigravity (Google)" : "ChatGPT"}`
             : "API key"}
         </dd>
         <dt className="text-muted-foreground">Priority</dt>
@@ -2395,6 +2494,7 @@ function LoginDialog({
   target,
   loginStep,
   codexStep,
+  geminiStep,
   loginDone,
   pending,
   pastedCode,
@@ -2413,6 +2513,7 @@ function LoginDialog({
   target: AccountSummary | null;
   loginStep: OAuthLoginStart | null;
   codexStep: CodexDeviceLoginStart | null;
+  geminiStep: z.infer<typeof geminiLoginStartSchema> | null;
   loginDone: string | null;
   pending: boolean;
   pastedCode: string;
@@ -2427,12 +2528,25 @@ function LoginDialog({
   complete: () => void;
   restart: () => void;
 }) {
-  const name = provider === "claude" ? "Claude" : "Codex";
-  const service = provider === "claude" ? "Claude" : "ChatGPT";
+  const name =
+    provider === "claude"
+      ? "Claude"
+      : provider === "gemini"
+        ? "Antigravity"
+        : "Codex";
+  const service =
+    provider === "claude"
+      ? "Claude"
+      : provider === "gemini"
+        ? "Google"
+        : "ChatGPT";
   const url =
     provider === "claude"
       ? loginStep?.authorizeUrl
-      : codexStep?.verificationUri;
+      : provider === "gemini"
+        ? undefined
+        : codexStep?.verificationUri;
+  const started = provider === "gemini" ? geminiStep !== null : url !== undefined;
   return (
     <DialogFrame
       title={target === null ? `Sign in to ${name}` : "Sign in again"}
@@ -2479,7 +2593,7 @@ function LoginDialog({
                 : "It stays off until you turn it on."}
           </p>
         </div>
-      ) : url === undefined ? (
+      ) : !started ? (
         error !== null ? (
           <div className="space-y-3">
             <p role="alert" className="text-sm text-destructive-text">
@@ -2507,15 +2621,19 @@ function LoginDialog({
               ? cleanWindow
                 ? "Sign in to the account you want to add in the window that opened. bb finishes the login when you authorize; if it does not, paste the code from the final page."
                 : "Sign in at claude.ai, then paste the code from the final page."
-              : cleanWindow
-                ? "Sign in to ChatGPT in the window that opened and enter this code."
-                : "Open the verification page, sign in to ChatGPT, and enter this code."}
+              : provider === "gemini"
+                ? "Sign in to Google in the window that opened. bb finishes the sign-in when you authorize."
+                : cleanWindow
+                  ? "Sign in to ChatGPT in the window that opened and enter this code."
+                  : "Open the verification page, sign in to ChatGPT, and enter this code."}
           </p>
           {codexStep === null ? null : (
             <UserCodeBlock userCode={codexStep.userCode} />
           )}
-          <AuthorizationUrlRow name={name} url={url} openUrl={openUrl} />
-          {target === null ? (
+          {url === undefined ? null : (
+            <AuthorizationUrlRow name={name} url={url} openUrl={openUrl} />
+          )}
+          {target === null && provider !== "gemini" ? (
             <>
               <Input
                 aria-label="Account label"
@@ -2529,7 +2647,7 @@ function LoginDialog({
                   : "Use a private window or sign in to the account you want to add."}
               </p>
             </>
-          ) : (
+          ) : target === null ? null : (
             <p className="text-xs text-muted-foreground">
               If {provider === "claude" ? "the code belongs" : "you sign in"} to
               a different {service} account, bb stops and keeps this

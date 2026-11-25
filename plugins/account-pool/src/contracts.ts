@@ -609,6 +609,47 @@ export const codexLoginPollSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("error"), message: z.string().min(1) }).strict(),
 ]);
 
+export const geminiLoginStartInputSchema = z
+  .object({
+    label: z.string().trim().min(1).max(120).optional(),
+    accountId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const geminiLoginStartSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+
+export const geminiLoginSessionInputSchema = z
+  .object({ sessionId: z.string().uuid() })
+  .strict();
+
+export const geminiLoginWaitSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("complete"),
+      account: z
+        .object({ id: z.string().uuid(), label: z.string().min(1) })
+        .strict(),
+      email: z.string().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("error"),
+      reason: z.string().min(1),
+      message: z.string().min(1),
+    })
+    .strict(),
+]);
+
+export const geminiLoginCancelSchema = z
+  .object({ cancelled: z.boolean() })
+  .strict();
+
 export const accountIdInputSchema = z
   .object({ id: z.string().uuid() })
   .strict();
