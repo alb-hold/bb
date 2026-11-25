@@ -1720,4 +1720,86 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(setProject).not.toHaveBeenCalled();
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
   });
+
+  type CandidateState = "fails" | "empty" | "third-party" | "gemini" | "both";
+  const CANDIDATE_STATES: CandidateState[] = ["fails", "empty", "third-party", "gemini", "both"];
+  const matrixPayload = (state: CandidateState, gemini: number, thirdParty: number) => {
+    const geminiBuckets = [bucket("gemini-4-neon", gemini)];
+    const groups = [
+      {
+        displayName: "Claude and GPT models",
+        buckets: [bucket("3p-5h", thirdParty), bucket("3p-weekly", thirdParty - 0.1)],
+      },
+    ];
+    if (state === "empty") return { buckets: [] };
+    if (state === "third-party") return { groups };
+    if (state === "gemini") return { buckets: geminiBuckets };
+    if (state === "both") return { buckets: geminiBuckets, groups };
+    return undefined;
+  };
+  const matrixRows = CANDIDATE_STATES.flatMap((a) =>
+    CANDIDATE_STATES.map((b) => [a, b] as const),
+  );
+
+  it.each(matrixRows)(
+    "refreshes with own companion %s and other companion %s: routing from the first Gemini candidate, 3p display kept, project and error settled",
+    async (a, b) => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-token");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const seeded = stores.quotas.get(account.id);
+      const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+      stores.quotas.put({ ...seeded, error: "OAuth refresh failed with HTTP 500." });
+      const byProject: Record<string, unknown> = {};
+      const aPayload = matrixPayload(a, 0.3, 0.9);
+      const bPayload = matrixPayload(b, 0.1, 0.6);
+      if (aPayload !== undefined) byProject["proj-own"] = aPayload;
+      if (bPayload !== undefined) byProject["proj-other"] = bPayload;
+      const google = ownAndOtherCompanions(byProject);
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const run = google.adapter.refreshUsage(
+        usageContext(stores, live, google.fetch, () => NOW + 60_000),
+      );
+      const hasGemini = (state: CandidateState) => state === "gemini" || state === "both";
+      const hasThirdParty = (state: CandidateState) => state === "third-party" || state === "both";
+      const read = (state: CandidateState) => state !== "fails";
+      const winner = hasGemini(a) ? "a" : hasGemini(b) ? "b" : null;
+      if (!read(a) && !read(b)) {
+        await expect(run).rejects.toBeDefined();
+        expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+        expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+        return;
+      }
+      await run;
+      const quota = stores.quotas.get(account.id);
+      expect(quota.error).toBeNull();
+      if (winner === null)
+        expect(quota.limitWindows).toEqual(
+          hasThirdParty(a) || hasThirdParty(b) ? seeded.limitWindows : [],
+        );
+      else {
+        expect(quota.limitWindows).toHaveLength(1);
+        expect(quota.limitWindows[0]?.utilization).toBeCloseTo(winner === "a" ? 0.7 : 0.9);
+      }
+      const display = stores.quotas.modelWeekly(account.id) ?? {};
+      const winnerState = winner === "a" ? a : winner === "b" ? b : null;
+      const displaySource =
+        winnerState !== null && hasThirdParty(winnerState)
+          ? winner
+          : hasThirdParty(a)
+            ? "a"
+            : winner !== "a" && hasThirdParty(b)
+              ? "b"
+              : null;
+      if (displaySource === null) expect(Object.keys(display)).toHaveLength(0);
+      else {
+        expect(Object.keys(display)).toHaveLength(2);
+        const fiveHour = Object.values(display).find((row) => row.utilization !== null && Math.abs(row.utilization - (displaySource === "a" ? 0.1 : 0.4)) < 1e-6);
+        expect(fiveHour).toBeDefined();
+      }
+      const expectedProject = winner === "a" ? "proj-own" : winner === "b" ? "proj-other" : storedProject;
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(expectedProject);
+    },
+  );
 });
