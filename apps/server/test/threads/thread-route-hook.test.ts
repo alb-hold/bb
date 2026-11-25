@@ -226,6 +226,37 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it("never logs a reason that echoes the title or input text", async () => {
+    for (const echo of ["title", "input"] as const) {
+      await withTestHarness(async (harness) => {
+        const { request } = await seedCreateTarget(harness);
+        const title = "Patient Jane Doe needs a refill";
+        installRouteHook((context) => ({
+          providerId: "claude-code",
+          model: "claude-code-model",
+          reason: echo === "title" ? (context.title ?? "") : (context.inputText ?? ""),
+        }));
+        const info = vi.spyOn(harness.deps.logger, "info");
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        await createThreadFromRequest(harness.deps, { ...request, title });
+        const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+        expect(lines).not.toContain(title);
+        expect(lines).not.toContain("route me");
+        expect(lines).toContain("[redacted len=");
+      });
+    }
+  });
+
+  it("logs a benign reason", async () => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      installRouteHook(toClaude);
+      const info = vi.spyOn(harness.deps.logger, "info");
+      await createThreadFromRequest(harness.deps, request);
+      expect(JSON.stringify(info.mock.calls)).toContain("(balance)");
+    });
+  });
+
   it("cuts inputText to 4000 characters", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);

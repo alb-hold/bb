@@ -176,6 +176,12 @@ async function loadCatalogDefaultForProvider(
   return { model: defaultModel.model, providerId: args.providerId };
 }
 
+const SAFE_LOG_TOKEN = /^[a-z0-9_.:-]{1,64}$/i;
+
+function safeHookLogToken(value: string): string {
+  return SAFE_LOG_TOKEN.test(value) ? value : `[redacted len=${value.length}]`;
+}
+
 type RoutedModelCheck = "known" | "unknown" | "unreadable";
 
 async function checkRoutedModel(
@@ -937,7 +943,7 @@ export async function createThreadFromRequest(
         try {
           requireBridgeLaunchForProviderId(deps, decision.providerId);
         } catch (error) {
-          rejection = error instanceof Error ? error.message : String(error);
+          rejection = "provider launch unavailable";
         }
       }
       if (rejection === null && decidedModel !== null) {
@@ -952,7 +958,7 @@ export async function createThreadFromRequest(
           model: decidedModel,
         });
         if (check === "unknown") {
-          rejection = `model ${decidedModel} is not in the ${decision.providerId} catalog`;
+          rejection = `model ${safeHookLogToken(decidedModel)} is not in the ${safeHookLogToken(decision.providerId)} catalog`;
         }
       }
       if (rejection !== null) {
@@ -960,9 +966,9 @@ export async function createThreadFromRequest(
           {
             projectId: requestInput.projectId,
             from: providerId,
-            to: decision.providerId,
+            to: safeHookLogToken(decision.providerId),
           },
-          `thread route hook named ${decision.providerId}, keeping ${providerId}: ${rejection}`,
+          `thread route hook named ${safeHookLogToken(decision.providerId)}, keeping ${providerId}: ${rejection}`,
         );
       } else {
         providerId = decision.providerId;
@@ -978,10 +984,13 @@ export async function createThreadFromRequest(
             projectId: requestInput.projectId,
             from: originalProviderId,
             to: providerId,
-            reason: decision.reason,
+            reason:
+              decision.reason === null
+                ? null
+                : safeHookLogToken(decision.reason),
             pluginId: decision.pluginId,
           },
-          `thread rerouted by ${decision.pluginId}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${decision.reason})`}`,
+          `thread rerouted by ${decision.pluginId}: ${originalProviderId} -> ${providerId}${decision.reason === null ? "" : ` (${safeHookLogToken(decision.reason)})`}`,
         );
       }
     }
