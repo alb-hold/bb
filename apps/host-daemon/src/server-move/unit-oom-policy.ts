@@ -51,7 +51,10 @@ interface DropInScan {
   setsOomPolicy: boolean;
 }
 
-async function scanDropIns(dropInDir: string): Promise<DropInScan> {
+async function scanDropIns(
+  dropInDir: string,
+  ignoredName: string | null = null,
+): Promise<DropInScan> {
   let names: string[];
   try {
     names = await readdir(dropInDir);
@@ -62,7 +65,7 @@ async function scanDropIns(dropInDir: string): Promise<DropInScan> {
     throw error;
   }
   for (const name of names) {
-    if (!name.endsWith(".conf")) {
+    if (!name.endsWith(".conf") || name === ignoredName) {
       continue;
     }
     try {
@@ -107,7 +110,8 @@ export async function ensureUnitOomPolicy(
     if (scan.setsOomPolicy) {
       return "already-current";
     }
-    const dropInPath = join(dropInDir, freeDropInName(scan.names));
+    const dropInName = freeDropInName(scan.names);
+    const dropInPath = join(dropInDir, dropInName);
     try {
       await writeFile(dropInPath, OOM_POLICY_DROP_IN_CONTENT, {
         flag: "wx",
@@ -118,6 +122,16 @@ export async function ensureUnitOomPolicy(
         continue;
       }
       throw error;
+    }
+    const recheck = await scanDropIns(dropInDir, dropInName).catch(
+      async (error: unknown) => {
+        await rm(dropInPath, { force: true });
+        throw error;
+      },
+    );
+    if (recheck.setsOomPolicy) {
+      await rm(dropInPath, { force: true });
+      return "already-current";
     }
     try {
       await args.runCommand("systemctl", ["--user", "daemon-reload"]);

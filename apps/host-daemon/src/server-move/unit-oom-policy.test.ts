@@ -216,6 +216,24 @@ describe("ensureUnitOomPolicy", () => {
     ).resolves.toBe(OOM_POLICY_DROP_IN_CONTENT);
   });
 
+  it("withdraws its drop-in and skips the reload when a sibling sets OOMPolicy after the scan", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    const custom = "[Service]\nOOMPolicy=kill\n";
+    raceHooks.afterReaddir = async (dir) => {
+      await writeFile(join(dir, "10-custom.conf"), custom, "utf8");
+    };
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe(
+      "already-current",
+    );
+
+    await expect(readdir(fixture.dropInDir)).resolves.toEqual([
+      "10-custom.conf",
+    ]);
+    expect(fixture.commands).toEqual([]);
+  });
+
   it("does not remove a colliding file when the reload fails", async () => {
     const fixture = await createFixture();
     await mkdir(fixture.dropInDir, { recursive: true });
