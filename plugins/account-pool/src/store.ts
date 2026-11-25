@@ -772,21 +772,7 @@ export class HubTokenStore {
     private readonly now: () => number = Date.now,
   ) {}
 
-  private startup: Promise<void> | null = null;
-
-  startWhen(hostIds: Promise<readonly string[]>): Promise<void> {
-    const started = hostIds.then((ids) => this.prune(ids));
-    this.startup = started;
-    started.catch(() => undefined);
-    return started;
-  }
-
   async initialize(): Promise<void> {
-    await this.loaded();
-    if (this.startup !== null) await this.startup;
-  }
-
-  private async loaded(): Promise<void> {
     this.initialization ??= this.load();
     await this.initialization;
   }
@@ -894,7 +880,7 @@ export class HubTokenStore {
   }
 
   async prune(hostIds: readonly string[]): Promise<void> {
-    await this.loaded();
+    await this.initialize();
     const enrolled = new Set(hostIds);
     const stale = [...this.tokens.keys()].filter(
       (hostId) => !enrolled.has(hostId),
@@ -1120,6 +1106,7 @@ export class RoutingStore {
       this.kv.delete(`selection:claude:${threadId}`),
       this.kv.delete(`selection:codex:${threadId}`),
       this.kv.delete(`selection:gemini:${threadId}`),
+      this.kv.delete(`retry-route:${threadId}`),
       this.kv.delete(this.bypassKey(threadId)),
       this.kv.delete(this.routedKey(threadId)),
     ]);

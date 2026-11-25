@@ -1712,12 +1712,7 @@ describe("Account Pool plugin", () => {
       await host.harness.lifecycle.dispose();
       await fs.rm(dataDir, { recursive: true, force: true });
     });
-    await vi.waitFor(
-      async () => {
-        await expect(fs.access(goneTokenFile)).rejects.toThrow();
-      },
-      { timeout: 5_000, interval: 25 },
-    );
+    await expect(fs.access(goneTokenFile)).rejects.toThrow();
     await host.harness.behavior.callRpc("account.add", {
       provider: "claude",
       source: { kind: "api-key", apiKey: "sk-account" },
@@ -1798,13 +1793,6 @@ describe("Account Pool plugin", () => {
       await host.harness.lifecycle.dispose();
       await fs.rm(dataDir, { recursive: true, force: true });
     });
-    await vi.waitFor(
-      async () => {
-        const result = await host.harness.behavior.runCli(["status", "--json"]);
-        expect(statusReportSchema.parse(JSON.parse(result.stdout)).accepting).toBe(true);
-      },
-      { timeout: 5_000, interval: 25 },
-    );
     const statusResult = await host.harness.behavior.runCli([
       "status",
       "--json",
