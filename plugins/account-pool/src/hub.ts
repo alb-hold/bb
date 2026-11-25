@@ -79,6 +79,7 @@ const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
 const TRANSIENT_USAGE_RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000];
 const MIN_USAGE_LOOP_DELAY_MS = 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
+const MAX_INLINE_PACING_MS = 2_000;
 const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000];
 const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
@@ -1413,7 +1414,10 @@ export class AccountPoolHub {
             await abortable(activePacing.result, signal);
           } else if (
             heldMs > MAX_INLINE_HOLD_MS ||
-            waited.has(selected.account.id)
+            waited.has(selected.account.id) ||
+            (adapter.provider === "gemini" &&
+              (heldMs > MAX_INLINE_PACING_MS ||
+                candidateIds.size > attempted.size + 1))
           ) {
             failure = {
               status: 429,
@@ -1584,7 +1588,13 @@ export class AccountPoolHub {
               ...observed,
               heldUntil,
             });
-            if (!paced && waitMs <= MAX_INLINE_HOLD_MS) {
+            if (
+              !paced &&
+              waitMs <= MAX_INLINE_HOLD_MS &&
+              (adapter.provider !== "gemini" ||
+                (waitMs <= MAX_INLINE_PACING_MS &&
+                  candidateIds.size <= attempted.size))
+            ) {
               paced = true;
               pacing = {
                 heldUntil,

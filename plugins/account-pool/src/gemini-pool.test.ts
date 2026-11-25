@@ -2547,24 +2547,66 @@ describe("Gemini account pool", () => {
     ).toBe("tok-a");
   });
 
-  it("keeps the Retry-After of a capacity 429 and holds the accounts that returned it", async () => {
-    let degraded = true;
-    const { post } = await twoAccounts(() =>
-      degraded
-        ? {
-            status: 429,
-            body: CAPACITY_BODY,
-            headers: { "retry-after": "3600" },
-          }
-        : { status: 200, body: OK_BODY },
-    );
-    const first = await post("s-capacity-1");
-    expect(first.status).toBe(429);
-    expect(first.headers.get("retry-after")).toBe("3600");
-    degraded = false;
-    const held = await post("s-capacity-2");
-    expect(held.status).toBe(429);
-    expect(Number(held.headers.get("retry-after"))).toBeGreaterThan(0);
+  describe("capacity 429 holds the account instead of waiting", () => {
+    const capacity = (retryAfter: string) => ({
+      status: 429,
+      body: CAPACITY_BODY,
+      headers: { "retry-after": retryAfter },
+    });
+    const timed = async <T,>(work: Promise<T>) => {
+      const started = Date.now();
+      const value = await Promise.race([
+        work,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("request stalled on Retry-After")), 4_000),
+        ),
+      ]);
+      return { value, elapsedMs: Date.now() - started };
+    };
+    const streamed = (google: { calls: Array<{ method: string; bearer?: string }> }) =>
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => call.bearer);
+
+    it("fails over to the second account at once and skips the held one on the next request", async () => {
+      const { google, post } = await twoAccounts((bearer) =>
+        bearer === "tok-a" ? capacity("10") : { status: 200, body: OK_BODY },
+      );
+      const first = await timed(post("s-cap-1"));
+      expect(first.value.status).toBe(200);
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      expect(streamed(google)).toEqual(["tok-a", "tok-b"]);
+      const next = await timed(post("s-cap-2"));
+      expect(next.value.status).toBe(200);
+      expect(streamed(google)).toEqual(["tok-a", "tok-b", "tok-b"]);
+    });
+
+    it("returns the 429 at once with the upstream Retry-After when no other account exists", async () => {
+      const { post } = await twoAccounts(() => capacity("10"));
+      const first = await timed(post("s-cap-3"));
+      expect(first.value.status).toBe(429);
+      expect(first.value.headers.get("retry-after")).toBe("10");
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      const held = await timed(post("s-cap-4"));
+      expect(held.value.status).toBe(429);
+      expect(Number(held.value.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(held.elapsedMs).toBeLessThan(2_000);
+    });
+
+    it("keeps the Retry-After of an hour and holds both accounts", async () => {
+      let degraded = true;
+      const { post } = await twoAccounts(() =>
+        degraded ? capacity("3600") : { status: 200, body: OK_BODY },
+      );
+      const first = await timed(post("s-capacity-1"));
+      expect(first.value.status).toBe(429);
+      expect(first.value.headers.get("retry-after")).toBe("3600");
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      degraded = false;
+      const held = await post("s-capacity-2");
+      expect(held.status).toBe(429);
+      expect(Number(held.headers.get("retry-after"))).toBeGreaterThan(0);
+    });
   });
 
   it("balances Antigravity accounts by headroom, records the choice and previews the binding", async () => {
