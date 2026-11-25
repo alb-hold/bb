@@ -2858,3 +2858,151 @@ it("loads a store with 15,000 kv-recorded deleted-thread markers without opening
   expect(performance.now() - started).toBeLessThan(5_000);
   expect(openSpy).not.toHaveBeenCalled();
 });
+
+type RecordedDeletionKind =
+  | "mismatched-payload"
+  | "archived"
+  | "deleted"
+  | "revocation-restore";
+
+async function loadWithRecordedDeletion(kind: RecordedDeletionKind) {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const digestOf = (threadId: string) =>
+    createHash("sha256").update(threadId).digest("hex");
+  const deletedId = "thr_deleted";
+  const otherId = "thr_other";
+  const liveId = "thr_live";
+  const tokens = new Map<string, string>();
+  for (const threadId of [deletedId, otherId, liveId])
+    tokens.set(
+      threadId,
+      await threads.forThread({ ...route, threadId }, hostToken),
+    );
+  const kvRows = new Map<string, unknown>();
+  const kv = {
+    set: async (key: string, value: unknown) => {
+      kvRows.set(key, value);
+    },
+    list: async (prefix?: string) =>
+      [...kvRows.keys()].filter(
+        (key) => prefix === undefined || key.startsWith(prefix),
+      ),
+  };
+  const deletedDigest = digestOf(deletedId);
+  kvRows.set(`deleted-thread:${deletedDigest}`, { deletedAt: 1_000 });
+  await fs.writeFile(
+    path.join(directory, `deleted-thread-${deletedDigest}.json`),
+    JSON.stringify({ threadDigest: deletedDigest, deleted: true }),
+    { mode: 0o600 },
+  );
+  const marker =
+    kind === "mismatched-payload"
+      ? {
+          name: `archived-thread-${deletedDigest}.json`,
+          body: { threadId: otherId, epoch: 3, archived: true },
+        }
+      : kind === "archived"
+        ? {
+            name: `archived-thread-${deletedDigest}.json`,
+            body: { threadId: deletedId, epoch: 2, archived: true },
+          }
+        : kind === "deleted"
+          ? {
+              name: `archived-thread-${deletedDigest}.json`,
+              body: {
+                threadId: deletedId,
+                epoch: 2,
+                archived: true,
+                deleted: true,
+              },
+            }
+          : {
+              name: `archive-revocation-${deletedDigest}.json`,
+              body: { threadId: deletedId, epoch: 2, archived: false },
+            };
+  await fs.writeFile(
+    path.join(directory, marker.name),
+    JSON.stringify(marker.body),
+    { mode: 0o600 },
+  );
+  const restarted = new ThreadTokenStore(
+    directory,
+    hosts,
+    Date.now,
+    undefined,
+    undefined,
+    undefined,
+    kv,
+  );
+  await restarted.initialize([route.hostId]);
+  const lookups: string[] = [];
+  const sweep = await restarted.sweepThreads(async (threadId) => {
+    lookups.push(threadId);
+    return "live";
+  });
+  const authenticated = async (threadId: string) =>
+    (await restarted.authenticate(tokens.get(threadId)!)) !== null;
+  return {
+    restarted,
+    route,
+    hostToken,
+    deletedId,
+    otherId,
+    liveId,
+    deleted: {
+      authenticates: await authenticated(deletedId),
+      restored: await restarted.restoreThread(
+        deletedId,
+        restarted.archiveVersion(deletedId),
+      ),
+      remint: await restarted
+        .forThread({ ...route, threadId: deletedId }, hostToken)
+        .then(
+          () => "minted",
+          () => "rejected",
+        ),
+    },
+    other: {
+      authenticates: await authenticated(otherId),
+      version: restarted.archiveVersion(otherId),
+    },
+    live: {
+      authenticates: await authenticated(liveId),
+      version: restarted.archiveVersion(liveId),
+    },
+    sweep: { lookups: lookups.sort(), result: sweep },
+  };
+}
+
+it("leaves another thread's state identical to a serial load when a kv-recorded marker name carries a different thread's payload", async () => {
+  const loaded = await loadWithRecordedDeletion("mismatched-payload");
+  expect(loaded.deleted).toEqual({
+    authenticates: false,
+    restored: null,
+    remint: "rejected",
+  });
+  expect(loaded.other).toEqual({ authenticates: true, version: 0 });
+  expect(loaded.live).toEqual({ authenticates: true, version: 0 });
+  expect(loaded.sweep).toEqual({
+    lookups: ["thr_live", "thr_other"],
+    result: { checked: 2, revoked: 0, failed: 0, deferred: 0 },
+  });
+});
+
+it.each(["archived", "deleted", "revocation-restore"] as const)(
+  "keeps a kv-recorded deleted thread deleted, unrestorable and unswept like a serial load when it has a %s marker",
+  async (kind) => {
+    const loaded = await loadWithRecordedDeletion(kind);
+    expect(loaded.deleted).toEqual({
+      authenticates: false,
+      restored: null,
+      remint: "rejected",
+    });
+    expect(loaded.other).toEqual({ authenticates: true, version: 0 });
+    expect(loaded.live).toEqual({ authenticates: true, version: 0 });
+    expect(loaded.sweep).toEqual({
+      lookups: ["thr_live", "thr_other"],
+      result: { checked: 2, revoked: 0, failed: 0, deferred: 0 },
+    });
+  },
+);
