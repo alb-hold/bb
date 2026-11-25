@@ -4882,6 +4882,25 @@ describe("Account Pool plugin", () => {
       ).toEqual([]);
     });
 
+    it("logs an early end when the stream is cut inside the final event before its blank line", async () => {
+      const entries = await relayStream(
+        ["event: message_start\ndata: {}\n\nevent: message_stop\n"],
+        {},
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+      expect(entries[0]?.message).toContain("events=1");
+    });
+
+    it("does not log when the final event is complete and blank-line terminated", async () => {
+      expect(
+        await relayStream(
+          ["event: message_start\ndata: {}\n\nevent: message_stop\ndata: {}\n\n"],
+          {},
+        ),
+      ).toEqual([]);
+    });
+
     it("puts only the request id on the log line, never other response header values", async () => {
       const entries = await relayStream(["event: message_start\ndata: {}\n\n"], {
         "x-request-id": "req_fallback",

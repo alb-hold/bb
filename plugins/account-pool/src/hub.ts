@@ -2336,6 +2336,7 @@ export class AccountPoolHub {
     let events = 0;
     let finalSeen = false;
     let pendingLine = "";
+    let eventName = "";
     let finished = false;
     const reportCut = (
       kind: StreamCut["kind"],
@@ -2386,12 +2387,12 @@ export class AccountPoolHub {
               pendingLine = (lines.pop() ?? "").slice(0, 256);
               for (const line of lines) {
                 const field = line.endsWith("\r") ? line.slice(0, -1) : line;
-                if (field === "") events += 1;
-                else if (
-                  field.startsWith("event:") &&
-                  markers.includes(field.slice("event:".length).trim())
-                )
-                  finalSeen = true;
+                if (field === "") {
+                  events += 1;
+                  if (markers.includes(eventName)) finalSeen = true;
+                  eventName = "";
+                } else if (field.startsWith("event:"))
+                  eventName = field.slice("event:".length).trim();
               }
             }
             controller.enqueue(chunk.value);
