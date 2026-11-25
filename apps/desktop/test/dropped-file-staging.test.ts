@@ -2,8 +2,10 @@ import { makeTempDir } from "@bb/test-helpers";
 import { randomBytes } from "node:crypto";
 import {
   mkdir,
+  lstat,
   readdir,
   readFile,
+  rm,
   stat,
   symlink,
   utimes,
@@ -153,5 +155,43 @@ describe("pruneDroppedFiles", () => {
 
     expect(await exists(oldDir)).toBe(true);
     expect(await readdir(outside)).toEqual(["old"]);
+  });
+
+  it("does not follow an entry swapped for a symlink before it is removed", async () => {
+    const rootDir = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    await writeFile(join(outside, "keep.txt"), "keep");
+    const entry = await makeDrop(rootDir, "old", 10, 30 * DAY);
+
+    await pruneDroppedFiles({
+      rootDir,
+      afterScan: async () => {
+        await rm(entry, { recursive: true });
+        await symlink(outside, entry);
+      },
+    });
+
+    expect((await lstat(entry)).isSymbolicLink()).toBe(true);
+    expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
+  });
+
+  it("falls back and leaves the outside directory unchanged when the root is swapped mid-stage", async () => {
+    const base = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    const rootDir = join(base, "dropped-files");
+
+    await expect(
+      stageDroppedFile({
+        rootDir,
+        name: "a.png",
+        bytes: new Uint8Array([1]),
+        afterRootCheck: async () => {
+          await rm(rootDir, { recursive: true });
+          await symlink(outside, rootDir);
+        },
+      }),
+    ).rejects.toThrow("changed while staging");
+
+    expect(await readdir(outside)).toEqual([]);
   });
 });

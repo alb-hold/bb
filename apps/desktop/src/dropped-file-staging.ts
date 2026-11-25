@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
+  mkdtemp,
+  open,
   readdir,
   realpath,
   rm,
-  writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { ipcMain } from "electron";
@@ -60,12 +60,14 @@ export async function pruneDroppedFiles({
   now = Date.now(),
   maxAgeMs = DROPPED_FILE_MAX_AGE_MS,
   maxTotalBytes = DROPPED_FILE_MAX_TOTAL_BYTES,
+  afterScan,
 }: {
   rootDir: string;
   keepDir?: string;
   now?: number;
   maxAgeMs?: number;
   maxTotalBytes?: number;
+  afterScan?: () => Promise<void>;
 }): Promise<void> {
   try {
     if (!(await isPlainDirectory(rootDir))) {
@@ -93,12 +95,17 @@ export async function pruneDroppedFiles({
     }
     const remove = async (drop: StagedDrop): Promise<boolean> => {
       try {
-        await rm(drop.path, { recursive: true, force: true });
+        const info = await lstat(drop.path);
+        if (!info.isDirectory() || info.isSymbolicLink()) return false;
+        const real = await realpath(drop.path);
+        if (dirname(real) !== realRoot) return false;
+        await rm(real, { recursive: true, force: true });
         return true;
       } catch {
         return false;
       }
     };
+    await afterScan?.();
     const kept: StagedDrop[] = [];
     for (const drop of drops) {
       const expired = now - drop.mtimeMs > maxAgeMs;
@@ -122,22 +129,52 @@ export async function stageDroppedFile({
   rootDir,
   name,
   bytes,
+  afterRootCheck,
 }: {
   rootDir: string;
   name: string;
   bytes: Uint8Array;
+  afterRootCheck?: () => Promise<void>;
 }): Promise<string> {
   const fileName = basename(name.replaceAll("\\", "/"));
   if (fileName.length === 0 || fileName === "." || fileName === "..") {
     throw new Error("Dropped file has no usable name");
   }
   await ensurePlainRoot(rootDir);
-  const dropDir = join(rootDir, randomUUID());
-  await mkdir(dropDir, { mode: 0o700 });
-  const path = join(dropDir, fileName);
-  await writeFile(path, bytes, { mode: 0o600 });
+  const realRoot = await realpath(rootDir);
+  await afterRootCheck?.();
+  const dropDir = await mkdtemp(join(rootDir, "drop-"));
+  let realDrop: string | null = null;
+  try {
+    realDrop = await realpath(dropDir);
+    if (
+      dirname(realDrop) !== realRoot ||
+      (await realpath(rootDir)) !== realRoot
+    ) {
+      throw new Error("Dropped-file store changed while staging");
+    }
+    const realPath = join(realDrop, fileName);
+    const handle = await open(realPath, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+      const info = await handle.stat();
+      if (!info.isFile() || info.nlink !== 1) {
+        throw new Error("Staged file is not a regular file");
+      }
+    } finally {
+      await handle.close();
+    }
+    if (!(await realpath(realPath)).startsWith(`${realRoot}${sep}`)) {
+      throw new Error("Staged file escaped the dropped-file store");
+    }
+  } catch (error) {
+    await rm(realDrop ?? dropDir, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+    throw error;
+  }
   await pruneDroppedFiles({ rootDir, keepDir: dropDir });
-  return path;
+  return join(dropDir, fileName);
 }
 
 export function registerDroppedFileStagingIpc(
