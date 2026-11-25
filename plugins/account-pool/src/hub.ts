@@ -465,6 +465,7 @@ export class AccountPoolHub {
         result: writeSecret()
           .then(async () => {
             this.refreshBackoffs.delete(accountId);
+            this.committedProjects.delete(accountId);
             await this.options.accounts.clearRejectedRefresh(accountId);
             this.setError(accountId, null);
           })
@@ -877,6 +878,11 @@ export class AccountPoolHub {
     const listed = new Set(accounts.map((account) => account.id));
     for (const id of [...this.transientUsageRetries.keys()])
       if (!listed.has(id)) this.transientUsageRetries.delete(id);
+    const existing = new Set(
+      (await this.options.accounts.list()).map((account) => account.id),
+    );
+    for (const id of [...this.committedProjects.keys()])
+      if (!existing.has(id)) this.committedProjects.delete(id);
     const before = new Map(
       accounts.map((account) => [
         account.id,
@@ -999,7 +1005,10 @@ export class AccountPoolHub {
         fetch: this.options.fetch,
         now: this.options.now,
         onProjectCommitted: (accountId, project) =>
-          this.committedProjects.set(accountId, project),
+          this.committedProjects.set(accountId, {
+            project,
+            createdAt: account.createdAt,
+          }),
       })
       .then(
         () => true,
@@ -2643,7 +2652,10 @@ export class AccountPoolHub {
     );
   }
 
-  private readonly committedProjects = new Map<string, string>();
+  private readonly committedProjects = new Map<
+    string,
+    { project: string; createdAt: number }
+  >();
 
   private putObservedQuota(
     sentOn: Account,
@@ -2652,7 +2664,13 @@ export class AccountPoolHub {
     const stored = this.options.quotas.get(sentOn.id);
     if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
     const committed = this.committedProjects.get(sentOn.id);
-    if (committed !== undefined && committed !== sentOn.geminiProject) return;
+    if (committed !== undefined && committed.createdAt !== sentOn.createdAt)
+      this.committedProjects.delete(sentOn.id);
+    else if (
+      committed !== undefined &&
+      committed.project !== sentOn.geminiProject
+    )
+      return;
     this.putQuota(change(stored));
   }
 

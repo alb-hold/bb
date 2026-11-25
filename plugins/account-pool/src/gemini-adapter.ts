@@ -1708,6 +1708,23 @@ export function createGeminiAdapter(options: {
                 1_000,
               ),
           });
+        const restoreProject = async (error: unknown): Promise<never> => {
+          try {
+            await context.accounts.setGeminiProject(
+              context.account.id,
+              previousProject,
+            );
+            projectRestored = true;
+          } catch (restoreError) {
+            throw new Error(
+              `${errorMessage(error)}; the previous project could not be restored: ${errorMessage(restoreError)}`.slice(
+                0,
+                1_000,
+              ),
+            );
+          }
+          throw error;
+        };
         if (newProject !== null) {
           try {
             await context.accounts.setGeminiProject(
@@ -1715,8 +1732,7 @@ export function createGeminiAdapter(options: {
               newProject,
             );
           } catch (error) {
-            projectRestored = true;
-            throw error;
+            return await restoreProject(error);
           }
         }
         try {
@@ -1724,22 +1740,7 @@ export function createGeminiAdapter(options: {
           if (newProject !== null)
             context.onProjectCommitted?.(context.account.id, newProject);
         } catch (error) {
-          if (newProject !== null) {
-            try {
-              await context.accounts.setGeminiProject(
-                context.account.id,
-                previousProject,
-              );
-              projectRestored = true;
-            } catch (restoreError) {
-              throw new Error(
-                `${errorMessage(error)}; the previous project could not be restored: ${errorMessage(restoreError)}`.slice(
-                  0,
-                  1_000,
-                ),
-              );
-            }
-          }
+          if (newProject !== null) return await restoreProject(error);
           throw error;
         }
       } catch (error) {

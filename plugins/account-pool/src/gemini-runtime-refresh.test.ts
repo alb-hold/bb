@@ -759,7 +759,8 @@ describe("Gemini usage refresh results", () => {
       pool.advance(5 * MINUTE + 1_000);
       expect(await pool.hub.refreshUsage()).toBe(false);
 
-      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(write).toHaveBeenLastCalledWith(pool.account.id, "synthetic-project");
       expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe(
         "synthetic-project",
       );
@@ -1257,6 +1258,81 @@ describe("Gemini usage refresh writes in the hub", () => {
 
     expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
     expect(pool.quotas.get(pool.account.id)).toEqual(committed);
+  });
+
+  const failGeminiAccountWrites = (
+    pool: Awaited<ReturnType<typeof createGeminiPool>>,
+    plan: readonly ("persist-then-reject" | "reject")[],
+  ) => {
+    const original = pool.kv.set.bind(pool.kv);
+    const remaining = [...plan];
+    vi.spyOn(pool.kv, "set").mockImplementation(async (...args) => {
+      const step = args[0] === "accounts:gemini:v1" ? remaining.shift() : undefined;
+      if (step === "persist-then-reject") {
+        await original(...args);
+        throw new Error("disk full after write");
+      }
+      if (step === "reject") throw new Error("disk full");
+      return original(...args);
+    });
+  };
+
+  it("restores the old project when the account store stored the new one and then rejected", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    failGeminiAccountWrites(pool, ["persist-then-reject"]);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id).error).toContain("quota_read");
+    pool.setQuotaMode("normal");
+    expect(await pool.request()).toBe(200);
+  });
+
+  it("keeps the blocking marker when the account store stored the new project, rejected, and the restore also rejected", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    failGeminiAccountWrites(pool, ["persist-then-reject", "reject"]);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+
+    const error = pool.quotas.get(pool.account.id).error;
+    expect(error).toContain("commit");
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+    expect(await pool.eligible()).toBe(true);
+  });
+
+  it("still writes the observed fields of a response from a re-added account with the same id", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    failGeminiAccountWrites(pool, ["reject"]);
+    await expect(pool.accounts.setEnabled(pool.account.id, false)).rejects.toThrow("disk full");
+    await pool.kv.set("accounts:gemini:v1", [
+      { ...pool.account, createdAt: pool.account.createdAt + 1, geminiProject: "synthetic-project" },
+    ]);
+    pool.setQuotaMode("normal");
+    pool.advance(10 * MINUTE);
+    await pool.hub.refreshUsage(undefined, true);
+    pool.planGenerate({
+      status: 429,
+      headers: { "retry-after": "3600" },
+      body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+    });
+    expect(await pool.request()).toBe(429);
+    await flush();
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
   });
 
   it("still writes the observed fields of a response on the current project", async () => {
