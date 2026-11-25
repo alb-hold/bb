@@ -471,6 +471,41 @@ describe("Gemini usage refresh results", () => {
     });
   });
 
+  const seedExhausted = async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    setStaleUsage(pool);
+    const restriction = {
+      reason: "quota_exhausted" as const,
+      resetAt: pool.now() + 60 * MINUTE,
+    };
+    pool.quotas.put({ ...pool.quotas.get(pool.account.id), usageRestriction: restriction });
+    expect(await pool.eligible()).toBe(false);
+    return { pool, restriction };
+  };
+
+  it("keeps a stored exhausted restriction through an empty read on every endpoint, so the account stays ineligible", async () => {
+    const { pool, restriction } = await seedExhausted();
+    pool.setQuotaMode("empty");
+
+    const account = await pool.operations.refreshUsage(pool.account.id);
+
+    expect(account?.limitWindows).toEqual([]);
+    expect(account?.observedAt).toBe(pool.now());
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toEqual(restriction);
+    expect(await pool.eligible()).toBe(false);
+    expect((await pool.summary()).status).toBe("exhausted");
+  });
+
+  it("clears a stored exhausted restriction when the read has Gemini windows and none is rejected", async () => {
+    const { pool } = await seedExhausted();
+
+    await pool.operations.refreshUsage(pool.account.id);
+
+    expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
+    expect(await pool.eligible()).toBe(true);
+  });
+
   it("stamps an empty parsed reading for a forced empty quota response", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
