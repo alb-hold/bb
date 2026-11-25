@@ -1697,7 +1697,7 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-token");
   });
 
-  it("completes a Claude and GPT only refresh like any success: clears a recoverable error and a stale restriction, stamps the read, keeps the stored windows and project", async () => {
+  it("completes a Claude and GPT only refresh without a Gemini reading: clears a recoverable error, keeps the stored restriction, windows, observedAt and project", async () => {
     const stores = await usageStores();
     const account = await storedAccount(stores, "proj-token");
     const good = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
@@ -1731,8 +1731,8 @@ describe("Antigravity companion project for consumer accounts", () => {
     );
     const quota = stores.quotas.get(account.id);
     expect(quota.error).toBeNull();
-    expect(quota.usageRestriction).toBeNull();
-    expect(quota.observedAt).toBe(NOW + 60_000);
+    expect(quota.usageRestriction).toEqual({ reason: "quota_exhausted", resetAt: NOW + 1 });
+    expect(quota.observedAt).toBe(seeded.observedAt);
     expect(quota.limitWindows).toEqual(seeded.limitWindows);
     expect(Object.keys(stores.quotas.modelWeekly(account.id) ?? {})).toHaveLength(2);
     expect(setProject).not.toHaveBeenCalled();
@@ -1855,11 +1855,10 @@ describe("Antigravity companion project for consumer accounts", () => {
       await run;
       const quota = stores.quotas.get(account.id);
       expect(quota.error).toBeNull();
-      expect(quota.observedAt).toBe(NOW + 60_000);
+      const thirdPartyOnly = winner === null && (hasThirdParty(a) || hasThirdParty(b));
+      expect(quota.observedAt).toBe(thirdPartyOnly ? seeded.observedAt : NOW + 60_000);
       expect(quota.usageRestriction).toEqual(
-        winner === null && !hasThirdParty(a) && !hasThirdParty(b)
-          ? seededRestriction
-          : null,
+        winner === null ? seededRestriction : null,
       );
       if (winner === null)
         expect(quota.limitWindows).toEqual(

@@ -1667,7 +1667,7 @@ export function createGeminiAdapter(options: {
           accountId: context.account.id,
           limitWindows: windows,
           usageRestriction:
-            windows.length === 0
+            keepStored || windows.length === 0
               ? previous.usageRestriction
               : rejected.length === 0
                 ? null
@@ -1683,7 +1683,7 @@ export function createGeminiAdapter(options: {
                       null,
                     ),
                   }),
-          observedAt: now,
+          observedAt: keepStored ? previous.observedAt : now,
           error: null,
         };
         context.signal?.throwIfAborted();

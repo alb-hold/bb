@@ -100,7 +100,7 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" = "normal";
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" = "normal";
   const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
@@ -132,6 +132,18 @@ async function createGeminiPool(
         return Response.json({ unexpected: true });
       if (quotaMode === "missing") return Response.json({});
       if (quotaMode === "empty") return Response.json({ buckets: [] });
+      if (quotaMode === "third-party")
+        return Response.json({
+          groups: [
+            {
+              displayName: "Claude and GPT models",
+              buckets: [
+                { bucketId: "3p-5h", remainingFraction: 0.1 },
+                { bucketId: "3p-weekly", remainingFraction: 0.2 },
+              ],
+            },
+          ],
+        });
       if (quotaMode === "unknown")
         return Response.json({
           buckets: [{ bucketId: "future-model", remainingFraction: 0.2 }],
@@ -574,6 +586,39 @@ describe("Gemini usage refresh results", () => {
     expect(pool.quotas.get(pool.account.id).usageRestriction).toBeNull();
     expect(await pool.eligible()).toBe(true);
   });
+
+  it.each([
+    ["stale windows with no reset time", null],
+    ["stale windows whose reset is in the past", -30 * MINUTE],
+  ] as const)(
+    "does not treat a 3p-only read as a Gemini reading: %s keep the stored restriction, windows and observedAt",
+    async (_name, resetOffset) => {
+      const { pool, restriction } = await seedExhausted();
+      const stored = pool.quotas.get(pool.account.id);
+      if (resetOffset !== null)
+        pool.quotas.put({
+          ...stored,
+          limitWindows: stored.limitWindows.map((window) => ({
+            ...window,
+            resetAt: pool.now() + resetOffset,
+          })),
+        });
+      const before = pool.quotas.get(pool.account.id);
+      pool.setQuotaMode("third-party");
+
+      await pool.operations.refreshUsage(pool.account.id);
+
+      const after = pool.quotas.get(pool.account.id);
+      expect(after.usageRestriction).toEqual(restriction);
+      expect(after.limitWindows).toEqual(before.limitWindows);
+      expect(after.observedAt).toBe(before.observedAt);
+      expect(after.error).toBeNull();
+      expect(await pool.eligible()).toBe(false);
+      const display = Object.values(pool.quotas.modelWeekly(pool.account.id) ?? {});
+      expect(display.length).toBeGreaterThan(0);
+      for (const entry of display) expect(entry.observedAt).toBe(pool.now());
+    },
+  );
 
   it("stamps an empty parsed reading for a forced empty quota response", async () => {
     const pool = await createGeminiPool(0);
