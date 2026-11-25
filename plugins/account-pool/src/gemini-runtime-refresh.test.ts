@@ -98,7 +98,7 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" = "normal";
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" = "normal";
   const transport: typeof fetch = async (input) => {
     const url = String(input);
     calls.push(url);
@@ -108,6 +108,10 @@ async function createGeminiPool(
         paidTier: { name: "Google AI Ultra" },
       });
     if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+      if (quotaMode === "empty-daily-http-prod")
+        return url.includes("/daily/")
+          ? Response.json({ buckets: [] })
+          : Response.json({ error: "synthetic failure" }, { status: 503 });
       if (quotaMode === "http")
         return Response.json({ error: "synthetic failure" }, { status: 503 });
       if (quotaMode === "unreadable")
@@ -388,6 +392,21 @@ describe("Gemini usage refresh results", () => {
     expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(
       0.54,
     );
+  });
+
+  it("reports one endpoint empty and the other failed as a failed refresh that leaves the account's eligibility unchanged", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const observedAt = setStaleUsage(pool);
+    const eligibleBefore = await pool.eligible();
+    pool.setQuotaMode("empty-daily-http-prod");
+
+    await expect(pool.operations.refreshUsage(pool.account.id)).rejects.toThrow(
+      "Could not refresh account usage. Try again.",
+    );
+    expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
+    expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(0.54);
+    expect(await pool.eligible()).toBe(eligibleBefore);
   });
 
   it.each(["http", "unreadable", "missing", "unknown"] as const)(

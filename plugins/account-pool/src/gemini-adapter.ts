@@ -1532,6 +1532,7 @@ export function createGeminiAdapter(options: {
           found = true;
           break;
         }
+        if (settled.some((result) => result.status === "rejected")) continue;
         if (
           thirdPartySummary === null &&
           Object.keys(geminiThirdPartyDisplay(merged, context.now())).length > 0

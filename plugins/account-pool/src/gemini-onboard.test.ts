@@ -1926,4 +1926,82 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(stored?.geminiEndpoint).toBe("daily");
     expect(setEndpoint).not.toHaveBeenCalled();
   });
+
+  type EndpointOutcome = "data" | "empty" | "failed";
+  const ENDPOINT_OUTCOMES: EndpointOutcome[] = ["data", "empty", "failed"];
+  const endpointRows = ENDPOINT_OUTCOMES.flatMap((daily) =>
+    ENDPOINT_OUTCOMES.map((prod) => [daily, prod] as const),
+  );
+  const endpointScript = (daily: EndpointOutcome, prod: EndpointOutcome) => {
+    const payload = (outcome: EndpointOutcome) =>
+      outcome === "data"
+        ? {
+            buckets: [bucket("gemini-4-neon", 0.3)],
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [bucket("3p-5h", 0.9), bucket("3p-weekly", 0.8)],
+              },
+            ],
+          }
+        : { buckets: [] };
+    const quotaByBase: Partial<Record<"daily" | "prod", unknown>> = {};
+    const quotaFailureByBase: Partial<Record<"daily" | "prod", number>> = {};
+    for (const [base, outcome] of [["daily", daily], ["prod", prod]] as const) {
+      if (outcome === "failed") quotaFailureByBase[base] = 503;
+      else quotaByBase[base] = payload(outcome);
+    }
+    return { quotaByBase, quotaFailureByBase };
+  };
+
+  it.each(endpointRows)(
+    "refreshes with the daily endpoint %s and the prod endpoint %s: an empty answer is real only when no endpoint failed",
+    async (daily, prod) => {
+      const stores = await usageStores();
+      const account = await storedAccount(stores, "proj-live-agy");
+      const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+      await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+      const seeded = stores.quotas.get(account.id);
+      const seededError = "OAuth refresh failed with HTTP 500.";
+      stores.quotas.put({ ...seeded, error: seededError });
+      const staleDisplay = {
+        "Stale 3p": { utilization: 0.77, resetAt: null, status: null, observedAt: NOW, source: "usage" as const },
+      };
+      stores.quotas.putModelWeekly(account.id, staleDisplay);
+      const google = fakeCodeAssist({
+        loads: [LIVE_AGY_DAILY],
+        ...endpointScript(daily, prod),
+      });
+      const live = (await stores.accounts.get(account.id)) ?? account;
+      const run = google.adapter.refreshUsage(
+        usageContext(stores, live, google.fetch, () => NOW + 60_000),
+      );
+      const outcomes = [daily, prod];
+      const hasData = outcomes.includes("data");
+      const anyFailed = outcomes.includes("failed");
+      const quota = stores.quotas.get(account.id);
+      if (!hasData && anyFailed) {
+        await expect(run).rejects.toBeDefined();
+        expect(quota.limitWindows).toEqual(seeded.limitWindows);
+        expect(quota.observedAt).toBe(seeded.observedAt);
+        expect(quota.error).toBe(seededError);
+        expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+        return;
+      }
+      await run;
+      const fresh = stores.quotas.get(account.id);
+      expect(fresh.error).toBeNull();
+      expect(fresh.observedAt).toBe(NOW + 60_000);
+      const display = stores.quotas.modelWeekly(account.id) ?? {};
+      expect(Object.keys(display)).not.toContain("Stale 3p");
+      if (hasData) {
+        expect(fresh.limitWindows).toHaveLength(1);
+        expect(fresh.limitWindows[0]?.utilization).toBeCloseTo(0.7);
+        expect(Object.keys(display)).toHaveLength(2);
+      } else {
+        expect(fresh.limitWindows).toEqual([]);
+        expect(Object.keys(display)).toHaveLength(0);
+      }
+    },
+  );
 });
