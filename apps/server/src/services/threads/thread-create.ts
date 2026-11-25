@@ -176,6 +176,61 @@ async function loadCatalogDefaultForProvider(
   return { model: defaultModel.model, providerId: args.providerId };
 }
 
+type RoutedModelCheck = "known" | "unknown" | "unreadable";
+
+async function checkRoutedModel(
+  deps: ThreadCreateDeps,
+  args: {
+    environment: ThreadCreateServiceRequestInput["environment"];
+    model: string;
+    parentThread: Thread | null;
+    projectId: string;
+    providerId: string;
+  },
+): Promise<RoutedModelCheck> {
+  try {
+    const requestedEnvironment = await resolveCreateThreadEnvironment(deps, {
+      parentThread: args.parentThread,
+      projectId: args.projectId,
+      requestedEnvironment: args.environment,
+    });
+    let hostId: string | null = null;
+    let cwd: string | undefined;
+    if (requestedEnvironment.type === "provider") {
+      if (requestedEnvironment.machine?.type === "existing") {
+        hostId = requestedEnvironment.machine.hostId;
+        cwd =
+          projectCheckoutPathOnHost(deps, args.projectId, hostId) ?? undefined;
+      }
+    } else {
+      const resolved = resolveStableThreadRequestEnvironment(deps, {
+        environment: requestedEnvironment,
+        projectId: args.projectId,
+      });
+      hostId = childHostIdForResolvedEnvironment(resolved);
+      cwd = modelCatalogCwdForResolvedEnvironment(resolved);
+    }
+    if (hostId === null) {
+      return "unreadable";
+    }
+    const catalog = await resolveSystemProviderModels(deps, {
+      ...(cwd !== undefined ? { cwd } : {}),
+      hostId,
+      providerId: args.providerId,
+    });
+    if (catalog.modelLoadError !== null) {
+      return "unreadable";
+    }
+    return [...catalog.models, ...catalog.selectedOnlyModels].some(
+      (candidate) => candidate.model === args.model,
+    )
+      ? "known"
+      : "unknown";
+  } catch {
+    return "unreadable";
+  }
+}
+
 interface ResolveSessionOptionDefaultModelArgs {
   cwd?: string;
   defaultModel: string | null;
@@ -875,6 +930,7 @@ export async function createThreadFromRequest(
       decision.model !== (requestedModel ?? inheritedDefaultModel);
     if (decision !== null && (providerChanged || modelChanged)) {
       let rejection: string | null = null;
+      let decidedModel = decision.model;
       if (deps.providerRegistry.get(decision.providerId) === null) {
         rejection = "unknown provider";
       } else {
@@ -882,6 +938,23 @@ export async function createThreadFromRequest(
           requireBridgeLaunchForProviderId(deps, decision.providerId);
         } catch (error) {
           rejection = error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (rejection === null && decidedModel !== null) {
+        const check = await checkRoutedModel(deps, {
+          environment: requestInput.environment,
+          parentThread:
+            forkSourceEnvironmentId !== undefined
+              ? null
+              : (sourceThread ?? parentThread),
+          projectId: requestInput.projectId,
+          providerId: decision.providerId,
+          model: decidedModel,
+        });
+        if (check === "unknown") {
+          rejection = `model ${decidedModel} is not in the ${decision.providerId} catalog`;
+        } else if (check === "unreadable") {
+          decidedModel = null;
         }
       }
       if (rejection !== null) {
@@ -895,7 +968,7 @@ export async function createThreadFromRequest(
         );
       } else {
         providerId = decision.providerId;
-        requestedModel = decision.model;
+        requestedModel = decidedModel;
         if (providerChanged) {
           inheritedDefaultModel = null;
           routedReasoningLevel = undefined;

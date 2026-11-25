@@ -160,6 +160,30 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it("ignores a decision whose model the chosen provider does not have", async () => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      installRouteHook(() => ({
+        providerId: "claude-code",
+        model: "no-such-model",
+        reason: "balance",
+      }));
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, request);
+      expect(thread.providerId).toBe("codex");
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === thread.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected start command");
+      }
+      expect(start.command.options.model).toBe("codex-model");
+      expect(JSON.stringify(warn.mock.calls)).toContain("no-such-model");
+    });
+  });
+
   it("cuts inputText to 4000 characters", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);
