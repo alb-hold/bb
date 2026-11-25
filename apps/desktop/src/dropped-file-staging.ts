@@ -1,11 +1,12 @@
+import { randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
-  mkdtemp,
   open,
   readdir,
   realpath,
-  rm,
+  rmdir,
+  unlink,
 } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { ipcMain } from "electron";
@@ -20,8 +21,13 @@ const stageDroppedFileRequestSchema = z.object({
 const DROPPED_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DROPPED_FILE_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 
+const DROP_DIR_NAME =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DROP_MAX_FILES = 4;
+
 interface StagedDrop {
   path: string;
+  files: string[];
   mtimeMs: number;
   bytes: number;
 }
@@ -44,14 +50,36 @@ async function ensurePlainRoot(rootDir: string): Promise<void> {
   }
 }
 
-async function directoryBytes(dir: string): Promise<number> {
-  let total = 0;
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) total += await directoryBytes(path);
-    else if (entry.isFile()) total += (await lstat(path)).size;
+async function removeDropEntries(
+  dir: string,
+  names: readonly string[],
+): Promise<boolean> {
+  for (const name of names) {
+    await unlink(join(dir, name)).catch(() => undefined);
   }
-  return total;
+  try {
+    await rmdir(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function scanDrop(path: string): Promise<StagedDrop | null> {
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink()) return null;
+  const children = await readdir(path, { withFileTypes: true });
+  if (children.length > DROP_MAX_FILES) return null;
+  const files: string[] = [];
+  let bytes = 0;
+  for (const child of children) {
+    if (!child.isFile()) return null;
+    const childInfo = await lstat(join(path, child.name));
+    if (!childInfo.isFile()) return null;
+    bytes += childInfo.size;
+    files.push(child.name);
+  }
+  return { path, files, mtimeMs: info.mtimeMs, bytes };
 }
 
 export async function pruneDroppedFiles({
@@ -76,35 +104,18 @@ export async function pruneDroppedFiles({
       );
       return;
     }
-    const realRoot = await realpath(rootDir);
     const drops: StagedDrop[] = [];
     for (const entry of await readdir(rootDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const path = join(rootDir, entry.name);
+      if (!entry.isDirectory() || !DROP_DIR_NAME.test(entry.name)) continue;
       try {
-        if (!(await realpath(path)).startsWith(`${realRoot}${sep}`)) continue;
-        const info = await lstat(path);
-        drops.push({
-          path,
-          mtimeMs: info.mtimeMs,
-          bytes: await directoryBytes(path),
-        });
+        const drop = await scanDrop(join(rootDir, entry.name));
+        if (drop !== null) drops.push(drop);
       } catch {
         continue;
       }
     }
-    const remove = async (drop: StagedDrop): Promise<boolean> => {
-      try {
-        const info = await lstat(drop.path);
-        if (!info.isDirectory() || info.isSymbolicLink()) return false;
-        const real = await realpath(drop.path);
-        if (dirname(real) !== realRoot) return false;
-        await rm(real, { recursive: true, force: true });
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    const remove = (drop: StagedDrop): Promise<boolean> =>
+      removeDropEntries(drop.path, drop.files);
     await afterScan?.();
     const kept: StagedDrop[] = [];
     for (const drop of drops) {
@@ -143,7 +154,8 @@ export async function stageDroppedFile({
   await ensurePlainRoot(rootDir);
   const realRoot = await realpath(rootDir);
   await afterRootCheck?.();
-  const dropDir = await mkdtemp(join(rootDir, "drop-"));
+  const dropDir = join(rootDir, randomUUID());
+  await mkdir(dropDir, { mode: 0o700 });
   let realDrop: string | null = null;
   try {
     realDrop = await realpath(dropDir);
@@ -168,9 +180,7 @@ export async function stageDroppedFile({
       throw new Error("Staged file escaped the dropped-file store");
     }
   } catch (error) {
-    await rm(realDrop ?? dropDir, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeDropEntries(realDrop ?? dropDir, [fileName]);
     throw error;
   }
   await pruneDroppedFiles({ rootDir, keepDir: dropDir });

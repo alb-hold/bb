@@ -6,6 +6,7 @@ import {
   readdir,
   readFile,
   rm,
+  rmdir,
   stat,
   symlink,
   utimes,
@@ -18,6 +19,10 @@ import {
   stageDroppedFile,
 } from "../src/dropped-file-staging.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rm: vi.fn(actual.rm) };
+});
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
 describe("stageDroppedFile", () => {
@@ -53,6 +58,14 @@ describe("stageDroppedFile", () => {
 
 describe("pruneDroppedFiles", () => {
   const DAY = 24 * 60 * 60 * 1000;
+  const DROP_IDS: Record<string, string> = {
+    old: "00000000-0000-4000-8000-000000000001",
+    fresh: "00000000-0000-4000-8000-000000000002",
+    a: "00000000-0000-4000-8000-000000000003",
+    b: "00000000-0000-4000-8000-000000000004",
+    c: "00000000-0000-4000-8000-000000000005",
+    inner: "00000000-0000-4000-8000-000000000006",
+  };
 
   async function makeDrop(
     rootDir: string,
@@ -60,7 +73,7 @@ describe("pruneDroppedFiles", () => {
     bytes: number,
     ageMs: number,
   ): Promise<string> {
-    const dir = join(rootDir, name);
+    const dir = join(rootDir, DROP_IDS[name] ?? name);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "a.png"), new Uint8Array(bytes));
     const when = new Date(Date.now() - ageMs);
@@ -118,7 +131,7 @@ describe("pruneDroppedFiles", () => {
     expect(await readFile(path)).toEqual(Buffer.from([1, 2, 3]));
   });
 
-  it("never follows a symlink out of the root and never throws", async () => {
+  it("skips a drop holding a symlink, never follows it and never throws", async () => {
     const rootDir = await makeTempDir("bb-drop-");
     const outside = await makeTempDir("bb-outside-");
     await writeFile(join(outside, "keep.txt"), "keep");
@@ -133,7 +146,7 @@ describe("pruneDroppedFiles", () => {
       pruneDroppedFiles({ rootDir: join(rootDir, "missing") }),
     ).resolves.toBeUndefined();
 
-    expect(await exists(inner)).toBe(false);
+    expect(await exists(inner)).toBe(true);
     expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
   });
 
@@ -154,7 +167,7 @@ describe("pruneDroppedFiles", () => {
     ).rejects.toThrow("not a plain directory");
 
     expect(await exists(oldDir)).toBe(true);
-    expect(await readdir(outside)).toEqual(["old"]);
+    expect(await readdir(outside)).toEqual([basename(oldDir)]);
   });
 
   it("does not follow an entry swapped for a symlink before it is removed", async () => {
@@ -193,5 +206,57 @@ describe("pruneDroppedFiles", () => {
     ).rejects.toThrow("changed while staging");
 
     expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("never deletes recursively and removes normal old drops", async () => {
+    const rootDir = await makeTempDir("bb-drop-");
+    const old = await makeDrop(rootDir, "old", 10, 30 * DAY);
+    vi.mocked(rm).mockClear();
+
+    await pruneDroppedFiles({ rootDir });
+
+    expect(await exists(old)).toBe(false);
+    expect(rm).not.toHaveBeenCalled();
+  });
+
+  it("skips non-uuid entries and entries holding a subdirectory", async () => {
+    const rootDir = await makeTempDir("bb-drop-");
+    const plain = join(rootDir, "not-a-uuid");
+    await mkdir(plain);
+    await writeFile(join(plain, "a.png"), "x");
+    const nested = await makeDrop(rootDir, "old", 10, 30 * DAY);
+    await mkdir(join(nested, "sub"));
+    await writeFile(join(nested, "sub", "deep.txt"), "deep");
+    const when = new Date(Date.now() - 30 * DAY);
+    await utimes(plain, when, when);
+
+    await pruneDroppedFiles({ rootDir });
+
+    expect(await exists(plain)).toBe(true);
+    expect(await exists(join(nested, "sub", "deep.txt"))).toBe(true);
+  });
+
+  it("a root swapped before the delete leaves an outside tree intact", async () => {
+    const base = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    const rootDir = join(base, "dropped-files");
+    await mkdir(rootDir);
+    const entry = await makeDrop(rootDir, "old", 10, 30 * DAY);
+    const twin = join(outside, DROP_IDS["old"] as string);
+    await mkdir(join(twin, "sub"), { recursive: true });
+    await writeFile(join(twin, "sub", "deep.txt"), "deep");
+    await writeFile(join(twin, "keep.txt"), "keep");
+
+    await pruneDroppedFiles({
+      rootDir,
+      afterScan: async () => {
+        await rm(entry, { recursive: true });
+        await rmdir(rootDir);
+        await symlink(outside, rootDir);
+      },
+    });
+
+    expect(await readFile(join(twin, "sub", "deep.txt"), "utf8")).toBe("deep");
+    expect(await readFile(join(twin, "keep.txt"), "utf8")).toBe("keep");
   });
 });
