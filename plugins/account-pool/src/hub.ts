@@ -29,6 +29,7 @@ import {
 } from "./codex-adapter.js";
 import {
   createGeminiAdapter,
+  GEMINI_COMMIT_ERROR_PREFIX,
   DEFAULT_GEMINI_REFRESH_URL,
   DEFAULT_GEMINI_UPSTREAM_BASE_URLS,
   type GeminiUpstreamBaseUrls,
@@ -465,8 +466,7 @@ export class AccountPoolHub {
           .then(async () => {
             this.refreshBackoffs.delete(accountId);
             await this.options.accounts.clearRejectedRefresh(accountId);
-            const quota = this.options.quotas.get(accountId);
-            this.options.quotas.put({ ...quota, error: null });
+            this.setError(accountId, null);
           })
           .finally(() => {
             if (this.refreshes.get(accountId) === flight)
@@ -1541,7 +1541,7 @@ export class AccountPoolHub {
             family,
             this.options.now(),
           );
-          this.options.quotas.put(observed);
+          this.putQuota(observed);
           if (pacing !== null && !response.ok) {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
@@ -1564,7 +1564,7 @@ export class AccountPoolHub {
                 this.options.now(),
               );
               if (rejection !== null) {
-                this.options.quotas.put({
+                this.putQuota({
                   ...observed,
                   usageRestriction: {
                     reason: rejection.reason,
@@ -1585,7 +1585,7 @@ export class AccountPoolHub {
               this.options.now(),
             );
             const heldUntil = this.options.now() + waitMs;
-            this.options.quotas.put({
+            this.putQuota({
               ...observed,
               heldUntil,
             });
@@ -1718,7 +1718,7 @@ export class AccountPoolHub {
                 url: requestUrl,
                 account: selected.account,
                 onQuotaRejection: ({ reason, resetAt }) =>
-                  this.options.quotas.put({
+                  this.putQuota({
                     ...this.options.quotas.get(accountId),
                     usageRestriction: { reason, resetAt },
                   }),
@@ -2630,11 +2630,21 @@ export class AccountPoolHub {
     }
   }
 
+  private putQuota(quota: AccountQuota): void {
+    const stored = this.options.quotas.get(quota.accountId).error;
+    this.options.quotas.put(
+      stored?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true &&
+        quota.error !== stored
+        ? { ...quota, error: stored }
+        : quota,
+    );
+  }
+
   private setError(accountId: string, message: string | null): void {
     const quota = this.options.quotas.get(accountId);
     const error = message?.slice(0, 1_000) ?? null;
     if (quota.error === error) return;
-    this.options.quotas.put({ ...quota, error });
+    this.putQuota({ ...quota, error });
     this.options.onAccountsChanged();
   }
 

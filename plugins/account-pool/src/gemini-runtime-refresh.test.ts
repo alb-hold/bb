@@ -101,6 +101,7 @@ async function createGeminiPool(
   };
   const calls: string[] = [];
   let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" | "load-http" = "normal";
+  let tokenFails = false;
   const gates = new Map<string, { reached: () => void; waiting: Promise<void> }>();
   const hold = (suffix: string) => {
     let reached: () => void = () => {};
@@ -127,6 +128,8 @@ async function createGeminiPool(
       return new Response("data: {}\n\n", {
         headers: { "content-type": "text/event-stream" },
       });
+    if (url.endsWith("/token") && tokenFails)
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
     if (url.endsWith("/token"))
       return Response.json({
         access_token: "access-fresh",
@@ -295,6 +298,9 @@ async function createGeminiPool(
     now,
     setQuotaMode: (mode: typeof quotaMode) => {
       quotaMode = mode;
+    },
+    setTokenFails: (value: boolean) => {
+      tokenFails = value;
     },
     summary,
     eligible: async () =>
@@ -935,7 +941,9 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect([second, pool.quotas.get(pool.account.id).error]).toEqual([true, null]);
   });
 
-  const beginProjectChange = async () => {
+  const beginProjectChange = async (
+    heldRefresh: "succeeds" | "fails deleting its rejection" | "is rejected" = "succeeds",
+  ) => {
     const pool = await createGeminiPool(0);
     await pool.settled();
     pool.setQuotaMode("new-project");
@@ -944,6 +952,13 @@ describe("Gemini usage refresh writes in the hub", () => {
     const usage = pool.hub.refreshUsage(undefined, true);
     await load.reached;
     await expireSecret(pool);
+    if (heldRefresh === "fails deleting its rejection") {
+      await rejectOldToken(pool);
+      vi.spyOn(pool.accounts, "clearRejectedRefresh").mockRejectedValueOnce(
+        new Error("disk full"),
+      );
+    }
+    if (heldRefresh === "is rejected") pool.setTokenFails(true);
     const token = pool.hold("/token");
     const served = pool.request();
     await token.reached;
@@ -973,11 +988,12 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
     expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
     token.release();
-    await vi.waitFor(async () => {
-      expect((await pool.accounts.readSecret(pool.account.id)).kind).toBe("oauth");
-      const secret = await pool.accounts.readSecret(pool.account.id);
-      expect(secret.kind === "oauth" ? secret.accessToken : null).toBe("access-fresh");
-    });
+    if (heldRefresh === "succeeds")
+      await vi.waitFor(async () => {
+        expect((await pool.accounts.readSecret(pool.account.id)).kind).toBe("oauth");
+        const secret = await pool.accounts.readSecret(pool.account.id);
+        expect(secret.kind === "oauth" ? secret.accessToken : null).toBe("access-fresh");
+      });
     await served;
     return {
       pool,
@@ -1020,6 +1036,37 @@ describe("Gemini usage refresh writes in the hub", () => {
 
     expect(await finish(false)).toBe(true);
     expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it.each(["fails deleting its rejection", "is rejected"] as const)(
+    "keeps the marker blocking when the held request refresh %s during the project change, and a committed reading clears it",
+    async (heldRefresh) => {
+      const { pool, finish } = await beginProjectChange(heldRefresh);
+      expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+
+      expect(await finish(true)).toBe(false);
+
+      expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+      expect(await pool.eligible()).toBe(false);
+      expect(await pool.request()).not.toBe(200);
+
+      vi.restoreAllMocks();
+      pool.setTokenFails(false);
+      pool.advance(10 * MINUTE);
+      expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+      expect(pool.quotas.get(pool.account.id).error).toBeNull();
+      expect(await pool.eligible()).toBe(true);
+      expect(await pool.request()).toBe(200);
+    },
+  );
+
+  it("still replaces a non-marker error with the hub's error write", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await expireSecret(pool);
+    pool.setTokenFails(true);
+    expect(await pool.request()).not.toBe(200);
+    expect(pool.quotas.get(pool.account.id).error).toContain("invalid_grant");
   });
 
   it("clears a credential error when a request refresh succeeds", async () => {
