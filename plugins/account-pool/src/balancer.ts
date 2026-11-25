@@ -23,6 +23,8 @@ export interface BalanceChoice {
   reason: string;
 }
 
+const MIN_RESET_HOURS = 1 / 12;
+
 function makeWindow(args: {
   kind: BalanceWindow["kind"];
   key: string;
@@ -72,7 +74,10 @@ function makeWindow(args: {
     resetRecoveryPerHour:
       headroom === null || hoursUntilReset === null || hoursUntilReset <= 0
         ? null
-        : Math.max(0, (1 - headroom) / hoursUntilReset),
+        : Math.max(
+            0,
+            (1 - headroom) / Math.max(hoursUntilReset, MIN_RESET_HOURS),
+          ),
   };
 }
 
@@ -85,7 +90,7 @@ export function accountBalance(
   const windows = [
     ...quota.limitWindows.map((window) => {
       let kind: BalanceWindow["kind"] = "limit";
-      if (provider === "claude") {
+      if (provider === "claude" || provider === "gemini") {
         if (window.windowMinutes === 300) kind = "five-hour";
         if (window.windowMinutes === 10_080) kind = "weekly";
       }

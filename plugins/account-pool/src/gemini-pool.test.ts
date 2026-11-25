@@ -580,6 +580,86 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection("upstream connect error", 0)).toBeNull();
   });
 
+  it("emits a 5h and a weekly window from the Gemini group and leaves the third-party group out", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.8, resetTime: "2100-01-01T05:00:00Z" },
+              { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.35, resetTime: "2100-01-07T00:00:00Z" },
+            ],
+          },
+          {
+            displayName: "Claude and GPT models",
+            buckets: [
+              { bucketId: "3p-5h", window: "5h", remainingFraction: 0 },
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0 },
+            ],
+          },
+        ],
+      },
+      5,
+    );
+    expect(windows).toEqual([
+      expect.objectContaining({
+        slot: "primary",
+        windowMinutes: 300,
+        resetAt: Date.parse("2100-01-01T05:00:00Z"),
+        status: "allowed",
+      }),
+      expect.objectContaining({
+        slot: "secondary",
+        windowMinutes: 10_080,
+        resetAt: Date.parse("2100-01-07T00:00:00Z"),
+        status: "allowed",
+      }),
+    ]);
+    expect(windows[0]?.utilization).toBeCloseTo(0.2);
+    expect(windows[1]?.utilization).toBeCloseTo(0.65);
+  });
+
+  it("accepts the 5-hour and five_hour window names", () => {
+    for (const name of ["5-hour", "five_hour"])
+      expect(
+        geminiWindowsFromQuota(
+          { buckets: [{ bucketId: "gemini-x", window: name, remainingFraction: 0.5 }] },
+          5,
+        ),
+      ).toEqual([expect.objectContaining({ slot: "primary", windowMinutes: 300 })]);
+  });
+
+  it("falls back to the bucket id or display name when window is missing", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        buckets: [
+          { bucketId: "gemini-5h", remainingFraction: 0.9 },
+          { displayName: "Gemini Weekly Limit Remaining", remainingFraction: 0.4 },
+        ],
+      },
+      5,
+    );
+    expect(windows.map((window) => [window.slot, window.windowMinutes])).toEqual([
+      ["primary", 300],
+      ["secondary", 10_080],
+    ]);
+  });
+
+  it("keeps the most used reading when two buckets share a window", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        buckets: [
+          { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.9 },
+          { bucketId: "gemini-extra-5h", window: "5h", remainingFraction: 0.1 },
+        ],
+      },
+      5,
+    );
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.utilization).toBeCloseTo(0.9);
+  });
+
   it("maps only the routed Neon bucket to the account's window", () => {
     const windows = geminiWindowsFromQuota(
       {
@@ -629,10 +709,10 @@ describe("Gemini quota parsing", () => {
       ),
     ).toEqual([
       {
-        slot: "primary",
+        slot: "secondary",
         utilization: 0.4,
         resetAt: null,
-        windowMinutes: null,
+        windowMinutes: 10_080,
         status: "allowed",
         observedAt: 5,
         source: "usage",
@@ -692,7 +772,7 @@ describe("Gemini quota parsing", () => {
       5,
     );
     expect(windows).toEqual([
-      expect.objectContaining({ slot: "primary", utilization: 0.4, status: "allowed" }),
+      expect.objectContaining({ slot: "secondary", utilization: 0.4, status: "allowed" }),
     ]);
     expect(
       geminiWindowsFromQuota(
@@ -1652,6 +1732,7 @@ describe("Gemini account pool", () => {
             remainingFraction: 1,
             resetTime: "2100-01-01T00:00:00Z",
             disabled: false,
+            window: null,
             slot: "primary",
           },
           {
@@ -1661,6 +1742,7 @@ describe("Gemini account pool", () => {
             remainingFraction: 0.5,
             resetTime: null,
             disabled: false,
+            window: "weekly",
             slot: "primary",
           },
         ],
@@ -2465,20 +2547,168 @@ describe("Gemini account pool", () => {
     ).toBe("tok-a");
   });
 
-  it("does not hold any account after a reasonless or capacity 429, even with Retry-After", async () => {
-    let degraded = true;
-    const { post } = await twoAccounts(() =>
-      degraded
-        ? {
-            status: 429,
-            body: CAPACITY_BODY,
-            headers: { "retry-after": "3600" },
-          }
-        : { status: 200, body: OK_BODY },
+  describe("capacity 429 holds the account instead of waiting", () => {
+    const capacity = (retryAfter: string) => ({
+      status: 429,
+      body: CAPACITY_BODY,
+      headers: { "retry-after": retryAfter },
+    });
+    const timed = async <T,>(work: Promise<T>) => {
+      const started = Date.now();
+      const value = await Promise.race([
+        work,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("request stalled on Retry-After")), 4_000),
+        ),
+      ]);
+      return { value, elapsedMs: Date.now() - started };
+    };
+    const streamed = (google: { calls: Array<{ method: string; bearer?: string }> }) =>
+      google.calls
+        .filter((call) => call.method === "streamGenerateContent")
+        .map((call) => call.bearer);
+
+    it("fails over to the second account at once and skips the held one on the next request", async () => {
+      const { google, post } = await twoAccounts((bearer) =>
+        bearer === "tok-a" ? capacity("10") : { status: 200, body: OK_BODY },
+      );
+      const first = await timed(post("s-cap-1"));
+      expect(first.value.status).toBe(200);
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      expect(streamed(google)).toEqual(["tok-a", "tok-b"]);
+      const next = await timed(post("s-cap-2"));
+      expect(next.value.status).toBe(200);
+      expect(streamed(google)).toEqual(["tok-a", "tok-b", "tok-b"]);
+    });
+
+    it("returns the 429 at once with the upstream Retry-After when no other account exists", async () => {
+      const { post } = await twoAccounts(() => capacity("10"));
+      const first = await timed(post("s-cap-3"));
+      expect(first.value.status).toBe(429);
+      expect(first.value.headers.get("retry-after")).toBe("10");
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      const held = await timed(post("s-cap-4"));
+      expect(held.value.status).toBe(429);
+      expect(Number(held.value.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(held.elapsedMs).toBeLessThan(2_000);
+    });
+
+    it("serves again once the hold has expired", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        let degraded = true;
+        const { post } = await twoAccounts(() =>
+          degraded ? capacity("10") : { status: 200, body: OK_BODY },
+        );
+        expect((await post("s-cap-5")).status).toBe(429);
+        degraded = false;
+        expect((await post("s-cap-6")).status).toBe(429);
+        vi.setSystemTime(Date.now() + 11_000);
+        expect((await post("s-cap-7")).status).toBe(200);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the Retry-After of an hour and holds both accounts", async () => {
+      let degraded = true;
+      const { post } = await twoAccounts(() =>
+        degraded ? capacity("3600") : { status: 200, body: OK_BODY },
+      );
+      const first = await timed(post("s-capacity-1"));
+      expect(first.value.status).toBe(429);
+      expect(first.value.headers.get("retry-after")).toBe("3600");
+      expect(first.elapsedMs).toBeLessThan(2_000);
+      degraded = false;
+      const held = await post("s-capacity-2");
+      expect(held.status).toBe(429);
+      expect(Number(held.headers.get("retry-after"))).toBeGreaterThan(0);
+    });
+  });
+
+  it("balances Antigravity accounts by headroom, records the choice and previews the binding", async () => {
+    const { fixture, post, ids } = await twoAccounts(
+      () => ({ status: 200, body: OK_BODY }),
+      { "tok-a": 0.2, "tok-b": 0.9 },
     );
-    expect((await post("s-capacity-1")).status).toBe(429);
-    degraded = false;
-    expect((await post("s-capacity-2")).status).toBe(200);
+    for (const id of Object.values(ids))
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", { accountId: id });
+    expect((await post("s-balance")).status).toBe(200);
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(
+      status.accounts.some((account) => account.lastAutomaticChoice !== null),
+    ).toBe(true);
+    const binding = await fixture.host.harness.behavior.callRpc("routing.binding.get", {
+      threadId: "thr_gemini_balance",
+      provider: "gemini",
+    });
+    expect(binding).toMatchObject({ nextAccountId: ids.b });
+  });
+
+  describe("stream end detection", () => {
+    const relay = async (sse: string[]) => {
+      const { fixture, post } = await twoAccounts(() => ({
+        status: 200,
+        body: OK_BODY,
+        sse,
+      }));
+      const response = await post("s-end");
+      expect(response.status).toBe(200);
+      await response.text();
+      return fixture.host.harness.inspection.logEntries.filter(({ message }) =>
+        message.startsWith("Account Pooler gemini stream"),
+      );
+    };
+
+    it("logs an early end when a part's function arguments merely contain a finishReason key", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{"finishReason":"STOP"}}}]}}]}}\r\n\r\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("logs an early end when no event carries a finishReason", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\n',
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}\r\n\r\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("does not log when the final event arrives split across chunks", async () => {
+      expect(
+        await relay([
+          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\ndata: {"response":{"candidates":[{"fini',
+          'shReason":"STOP"}]}}\r\n\r\n',
+        ]),
+      ).toEqual([]);
+    });
+
+    it("logs an early end when the final data line is never terminated by a blank line", async () => {
+      const entries = await relay([
+        'data: {"candidates":[{"finishReason":"STOP"}]}\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("does not log when a terminated bare finishReason event completes the stream", async () => {
+      expect(
+        await relay(['data: {"candidates":[{"finishReason":"STOP"}]}\n\n']),
+      ).toEqual([]);
+    });
+
+    it("logs an early end when the stream is cut inside the final event", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\ndata: {"response":{"candidates":[{"finishReason":"ST',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
   });
 
   it("returns the last Google error when every account is out", async () => {
@@ -2525,7 +2755,7 @@ describe("Gemini account pool", () => {
   it("keeps serving from an account whose only exhausted bucket is a third-party model", async () => {
     const { fixture, google, post } = await twoAccounts(
       () => ({ status: 200, body: OK_BODY }),
-      { "tok-a": 0.5 },
+      { "tok-a": 0.9, "tok-b": 0.3 },
       [{ bucketId: "claude-opus-4-5", remainingFraction: 0, resetTime: "2100-01-01T00:00:00Z" }],
     );
     const status = statusSchema.parse(
@@ -2536,9 +2766,16 @@ describe("Gemini account pool", () => {
         accountId: account.id,
       });
     expect((await post("s-third-party")).status).toBe(200);
-    expect(
-      google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
-    ).toEqual(["tok-a"]);
+    const after = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const thirdParty = after.accounts.find((account) => account.email === "a@example.com");
+    expect(thirdParty?.usageRestriction ?? null).toBeNull();
+    const served = google.calls.filter(
+      (call) => call.method === "streamGenerateContent",
+    );
+    expect(served.map((call) => call.bearer)).toEqual(["tok-a"]);
+    expect(served.map((call) => call.project)).toEqual(["proj-a"]);
   });
 
   it("shows 40% used and keeps serving when the Gemini group has 60% left and the Claude and GPT group is at 0", async () => {
@@ -2568,7 +2805,7 @@ describe("Gemini account pool", () => {
     );
     const account = status.accounts.find((entry) => entry.id === added.id);
     expect(account?.limitWindows.map((window) => [window.slot, window.status])).toEqual([
-      ["primary", "allowed"],
+      ["secondary", "allowed"],
     ]);
     expect(account?.limitWindows[0]?.utilization).toBeCloseTo(0.4);
     const env = await geminiEnv(fixture.host);

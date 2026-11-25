@@ -79,6 +79,7 @@ const EXHAUSTED_USAGE_REFRESH_INTERVAL_MS = 30 * 1_000;
 const TRANSIENT_USAGE_RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000];
 const MIN_USAGE_LOOP_DELAY_MS = 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
+const MAX_INLINE_PACING_MS = 2_000;
 const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000];
 const MAX_REFRESH_BACKOFF_MS = 60_000;
 const MAX_REFRESH_BACKOFFS = 1_024;
@@ -233,9 +234,39 @@ export interface StreamCut {
   clientAborted: boolean;
 }
 
-const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, readonly string[]>> = {
-  claude: ["message_stop"],
-  codex: ["response.completed", "response.failed", "response.incomplete"],
+interface FinalMarkers {
+  events: readonly string[];
+  isFinalData?: (payload: unknown) => boolean;
+}
+
+const MAX_PENDING_LINE = 4 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function geminiCandidates(payload: unknown): unknown[] {
+  if (!isRecord(payload)) return [];
+  const body = isRecord(payload.response) ? payload.response : payload;
+  return Array.isArray(body.candidates) ? body.candidates : [];
+}
+
+function isGeminiFinalEvent(payload: unknown): boolean {
+  return geminiCandidates(payload).some(
+    (candidate) =>
+      isRecord(candidate) &&
+      typeof candidate.finishReason === "string" &&
+      candidate.finishReason !== "" &&
+      candidate.finishReason !== "FINISH_REASON_UNSPECIFIED",
+  );
+}
+
+const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, FinalMarkers>> = {
+  claude: { events: ["message_stop"] },
+  codex: {
+    events: ["response.completed", "response.failed", "response.incomplete"],
+  },
+  gemini: { events: [], isFinalData: isGeminiFinalEvent },
 };
 
 interface RefreshBackoff {
@@ -1136,8 +1167,11 @@ export class AccountPoolHub {
     };
   }
 
-  async bindingPreview(threadId: string | null): Promise<BindingPreview> {
-    const preview = await this.previewAccountChoice("claude");
+  async bindingPreview(
+    threadId: string | null,
+    provider: "claude" | "gemini" = "claude",
+  ): Promise<BindingPreview> {
+    const preview = await this.previewAccountChoice(provider);
     const now = this.options.now();
     let binding: AccountBinding | null = null;
     for (const [key, value] of this.affinityBindings) {
@@ -1149,7 +1183,7 @@ export class AccountPoolHub {
       }
       if (
         Array.isArray(identity) &&
-        identity[0] === "claude" &&
+        identity[0] === provider &&
         identity[2] === threadId &&
         value.lastUsedAt > (binding?.lastUsedAt ?? 0) &&
         now - value.lastUsedAt < AFFINITY_IDLE_TTL_MS
@@ -1164,7 +1198,7 @@ export class AccountPoolHub {
         : status.find(
             (candidate) =>
               candidate.id === binding?.accountId &&
-              candidate.provider === "claude" &&
+              candidate.provider === provider &&
               candidate.enabled &&
               bindingEligibleIds.has(candidate.id),
           );
@@ -1380,7 +1414,10 @@ export class AccountPoolHub {
             await abortable(activePacing.result, signal);
           } else if (
             heldMs > MAX_INLINE_HOLD_MS ||
-            waited.has(selected.account.id)
+            waited.has(selected.account.id) ||
+            (adapter.provider === "gemini" &&
+              (heldMs > MAX_INLINE_PACING_MS ||
+                candidateIds.size > attempted.size + 1))
           ) {
             failure = {
               status: 429,
@@ -1509,6 +1546,7 @@ export class AccountPoolHub {
             pacing = null;
           }
           if (response.status === 429) {
+            let bodyDetail: string | null = null;
             if (adapter.isQuotaRejection(response.headers)) {
               await this.discardUpstream(upstream, false);
               break;
@@ -1537,10 +1575,9 @@ export class AccountPoolHub {
                   message: rejection.message,
                   headers: {},
                 };
-              } else {
-                failure = { status: 429, message: detail, headers: {} };
+                break;
               }
-              break;
+              bodyDetail = detail;
             }
             const waitMs = retryAfterMilliseconds(
               response.headers.get("retry-after"),
@@ -1551,21 +1588,29 @@ export class AccountPoolHub {
               ...observed,
               heldUntil,
             });
-            if (!paced && waitMs <= MAX_INLINE_HOLD_MS) {
+            if (
+              !paced &&
+              waitMs <= MAX_INLINE_HOLD_MS &&
+              (adapter.provider !== "gemini" ||
+                (waitMs <= MAX_INLINE_PACING_MS &&
+                  candidateIds.size <= attempted.size))
+            ) {
               paced = true;
               pacing = {
                 heldUntil,
                 result: waitForDelay(waitMs, this.stopped.signal),
               };
               this.pacingByAccount.set(selected.account.id, pacing);
-              await this.discardUpstream(upstream, false);
+              if (bodyDetail === null)
+                await this.discardUpstream(upstream, false);
               await abortable(pacing.result, signal);
               continue;
             }
-            if (!selected.keepAffinity) {
+            if (!selected.keepAffinity || bodyDetail !== null) {
               failure = {
                 status: 429,
-                message: await this.discardUpstream(upstream, true),
+                message:
+                  bodyDetail ?? (await this.discardUpstream(upstream, true)),
                 headers: { "retry-after": String(Math.ceil(waitMs / 1_000)) },
               };
               break;
@@ -1913,8 +1958,9 @@ export class AccountPoolHub {
     const activeAccount = eligible.find(
       ({ account }) => account.id === active?.accountId,
     );
+    const balancing = provider === "claude" || provider === "gemini";
     const balanced =
-      provider === "claude"
+      balancing
         ? chooseBalancedCandidate(
             candidates,
             family,
@@ -1950,14 +1996,14 @@ export class AccountPoolHub {
     const selected =
       selectedBound ??
       inherited ??
-      (provider === "claude" ? balanced.candidate : legacyAutomatic);
+      (balancing ? balanced.candidate : legacyAutomatic);
     if (selected === null) return null;
     const choiceReason =
       selectedBound !== null || inherited !== undefined
         ? null
         : balanced.reason;
     const automaticChoice =
-      provider !== "claude" ||
+      !balancing ||
       choiceReason === null ||
       routing.selectionAccountId !== null
         ? null
@@ -2015,12 +2061,12 @@ export class AccountPoolHub {
       (activeAccount === undefined ||
         active.accountId === selected.account.id ||
         (active === routing.active && attempted.has(active.accountId)) ||
-        (provider === "claude" && automaticChoice !== null));
+        (balancing && automaticChoice !== null));
     return {
       ...selected,
       keepAffinity:
         selected.account.id === routing.pinnedAccountId &&
-        (provider !== "claude" || routing.selectionAccountId !== null),
+        (!balancing || routing.selectionAccountId !== null),
       automaticChoice,
       accept: () => {
         if (automaticChoice !== null) {
@@ -2040,11 +2086,10 @@ export class AccountPoolHub {
           this.affinityBindings.set(affinityKey, accepted);
         }
         if (advance && this.activeAccounts.get(provider) === active) {
-          if (provider !== "gemini")
-            this.options.affinity.putActiveAccount(
-              provider,
-              selected.account.id,
-            );
+          this.options.affinity.putActiveAccount(
+            provider,
+            selected.account.id,
+          );
           this.activeAccounts.set(provider, { accountId: selected.account.id });
         }
       },
@@ -2337,7 +2382,30 @@ export class AccountPoolHub {
     let finalSeen = false;
     let pendingLine = "";
     let eventName = "";
+    let dataLines: string[] = [];
     let finished = false;
+    const endEvent = () => {
+      events += 1;
+      if (markers?.events.includes(eventName)) finalSeen = true;
+      if (markers?.isFinalData !== undefined && dataLines.length > 0) {
+        try {
+          if (markers.isFinalData(JSON.parse(dataLines.join("\n"))))
+            finalSeen = true;
+        } catch {
+          dataLines = [];
+        }
+      }
+      eventName = "";
+      dataLines = [];
+    };
+    const readLine = (line: string) => {
+      const field = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (field === "") endEvent();
+      else if (field.startsWith("event:"))
+        eventName = field.slice("event:".length).trim();
+      else if (field.startsWith("data:"))
+        dataLines.push(field.slice("data:".length).replace(/^ /u, ""));
+    };
     const reportCut = (
       kind: StreamCut["kind"],
       error: unknown,
@@ -2373,27 +2441,19 @@ export class AccountPoolHub {
         try {
           const chunk = await reader.read();
           if (chunk.done) {
-            if (eventStream && markers !== undefined && !finalSeen)
-              reportCut("ended-early", undefined, false);
+            if (eventStream && markers !== undefined) {
+              if (!finalSeen) reportCut("ended-early", undefined, false);
+            }
             finished = true;
             upstream.release();
             controller.close();
           } else {
             bytes += chunk.value.byteLength;
             if (eventStream && markers !== undefined) {
-              const lines = (
-                pendingLine + decoder.decode(chunk.value, { stream: true })
-              ).split("\n");
-              pendingLine = (lines.pop() ?? "").slice(0, 256);
-              for (const line of lines) {
-                const field = line.endsWith("\r") ? line.slice(0, -1) : line;
-                if (field === "") {
-                  events += 1;
-                  if (markers.includes(eventName)) finalSeen = true;
-                  eventName = "";
-                } else if (field.startsWith("event:"))
-                  eventName = field.slice("event:".length).trim();
-              }
+              const text = decoder.decode(chunk.value, { stream: true });
+              const lines = (pendingLine + text).split("\n");
+              pendingLine = (lines.pop() ?? "").slice(0, MAX_PENDING_LINE);
+              for (const line of lines) readLine(line);
             }
             controller.enqueue(chunk.value);
           }

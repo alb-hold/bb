@@ -5,6 +5,7 @@ import {
   usagePlanLabel,
   usagePlan,
   usageWindowLabel,
+  windowResetState,
 } from "./usage-source.js";
 
 import { displayPlanLabel } from "./display.js";
@@ -210,5 +211,24 @@ describe("usage presentation labels", () => {
         rateLimitTier: null,
       }),
     ).toBe("Pro");
+  });
+});
+
+describe("window reset state", () => {
+  const now = 1_800_000_000_000;
+
+  it("keeps a future reset open and a missing reset open", () => {
+    expect(windowResetState(now + 1, now)).toBe("open");
+    expect(windowResetState(null, now)).toBe("open");
+  });
+
+  it("treats a reset inside the five-minute poll as rolled over, not stale", () => {
+    expect(windowResetState(now, now)).toBe("rolled");
+    expect(windowResetState(now - 4 * 60_000, now)).toBe("rolled");
+    expect(windowResetState(now - 5 * 60_000, now)).toBe("rolled");
+  });
+
+  it("treats a reset older than a poll as expired", () => {
+    expect(windowResetState(now - 5 * 60_000 - 1, now)).toBe("expired");
   });
 });

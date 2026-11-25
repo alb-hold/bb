@@ -137,6 +137,7 @@ const quotaBucketSchema = z
   .object({
     bucketId: z.string().nullish(),
     displayName: z.string().nullish(),
+    window: z.string().nullish(),
     remainingFraction: z.number().nullish(),
     disabled: z.boolean().nullish(),
     resetTime: z.string().nullish(),
@@ -165,8 +166,30 @@ const OTHER_GEMINI_MODEL =
   /(?:^|[^a-z])(?:pro|flash|lite|carbon|argon|hydrogen|orchestrator)(?:[^a-z]|$)/iu;
 const GEMINI_QUOTA = /gemini/iu;
 
+export type GeminiQuotaWindow = "5h" | "weekly";
+
+const FIVE_HOUR_WINDOW = /5h|5-hour|5 hour|five.?hour/iu;
+const WEEKLY_WINDOW = /weekly/iu;
+const FIVE_HOUR_MINUTES = 300;
+const WEEKLY_MINUTES = 10_080;
+
+function quotaWindowOf(bucket: {
+  window?: string | null | undefined;
+  bucketId?: string | null | undefined;
+  displayName?: string | null | undefined;
+}): GeminiQuotaWindow | null {
+  const raw = (bucket.window ?? "").trim().toLowerCase();
+  if (raw === "weekly") return "weekly";
+  if (raw === "5h" || raw === "5-hour" || raw === "five_hour") return "5h";
+  const text = `${bucket.bucketId ?? ""} ${bucket.displayName ?? ""}`;
+  if (WEEKLY_WINDOW.test(text)) return "weekly";
+  if (FIVE_HOUR_WINDOW.test(text)) return "5h";
+  return null;
+}
+
 export interface GeminiQuotaBucket {
   group: string | null;
+  window: GeminiQuotaWindow | null;
   bucketId: string | null;
   displayName: string | null;
   remainingFraction: number | null;
@@ -208,6 +231,7 @@ export function geminiQuotaBuckets(payload: unknown): GeminiQuotaBucket[] | null
       );
     return {
       group,
+      window: quotaWindowOf(bucket),
       bucketId: bucket.bucketId ?? null,
       displayName: bucket.displayName ?? null,
       remainingFraction,
@@ -322,29 +346,53 @@ export function geminiQuotaRejection(
   };
 }
 
+function quotaWindow(
+  bucket: GeminiQuotaBucket,
+  remainingFraction: number,
+  now: number,
+): LimitWindow {
+  const utilization = Math.max(0, Math.min(1, 1 - remainingFraction));
+  const reset =
+    bucket.resetTime === null ? Number.NaN : Date.parse(bucket.resetTime);
+  return {
+    slot: bucket.window === "weekly" ? "secondary" : "primary",
+    windowMinutes:
+      bucket.window === "weekly"
+        ? WEEKLY_MINUTES
+        : bucket.window === "5h"
+          ? FIVE_HOUR_MINUTES
+          : null,
+    utilization,
+    resetAt: Number.isNaN(reset) ? null : reset,
+    status: utilization >= 1 ? "rejected" : "allowed",
+    observedAt: now,
+    source: "usage",
+  };
+}
+
 export function geminiWindowsFromQuota(
   payload: unknown,
   now: number,
 ): LimitWindow[] {
-  let routed: LimitWindow | null = null;
+  const best: Record<"5h" | "weekly" | "other", LimitWindow | null> = {
+    "5h": null,
+    weekly: null,
+    other: null,
+  };
   for (const bucket of geminiQuotaBuckets(payload) ?? []) {
     if (bucket.slot === "skipped" || bucket.remainingFraction === null)
       continue;
-    const utilization = Math.max(0, Math.min(1, 1 - bucket.remainingFraction));
-    if (routed !== null && (routed.utilization ?? 0) >= utilization) continue;
-    const reset =
-      bucket.resetTime === null ? Number.NaN : Date.parse(bucket.resetTime);
-    routed = {
-      slot: bucket.slot,
-      windowMinutes: null,
-      utilization,
-      resetAt: Number.isNaN(reset) ? null : reset,
-      status: utilization >= 1 ? "rejected" : "allowed",
-      observedAt: now,
-      source: "usage",
-    };
+    const window = quotaWindow(bucket, bucket.remainingFraction, now);
+    const key = bucket.window ?? "other";
+    const held = best[key];
+    if (held === null || (held.utilization ?? 0) < (window.utilization ?? 0))
+      best[key] = window;
   }
-  return routed === null ? [] : [routed];
+  if (best["5h"] !== null || best.weekly !== null)
+    return [best["5h"], best.weekly].filter(
+      (window): window is LimitWindow => window !== null,
+    );
+  return best.other === null ? [] : [best.other];
 }
 
 function googleStatusName(status: number): string {
@@ -1361,10 +1409,7 @@ export function createGeminiAdapter(options: {
       )
         throw new Error("Usage refresh returned unreadable data.");
       const now = context.now();
-      const windows = geminiWindowsFromQuota(
-        quotaSummary,
-        now,
-      );
+      const windows = geminiWindowsFromQuota(quotaSummary, now);
       const bucketCount =
         (parsedQuotaSummary.data.buckets?.length ?? 0) +
         (parsedQuotaSummary.data.groups?.reduce(
