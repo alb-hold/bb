@@ -1243,7 +1243,7 @@ async function scanLinuxPaths(
   }
   const ownCapabilities = await context.ownCapabilities();
   const cause = await unreadableCause(proc, pid, ownCapabilities);
-  if (await isSessionProcess(proc, pid, self.uid, cause, ownCapabilities))
+  if (await isSessionProcess(proc, pid, self, cause, ownCapabilities))
     return { sessionProcess: true };
   return {
     unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
@@ -1712,11 +1712,13 @@ async function unreadableCause(
 }
 
 const CAP_WAKE_ALARM = 1n << 35n;
+const SD_PAM_MAX_START_DELTA_TICKS = 200n;
 
 interface SessionFacts {
   comm: string;
   parent: number;
   uids: number[];
+  gids: number[] | null;
   permitted: bigint | null;
 }
 
@@ -1729,17 +1731,59 @@ async function sessionFacts(
   if (!("value" in status) || !("value" in comm)) return null;
   const parent = parseStatusNumbers(status.value, "PPid")?.[0];
   const uids = parseStatusNumbers(status.value, "Uid");
+  const gids = parseStatusNumbers(status.value, "Gid");
   if (parent === undefined || uids === null || uids.length !== 4) return null;
   return {
     comm: comm.value.replace(/\n$/u, ""),
     parent,
     uids,
+    gids: gids !== null && gids.length === 4 ? gids : null,
     permitted: permittedCapabilities(status.value),
   };
 }
 
 function ownedBy(facts: SessionFacts, uid: number): boolean {
   return facts.uids.every((value) => value === uid);
+}
+
+function hasForeignSavedGid(
+  facts: SessionFacts,
+  ownGids: readonly number[],
+): boolean {
+  if (facts.gids === null || ownGids.length === 0) return false;
+  const realGid = facts.gids[0];
+  const savedGid = facts.gids[2];
+  return (
+    realGid !== undefined &&
+    savedGid !== undefined &&
+    savedGid !== realGid &&
+    !ownGids.includes(savedGid)
+  );
+}
+
+async function processStartTicks(
+  proc: ProcReader,
+  pid: number,
+): Promise<bigint | null> {
+  const stat = await readOptional(() => proc.readFile(`/proc/${pid}/stat`));
+  if (!("value" in stat)) return null;
+  const start = processStartFromStat(stat.value);
+  return start === null ? null : BigInt(start);
+}
+
+async function startedWithinWindow(
+  proc: ProcReader,
+  pid: number,
+  parentPid: number,
+  maxDeltaTicks: bigint,
+): Promise<boolean> {
+  const [childStart, parentStart] = await Promise.all([
+    processStartTicks(proc, pid),
+    processStartTicks(proc, parentPid),
+  ]);
+  if (childStart === null || parentStart === null) return false;
+  const delta = childStart - parentStart;
+  return delta >= 0n && delta <= maxDeltaTicks;
 }
 
 function isUserSystemd(
@@ -1772,7 +1816,7 @@ async function isSshdSession(
 async function isSessionProcess(
   proc: ProcReader,
   pid: number,
-  uid: number,
+  self: LinuxProcessIdentity,
   cause: string | null,
   ownCapabilities: bigint | null,
 ): Promise<boolean> {
@@ -1782,21 +1826,31 @@ async function isSessionProcess(
   )
     return false;
   const facts = await sessionFacts(proc, pid);
-  if (facts === null || !ownedBy(facts, uid)) return false;
+  if (facts === null || !ownedBy(facts, self.uid)) return false;
   if (cause === "its capabilities exceed the daemon's")
-    return isUserSystemd(facts, uid, ownCapabilities);
-  if (facts.comm === "sshd-session") return isSshdSession(proc, facts, uid);
+    return isUserSystemd(facts, self.uid, ownCapabilities);
+  if (facts.comm === "sshd-session") return isSshdSession(proc, facts, self.uid);
   if (facts.comm === "(sd-pam)") {
     const parent = await sessionFacts(proc, facts.parent);
-    return parent !== null && isUserSystemd(parent, uid, ownCapabilities);
+    return (
+      parent !== null &&
+      isUserSystemd(parent, self.uid, ownCapabilities) &&
+      (await startedWithinWindow(
+        proc,
+        pid,
+        facts.parent,
+        SD_PAM_MAX_START_DELTA_TICKS,
+      ))
+    );
   }
   if (facts.comm === "ssh-agent") {
+    if (!hasForeignSavedGid(facts, self.gids)) return false;
     if (facts.parent === 1) return true;
     const parent = await sessionFacts(proc, facts.parent);
     if (parent === null) return false;
     return (
-      isUserSystemd(parent, uid, ownCapabilities) ||
-      (await isSshdSession(proc, parent, uid))
+      isUserSystemd(parent, self.uid, ownCapabilities) ||
+      (await isSshdSession(proc, parent, self.uid))
     );
   }
   return false;
