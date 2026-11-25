@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findServiceDefinition,
@@ -19,15 +19,33 @@ export interface EnsureUnitOomPolicyArgs extends FindServiceDefinitionArgs {
   runCommand: ServerMoveCommandRunner;
 }
 
-async function readIfPresent(path: string): Promise<string | null> {
+async function dropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
+  let names: string[];
   try {
-    return await readFile(path, "utf8");
+    names = await readdir(dropInDir);
   } catch (error) {
     if (isFileNotFoundError(error)) {
-      return null;
+      return false;
     }
     throw error;
   }
+  for (const name of names) {
+    if (!name.endsWith(".conf")) {
+      continue;
+    }
+    try {
+      if (
+        OOM_POLICY_DIRECTIVE.test(await readFile(join(dropInDir, name), "utf8"))
+      ) {
+        return true;
+      }
+    } catch (error) {
+      if (!isFileNotFoundError(error)) {
+        throw error;
+      }
+    }
+  }
+  return false;
 }
 
 export async function ensureUnitOomPolicy(
@@ -40,12 +58,12 @@ export async function ensureUnitOomPolicy(
   if (OOM_POLICY_DIRECTIVE.test(definition.content)) {
     return "already-current";
   }
-  const dropInPath = join(`${definition.path}.d`, OOM_POLICY_DROP_IN_NAME);
-  if ((await readIfPresent(dropInPath)) !== null) {
+  const dropInDir = `${definition.path}.d`;
+  if (await dropInSetsOomPolicy(dropInDir)) {
     return "already-current";
   }
   await writeFileAtomically({
-    path: dropInPath,
+    path: join(dropInDir, OOM_POLICY_DROP_IN_NAME),
     content: OOM_POLICY_DROP_IN_CONTENT,
     mode: 0o644,
   });

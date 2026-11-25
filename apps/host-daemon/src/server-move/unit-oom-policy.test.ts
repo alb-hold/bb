@@ -136,6 +136,25 @@ describe("ensureUnitOomPolicy", () => {
     expect(fixture.commands).toEqual([]);
   });
 
+  it("keeps a sibling drop-in's OOMPolicy effective and creates no overriding drop-in", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    await writeFile(
+      join(fixture.dropInDir, "10-custom.conf"),
+      "[Service]\nOOMPolicy=kill\n",
+      "utf8",
+    );
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe(
+      "already-current",
+    );
+
+    await expect(readdir(fixture.dropInDir)).resolves.toEqual([
+      "10-custom.conf",
+    ]);
+    expect(fixture.commands).toEqual([]);
+  });
+
   it("does nothing for a unit that already declares OOMPolicy", async () => {
     const fixture = await createFixture("OOMPolicy=continue\n");
 
