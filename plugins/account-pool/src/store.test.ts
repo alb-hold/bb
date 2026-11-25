@@ -7,7 +7,12 @@ import Database from "better-sqlite3";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Account } from "./contracts.js";
-import { AccountStore, QUOTA_MIGRATIONS, QuotaStore } from "./store.js";
+import {
+  AccountStore,
+  PoolAffinityStore,
+  QUOTA_MIGRATIONS,
+  QuotaStore,
+} from "./store.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -552,7 +557,7 @@ describe("QuotaStore", () => {
 
   it("moves stored Claude five-hour and seven-day columns into limit windows", () => {
     const database = new Database(":memory:");
-    const moveMigration = QUOTA_MIGRATIONS.length - 1;
+    const moveMigration = QUOTA_MIGRATIONS.length - 2;
     for (const migration of QUOTA_MIGRATIONS.slice(0, moveMigration))
       database.exec(migration);
     const claudeId = "11111111-1111-4111-8111-111111111111";
@@ -635,6 +640,31 @@ describe("QuotaStore", () => {
     quotas.put({ ...quotas.get(accountId), representativeClaim: "five_hour" });
 
     expect(quotas.get(accountId).representativeClaim).toBe("five_hour");
+    database.close();
+  });
+
+  it("keeps the Antigravity active account and automatic choice out of the tables older builds parse", () => {
+    const database = new Database(":memory:");
+    for (const migration of QUOTA_MIGRATIONS) database.exec(migration);
+    const accountId = "33333333-3333-4333-8333-333333333333";
+    const choice = {
+      chosenAt: 5,
+      reason: "most headroom",
+      family: "other" as const,
+      balance: {
+        bindingWindow: "weekly",
+        bindingHeadroom: 0.5,
+        resetRecoveryPerHour: null,
+        windows: [],
+      },
+    };
+    const store = new PoolAffinityStore(database);
+    store.putActiveAccount("gemini", accountId);
+    store.putAutomaticChoice("gemini", accountId, choice);
+    expect(store.loadActiveAccounts().get("gemini")).toEqual({ accountId });
+    expect(store.loadAutomaticChoices().get(`gemini:${accountId}`)).toEqual(choice);
+    expect(database.prepare("SELECT * FROM pool_active_account").all()).toEqual([]);
+    expect(database.prepare("SELECT * FROM pool_automatic_choice").all()).toEqual([]);
     database.close();
   });
 });

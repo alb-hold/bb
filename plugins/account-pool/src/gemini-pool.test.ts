@@ -580,6 +580,86 @@ describe("Gemini quota parsing", () => {
     expect(geminiQuotaRejection("upstream connect error", 0)).toBeNull();
   });
 
+  it("emits a 5h and a weekly window from the Gemini group and leaves the third-party group out", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.8, resetTime: "2100-01-01T05:00:00Z" },
+              { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.35, resetTime: "2100-01-07T00:00:00Z" },
+            ],
+          },
+          {
+            displayName: "Claude and GPT models",
+            buckets: [
+              { bucketId: "3p-5h", window: "5h", remainingFraction: 0 },
+              { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0 },
+            ],
+          },
+        ],
+      },
+      5,
+    );
+    expect(windows).toEqual([
+      expect.objectContaining({
+        slot: "primary",
+        windowMinutes: 300,
+        resetAt: Date.parse("2100-01-01T05:00:00Z"),
+        status: "allowed",
+      }),
+      expect.objectContaining({
+        slot: "secondary",
+        windowMinutes: 10_080,
+        resetAt: Date.parse("2100-01-07T00:00:00Z"),
+        status: "allowed",
+      }),
+    ]);
+    expect(windows[0]?.utilization).toBeCloseTo(0.2);
+    expect(windows[1]?.utilization).toBeCloseTo(0.65);
+  });
+
+  it("accepts the 5-hour and five_hour window names", () => {
+    for (const name of ["5-hour", "five_hour"])
+      expect(
+        geminiWindowsFromQuota(
+          { buckets: [{ bucketId: "gemini-x", window: name, remainingFraction: 0.5 }] },
+          5,
+        ),
+      ).toEqual([expect.objectContaining({ slot: "primary", windowMinutes: 300 })]);
+  });
+
+  it("falls back to the bucket id or display name when window is missing", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        buckets: [
+          { bucketId: "gemini-5h", remainingFraction: 0.9 },
+          { displayName: "Gemini Weekly Limit Remaining", remainingFraction: 0.4 },
+        ],
+      },
+      5,
+    );
+    expect(windows.map((window) => [window.slot, window.windowMinutes])).toEqual([
+      ["primary", 300],
+      ["secondary", 10_080],
+    ]);
+  });
+
+  it("keeps the most used reading when two buckets share a window", () => {
+    const windows = geminiWindowsFromQuota(
+      {
+        buckets: [
+          { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.9 },
+          { bucketId: "gemini-extra-5h", window: "5h", remainingFraction: 0.1 },
+        ],
+      },
+      5,
+    );
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.utilization).toBeCloseTo(0.9);
+  });
+
   it("maps only the routed Neon bucket to the account's window", () => {
     const windows = geminiWindowsFromQuota(
       {
@@ -629,10 +709,10 @@ describe("Gemini quota parsing", () => {
       ),
     ).toEqual([
       {
-        slot: "primary",
+        slot: "secondary",
         utilization: 0.4,
         resetAt: null,
-        windowMinutes: null,
+        windowMinutes: 10_080,
         status: "allowed",
         observedAt: 5,
         source: "usage",
@@ -692,7 +772,7 @@ describe("Gemini quota parsing", () => {
       5,
     );
     expect(windows).toEqual([
-      expect.objectContaining({ slot: "primary", utilization: 0.4, status: "allowed" }),
+      expect.objectContaining({ slot: "secondary", utilization: 0.4, status: "allowed" }),
     ]);
     expect(
       geminiWindowsFromQuota(
@@ -1652,6 +1732,7 @@ describe("Gemini account pool", () => {
             remainingFraction: 1,
             resetTime: "2100-01-01T00:00:00Z",
             disabled: false,
+            window: null,
             slot: "primary",
           },
           {
@@ -1661,6 +1742,7 @@ describe("Gemini account pool", () => {
             remainingFraction: 0.5,
             resetTime: null,
             disabled: false,
+            window: "weekly",
             slot: "primary",
           },
         ],
@@ -2465,7 +2547,7 @@ describe("Gemini account pool", () => {
     ).toBe("tok-a");
   });
 
-  it("does not hold any account after a reasonless or capacity 429, even with Retry-After", async () => {
+  it("keeps the Retry-After of a capacity 429 and holds the accounts that returned it", async () => {
     let degraded = true;
     const { post } = await twoAccounts(() =>
       degraded
@@ -2476,9 +2558,34 @@ describe("Gemini account pool", () => {
           }
         : { status: 200, body: OK_BODY },
     );
-    expect((await post("s-capacity-1")).status).toBe(429);
+    const first = await post("s-capacity-1");
+    expect(first.status).toBe(429);
+    expect(first.headers.get("retry-after")).toBe("3600");
     degraded = false;
-    expect((await post("s-capacity-2")).status).toBe(200);
+    const held = await post("s-capacity-2");
+    expect(held.status).toBe(429);
+    expect(Number(held.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+
+  it("balances Antigravity accounts by headroom, records the choice and previews the binding", async () => {
+    const { fixture, post, ids } = await twoAccounts(
+      () => ({ status: 200, body: OK_BODY }),
+      { "tok-a": 0.2, "tok-b": 0.9 },
+    );
+    for (const id of Object.values(ids))
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", { accountId: id });
+    expect((await post("s-balance")).status).toBe(200);
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(
+      status.accounts.some((account) => account.lastAutomaticChoice !== null),
+    ).toBe(true);
+    const binding = await fixture.host.harness.behavior.callRpc("routing.binding.get", {
+      threadId: "thr_gemini_balance",
+      provider: "gemini",
+    });
+    expect(binding).toMatchObject({ nextAccountId: ids.b });
   });
 
   it("returns the last Google error when every account is out", async () => {
@@ -2536,9 +2643,14 @@ describe("Gemini account pool", () => {
         accountId: account.id,
       });
     expect((await post("s-third-party")).status).toBe(200);
+    const after = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    const thirdParty = after.accounts.find((account) => account.email === "a@example.com");
+    expect(thirdParty?.usageRestriction ?? null).toBeNull();
     expect(
-      google.calls.filter((call) => call.method === "streamGenerateContent").map((call) => call.bearer),
-    ).toEqual(["tok-a"]);
+      google.calls.filter((call) => call.method === "streamGenerateContent"),
+    ).toHaveLength(1);
   });
 
   it("shows 40% used and keeps serving when the Gemini group has 60% left and the Claude and GPT group is at 0", async () => {
@@ -2568,7 +2680,7 @@ describe("Gemini account pool", () => {
     );
     const account = status.accounts.find((entry) => entry.id === added.id);
     expect(account?.limitWindows.map((window) => [window.slot, window.status])).toEqual([
-      ["primary", "allowed"],
+      ["secondary", "allowed"],
     ]);
     expect(account?.limitWindows[0]?.utilization).toBeCloseTo(0.4);
     const env = await geminiEnv(fixture.host);

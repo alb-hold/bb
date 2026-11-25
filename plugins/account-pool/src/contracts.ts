@@ -289,12 +289,12 @@ export type LastAutomaticChoice = z.infer<typeof lastAutomaticChoiceSchema>;
 export const routingBindingGetInputSchema = z
   .object({
     threadId: z.string().regex(/^thr_[A-Za-z0-9_-]+$/u),
-    provider: z.literal("claude"),
+    provider: z.enum(["claude", "gemini"]),
   })
   .strict();
 
 export const routingBindingNextInputSchema = z
-  .object({ provider: z.literal("claude") })
+  .object({ provider: z.enum(["claude", "gemini"]) })
   .strict();
 
 export const routingBindingHeadroomSchema = z
@@ -483,6 +483,7 @@ export const importProbeSchema = z
                 group: z.string().nullable(),
                 bucketId: z.string().nullable(),
                 displayName: z.string().nullable(),
+                window: z.enum(["5h", "weekly"]).nullable(),
                 remainingFraction: z.number().nullable(),
                 resetTime: z.string().nullable(),
                 disabled: z.boolean(),

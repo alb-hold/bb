@@ -13752,7 +13752,7 @@ describe("Account Pool subscription sign-in repair", () => {
         email: null,
         planLabel: null,
         status: "ready",
-        poolProvider: null,
+        poolProvider: "gemini",
         usage: {
           estimated: true,
           lastActivityAt: 1_795_325_403_691,

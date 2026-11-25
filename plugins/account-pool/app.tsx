@@ -891,6 +891,15 @@ function AddSubscriptionMenu({
           "Import this Mac's Codex login",
           "The ~/.codex login, if it isn't pooled yet",
         )}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>Antigravity</DropdownMenuLabel>
+        {item(
+          "gemini",
+          "import",
+          "Download",
+          "Import this Mac's Antigravity login",
+          "The Antigravity login, if it isn't pooled yet",
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1206,9 +1215,9 @@ function AccountPoolSettings() {
   const [cleanWindow, setCleanWindow] = useState(false);
   const [pastedCode, setPastedCode] = useState("");
   const [accountLabel, setAccountLabel] = useState("");
-  const [nextAccountId, setNextAccountId] = useState<string | null | undefined>(
-    undefined,
-  );
+  const [nextAccountIds, setNextAccountIds] = useState<
+    Partial<Record<"claude" | "gemini", string | null>> | undefined
+  >(undefined);
   const [localLogins, setLocalLogins] = useState<LocalLogin[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [priority, setPriority] = useState("100");
@@ -1224,17 +1233,20 @@ function AccountPoolSettings() {
   const refresh = useCallback(async () => {
     try {
       const next = await rpc.call("status.get", null);
-      const needsNextBinding =
-        next.routing.claude &&
-        next.accounts.some(
-          (account) => account.provider === "claude" && account.enabled,
-        );
-      const pick = needsNextBinding
-        ? await rpc.call("routing.binding.next", { provider: "claude" }).then(
-            (result) => result.nextAccountId,
-            () => null,
-          )
-        : null;
+      const picks: Partial<Record<"claude" | "gemini", string | null>> = {};
+      for (const provider of ["claude", "gemini"] as const) {
+        const needsNextBinding =
+          next.routing[provider] &&
+          next.accounts.some(
+            (account) => account.provider === provider && account.enabled,
+          );
+        picks[provider] = needsNextBinding
+          ? await rpc.call("routing.binding.next", { provider }).then(
+              (result) => result.nextAccountId,
+              () => null,
+            )
+          : null;
+      }
       writeCachedStatus(next);
       const nextDisplay = await rpc
         .call("display.get", null)
@@ -1243,7 +1255,7 @@ function AccountPoolSettings() {
       setDisplay(nextDisplay);
       setStatus(next);
       setStatusIsCached(false);
-      setNextAccountId(pick);
+      setNextAccountIds(picks);
     } catch (loadError) {
       if (mounted.current) setError(errorText(loadError));
     }
@@ -1322,12 +1334,16 @@ function AccountPoolSettings() {
     };
   }, [accountLabel, codexStep, loginDone, refresh, rpc]);
   const accounts = status?.accounts ?? [];
-  const nextSubscriptionId =
-    nextAccountId === undefined
+  const nextSubscriptionFor = (provider: PoolProvider) => {
+    if (provider === "codex") return null;
+    const nextAccountId =
+      nextAccountIds === undefined ? undefined : nextAccountIds[provider];
+    return nextAccountId === undefined
       ? undefined
       : nextAccountId === null
         ? null
         : (subscriptionRepresentative(accounts, nextAccountId)?.id ?? null);
+  };
   const enabledTwins = (account: AccountSummary) =>
     subscriptionMembers(accounts, account.id).filter(
       (member) => member.id !== account.id && member.enabled,
@@ -1805,9 +1821,9 @@ function AccountPoolSettings() {
                             displayName={display.plans[account.id] ?? null}
                             state={subscriptionState(
                               account,
-                              status?.routing.claude === false
+                              status?.routing[provider.id] === false
                                 ? null
-                                : nextSubscriptionId,
+                                : nextSubscriptionFor(provider.id),
                             )}
                             pending={pending.size > 0}
                             refreshing={
@@ -2261,7 +2277,9 @@ function AccountDialog({
   const providerId =
     account.provider === "claude"
       ? account.accountUuid
-      : account.codexAccountId;
+      : account.provider === "gemini"
+        ? account.geminiProject
+        : account.codexAccountId;
   const plan = planBadge(account, displayName);
   return (
     <DialogFrame
@@ -2356,9 +2374,17 @@ function AccountDialog({
             </dd>
           </>
         )}
+        {account.geminiEndpoint === undefined ? null : (
+          <>
+            <dt className="text-muted-foreground">Endpoint</dt>
+            <dd>{account.geminiEndpoint}</dd>
+          </>
+        )}
         {providerId === null || providerId === undefined ? null : (
           <>
-            <dt className="text-muted-foreground">Account id</dt>
+            <dt className="text-muted-foreground">
+              {account.provider === "gemini" ? "Project" : "Account id"}
+            </dt>
             <dd className="font-mono text-xs">{`${providerId.slice(0, 4)}…${providerId.slice(-4)}`}</dd>
           </>
         )}

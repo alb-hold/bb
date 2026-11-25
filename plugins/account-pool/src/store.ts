@@ -1347,7 +1347,10 @@ export class PoolAffinityStore {
     return new Map(
       z
         .array(activeAccountRowSchema)
-        .parse(this.db.prepare("SELECT * FROM pool_active_account").all())
+        .parse([
+          ...this.db.prepare("SELECT * FROM pool_active_account").all(),
+          ...this.db.prepare("SELECT * FROM pool_gemini_active_account").all(),
+        ])
         .map((row) => [row.provider, { accountId: row.account_id }]),
     );
   }
@@ -1368,9 +1371,11 @@ export class PoolAffinityStore {
   }
 
   putActiveAccount(provider: PoolProvider, accountId: string): void {
+    const table =
+      provider === "gemini" ? "pool_gemini_active_account" : "pool_active_account";
     this.db
       .prepare(
-        `INSERT INTO pool_active_account (provider, account_id) VALUES (?, ?)
+        `INSERT INTO ${table} (provider, account_id) VALUES (?, ?)
        ON CONFLICT(provider) DO UPDATE SET account_id = excluded.account_id`,
       )
       .run(provider, accountId);
@@ -1388,7 +1393,10 @@ export class PoolAffinityStore {
           balance_json: z.string(),
         }),
       )
-      .parse(this.db.prepare("SELECT * FROM pool_automatic_choice").all());
+      .parse([
+        ...this.db.prepare("SELECT * FROM pool_automatic_choice").all(),
+        ...this.db.prepare("SELECT * FROM pool_gemini_automatic_choice").all(),
+      ]);
     return new Map(
       rows.map((row) => [
         `${row.provider}:${row.account_id}`,
@@ -1407,9 +1415,13 @@ export class PoolAffinityStore {
     accountId: string,
     choice: LastAutomaticChoice,
   ): void {
+    const table =
+      provider === "gemini"
+        ? "pool_gemini_automatic_choice"
+        : "pool_automatic_choice";
     this.db
       .prepare(
-        `INSERT INTO pool_automatic_choice
+        `INSERT INTO ${table}
           (provider, account_id, chosen_at, reason, family, balance_json)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(provider, account_id) DO UPDATE SET
@@ -1498,4 +1510,17 @@ export const QUOTA_MIGRATIONS = [
     five_hour_utilization = NULL, five_hour_reset_at = NULL,
     five_hour_status = NULL, seven_day_utilization = NULL,
     seven_day_reset_at = NULL, seven_day_status = NULL`,
+  `CREATE TABLE pool_gemini_active_account (
+    provider TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL
+  );
+  CREATE TABLE pool_gemini_automatic_choice (
+    provider TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    chosen_at INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    family TEXT NOT NULL,
+    balance_json TEXT NOT NULL,
+    PRIMARY KEY(provider, account_id)
+  )`,
 ];

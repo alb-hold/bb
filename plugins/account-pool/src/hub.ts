@@ -233,9 +233,18 @@ export interface StreamCut {
   clientAborted: boolean;
 }
 
-const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, readonly string[]>> = {
-  claude: ["message_stop"],
-  codex: ["response.completed", "response.failed", "response.incomplete"],
+interface FinalMarkers {
+  events: readonly string[];
+  data: readonly string[];
+}
+
+const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, FinalMarkers>> = {
+  claude: { events: ["message_stop"], data: [] },
+  codex: {
+    events: ["response.completed", "response.failed", "response.incomplete"],
+    data: [],
+  },
+  gemini: { events: [], data: ['"finishReason"'] },
 };
 
 interface RefreshBackoff {
@@ -1136,8 +1145,11 @@ export class AccountPoolHub {
     };
   }
 
-  async bindingPreview(threadId: string | null): Promise<BindingPreview> {
-    const preview = await this.previewAccountChoice("claude");
+  async bindingPreview(
+    threadId: string | null,
+    provider: "claude" | "gemini" = "claude",
+  ): Promise<BindingPreview> {
+    const preview = await this.previewAccountChoice(provider);
     const now = this.options.now();
     let binding: AccountBinding | null = null;
     for (const [key, value] of this.affinityBindings) {
@@ -1149,7 +1161,7 @@ export class AccountPoolHub {
       }
       if (
         Array.isArray(identity) &&
-        identity[0] === "claude" &&
+        identity[0] === provider &&
         identity[2] === threadId &&
         value.lastUsedAt > (binding?.lastUsedAt ?? 0) &&
         now - value.lastUsedAt < AFFINITY_IDLE_TTL_MS
@@ -1164,7 +1176,7 @@ export class AccountPoolHub {
         : status.find(
             (candidate) =>
               candidate.id === binding?.accountId &&
-              candidate.provider === "claude" &&
+              candidate.provider === provider &&
               candidate.enabled &&
               bindingEligibleIds.has(candidate.id),
           );
@@ -1509,6 +1521,7 @@ export class AccountPoolHub {
             pacing = null;
           }
           if (response.status === 429) {
+            let bodyDetail: string | null = null;
             if (adapter.isQuotaRejection(response.headers)) {
               await this.discardUpstream(upstream, false);
               break;
@@ -1537,10 +1550,9 @@ export class AccountPoolHub {
                   message: rejection.message,
                   headers: {},
                 };
-              } else {
-                failure = { status: 429, message: detail, headers: {} };
+                break;
               }
-              break;
+              bodyDetail = detail;
             }
             const waitMs = retryAfterMilliseconds(
               response.headers.get("retry-after"),
@@ -1558,14 +1570,16 @@ export class AccountPoolHub {
                 result: waitForDelay(waitMs, this.stopped.signal),
               };
               this.pacingByAccount.set(selected.account.id, pacing);
-              await this.discardUpstream(upstream, false);
+              if (bodyDetail === null)
+                await this.discardUpstream(upstream, false);
               await abortable(pacing.result, signal);
               continue;
             }
-            if (!selected.keepAffinity) {
+            if (!selected.keepAffinity || bodyDetail !== null) {
               failure = {
                 status: 429,
-                message: await this.discardUpstream(upstream, true),
+                message:
+                  bodyDetail ?? (await this.discardUpstream(upstream, true)),
                 headers: { "retry-after": String(Math.ceil(waitMs / 1_000)) },
               };
               break;
@@ -1913,8 +1927,9 @@ export class AccountPoolHub {
     const activeAccount = eligible.find(
       ({ account }) => account.id === active?.accountId,
     );
+    const balancing = provider === "claude" || provider === "gemini";
     const balanced =
-      provider === "claude"
+      balancing
         ? chooseBalancedCandidate(
             candidates,
             family,
@@ -1950,14 +1965,14 @@ export class AccountPoolHub {
     const selected =
       selectedBound ??
       inherited ??
-      (provider === "claude" ? balanced.candidate : legacyAutomatic);
+      (balancing ? balanced.candidate : legacyAutomatic);
     if (selected === null) return null;
     const choiceReason =
       selectedBound !== null || inherited !== undefined
         ? null
         : balanced.reason;
     const automaticChoice =
-      provider !== "claude" ||
+      !balancing ||
       choiceReason === null ||
       routing.selectionAccountId !== null
         ? null
@@ -2015,12 +2030,12 @@ export class AccountPoolHub {
       (activeAccount === undefined ||
         active.accountId === selected.account.id ||
         (active === routing.active && attempted.has(active.accountId)) ||
-        (provider === "claude" && automaticChoice !== null));
+        (balancing && automaticChoice !== null));
     return {
       ...selected,
       keepAffinity:
         selected.account.id === routing.pinnedAccountId &&
-        (provider !== "claude" || routing.selectionAccountId !== null),
+        (!balancing || routing.selectionAccountId !== null),
       automaticChoice,
       accept: () => {
         if (automaticChoice !== null) {
@@ -2040,11 +2055,10 @@ export class AccountPoolHub {
           this.affinityBindings.set(affinityKey, accepted);
         }
         if (advance && this.activeAccounts.get(provider) === active) {
-          if (provider !== "gemini")
-            this.options.affinity.putActiveAccount(
-              provider,
-              selected.account.id,
-            );
+          this.options.affinity.putActiveAccount(
+            provider,
+            selected.account.id,
+          );
           this.activeAccounts.set(provider, { accountId: selected.account.id });
         }
       },
@@ -2337,6 +2351,7 @@ export class AccountPoolHub {
     let finalSeen = false;
     let pendingLine = "";
     let eventName = "";
+    let dataTail = "";
     let finished = false;
     const reportCut = (
       kind: StreamCut["kind"],
@@ -2381,15 +2396,22 @@ export class AccountPoolHub {
           } else {
             bytes += chunk.value.byteLength;
             if (eventStream && markers !== undefined) {
-              const lines = (
-                pendingLine + decoder.decode(chunk.value, { stream: true })
-              ).split("\n");
+              const text = decoder.decode(chunk.value, { stream: true });
+              if (markers.data.length > 0) {
+                const window = dataTail + text;
+                if (markers.data.some((marker) => window.includes(marker)))
+                  finalSeen = true;
+                dataTail = window.slice(
+                  -(Math.max(...markers.data.map((marker) => marker.length)) - 1),
+                );
+              }
+              const lines = (pendingLine + text).split("\n");
               pendingLine = (lines.pop() ?? "").slice(0, 256);
               for (const line of lines) {
                 const field = line.endsWith("\r") ? line.slice(0, -1) : line;
                 if (field === "") {
                   events += 1;
-                  if (markers.includes(eventName)) finalSeen = true;
+                  if (markers.events.includes(eventName)) finalSeen = true;
                   eventName = "";
                 } else if (field.startsWith("event:"))
                   eventName = field.slice("event:".length).trim();

@@ -441,6 +441,14 @@ export class PoolOperations {
       if (state.status !== "ready" && state.status !== "expired") return [];
       if (state.planLabel === "Proxied") return [];
       if (state.providerId === "acp-antigravity-acp") {
+        if (
+          accounts.some(
+            (account) =>
+              account.provider === "gemini" &&
+              sameEmail(account.email, state.accountEmail),
+          )
+        )
+          return [];
         return [
           {
             providerId: state.providerId,
@@ -448,7 +456,7 @@ export class PoolOperations {
             email: state.accountEmail,
             planLabel: state.planLabel,
             status: state.status,
-            poolProvider: null,
+            poolProvider: "gemini",
             ...(antigravityUsage === null ? {} : { usage: antigravityUsage }),
           },
         ];
@@ -595,8 +603,8 @@ export class PoolOperations {
     };
   }
 
-  bindingPreview(threadId: string) {
-    return this.hub.bindingPreview(threadId);
+  bindingPreview(threadId: string, provider: "claude" | "gemini") {
+    return this.hub.bindingPreview(threadId, provider);
   }
 
   async nextAccountPreview(provider: PoolProvider) {

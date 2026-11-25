@@ -70,6 +70,19 @@ export function usagePlan(
       }
     : null;
 }
+
+export type WindowResetState = "open" | "rolled" | "expired";
+
+const ROLLED_WINDOW_GRACE_MS = 5 * 60 * 1_000;
+
+export function windowResetState(
+  reset: number | null,
+  now: number,
+): WindowResetState {
+  if (reset === null || reset > now) return "open";
+  return now - reset <= ROLLED_WINDOW_GRACE_MS ? "rolled" : "expired";
+}
+
 export { displayPlanLabel as usagePlanLabel } from "./display.js";
 import { displayPlanLabel, modelWeeklyRows } from "./display.js";
 
@@ -181,9 +194,14 @@ export function registerUsageSource(
               model: string | null,
             ) => {
               if (utilization === null) return;
-              if (reset !== null && reset <= Date.now()) {
+              const resetState = windowResetState(reset, Date.now());
+              if (resetState === "expired") {
                 expiredWindows += 1;
                 return;
+              }
+              if (resetState === "rolled") {
+                utilization = 0;
+                reset = null;
               }
               windows.push({
                 kind:

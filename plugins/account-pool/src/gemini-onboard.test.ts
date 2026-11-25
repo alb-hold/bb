@@ -779,6 +779,7 @@ describe("Gemini import dry run", () => {
             remainingFraction: 0.25,
             resetTime: null,
             disabled: false,
+            window: null,
             slot: "primary",
           },
           {
@@ -788,6 +789,7 @@ describe("Gemini import dry run", () => {
             remainingFraction: 0.5,
             resetTime: null,
             disabled: false,
+            window: null,
             slot: "skipped",
           },
         ],
