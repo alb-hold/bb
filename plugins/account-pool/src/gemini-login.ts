@@ -52,6 +52,7 @@ export class GeminiLoginError extends Error {
 export interface GeminiLoginTarget {
   label: string | null;
   priority?: number;
+  accountId?: string;
 }
 
 export interface GeminiLoginAccount {

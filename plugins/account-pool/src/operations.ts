@@ -374,6 +374,23 @@ export class PoolOperations {
     return summary;
   }
 
+  async reauthorizeGemini(id: string, home: string): Promise<Account> {
+    const account = await this.requireReauthorizable(id, "gemini");
+    const imported = await this.hub.importAccount("gemini", { home });
+    requireSameLogin(
+      account,
+      { id: null, email: account.email },
+      { id: null, email: imported.email },
+      `That Google sign-in belongs to a different account. Sign in as the account behind ${account.label}; it was not changed.`,
+    );
+    return this.reauthorize(
+      account,
+      { email: imported.email ?? account.email },
+      imported.secret,
+      null,
+    );
+  }
+
   private async reauthorize(
     account: Account,
     identity: Partial<

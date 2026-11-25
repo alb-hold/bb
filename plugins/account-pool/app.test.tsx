@@ -691,7 +691,7 @@ describe("Account Pool settings", () => {
     expect(slot.getByText(/^37% ·/)).toBeTruthy();
     expect(slot.getByText("Usage limit")).toBeTruthy();
     expect(slot.getByText(/^52% ·/)).toBeTruthy();
-    expect(slot.getByText("OAuth · Google")).toBeTruthy();
+    expect(slot.getByText("OAuth · Antigravity (Google)")).toBeTruthy();
     expect(slot.getByRole("dialog").textContent).not.toMatch(
       /claude|chatgpt|5 hour|7 day/iu,
     );
@@ -1828,6 +1828,88 @@ describe("Account Pool settings", () => {
     expect(
       within(dialog).queryByRole("textbox", { name: "Account label" }),
     ).toBeNull();
+  });
+
+  it("adds an Antigravity account from the Add subscription menu through geminiLogin, not the Claude or Codex flows", async () => {
+    const sessionId = "44444444-4444-4444-8444-444444444444";
+    const slot = render([], {
+      "geminiLogin.start": () => ({ sessionId, expiresAt: Date.now() + 300_000 }),
+      "geminiLogin.wait": () => new Promise(() => {}),
+      "geminiLogin.cancel": () => ({ cancelled: true }),
+    });
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Add Antigravity account", {
+        selector: "span.block",
+      }),
+    );
+    const dialog = await slot.findByRole("dialog");
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "geminiLogin.start",
+        input: {},
+      }),
+    );
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "geminiLogin.wait",
+        input: { sessionId },
+      }),
+    );
+    expect(dialog.textContent).toContain("Antigravity");
+    expect(dialog.textContent).toContain("Sign in to Google in the window that opened");
+    expect(dialog.textContent).not.toMatch(/claude|chatgpt|codex/iu);
+    expect(
+      within(dialog).queryByRole("textbox", { name: "Account label" }),
+    ).toBeNull();
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain("login.start");
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain(
+      "codexLogin.start",
+    );
+
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "geminiLogin.cancel",
+        input: { sessionId },
+      }),
+    );
+  });
+
+  it("signs an Antigravity account in again for that account through geminiLogin", async () => {
+    const expired = account({
+      id: "55555555-5555-4555-8555-555555555555",
+      provider: "gemini",
+      label: "gem@example.com",
+      email: "gem@example.com",
+      signInExpired: true,
+      status: "error",
+      error: "OAuth refresh failed with HTTP 400.",
+    });
+    const sessionId = "66666666-6666-4666-8666-666666666666";
+    const slot = render([expired], {
+      "geminiLogin.start": () => ({ sessionId, expiresAt: Date.now() + 300_000 }),
+      "geminiLogin.wait": () => new Promise(() => {}),
+      "geminiLogin.cancel": () => ({ cancelled: true }),
+    });
+    fireEvent.click(
+      await slot.findByRole("button", { name: /^Sign in again to / }),
+    );
+    const dialog = await slot.findByRole("dialog", { name: "Sign in again" });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "geminiLogin.start",
+        input: { accountId: expired.id },
+      }),
+    );
+    expect(dialog.textContent).toContain(
+      "Sign in to Google as the account behind gem@example.com.",
+    );
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain(
+      "codexLogin.start",
+    );
+    expect(slot.rpcCalls.map((call) => call.method)).not.toContain("login.start");
   });
 
   function renderOwnerPool() {

@@ -1013,7 +1013,9 @@ async function startGoogle(args: {
             send(503, { error: "unavailable" });
             return;
           }
-          send(200, { email: `${bearer.replace(/^tok-/u, "")}@example.com` });
+          send(200, {
+            email: `${bearer.replace(/^tok-/u, "").replace(/~.*$/u, "")}@example.com`,
+          });
           return;
         }
         const mount = /^\/(prod|daily)(\/.*)$/u.exec(String(request.url));
@@ -3956,5 +3958,287 @@ describe("Gemini rows and an older build", () => {
       "gemini",
       "gemini",
     ]);
+  });
+});
+
+describe("Antigravity sign-in from the app", () => {
+  const LEAKS = [/tok-/u, /refresh/u, /accounts\.google\.com/u, /code=/u];
+
+  async function setup(
+    options: {
+      loginTimeoutMs?: number;
+      homes?: Record<string, ImportedGeminiCredentials>;
+    } = {},
+  ) {
+    const google = await startGoogle({
+      projects: Object.fromEntries(
+        ["new", "c", "c~2", "other", "late", "denied", "x", "noemail1"].map((name) => [
+          `tok-${name}`,
+          `proj-${name}`,
+        ]),
+      ),
+      quotaFraction: {},
+      stream: () => ({ status: 200, body: OK_BODY }),
+    });
+    upstreams.push(google.close);
+    const control = await tempDir("bb-gemini-signin-control-");
+    const fixture = await createGeminiFixture(google, options.homes ?? {}, {
+      loginControl: control,
+      ...(options.loginTimeoutMs === undefined
+        ? {}
+        : { loginTimeoutMs: options.loginTimeoutMs }),
+    });
+    const rpc = fixture.host.harness.behavior;
+    const loginRoot = path.join(
+      fixture.dataDir,
+      "plugins",
+      "account-pool",
+      "gemini-login",
+    );
+    const configure = async (token: { access: string }) => {
+      await fs.rm(path.join(control, "approve"), { force: true });
+      await fs.rm(path.join(control, "deny"), { force: true });
+      await fs.rm(path.join(control, "browser.json"), { force: true });
+      await fs.writeFile(
+        path.join(control, "config.json"),
+        JSON.stringify({ version: "1.5.0", token }),
+      );
+    };
+    const start = async (input: { label?: string; accountId?: string } = {}) => {
+      const result = await rpc.callRpc("geminiLogin.start", input);
+      await waitForFile(path.join(control, "browser.json"));
+      return result as { sessionId: string; expiresAt: number };
+    };
+    const wait = async (sessionId: string) =>
+      (await rpc.callRpc("geminiLogin.wait", { sessionId })) as {
+        status: string;
+        message?: string;
+        email?: string;
+        account?: { id: string; label: string };
+      };
+    const approve = () => fs.writeFile(path.join(control, "approve"), "");
+    const list = async () =>
+      (
+        (await rpc.callRpc("account.list", null)) as Array<{
+          id: string;
+          provider: string;
+          label: string;
+          email: string | null;
+          priority: number;
+          enabled: boolean;
+        }>
+      ).filter((account) => account.provider === "gemini");
+    const stored = async () => {
+      const files = await accountSecretFiles(fixture.dataDir);
+      return Object.fromEntries(
+        await Promise.all(
+          files.map(async (file) => [
+            file,
+            await fs.readFile(path.join(fixture.dataDir, file), "utf8"),
+          ]),
+        ),
+      ) as Record<string, string>;
+    };
+    const expectNothingLeft = async () => {
+      expect(await fs.readdir(loginRoot).catch(() => [])).toEqual([]);
+      const browser = JSON.parse(
+        await fs.readFile(path.join(control, "browser.json"), "utf8"),
+      ) as { pid: number };
+      const runtime = JSON.parse(
+        await fs.readFile(path.join(control, "env.json"), "utf8"),
+      ) as { pid: number };
+      await vi.waitFor(() => {
+        expect(isAlive(browser.pid)).toBe(false);
+        expect(isAlive(runtime.pid)).toBe(false);
+      });
+    };
+    const noLeak = (value: unknown) => {
+      const text = JSON.stringify(value);
+      for (const pattern of LEAKS) expect(text).not.toMatch(pattern);
+    };
+    return {
+      control,
+      fixture,
+      rpc,
+      configure,
+      start,
+      wait,
+      approve,
+      list,
+      stored,
+      expectNothingLeft,
+      noLeak,
+    };
+  }
+
+  it("adds a new Antigravity account from the app and returns only status and email", async () => {
+    const t = await setup();
+    await t.configure({ access: "tok-new" });
+    const started = await t.start({ label: "from-app" });
+    t.noLeak(started);
+    expect(Object.keys(started).sort()).toEqual(["expiresAt", "sessionId"]);
+    await t.approve();
+    const done = await t.wait(started.sessionId);
+    t.noLeak(done);
+    expect(done.status).toBe("complete");
+    expect(done.email).toBe("new@example.com");
+    expect(done.account?.label).toBe("from-app");
+    expect(Object.keys(done).sort()).toEqual(["account", "email", "status"]);
+    expect((await t.list()).map((account) => account.email)).toEqual([
+      "new@example.com",
+    ]);
+    await t.expectNothingLeft();
+    const browser = JSON.parse(
+      await fs.readFile(path.join(t.control, "browser.json"), "utf8"),
+    ) as { args: string[] };
+    expect(browser.args.filter((arg) => arg.startsWith("https://"))).toEqual([
+      expect.stringMatching(/^https:\/\/accounts\.google\.com\//u),
+    ]);
+  });
+
+  it("signs in again as the same Google account, replaces the stored credential and keeps id, label, priority and flags", async () => {
+    const t = await setup({ homes: { "/homes/c": creds("tok-c") } });
+    const added = await addGemini(t.fixture.host, "/homes/c", 7);
+    await t.rpc.callRpc("account.rename", { id: added.id, label: "my-label" });
+    await t.rpc.callRpc("account.disable", { id: added.id });
+    const before = await t.stored();
+    expect(Object.values(before).join("")).toContain("refresh-tok-c");
+
+    await t.configure({ access: "tok-c~2" });
+    const started = await t.start({ accountId: added.id });
+    await t.approve();
+    const done = await t.wait(started.sessionId);
+    t.noLeak(done);
+    expect(done.status).toBe("complete");
+    expect(done.account?.id).toBe(added.id);
+
+    const after = await t.stored();
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    const joined = Object.values(after).join("");
+    expect(joined).toContain("refresh-tok-c~2");
+    expect(joined).not.toMatch(/refresh-tok-c(?!~)/u);
+    const accounts = await t.list();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      id: added.id,
+      label: "my-label",
+      priority: 7,
+      enabled: false,
+      email: "c@example.com",
+    });
+    await t.expectNothingLeft();
+  });
+
+  it("refuses to sign in again as a different Google account and leaves the old credential untouched", async () => {
+    const t = await setup({ homes: { "/homes/c": creds("tok-c") } });
+    const added = await addGemini(t.fixture.host, "/homes/c", 3);
+    const before = await t.stored();
+
+    await t.configure({ access: "tok-other" });
+    const started = await t.start({ accountId: added.id });
+    await t.approve();
+    const done = await t.wait(started.sessionId);
+    t.noLeak(done);
+    expect(done.status).toBe("error");
+    expect(done.message).toContain("different account");
+    expect(await t.stored()).toEqual(before);
+    const accounts = await t.list();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      id: added.id,
+      email: "c@example.com",
+      priority: 3,
+    });
+    await t.expectNothingLeft();
+  });
+
+  it("refuses to sign in again when the signed-in email cannot be verified", async () => {
+    const t = await setup({ homes: { "/homes/c": creds("tok-c") } });
+    const added = await addGemini(t.fixture.host, "/homes/c", 0);
+    const before = await t.stored();
+    await t.configure({ access: "tok-noemail1" });
+    const started = await t.start({ accountId: added.id });
+    await t.approve();
+    const done = await t.wait(started.sessionId);
+    expect(done.status).toBe("error");
+    expect(await t.stored()).toEqual(before);
+    await t.expectNothingLeft();
+  });
+
+  it("refuses a second sign-in while one is pending, and cancel leaves no account and no changed credential", async () => {
+    const t = await setup({ homes: { "/homes/c": creds("tok-c") } });
+    const added = await addGemini(t.fixture.host, "/homes/c", 0);
+    const before = await t.stored();
+    await t.configure({ access: "tok-c~2" });
+    const first = await t.start({ accountId: added.id });
+
+    await expect(t.rpc.callRpc("geminiLogin.start", {})).rejects.toThrow();
+    expect(
+      await t.rpc.callRpc("geminiLogin.cancel", { sessionId: first.sessionId }),
+    ).toEqual({ cancelled: true });
+    const done = await t.wait(first.sessionId);
+    t.noLeak(done);
+    expect(done.status).toBe("error");
+    expect(await t.stored()).toEqual(before);
+    expect(await t.list()).toHaveLength(1);
+    await t.expectNothingLeft();
+    expect(
+      await t.rpc.callRpc("geminiLogin.cancel", { sessionId: first.sessionId }),
+    ).toEqual({ cancelled: false });
+  });
+
+  it("adds nothing and changes nothing when a new sign-in times out", async () => {
+    const t = await setup({ loginTimeoutMs: 400 });
+    await t.configure({ access: "tok-late" });
+    const started = await t.start({ label: "late" });
+    const done = await t.wait(started.sessionId);
+    t.noLeak(done);
+    expect(done.status).toBe("error");
+    expect(await t.list()).toEqual([]);
+    expect(await t.stored()).toEqual({});
+    await t.expectNothingLeft();
+  });
+
+  it("leaves the old credential untouched when a sign-in again times out", async () => {
+    const t = await setup({
+      loginTimeoutMs: 400,
+      homes: { "/homes/c": creds("tok-c") },
+    });
+    const added = await addGemini(t.fixture.host, "/homes/c", 0);
+    const before = await t.stored();
+    await t.configure({ access: "tok-c~2" });
+    const started = await t.start({ accountId: added.id });
+    const done = await t.wait(started.sessionId);
+    expect(done.status).toBe("error");
+    expect(await t.stored()).toEqual(before);
+    await t.expectNothingLeft();
+  });
+
+  it("adds nothing when the sign-in is denied, and never returns the runtime's own error text", async () => {
+    const t = await setup();
+    await t.configure({ access: "tok-denied" });
+    const started = await t.start();
+    await fs.writeFile(path.join(t.control, "deny"), "");
+    const done = await t.wait(started.sessionId);
+    t.noLeak(done);
+    expect(JSON.stringify(done)).not.toContain("secret-looking");
+    expect(done.status).toBe("error");
+    expect(await t.list()).toEqual([]);
+    expect(await t.stored()).toEqual({});
+    await t.expectNothingLeft();
+  });
+
+  it("refuses a sign-in again for an account that does not exist, and opens no window", async () => {
+    const t = await setup();
+    await t.configure({ access: "tok-x" });
+    await expect(
+      t.rpc.callRpc("geminiLogin.start", {
+        accountId: "00000000-0000-4000-8000-000000000000",
+      }),
+    ).rejects.toThrow("This subscription no longer exists.");
+    await expect(
+      fs.access(path.join(t.control, "browser.json")),
+    ).rejects.toThrow();
+    expect(await t.list()).toEqual([]);
   });
 });

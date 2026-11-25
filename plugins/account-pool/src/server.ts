@@ -789,14 +789,16 @@ export function createAccountPoolPlugin(
         ? {}
         : { startupTimeoutMs: options.geminiLoginStartupTimeoutMs }),
       importAccount: (home, target) =>
-        operations.add(
-          accountAddInputSchema.parse({
-            provider: "gemini",
-            source: { kind: "import", home },
-            label: target.label,
-            priority: target.priority,
-          }),
-        ),
+        target.accountId === undefined
+          ? operations.add(
+              accountAddInputSchema.parse({
+                provider: "gemini",
+                source: { kind: "import", home },
+                label: target.label,
+                priority: target.priority,
+              }),
+            )
+          : operations.reauthorizeGemini(target.accountId, home),
     });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
@@ -844,7 +846,7 @@ export function createAccountPoolPlugin(
     );
     bb.rpc.register(
       accountPoolRpcContract,
-      createRpcHandlers(operations, login, codexLogin, config),
+      createRpcHandlers(operations, login, codexLogin, geminiLogin, config),
     );
     bb.rpc.register(
       accountPoolBypassReadRpcContract,
