@@ -2010,8 +2010,8 @@ describe("final scan fd replacement", () => {
               ? "uncertain"
               : "clear",
       });
-      expect(lists).toBe(kind === "churning" ? 4 : 2);
-      expect(links).toBe(kind === "churning" ? 4 : 2);
+      expect(lists).toBe(kind === "churning" ? 12 : 2);
+      expect(links).toBe(kind === "churning" ? 12 : 2);
     },
   );
   it("does not recheck a gone task fd on an earlier scan", async () => {

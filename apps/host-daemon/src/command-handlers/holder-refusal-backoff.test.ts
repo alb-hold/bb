@@ -10,6 +10,7 @@ import {
   hostProc,
   processCredentialsFromStatus,
   processStartFromStat,
+  useDoubtRecheckWaitForTests,
   useProcReaderForTests,
   type ProcReader,
 } from "@bb/process-utils";
@@ -26,6 +27,7 @@ import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 const children: ChildProcess[] = [];
 const roots: string[] = [];
 afterEach(async () => {
+  useDoubtRecheckWaitForTests(null);
   useProcReaderForTests(null);
   useHolderRefusalClockForTests(null);
   useProcessStartReaderForTests(null);
@@ -537,6 +539,9 @@ describe.skipIf(!runsHere)(
       useProcessCredentialsReaderForTests(later.credentials);
       const watched = readerWatching(pid);
       let classifying = false;
+      useDoubtRecheckWaitForTests(async () => {
+        classifying = false;
+      });
       const own = `/proc/${pid}/`;
       const identityLeaf = (target: string) =>
         target === `${own}stat` || target === `${own}status`;
