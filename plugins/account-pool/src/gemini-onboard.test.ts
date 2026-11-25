@@ -1524,4 +1524,71 @@ describe("Antigravity companion project for consumer accounts", () => {
       ],
     ).toEqual(["proj-companion", "aicode-consumers", "none"]);
   });
+
+  const ownAndOtherCompanions = (quotaByProject: Record<string, unknown>) =>
+    fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      loadsByBase: {
+        daily: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-own" }],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-other" }],
+      },
+      quotaByProject,
+    });
+  const quotaProjects = (google: ReturnType<typeof fakeCodeAssist>) => [
+    ...new Set(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .map((call) => call.body?.project ?? "none"),
+    ),
+  ];
+
+  it("tries the other endpoint's companion when the own companion has no buckets, before the token project", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [] },
+      "proj-other": ONE_WINDOW,
+      "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
+  });
+
+  it("guard: makes no extra load or quota call when the own companion already has buckets", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": ONE_WINDOW,
+      "proj-other": { buckets: [bucket("gemini-4-neon", 0.9)] },
+      "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quotaProjects(google)).toEqual(["proj-own"]);
+    expect(
+      google.calls.filter((call) => call.method === "loadCodeAssist"),
+    ).toHaveLength(1);
+  });
+
+  it("uses the stored project when the own and the other endpoint's companions both have no buckets", async () => {
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [] },
+      "proj-other": { buckets: [] },
+      "proj-token": ONE_WINDOW,
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quotaProjects(google)).toEqual([
+      "proj-own",
+      "proj-other",
+      "proj-token",
+    ]);
+  });
 });

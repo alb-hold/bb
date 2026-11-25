@@ -1459,13 +1459,11 @@ export function createGeminiAdapter(options: {
       );
       if (info === null) throw new Error("Usage refresh returned unreadable data.");
       const stored = context.account.geminiProject ?? null;
-      let companion = info.project;
-      if (companion === null) {
-        const otherBase =
-          baseFor(context.account) === bases.daily ? bases.prod : bases.daily;
-        companion = await codeAssistCall(
+      let otherCompanion: Promise<string | null> | undefined;
+      const loadOtherCompanion = () =>
+        (otherCompanion ??= codeAssistCall(
           context.fetch,
-          otherBase,
+          baseFor(context.account) === bases.daily ? bases.prod : bases.daily,
           "loadCodeAssist",
           secret.accessToken,
           LOAD_CODE_ASSIST_BODY,
@@ -1473,11 +1471,11 @@ export function createGeminiAdapter(options: {
           context.signal,
         )
           .then((payload) => parseLoadCodeAssist(payload)?.project ?? null)
-          .catch(() => null);
-        context.signal?.throwIfAborted();
-      }
-      const candidates: Array<string | null> = [
-        ...new Set([companion, stored, null]),
+          .catch(() => null));
+      const candidateSources: Array<() => Promise<string | null>> = [
+        async () => info.project,
+        loadOtherCompanion,
+        async () => stored,
       ];
       if (info.endpoint !== context.account.geminiEndpoint)
         await context.accounts.setGeminiEndpoint(
@@ -1494,7 +1492,14 @@ export function createGeminiAdapter(options: {
       let quotaSummary: unknown = null;
       let quotaFailure: unknown = null;
       let quotaProject: string | null = null;
-      for (const candidate of candidates) {
+      const tried = new Set<string | null>();
+      const sources = [...candidateSources, async () => null];
+      for (const [index, source] of sources.entries()) {
+        const candidate = await source();
+        context.signal?.throwIfAborted();
+        if (tried.has(candidate)) continue;
+        if (candidate === null && index < sources.length - 1) continue;
+        tried.add(candidate);
         const settled = await Promise.allSettled(
           [...new Set([bases.daily, bases.prod])].map((base) =>
             codeAssistCall(
