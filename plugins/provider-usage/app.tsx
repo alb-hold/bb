@@ -54,6 +54,7 @@ import {
 import { UsageSettings } from "./settings.js";
 import {
   combinedUsageMachine,
+  isCombinedPooledProvider,
   usageTargetsToRefresh,
 } from "./combined-usage.js";
 
@@ -577,9 +578,7 @@ export function ProviderUsageStatusContent({
   );
   const usesCombinedSource =
     selectedMachine?.id.startsWith("source:") === true &&
-    selectedMachine.providers.some(
-      (provider) => provider.providerId === "claude-code",
-    );
+    selectedMachine.providers.some(isCombinedPooledProvider);
   const activeMachine = useMemo(
     () =>
       usesCombinedSource
@@ -1012,7 +1011,10 @@ function ProviderUsageStatus(props: ExperimentalSidebarFooterDisclosureProps) {
     getStoreSnapshot,
   );
   const { threadId } = useBbContext();
-  const sidebarThreads = experimental_useSidebarThreads({ experimental_previewRows: true, experimental_lifecycles: ["active"] });
+  const sidebarThreads = experimental_useSidebarThreads({
+    experimental_previewRows: true,
+    experimental_lifecycles: ["active"],
+  });
   const threadMachineId = useMemo(
     () =>
       sidebarThreads.threads.find((thread) => thread.id === threadId)?.host
