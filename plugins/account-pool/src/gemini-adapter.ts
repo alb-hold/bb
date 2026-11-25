@@ -1523,9 +1523,6 @@ export function createGeminiAdapter(options: {
           });
         throw error;
       });
-      const stale = context.quotas.get(context.account.id);
-      if (stale.error !== null && isGeminiUsageRefreshError(stale.error))
-        context.quotas.put({ ...stale, error: null });
       const secret = await context.freshSecret(context.signal);
       try {
         context.signal?.throwIfAborted();

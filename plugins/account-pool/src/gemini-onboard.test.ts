@@ -1934,6 +1934,113 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(kept.observedAt).toBe(seeded.observedAt);
   });
 
+  const RECOVERABLE_ERRORS = [
+    ["quota_read", `${QUOTA_READ_PREFIX}old read failure`],
+    ["runtime_version", "Gemini usage refresh stopped (runtime_version): old lookup failure"],
+  ] as const;
+
+  const seededWithError = async (seedError: string) => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const google = fakeCodeAssist({
+      loads: [LIVE_AGY_DAILY],
+      quota: ONE_WINDOW,
+    });
+    await google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW));
+    stores.quotas.put({ ...stores.quotas.get(account.id), error: seedError });
+    const live = (await stores.accounts.get(account.id)) ?? account;
+    return {
+      stores,
+      account: live,
+      google,
+      before: stores.quotas.get(account.id),
+      accountBefore: live,
+    };
+  };
+
+  it.each(RECOVERABLE_ERRORS)(
+    "keeps a seeded %s error and every quota field when the refresh is cancelled during the quota read",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      const controller = new AbortController();
+      const abortingFetch: typeof fetch = async (input, init) => {
+        if (String(input).endsWith(":retrieveUserQuotaSummary")) controller.abort();
+        return google.fetch(input, init);
+      };
+      await expect(
+        google.adapter.refreshUsage({
+          ...abortingContext(stores, account, google, controller, () => NOW + 60_000),
+          fetch: abortingFetch,
+        }),
+      ).rejects.toBeDefined();
+      expect(stores.quotas.get(account.id)).toEqual(before);
+      expect((await stores.accounts.get(account.id))?.geminiProject).toBe(
+        account.geminiProject,
+      );
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "keeps a seeded %s error and every quota field when the credential refresh fails, and records no quota_read error",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      await expect(
+        google.adapter.refreshUsage({
+          ...usageContext(stores, account, google.fetch, () => NOW + 60_000),
+          freshSecret: async () => {
+            throw new Error("OAuth refresh failed with HTTP 401.");
+          },
+        }),
+      ).rejects.toThrow("OAuth refresh failed with HTTP 401.");
+      expect(stores.quotas.get(account.id)).toEqual(before);
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "records a runtime_version error and moves nothing else when the version lookup fails over a seeded %s error",
+    async (_kind, seedError) => {
+      const { stores, account, before } = await seededWithError(seedError);
+      const failing = fakeCodeAssist({
+        loads: [LIVE_AGY_DAILY],
+        quota: ONE_WINDOW,
+        runtimeUserAgent: async () => {
+          throw new Error(RUNTIME_VERSION_FAILURE);
+        },
+      });
+      await expect(
+        failing.adapter.refreshUsage(usageContext(stores, account, failing.fetch, () => NOW + 60_000)),
+      ).rejects.toThrow(RUNTIME_VERSION_FAILURE);
+      expect(failing.calls).toEqual([]);
+      expect(stores.quotas.get(account.id)).toEqual({
+        ...before,
+        error: `Gemini usage refresh stopped (runtime_version): ${RUNTIME_VERSION_FAILURE}`,
+      });
+    },
+  );
+
+  it.each(RECOVERABLE_ERRORS)(
+    "records a quota_read error and leaves the endpoint, tier, project and quota alone when loadCodeAssist fails over a seeded %s error",
+    async (_kind, seedError) => {
+      const { stores, account, google, before } = await seededWithError(seedError);
+      const failingFetch: typeof fetch = async (input, init) =>
+        String(input).endsWith(":loadCodeAssist")
+          ? new Response("{}", { status: 503 })
+          : google.fetch(input, init);
+      await expect(
+        google.adapter.refreshUsage({
+          ...usageContext(stores, account, failingFetch, () => NOW + 60_000),
+        }),
+      ).rejects.toBeDefined();
+      const after = stores.quotas.get(account.id);
+      expect(after.error?.startsWith(QUOTA_READ_PREFIX)).toBe(true);
+      expect({ ...after, error: null }).toEqual({ ...before, error: null });
+      const stored = await stores.accounts.get(account.id);
+      expect(stored?.geminiEndpoint).toBe(account.geminiEndpoint);
+      expect(stored?.subscriptionType).toBe(account.subscriptionType);
+      expect(stored?.geminiProject).toBe(account.geminiProject);
+    },
+  );
+
   it("never mixes the new project with the old windows when the refresh is aborted right after the project commits", async () => {
     const { stores, account, seeded, google } = await seededForCommit();
     const controller = new AbortController();

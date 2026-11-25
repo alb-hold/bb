@@ -984,6 +984,7 @@ export class AccountPoolHub {
             { kind: "normal" },
             recover,
             profileSignal,
+            true,
           ).catch((error: unknown) => {
             if (
               !profileSignal.aborted &&
@@ -2104,6 +2105,7 @@ export class AccountPoolHub {
     use: SecretUse,
     recover = false,
     signal?: AbortSignal,
+    usageRefresh = false,
   ): Promise<AccountSecret> {
     while (true) {
       signal?.throwIfAborted();
@@ -2181,7 +2183,11 @@ export class AccountPoolHub {
             const error = this.options.quotas.get(account.id).error;
             if (
               !recover &&
-              this.usageErrorBlocks(account.provider, error)
+              this.usageErrorBlocks(account.provider, error) &&
+              !(
+                usageRefresh &&
+                adapter.isTransientUsageError?.(error) === true
+              )
             )
               throw new Error(error);
             if (rejection?.sameToken && !recover && secret.kind === "oauth") {
