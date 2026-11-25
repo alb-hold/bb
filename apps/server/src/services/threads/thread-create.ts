@@ -15,6 +15,7 @@ import {
   getThreadSpawner,
   setThreadExecutionOverride,
 } from "@bb/db";
+import { sliceUtf16Head } from "@bb/text-utils";
 import { randomUUID } from "node:crypto";
 import {
   describeSessionOptionConflict,
@@ -53,6 +54,11 @@ import {
 } from "./dispatch-attempt.js";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
 import { configureThreadPlugins } from "./dispatch-hooks.js";
+import {
+  THREAD_ROUTE_INPUT_TEXT_MAX_LENGTH,
+  runThreadRouteHooks,
+  safeHookLogToken,
+} from "./thread-route-hook.js";
 import {
   createThreadRecord,
   getThreadSafe,
@@ -169,6 +175,61 @@ async function loadCatalogDefaultForProvider(
     );
   }
   return { model: defaultModel.model, providerId: args.providerId };
+}
+
+type RoutedModelCheck = "known" | "unknown" | "unreadable";
+
+async function checkRoutedModel(
+  deps: ThreadCreateDeps,
+  args: {
+    environment: ThreadCreateServiceRequestInput["environment"];
+    model: string;
+    parentThread: Thread | null;
+    projectId: string;
+    providerId: string;
+  },
+): Promise<RoutedModelCheck> {
+  try {
+    const requestedEnvironment = await resolveCreateThreadEnvironment(deps, {
+      parentThread: args.parentThread,
+      projectId: args.projectId,
+      requestedEnvironment: args.environment,
+    });
+    let hostId: string | null = null;
+    let cwd: string | undefined;
+    if (requestedEnvironment.type === "provider") {
+      if (requestedEnvironment.machine?.type === "existing") {
+        hostId = requestedEnvironment.machine.hostId;
+        cwd =
+          projectCheckoutPathOnHost(deps, args.projectId, hostId) ?? undefined;
+      }
+    } else {
+      const resolved = resolveStableThreadRequestEnvironment(deps, {
+        environment: requestedEnvironment,
+        projectId: args.projectId,
+      });
+      hostId = childHostIdForResolvedEnvironment(resolved);
+      cwd = modelCatalogCwdForResolvedEnvironment(resolved);
+    }
+    if (hostId === null) {
+      return "unreadable";
+    }
+    const catalog = await resolveSystemProviderModels(deps, {
+      ...(cwd !== undefined ? { cwd } : {}),
+      hostId,
+      providerId: args.providerId,
+    });
+    if (catalog.modelLoadError !== null) {
+      return "unreadable";
+    }
+    return [...catalog.models, ...catalog.selectedOnlyModels].some(
+      (candidate) => candidate.model === args.model,
+    )
+      ? "known"
+      : "unknown";
+  } catch {
+    return "unreadable";
+  }
 }
 
 interface ResolveSessionOptionDefaultModelArgs {
@@ -465,6 +526,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
   args: CreateProvisioningThreadArgs & {
     environmentIntent: ThreadProvisionEnvironmentIntent;
     nativeTerminal: NativeTerminalCreate | null;
+    providerRerouted: boolean;
     sendAt: number | undefined;
   },
 ) {
@@ -654,6 +716,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
   }
   rememberProjectExecutionDefaultsForCreate(deps, {
     execution,
+    providerRerouted: args.providerRerouted,
     request: args.request,
   });
   return getThreadSafe(deps, thread.id);
@@ -818,18 +881,130 @@ export async function createThreadFromRequest(
     }
   }
   await deps.providerRegistry.whenRegistrationsSettled();
-  const {
-    defaultModel: inheritedDefaultModel,
-    providerId,
-    providerFallbackCandidates,
-    requestedModel,
-  } = resolveProjectExecutionDefaultsForCreate(deps, {
+  const resolvedDefaults = resolveProjectExecutionDefaultsForCreate(deps, {
     executionInputSources: requestInput.executionInputSources,
     model: requestInput.model,
     parentThread,
     projectId: requestInput.projectId,
     providerId: requestInput.providerId,
   });
+  const { providerFallbackCandidates } = resolvedDefaults;
+  let { defaultModel: inheritedDefaultModel, providerId, requestedModel } =
+    resolvedDefaults;
+  let providerRerouted = false;
+  let routedReasoningLevel = requestInput.reasoningLevel;
+  let routedSessionOptions = requestInput.sessionOptions;
+  if (originKind !== "fork" && requestInput.nativeTerminal !== true) {
+    const originalProviderId = providerId;
+    const inputText = requestInput.input
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    const outcome = await runThreadRouteHooks({
+      projectId: requestInput.projectId,
+      parentThreadId: parentThread?.id ?? null,
+      parentProviderId: parentThread?.providerId ?? null,
+      origin: requestInput.origin,
+      originKind: originKind ?? null,
+      originPluginId: requestInput.originPluginId ?? null,
+      title: requestInput.title ?? null,
+      inputText:
+        inputText.length === 0
+          ? null
+          : sliceUtf16Head(inputText, THREAD_ROUTE_INPUT_TEXT_MAX_LENGTH),
+      providerId,
+      model: requestedModel ?? inheritedDefaultModel,
+      explicitProvider: requestInput.providerId !== undefined,
+    });
+    for (const failure of outcome.failures) {
+      deps.logger.warn(
+        {
+          projectId: requestInput.projectId,
+          providerId,
+          pluginId: safeHookLogToken(failure.pluginId),
+          kind: failure.kind,
+          errorName:
+            failure.errorName === null
+              ? null
+              : safeHookLogToken(failure.errorName),
+        },
+        "thread route hook failed, keeping provider",
+      );
+    }
+    const decision = outcome.decision;
+    const providerChanged =
+      decision !== null && decision.providerId !== providerId;
+    const modelChanged =
+      decision !== null &&
+      decision.model !== null &&
+      decision.model !== (requestedModel ?? inheritedDefaultModel);
+    if (decision !== null && (providerChanged || modelChanged)) {
+      let rejection: string | null = null;
+      let decidedModel = decision.model;
+      let modelLabel = "unlisted";
+      const providerLabel =
+        deps.providerRegistry.get(decision.providerId) === null
+          ? "unregistered"
+          : decision.providerId;
+      if (deps.providerRegistry.get(decision.providerId) === null) {
+        rejection = "unknown provider";
+      } else {
+        try {
+          requireBridgeLaunchForProviderId(deps, decision.providerId);
+        } catch (error) {
+          rejection = "provider launch unavailable";
+        }
+      }
+      if (rejection === null && decidedModel !== null) {
+        const check = await checkRoutedModel(deps, {
+          environment: requestInput.environment,
+          parentThread:
+            forkSourceEnvironmentId !== undefined
+              ? null
+              : (sourceThread ?? parentThread),
+          projectId: requestInput.projectId,
+          providerId: decision.providerId,
+          model: decidedModel,
+        });
+        if (check === "unknown") {
+          rejection = "model is not in the provider catalog";
+        } else if (check === "known") {
+          modelLabel = decidedModel;
+        }
+      }
+      if (rejection !== null) {
+        deps.logger.warn(
+          {
+            projectId: requestInput.projectId,
+            from: providerId,
+            to: providerLabel,
+            model: modelLabel,
+          },
+          `thread route hook named ${providerLabel}, keeping ${providerId}: ${rejection}`,
+        );
+      } else {
+        providerId = decision.providerId;
+        requestedModel = decidedModel;
+        if (providerChanged) {
+          inheritedDefaultModel = null;
+          routedReasoningLevel = undefined;
+          routedSessionOptions = undefined;
+        }
+        providerRerouted = true;
+        deps.logger.info(
+          {
+            projectId: requestInput.projectId,
+            from: originalProviderId,
+            to: providerId,
+            model: modelLabel,
+            reason_present: decision.reason !== null,
+            pluginId: safeHookLogToken(decision.pluginId),
+          },
+          `thread rerouted by ${safeHookLogToken(decision.pluginId)}: ${originalProviderId} -> ${providerId}`,
+        );
+      }
+    }
+  }
   const provider = deps.providerRegistry.get(providerId);
   if (provider === null) {
     throw new ApiError(
@@ -887,6 +1062,11 @@ export async function createThreadFromRequest(
     providerId,
     titleFallback: deriveTitleFallback(requestInput.input),
   };
+  if (providerRerouted) {
+    request.model = requestedModel ?? undefined;
+    request.reasoningLevel = routedReasoningLevel;
+    request.sessionOptions = routedSessionOptions;
+  }
   if (
     request.title === undefined &&
     request.originKind === "fork" &&
@@ -1027,6 +1207,7 @@ export async function createThreadFromRequest(
   };
   const thread = await createPendingThreadAndAttemptFirstDispatch(deps, {
     ...createArgs,
+    providerRerouted,
     sendAt: request.sendAt,
   });
   const { initiator } = resolveDispatchAuthor({

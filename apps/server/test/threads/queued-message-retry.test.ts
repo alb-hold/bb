@@ -53,6 +53,7 @@ function installDispatchGate(decide: (attempt: number) => GateDecision): {
   let attempts = 0;
   const registry: HookRegistry = {
     "experimental_thread.configure": [],
+    "experimental_thread.route": [],
     "message.dispatch": [],
   };
   registry["message.dispatch"].push({

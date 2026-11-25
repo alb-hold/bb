@@ -106,6 +106,7 @@ function installDispatchHook(
   const seen: MessageDispatchHookContext[] = [];
   const registry: HookRegistry = {
     "experimental_thread.configure": [],
+    "experimental_thread.route": [],
     "message.dispatch": [
       {
         pluginId: HOOK_PLUGIN_ID,

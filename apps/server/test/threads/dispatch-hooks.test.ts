@@ -58,7 +58,11 @@ type HookRegistry = {
 };
 
 function emptyRegistry(): HookRegistry {
-  return { "experimental_thread.configure": [], "message.dispatch": [] };
+  return {
+    "experimental_thread.configure": [],
+    "experimental_thread.route": [],
+    "message.dispatch": [],
+  };
 }
 
 function installHooks(
@@ -217,6 +221,7 @@ describe("message.dispatch hook context", () => {
             },
           },
         ],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "fleet",
@@ -265,6 +270,7 @@ describe("message.dispatch hook context", () => {
       let admitted = false;
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "fleet",
@@ -313,6 +319,7 @@ describe("message.dispatch hook context", () => {
             },
           },
         ],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "fleet",
@@ -355,6 +362,7 @@ describe("message.dispatch hook context", () => {
       const seen: unknown[] = [];
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "drafts",
@@ -396,6 +404,7 @@ describe("message.dispatch hook context", () => {
     await withTestHarness(async (harness) => {
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "drafts",
@@ -434,6 +443,7 @@ describe("message.dispatch hook context", () => {
       const seen: { environment: unknown; hostId: string | null }[] = [];
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "limits",

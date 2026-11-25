@@ -203,6 +203,7 @@ describe("the requested queue drain", () => {
       let hookCalls = 0;
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "slow-drain-proof",
@@ -1249,6 +1250,7 @@ describe("the requested queue drain", () => {
       });
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "admission-race",
@@ -1496,6 +1498,7 @@ describe("the requested queue drain", () => {
       let attempts = 0;
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "limiter",
@@ -1546,6 +1549,7 @@ describe("the requested queue drain", () => {
       let attempts = 0;
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "limiter",
@@ -1606,6 +1610,7 @@ describe("the requested queue drain", () => {
         let attempts = 0;
         installHooks({
           "experimental_thread.configure": [],
+          "experimental_thread.route": [],
           "message.dispatch": [
             {
               pluginId: "limiter",
@@ -1690,6 +1695,7 @@ describe("the requested queue drain", () => {
       await withTestHarness(async (harness) => {
         installHooks({
           "experimental_thread.configure": [],
+          "experimental_thread.route": [],
           "message.dispatch": [
             {
               pluginId: "limiter",
@@ -1763,6 +1769,7 @@ describe("the requested queue drain", () => {
         let attempts = 0;
         installHooks({
           "experimental_thread.configure": [],
+          "experimental_thread.route": [],
           "message.dispatch": [
             {
               pluginId: "limiter",
@@ -1827,6 +1834,7 @@ describe("the requested queue drain", () => {
       const seen: string[] = [];
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       const { thread } = seedRunnableThread(harness, {
@@ -1863,6 +1871,7 @@ describe("the requested queue drain", () => {
       let passes = 0;
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       registry["message.dispatch"].push({
@@ -1896,6 +1905,7 @@ describe("the requested queue drain", () => {
       const seen: string[] = [];
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       registry["message.dispatch"].push({
@@ -1980,6 +1990,7 @@ describe("requesting a drain", () => {
       let passes = 0;
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       registry["message.dispatch"].push({
@@ -2150,6 +2161,7 @@ describe("a thread-ready wake during a running drain", () => {
       let wokeDuringDrain = false;
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "limiter",
@@ -2203,6 +2215,7 @@ describe("a targeted attempt that holds its claim while the turn completes", () 
       });
       installHooks({
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [
           {
             pluginId: "limiter",

@@ -575,6 +575,7 @@ class LimiterPlugin {
       [K in PluginHookName]: PluginHookRegistration<K>[];
     } = {
       "experimental_thread.configure": [],
+      "experimental_thread.route": [],
       "message.dispatch": this.registrations,
     };
     this.registrations.push(registration, {

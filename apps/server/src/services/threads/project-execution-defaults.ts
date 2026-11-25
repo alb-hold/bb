@@ -24,6 +24,7 @@ import { isLiveParentThread } from "./thread-parent.js";
 
 interface RememberProjectExecutionDefaultsForCreateArgs {
   execution: ResolvedThreadExecutionOptions;
+  providerRerouted: boolean;
   request: ThreadCreateServiceRequest;
 }
 
@@ -169,7 +170,10 @@ export function rememberProjectExecutionDefaultsForCreate(
   deps: Pick<AppDeps, "db">,
   args: RememberProjectExecutionDefaultsForCreateArgs,
 ): void {
-  if (!shouldRememberProjectExecutionDefaults(args.request)) {
+  if (
+    args.providerRerouted ||
+    !shouldRememberProjectExecutionDefaults(args.request)
+  ) {
     return;
   }
 

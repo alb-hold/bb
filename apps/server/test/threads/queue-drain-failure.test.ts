@@ -131,6 +131,7 @@ describe("recordQueuedMessageDrainFailure", () => {
       let attempts = 0;
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       registry["message.dispatch"].push({
@@ -188,6 +189,7 @@ describe("recordQueuedMessageDrainFailure", () => {
     await withTestHarness(async (harness) => {
       const registry: HookRegistry = {
         "experimental_thread.configure": [],
+        "experimental_thread.route": [],
         "message.dispatch": [],
       };
       registry["message.dispatch"].push({

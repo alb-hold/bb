@@ -53,6 +53,7 @@ function recordDispatchHookCalls(): string[][] {
   const calls: string[][] = [];
   const registry: HookRegistry = {
     "experimental_thread.configure": [],
+    "experimental_thread.route": [],
     "message.dispatch": [
       {
         pluginId: "send-time-test",

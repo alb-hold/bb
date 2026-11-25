@@ -889,6 +889,43 @@ now, or when the orphan sweep clears a wait whose plugin is no longer running.
 - **The single server-wide lock.** One slow handler delays every dispatch in
   the server, up to its 10 s box.
 
+## `experimental_thread.route` (`bb.experimental_hooks.on`)
+
+`on("experimental_thread.route", handler)` runs before a new thread is created
+and may choose its provider and model. The context carries `projectId`,
+`parentThreadId`, `parentProviderId`, `origin`, `originKind`, `originPluginId`,
+`title`, `inputText` (cut to 4000 characters), `providerId`, `model` and
+`explicitProvider`. A handler returns `null` or
+`{ providerId, model?, reason? }`; the first non-null decision wins.
+
+Core calls the hook from `createThreadFromRequest` (`thread-create.ts`), the
+one path every create takes. It skips forks and native-terminal creates. A
+decision applies when its provider or its model differs from the current
+choice. A thrown handler, a 2 s timeout, an invalid decision, an unknown
+provider, a provider without a bridge launch, or a model the chosen provider's
+catalog lacks keeps the original provider and model and logs a warning; a
+catalog that cannot be read applies the provider and the decision's model
+unchecked, because core cannot start a thread without a model. A
+rerouted thread clears the inherited default model, reasoning level and
+session options, and never overwrites the project's remembered execution
+defaults. Each reroute logs one line with the project, both providers, the
+reason and the plugin, never the title or prompt.
+
+**Audit before stabilizing.**
+
+- **Callers.** The fleet balancer plugin is the only caller; core has no second
+  consumer of the decision. Confirm the shape fits a second router before
+  stabilizing.
+- **Not applied to forks or native terminals.** Confirm no router needs them.
+- **`executionInputSources` is not consulted.** A decision-supplied model is
+  not reflected in the per-field provenance when the sources carry no `model`
+  entry. Decide whether provenance should record the route.
+- **Catalog check cost.** A decision that names a model reads the provider's
+  model catalog during create, inside the 2 s box's successor path. Confirm
+  this stays cheap on cold hosts.
+- **No chain.** The first non-null decision wins and later handlers are not
+  consulted. Confirm that is wanted over a merged decision.
+
 ## `interaction.pending` (`bb.events.on`)
 
 Fires after core commits a pending interaction. It carries the public thread

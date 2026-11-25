@@ -161,7 +161,11 @@ function installEnvironmentIntentProbe(): PluginDispatchEnvironmentIntent[] {
   const environmentIntents: PluginDispatchEnvironmentIntent[] = [];
   const registry: {
     [K in PluginHookName]: PluginHookRegistration<K>[];
-  } = { "experimental_thread.configure": [], "message.dispatch": [] };
+  } = {
+    "experimental_thread.configure": [],
+    "experimental_thread.route": [],
+    "message.dispatch": [],
+  };
   registry["message.dispatch"].push({
     pluginId: "observer",
     handler: (context) => {
