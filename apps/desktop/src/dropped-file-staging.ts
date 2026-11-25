@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join, sep } from "node:path";
 import { ipcMain } from "electron";
 import { z } from "zod";
 import { BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL } from "./desktop-window-command-ipc.js";
@@ -17,6 +24,24 @@ interface StagedDrop {
   path: string;
   mtimeMs: number;
   bytes: number;
+}
+
+async function isPlainDirectory(path: string): Promise<boolean> {
+  const info = await lstat(path);
+  return info.isDirectory() && !info.isSymbolicLink();
+}
+
+async function ensurePlainRoot(rootDir: string): Promise<void> {
+  await mkdir(dirname(rootDir), { recursive: true });
+  try {
+    await mkdir(rootDir, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
+      throw error;
+  }
+  if (!(await isPlainDirectory(rootDir))) {
+    throw new Error("Dropped-file store is not a plain directory");
+  }
 }
 
 async function directoryBytes(dir: string): Promise<number> {
@@ -43,11 +68,19 @@ export async function pruneDroppedFiles({
   maxTotalBytes?: number;
 }): Promise<void> {
   try {
+    if (!(await isPlainDirectory(rootDir))) {
+      console.warn(
+        "bb: skipping dropped-file pruning, store is not a plain directory",
+      );
+      return;
+    }
+    const realRoot = await realpath(rootDir);
     const drops: StagedDrop[] = [];
     for (const entry of await readdir(rootDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const path = join(rootDir, entry.name);
       try {
+        if (!(await realpath(path)).startsWith(`${realRoot}${sep}`)) continue;
         const info = await lstat(path);
         drops.push({
           path,
@@ -98,7 +131,7 @@ export async function stageDroppedFile({
   if (fileName.length === 0 || fileName === "." || fileName === "..") {
     throw new Error("Dropped file has no usable name");
   }
-  await mkdir(rootDir, { recursive: true, mode: 0o700 });
+  await ensurePlainRoot(rootDir);
   const dropDir = join(rootDir, randomUUID());
   await mkdir(dropDir, { mode: 0o700 });
   const path = join(dropDir, fileName);

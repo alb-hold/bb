@@ -2,6 +2,7 @@ import { makeTempDir } from "@bb/test-helpers";
 import { randomBytes } from "node:crypto";
 import {
   mkdir,
+  readdir,
   readFile,
   stat,
   symlink,
@@ -132,5 +133,25 @@ describe("pruneDroppedFiles", () => {
 
     expect(await exists(inner)).toBe(false);
     expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
+  });
+
+  it("leaves a symlinked store root alone and refuses to stage through it", async () => {
+    const base = await makeTempDir("bb-drop-");
+    const outside = await makeTempDir("bb-outside-");
+    const oldDir = await makeDrop(outside, "old", 10, 30 * DAY);
+    const rootDir = join(base, "dropped-files");
+    await symlink(outside, rootDir);
+
+    await pruneDroppedFiles({ rootDir });
+    await expect(
+      stageDroppedFile({
+        rootDir,
+        name: "a.png",
+        bytes: new Uint8Array([1]),
+      }),
+    ).rejects.toThrow("not a plain directory");
+
+    expect(await exists(oldDir)).toBe(true);
+    expect(await readdir(outside)).toEqual(["old"]);
   });
 });
