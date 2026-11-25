@@ -2593,6 +2593,23 @@ describe("Gemini account pool", () => {
       expect(held.elapsedMs).toBeLessThan(2_000);
     });
 
+    it("serves again once the hold has expired", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        let degraded = true;
+        const { post } = await twoAccounts(() =>
+          degraded ? capacity("10") : { status: 200, body: OK_BODY },
+        );
+        expect((await post("s-cap-5")).status).toBe(429);
+        degraded = false;
+        expect((await post("s-cap-6")).status).toBe(429);
+        vi.setSystemTime(Date.now() + 11_000);
+        expect((await post("s-cap-7")).status).toBe(200);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps the Retry-After of an hour and holds both accounts", async () => {
       let degraded = true;
       const { post } = await twoAccounts(() =>
