@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findServiceDefinition,
@@ -82,6 +82,41 @@ async function scanDropIns(
   return { names: new Set(names), setsOomPolicy: false };
 }
 
+interface CreatedDropIn {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+async function createDropInExclusively(path: string): Promise<CreatedDropIn> {
+  const handle = await open(path, "wx", 0o644);
+  try {
+    await handle.writeFile(OOM_POLICY_DROP_IN_CONTENT, "utf8");
+    const stats = await handle.stat();
+    return { path, dev: stats.dev, ino: stats.ino };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeIfUnchanged(created: CreatedDropIn): Promise<void> {
+  try {
+    const stats = await stat(created.path);
+    if (stats.dev !== created.dev || stats.ino !== created.ino) {
+      return;
+    }
+    const text = await readFile(created.path, "utf8");
+    if (text !== OOM_POLICY_DROP_IN_CONTENT) {
+      return;
+    }
+    await rm(created.path, { force: true });
+  } catch (error) {
+    if (!isFileNotFoundError(error)) {
+      throw error;
+    }
+  }
+}
+
 function freeDropInName(names: ReadonlySet<string>): string {
   if (!names.has(OOM_POLICY_DROP_IN_NAME)) {
     return OOM_POLICY_DROP_IN_NAME;
@@ -112,11 +147,9 @@ export async function ensureUnitOomPolicy(
     }
     const dropInName = freeDropInName(scan.names);
     const dropInPath = join(dropInDir, dropInName);
+    let created: CreatedDropIn;
     try {
-      await writeFile(dropInPath, OOM_POLICY_DROP_IN_CONTENT, {
-        flag: "wx",
-        mode: 0o644,
-      });
+      created = await createDropInExclusively(dropInPath);
     } catch (error) {
       if (isFileExistsError(error)) {
         continue;
@@ -125,18 +158,18 @@ export async function ensureUnitOomPolicy(
     }
     const recheck = await scanDropIns(dropInDir, dropInName).catch(
       async (error: unknown) => {
-        await rm(dropInPath, { force: true });
+        await removeIfUnchanged(created);
         throw error;
       },
     );
     if (recheck.setsOomPolicy) {
-      await rm(dropInPath, { force: true });
+      await removeIfUnchanged(created);
       return "already-current";
     }
     try {
       await args.runCommand("systemctl", ["--user", "daemon-reload"]);
     } catch (error) {
-      await rm(dropInPath, { force: true });
+      await removeIfUnchanged(created);
       throw error;
     }
     return "migrated";

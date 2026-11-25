@@ -234,6 +234,25 @@ describe("ensureUnitOomPolicy", () => {
     expect(fixture.commands).toEqual([]);
   });
 
+  it("keeps a file that replaced its drop-in after creation when the reload fails", async () => {
+    const fixture = await createFixture();
+    const owner = "[Service]\nOOMPolicy=kill\nNice=5\n";
+    const dropInPath = join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME);
+
+    await expect(
+      ensureUnitOomPolicy({
+        ...fixture.args,
+        runCommand: async () => {
+          await rm(dropInPath);
+          await writeFile(dropInPath, owner, "utf8");
+          throw new Error("reload failed");
+        },
+      }),
+    ).rejects.toThrow("reload failed");
+
+    await expect(readFile(dropInPath, "utf8")).resolves.toBe(owner);
+  });
+
   it("does not remove a colliding file when the reload fails", async () => {
     const fixture = await createFixture();
     await mkdir(fixture.dropInDir, { recursive: true });
