@@ -240,6 +240,20 @@ describe("ensureUnitOomPolicy", () => {
     expect(fixture.commands).toEqual([CAT]);
   });
 
+  it("skips when an external drop-in whose path contains a space sets OOMPolicy", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    await writeFile(fixture.ownDropInPath, OOM_POLICY_DROP_IN_CONTENT, "utf8");
+    fixture.extraCat.value =
+      "\n# /etc/systemd/user/my units/bb-host-daemon-test.service.d/10-admin.conf\n[Service]\nOOMPolicy=kill\n";
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe(
+      "already-current",
+    );
+
+    expect(fixture.commands).toEqual([CAT]);
+  });
+
   it("writes nothing when systemctl cat fails", async () => {
     const fixture = await createFixture();
     fixture.catFails.value = true;

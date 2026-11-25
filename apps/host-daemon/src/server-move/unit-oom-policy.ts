@@ -17,7 +17,7 @@ export const OOM_POLICY_DROP_IN_CONTENT = "[Service]\nOOMPolicy=continue\n";
 
 const OOM_POLICY_DIRECTIVE = /^OOMPolicy\s*=/u;
 const SECTION_HEADER = /^\[([^\]]*)\]\s*$/u;
-const FILE_HEADER = /^# (\/\S+\.(?:service|conf))\s*$/u;
+const FILE_HEADER = /^# (\/.*\.(?:service|conf))\s*$/u;
 
 interface CatFile {
   path: string;
