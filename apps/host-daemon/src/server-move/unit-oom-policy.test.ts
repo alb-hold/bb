@@ -178,6 +178,34 @@ describe("ensureUnitOomPolicy", () => {
     ]);
   });
 
+  it("removes its drop-in when the reload fails so the next start retries without a restart", async () => {
+    const fixture = await createFixture();
+    let failReload = true;
+    const args: typeof fixture.args = {
+      ...fixture.args,
+      runCommand: async (command, commandArgs) => {
+        fixture.commands.push([command, ...commandArgs]);
+        if (failReload) {
+          throw new Error("reload failed");
+        }
+      },
+    };
+
+    await expect(ensureUnitOomPolicy(args)).rejects.toThrow("reload failed");
+    await expect(readdir(fixture.dropInDir)).resolves.toEqual([]);
+
+    failReload = false;
+    await expect(ensureUnitOomPolicy(args)).resolves.toBe("migrated");
+
+    await expect(
+      readFile(join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME), "utf8"),
+    ).resolves.toBe(OOM_POLICY_DROP_IN_CONTENT);
+    expect(fixture.commands).toEqual([
+      ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "daemon-reload"],
+    ]);
+  });
+
   it("does nothing for a unit that already declares OOMPolicy", async () => {
     const fixture = await createFixture("OOMPolicy=continue\n");
 

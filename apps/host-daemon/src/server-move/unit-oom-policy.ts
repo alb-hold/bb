@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findServiceDefinition,
@@ -78,11 +78,17 @@ export async function ensureUnitOomPolicy(
   if (scan.setsOomPolicy) {
     return "already-current";
   }
+  const dropInPath = join(dropInDir, freeDropInName(scan.names));
   await writeFileAtomically({
-    path: join(dropInDir, freeDropInName(scan.names)),
+    path: dropInPath,
     content: OOM_POLICY_DROP_IN_CONTENT,
     mode: 0o644,
   });
-  await args.runCommand("systemctl", ["--user", "daemon-reload"]);
+  try {
+    await args.runCommand("systemctl", ["--user", "daemon-reload"]);
+  } catch (error) {
+    await rm(dropInPath, { force: true });
+    throw error;
+  }
   return "migrated";
 }
