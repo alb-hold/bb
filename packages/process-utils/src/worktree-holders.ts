@@ -1241,11 +1241,9 @@ async function scanLinuxPaths(
       vouchable: false,
     };
   }
-  if (
-    (await unreadableCause(proc, pid, await context.ownCapabilities())) ===
-      "it is non-dumpable" &&
-    (await isSessionProcess(proc, pid, self.uid))
-  )
+  const ownCapabilities = await context.ownCapabilities();
+  const cause = await unreadableCause(proc, pid, ownCapabilities);
+  if (await isSessionProcess(proc, pid, self.uid, cause, ownCapabilities))
     return { sessionProcess: true };
   return {
     unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
@@ -1713,10 +1711,13 @@ async function unreadableCause(
   return null;
 }
 
+const CAP_WAKE_ALARM = 1n << 35n;
+
 interface SessionFacts {
   comm: string;
   parent: number;
   uids: number[];
+  permitted: bigint | null;
 }
 
 async function sessionFacts(
@@ -1729,25 +1730,76 @@ async function sessionFacts(
   const parent = parseStatusNumbers(status.value, "PPid")?.[0];
   const uids = parseStatusNumbers(status.value, "Uid");
   if (parent === undefined || uids === null || uids.length !== 4) return null;
-  return { comm: comm.value.replace(/\n$/u, ""), parent, uids };
+  return {
+    comm: comm.value.replace(/\n$/u, ""),
+    parent,
+    uids,
+    permitted: permittedCapabilities(status.value),
+  };
 }
 
 function ownedBy(facts: SessionFacts, uid: number): boolean {
   return facts.uids.every((value) => value === uid);
 }
 
-async function isSessionProcess(
+function isUserSystemd(
+  facts: SessionFacts,
+  uid: number,
+  ownCapabilities: bigint | null,
+): boolean {
+  return (
+    facts.comm === "systemd" &&
+    ownedBy(facts, uid) &&
+    facts.parent === 1 &&
+    facts.permitted !== null &&
+    ownCapabilities !== null &&
+    (facts.permitted & ~ownCapabilities) === CAP_WAKE_ALARM
+  );
+}
+
+async function isSshdSession(
   proc: ProcReader,
-  pid: number,
+  facts: SessionFacts,
   uid: number,
 ): Promise<boolean> {
-  const facts = await sessionFacts(proc, pid);
-  if (facts === null || facts.comm !== "sshd-session" || !ownedBy(facts, uid))
-    return false;
+  if (facts.comm !== "sshd-session" || !ownedBy(facts, uid)) return false;
   const parent = await sessionFacts(proc, facts.parent);
   return (
     parent !== null && parent.comm === "sshd-session" && ownedBy(parent, 0)
   );
+}
+
+async function isSessionProcess(
+  proc: ProcReader,
+  pid: number,
+  uid: number,
+  cause: string | null,
+  ownCapabilities: bigint | null,
+): Promise<boolean> {
+  if (
+    cause !== "it is non-dumpable" &&
+    cause !== "its capabilities exceed the daemon's"
+  )
+    return false;
+  const facts = await sessionFacts(proc, pid);
+  if (facts === null || !ownedBy(facts, uid)) return false;
+  if (cause === "its capabilities exceed the daemon's")
+    return isUserSystemd(facts, uid, ownCapabilities);
+  if (facts.comm === "sshd-session") return isSshdSession(proc, facts, uid);
+  if (facts.comm === "(sd-pam)") {
+    const parent = await sessionFacts(proc, facts.parent);
+    return parent !== null && isUserSystemd(parent, uid, ownCapabilities);
+  }
+  if (facts.comm === "ssh-agent") {
+    if (facts.parent === 1) return true;
+    const parent = await sessionFacts(proc, facts.parent);
+    if (parent === null) return false;
+    return (
+      isUserSystemd(parent, uid, ownCapabilities) ||
+      (await isSshdSession(proc, parent, uid))
+    );
+  }
+  return false;
 }
 
 async function processName(proc: ProcReader, pid: number): Promise<string> {
