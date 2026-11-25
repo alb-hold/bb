@@ -61,6 +61,19 @@ describe("combined usage with the account pooler", () => {
     ).toEqual(["claude-code", "acp-antigravity-acp"]);
   });
 
+  it("keeps pooled Codex out of the combined view", () => {
+    const source = machine("source:account-pool", [
+      pooledClaude,
+      account("codex", "pool:codex", "openai:chatgpt:a"),
+    ]);
+    const host = machine("host-1", [account("codex", "host:codex", null)]);
+    expect(
+      combinedUsageMachine([host, source])?.providers.map(
+        (provider) => provider.id,
+      ),
+    ).toEqual(["pool:claude", "host:codex"]);
+  });
+
   it("drops a host Antigravity copy of the same pooled account only", () => {
     const source = machine("source:account-pool", [
       pooledClaude,

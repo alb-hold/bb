@@ -42,7 +42,9 @@ export function combinedUsageSelection(machines: UsageMachine[]): {
   const sourcePooled = machines
     .filter(isSource)
     .flatMap((machine) =>
-      machine.providers.map((provider) => ({ machine, provider })),
+      machine.providers
+        .filter((provider) => provider.providerId !== "codex")
+        .map((provider) => ({ machine, provider })),
     );
   const seenPooled = new Set<string>();
   const pooled = sourcePooled.filter(({ provider }) => {
