@@ -1095,6 +1095,20 @@ describe("Gemini usage refresh writes in the hub", () => {
     expect(await pool.accounts.rejectedRefresh(pool.account.id, "refresh-synthetic")).toBeNull();
   });
 
+  it("records the error and refuses requests when deleting the stored rejection throws on a request", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await rejectOldToken(pool);
+    await expireSecret(pool);
+    vi.spyOn(pool.accounts, "clearRejectedRefresh").mockRejectedValueOnce(new Error("disk full"));
+
+    expect(await pool.request()).not.toBe(200);
+
+    expect(pool.quotas.get(pool.account.id).error).toBe("disk full");
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+  });
+
   it("writes no affinity, active-account or automatic-choice row during a usage refresh", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
