@@ -43,6 +43,14 @@ export function getNewTerminalSelection(
   return text.trim().length > 0 && text !== previousText ? text : null;
 }
 
+let stagingQueue: Promise<unknown> = Promise.resolve();
+
+function runExclusiveStage<R>(task: () => Promise<R>): Promise<R> {
+  const result = stagingQueue.then(task);
+  stagingQueue = result.catch(() => undefined);
+  return result;
+}
+
 export async function handleStagedTerminalFileDrop<
   T extends { name: string; size: number },
 >({
@@ -69,7 +77,7 @@ export async function handleStagedTerminalFileDrop<
       continue;
     }
     try {
-      paths.push(await stageFile(file));
+      paths.push(await runExclusiveStage(() => stageFile(file)));
     } catch {
       onStageFailure(
         file,

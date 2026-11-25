@@ -183,4 +183,51 @@ describe("staged terminal file drop", () => {
       "end second.png",
     ]);
   });
+  it("keeps at most one stage in flight across overlapping drop events", async () => {
+    const first = new File(["a"], "a.png");
+    const second = new File(["b"], "b.png");
+    const pending = new Map<string, (path: string | Error) => void>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const stageFile = (file: File) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise<string>((resolve, reject) => {
+        pending.set(file.name, (result) => {
+          inFlight -= 1;
+          if (result instanceof Error) reject(result);
+          else resolve(result);
+        });
+      });
+    };
+    const sendA = vi.fn();
+    const sendB = vi.fn();
+    const failA = vi.fn();
+    const eventA = handleStagedTerminalFileDrop({
+      files: [first],
+      stageFile,
+      onStageFailure: failA,
+      isRunning: () => true,
+      sendInput: sendA,
+    });
+    const eventB = handleStagedTerminalFileDrop({
+      files: [second],
+      stageFile,
+      onStageFailure: vi.fn(),
+      isRunning: () => true,
+      sendInput: sendB,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect([...pending.keys()]).toEqual(["a.png"]);
+    pending.get("a.png")?.(new Error("boom"));
+    await eventA;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect([...pending.keys()]).toEqual(["a.png", "b.png"]);
+    pending.get("b.png")?.("/tmp/bb-drop-x/b.png");
+    await eventB;
+    expect(maxInFlight).toBe(1);
+    expect(failA).toHaveBeenCalledTimes(1);
+    expect(sendA).not.toHaveBeenCalled();
+    expect(sendB).toHaveBeenCalledWith("'/tmp/bb-drop-x/b.png'");
+  });
 });
