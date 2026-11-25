@@ -1990,8 +1990,8 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
   });
 
-  it("keeps the old project when the project write fails after the quota write, and the next refresh repairs it", async () => {
-    const { stores, account, storedProject, google } = await seededForCommit();
+  it("keeps the old project and the old quota together when the project write fails, and the next refresh repairs both", async () => {
+    const { stores, account, seeded, storedProject, google } = await seededForCommit();
     const spy = vi
       .spyOn(stores.accounts, "setGeminiProject")
       .mockRejectedValueOnce(new Error("disk full"));
@@ -1999,7 +1999,8 @@ describe("Antigravity companion project for consumer accounts", () => {
       google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000)),
     ).rejects.toThrow("disk full");
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
-    expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+    expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
     expect(stores.quotas.get(account.id).error).toBe(
       `${QUOTA_READ_PREFIX}disk full`,
     );

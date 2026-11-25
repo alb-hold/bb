@@ -100,7 +100,7 @@ async function createGeminiPool(
     return RUNTIME_UA;
   };
   const calls: string[] = [];
-  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" = "normal";
+  let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" = "normal";
   const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
@@ -111,7 +111,9 @@ async function createGeminiPool(
             ? url.includes("/daily/")
               ? "proj-own"
               : "proj-other"
-            : "synthetic-project",
+            : quotaMode === "new-project"
+              ? "proj-new"
+              : "synthetic-project",
         paidTier: { name: "Google AI Ultra" },
       });
     if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
@@ -617,6 +619,42 @@ describe("Gemini usage refresh results", () => {
       const display = Object.values(pool.quotas.modelWeekly(pool.account.id) ?? {});
       expect(display.length).toBeGreaterThan(0);
       for (const entry of display) expect(entry.observedAt).toBe(pool.now());
+    },
+  );
+
+  it.each([
+    ["with a stored exhausted restriction", true],
+    ["without a restriction", false],
+  ] as const)(
+    "keeps the old project and the old quota together when the project write fails, %s",
+    async (_name, restricted) => {
+      const { pool, restriction } = await seedExhausted();
+      if (!restricted)
+        pool.quotas.put({
+          ...pool.quotas.get(pool.account.id),
+          usageRestriction: null,
+        });
+      const before = pool.quotas.get(pool.account.id);
+      pool.setQuotaMode("new-project");
+      const write = vi
+        .spyOn(pool.accounts, "setGeminiProject")
+        .mockRejectedValueOnce(new Error("disk full"));
+
+      pool.advance(5 * MINUTE + 1_000);
+      expect(await pool.hub.refreshUsage()).toBe(false);
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe(
+        "synthetic-project",
+      );
+      const after = pool.quotas.get(pool.account.id);
+      expect(after.limitWindows).toEqual(before.limitWindows);
+      expect(after.observedAt).toBe(before.observedAt);
+      expect(after.usageRestriction).toEqual(
+        restricted ? restriction : null,
+      );
+      expect(after.error).toBe(`${QUOTA_READ_PREFIX}disk full`);
+      expect(await pool.eligible()).toBe(!restricted);
     },
   );
 

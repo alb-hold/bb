@@ -1692,8 +1692,6 @@ export function createGeminiAdapter(options: {
           error: null,
         };
         context.signal?.throwIfAborted();
-        context.quotas.putModelWeekly(context.account.id, thirdParty);
-        context.quotas.put(quota);
         if (
           found &&
           quotaProject !== null &&
@@ -1703,6 +1701,8 @@ export function createGeminiAdapter(options: {
             context.account.id,
             quotaProject,
           );
+        context.quotas.putModelWeekly(context.account.id, thirdParty);
+        context.quotas.put(quota);
       } catch (error) {
         if (context.signal?.aborted !== true)
           context.quotas.put({
