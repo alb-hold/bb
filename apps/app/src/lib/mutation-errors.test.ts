@@ -176,6 +176,25 @@ describe("getMutationErrorMessage", () => {
       }),
     ).toBe("Commit failed");
   });
+
+  it("shows the server's Terminal-unsupported refusal for a failed thread create", () => {
+    const message =
+      "Provider pi does not support Terminal mode. Turn Terminal off to create a regular thread.";
+    const refusal = new HttpError({
+      body: { code: "invalid_request", message },
+      code: "invalid_request",
+      message,
+      status: 400,
+    });
+
+    expect(
+      getMutationErrorMessage({
+        error: refusal,
+        fallbackMessage: "Failed to create thread.",
+        lifecycleOperation: "create_thread",
+      }),
+    ).toBe(message);
+  });
 });
 
 describe("shouldShowMutationErrorToast", () => {

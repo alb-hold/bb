@@ -638,6 +638,23 @@ describe("switching a chat thread to its native terminal", () => {
     );
     expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
   });
+
+  it("refuses a terminal thread on a provider without terminal support instead of creating a chat thread", async () => {
+    const fixture = await createFixture();
+    const created = await postJson(fixture, "/threads", {
+      projectId: fixture.projectId,
+      providerId: "pi",
+      origin: "cli",
+      input: [],
+      environment: { type: "reuse", environmentId: fixture.environment.id },
+      nativeTerminal: true,
+    });
+    expect(created.status).toBe(400);
+    const error = apiErrorSchema.parse(await readJson(created));
+    expect(error.code).toBe("invalid_request");
+    expect(error.message).toContain("does not support Terminal mode");
+    expect(error.message).toContain("Turn Terminal off");
+  });
 });
 
 function withHolderCloses<

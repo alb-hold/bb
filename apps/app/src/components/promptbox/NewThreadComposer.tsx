@@ -1969,6 +1969,10 @@ export function NewThreadComposer({
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
   const submitDisabledReason = submissionReadinessReason;
+  const nativeTerminalSubmitted =
+    nativeTerminalSupport === undefined
+      ? nativeTerminalRequested
+      : nativeTerminal;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
@@ -1980,7 +1984,7 @@ export function NewThreadComposer({
       if (
         blockedReason !== null ||
         submissionReadinessReason !== null ||
-        (input.length === 0 && !nativeTerminal) ||
+        (input.length === 0 && !nativeTerminalSubmitted) ||
         isSubmittingRef.current ||
         projectDefaultsUnavailable ||
         submissionEnvironment === null ||
@@ -2007,11 +2011,12 @@ export function NewThreadComposer({
         projectId,
         providerId: selectedProviderId,
         model: selectedThreadModel,
-        ...(nativeTerminal ? { nativeTerminal: true } : {}),
+        ...(nativeTerminalSubmitted ? { nativeTerminal: true } : {}),
         reasoningLevel,
         permissionMode,
         ...(supportsServiceTier && serviceTier ? { serviceTier } : {}),
-        ...(!nativeTerminal && Object.keys(sessionOptionSelections).length > 0
+        ...(!nativeTerminalSubmitted &&
+        Object.keys(sessionOptionSelections).length > 0
           ? { sessionOptions: sessionOptionSelections }
           : {}),
         executionInputSources: resolveSubmittedExecutionSources(
@@ -2041,7 +2046,7 @@ export function NewThreadComposer({
     [
       clearReuseEnvironment,
       executionInputSources,
-      nativeTerminal,
+      nativeTerminalSubmitted,
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,
@@ -2324,7 +2329,15 @@ export function NewThreadComposer({
                     </Button>
                   }
                 />
-              ) : setupRequiredProvider === null ? null : (
+              ) : setupRequiredProvider === null ? (
+                nativeTerminalSupport === false && nativeTerminalRequested ? (
+                  <ProviderRequirementBanner
+                    title={`${selectedProviderDisplayName} has no Terminal mode yet`}
+                    description="This starts a chat thread."
+                    action={null}
+                  />
+                ) : null
+              ) : (
                 <ProviderRequirementBanner
                   title={`${setupRequiredProvider.displayName} needs configuration`}
                   description={environmentSetupRequiredReason}
@@ -2493,6 +2506,7 @@ export function NewThreadComposer({
       nativeTerminal,
       nativeTerminalRequested,
       nativeTerminalSupport,
+      selectedProviderDisplayName,
       handleNativeTerminalChange,
       pickerSessionOptionSections,
       placedSessionOptions.footer,
