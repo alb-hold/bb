@@ -998,6 +998,8 @@ export class AccountPoolHub {
         quotas: this.options.quotas,
         fetch: this.options.fetch,
         now: this.options.now,
+        onProjectCommitted: (accountId, project) =>
+          this.committedProjects.set(accountId, project),
       })
       .then(
         () => true,
@@ -2641,16 +2643,16 @@ export class AccountPoolHub {
     );
   }
 
+  private readonly committedProjects = new Map<string, string>();
+
   private putObservedQuota(
     sentOn: Account,
     change: (stored: AccountQuota) => AccountQuota,
   ): void {
     const stored = this.options.quotas.get(sentOn.id);
     if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
-    if (sentOn.provider === "gemini") {
-      const current = this.options.accounts.currentGeminiProject(sentOn.id);
-      if (current === null || current.project !== sentOn.geminiProject) return;
-    }
+    const committed = this.committedProjects.get(sentOn.id);
+    if (committed !== undefined && committed !== sentOn.geminiProject) return;
     this.putQuota(change(stored));
   }
 

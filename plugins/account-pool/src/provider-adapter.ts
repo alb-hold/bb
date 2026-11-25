@@ -78,6 +78,7 @@ export interface AdapterUsageContext {
   quotas: QuotaStore;
   fetch: typeof fetch;
   now: () => number;
+  onProjectCommitted?: (accountId: string, project: string) => void;
 }
 
 export interface ImportedProviderAccount {

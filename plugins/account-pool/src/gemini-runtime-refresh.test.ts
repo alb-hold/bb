@@ -323,6 +323,7 @@ async function createGeminiPool(
     hub,
     operations,
     quotas,
+    kv: host.bb.storage.kv,
     calls,
     hold,
     request,
@@ -1168,6 +1169,95 @@ describe("Gemini usage refresh writes in the hub", () => {
       expect(await pool.request()).toBe(200);
     },
   );
+
+  const RETRY_AFTER_PLAN = {
+    status: 429,
+    headers: { "retry-after": "3600" },
+    body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+  };
+  const failGeminiAccountWrite = (pool: Awaited<ReturnType<typeof createGeminiPool>>) => {
+    const original = pool.kv.set.bind(pool.kv);
+    let failed = false;
+    vi.spyOn(pool.kv, "set").mockImplementation(async (...args) => {
+      if (args[0] === "accounts:gemini:v1" && !failed) {
+        failed = true;
+        throw new Error("disk full");
+      }
+      return original(...args);
+    });
+  };
+  const holdOldProjectRequest = async (
+    pool: Awaited<ReturnType<typeof createGeminiPool>>,
+  ) => {
+    const body = pool.gatedBody();
+    pool.planGenerate({ ...RETRY_AFTER_PLAN, gate: body.gate });
+    const served = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+    return { body, served };
+  };
+
+  it("persists the hold of an old-project response when the account store failed to change the project", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const { body, served } = await holdOldProjectRequest(pool);
+
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    failGeminiAccountWrite(pool);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+
+    body.release();
+    expect(await served).toBe(429);
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+  });
+
+  it("persists the hold of an old-project response when the commit failed and the project was restored", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const { body, served } = await holdOldProjectRequest(pool);
+
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    vi.spyOn(pool.quotas, "commitReading").mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-project");
+
+    body.release();
+    expect(await served).toBe(429);
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+    expect(await pool.eligible()).toBe(false);
+  });
+
+  it("still drops an old-project response after a failed account-store write that follows a committed project change", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const { body, served } = await holdOldProjectRequest(pool);
+
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    const committed = pool.quotas.get(pool.account.id);
+    failGeminiAccountWrite(pool);
+    const endpoint = (await pool.accounts.get(pool.account.id))?.geminiEndpoint === "prod" ? "daily" : "prod";
+    await expect(pool.accounts.setGeminiEndpoint(pool.account.id, endpoint)).rejects.toThrow("disk full");
+
+    body.release();
+    expect(await served).toBe(429);
+    await flush();
+
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+    expect(pool.quotas.get(pool.account.id)).toEqual(committed);
+  });
 
   it("still writes the observed fields of a response on the current project", async () => {
     const pool = await createGeminiPool(0);

@@ -1721,6 +1721,8 @@ export function createGeminiAdapter(options: {
         }
         try {
           context.quotas.commitReading(readingToStore, displayToStore);
+          if (newProject !== null)
+            context.onProjectCommitted?.(context.account.id, newProject);
         } catch (error) {
           if (newProject !== null) {
             try {
