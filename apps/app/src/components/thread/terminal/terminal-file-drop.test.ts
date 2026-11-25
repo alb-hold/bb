@@ -59,15 +59,14 @@ describe("staged terminal file drop", () => {
   const screenshot = {
     name: "Screenshot 2026-11-25 at 1.35.15 AM.png",
   };
-  const protectedPath = `/var/folders/4n/x/T/TemporaryItems/NSIRD_screencaptureui_YVUwM8/${screenshot.name}`;
   const stagedPath = `/Users/alex/Library/Application Support/bb/dropped-files/abc/${screenshot.name}`;
 
   it("inserts the staged copy instead of the protected original path", async () => {
     const sendInput = vi.fn();
     const handled = await handleStagedTerminalFileDrop({
       files: [screenshot],
-      getPathForFile: () => protectedPath,
       stageFile: async () => stagedPath,
+      onStageFailure: vi.fn(),
       isRunning: () => true,
       sendInput,
     });
@@ -76,18 +75,40 @@ describe("staged terminal file drop", () => {
     expect(sendInput.mock.calls[0]?.[0]).not.toContain("TemporaryItems");
   });
 
-  it("falls back to the original path when staging fails", async () => {
+  it("inserts no path and reports the file when staging fails", async () => {
     const sendInput = vi.fn();
-    await handleStagedTerminalFileDrop({
+    const onStageFailure = vi.fn();
+    const handled = await handleStagedTerminalFileDrop({
       files: [screenshot],
-      getPathForFile: () => "/Users/alex/Desktop/a.png",
       stageFile: async () => {
         throw new Error("disk full");
       },
+      onStageFailure,
       isRunning: () => true,
       sendInput,
     });
-    expect(sendInput).toHaveBeenCalledWith("'/Users/alex/Desktop/a.png'");
+    expect(handled).toBe(false);
+    expect(sendInput).not.toHaveBeenCalled();
+    expect(onStageFailure).toHaveBeenCalledWith(screenshot);
+  });
+
+  it("inserts the good file and reports only the failed one in a mixed drop", async () => {
+    const sendInput = vi.fn();
+    const onStageFailure = vi.fn();
+    const bad = new File(["x"], "bad.png", { type: "image/png" });
+    await handleStagedTerminalFileDrop({
+      files: [screenshot, bad],
+      stageFile: async (file) => {
+        if (file === bad) throw new Error("nope");
+        return stagedPath;
+      },
+      onStageFailure,
+      isRunning: () => true,
+      sendInput,
+    });
+    expect(sendInput).toHaveBeenCalledWith(`'${stagedPath}'`);
+    expect(onStageFailure).toHaveBeenCalledTimes(1);
+    expect(onStageFailure).toHaveBeenCalledWith(bad);
   });
 
   it("sends nothing once the session is no longer running", async () => {
@@ -95,7 +116,7 @@ describe("staged terminal file drop", () => {
     let running = true;
     const handled = await handleStagedTerminalFileDrop({
       files: [screenshot],
-      getPathForFile: undefined,
+      onStageFailure: vi.fn(),
       stageFile: async () => {
         running = false;
         return stagedPath;

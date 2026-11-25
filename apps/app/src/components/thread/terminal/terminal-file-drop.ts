@@ -43,14 +43,14 @@ export function getNewTerminalSelection(
 
 export async function handleStagedTerminalFileDrop<T>({
   files,
-  getPathForFile,
   stageFile,
+  onStageFailure,
   isRunning,
   sendInput,
 }: {
   files: readonly T[];
-  getPathForFile: ((file: T) => string) | undefined;
   stageFile: (file: T) => Promise<string>;
+  onStageFailure: (file: T) => void;
   isRunning: () => boolean;
   sendInput: (input: string) => void;
 }): Promise<boolean> {
@@ -60,7 +60,8 @@ export async function handleStagedTerminalFileDrop<T>({
       try {
         return await stageFile(file);
       } catch {
-        return getPathForFile === undefined ? "" : getPathForFile(file);
+        onStageFailure(file);
+        return "";
       }
     }),
   );

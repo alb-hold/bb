@@ -4098,8 +4098,11 @@ export function ThreadTerminalView({
         if (stageFile !== undefined) {
           void handleStagedTerminalFileDrop({
             files: Array.from(files),
-            getPathForFile: desktop?.getPathForFile,
             stageFile,
+            onStageFailure: (file) =>
+              appToast.error(
+                `Couldn't attach ${file.name}. Try saving it first.`,
+              ),
             isRunning: () => sessionStatusRef.current === "running",
             sendInput,
           });
