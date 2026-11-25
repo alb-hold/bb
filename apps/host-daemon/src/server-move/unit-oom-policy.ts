@@ -10,7 +10,24 @@ import type { ServerMoveCommandRunner } from "./service-manager.js";
 export const OOM_POLICY_DROP_IN_NAME = "50-oom-policy.conf";
 export const OOM_POLICY_DROP_IN_CONTENT = "[Service]\nOOMPolicy=continue\n";
 
-const OOM_POLICY_DIRECTIVE = /^\s*OOMPolicy\s*=/mu;
+const OOM_POLICY_DIRECTIVE = /^OOMPolicy\s*=/u;
+const SECTION_HEADER = /^\[([^\]]*)\]\s*$/u;
+
+function setsServiceOomPolicy(text: string): boolean {
+  let section = "";
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    const header = SECTION_HEADER.exec(line);
+    if (header !== null) {
+      section = header[1] ?? "";
+      continue;
+    }
+    if (section === "Service" && OOM_POLICY_DIRECTIVE.test(line)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export type UnitOomPolicyOutcome =
   "not-applicable" | "already-current" | "migrated";
@@ -40,7 +57,7 @@ async function scanDropIns(dropInDir: string): Promise<DropInScan> {
     }
     try {
       const text = await readFile(join(dropInDir, name), "utf8");
-      if (OOM_POLICY_DIRECTIVE.test(text)) {
+      if (setsServiceOomPolicy(text)) {
         return { names: new Set(names), setsOomPolicy: true };
       }
     } catch (error) {
@@ -70,7 +87,7 @@ export async function ensureUnitOomPolicy(
   if (definition === null || definition.manager !== "systemd-user") {
     return "not-applicable";
   }
-  if (OOM_POLICY_DIRECTIVE.test(definition.content)) {
+  if (setsServiceOomPolicy(definition.content)) {
     return "already-current";
   }
   const dropInDir = `${definition.path}.d`;

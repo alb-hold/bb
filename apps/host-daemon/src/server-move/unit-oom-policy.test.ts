@@ -206,6 +206,35 @@ describe("ensureUnitOomPolicy", () => {
     ]);
   });
 
+  it("still migrates when OOMPolicy appears only outside [Service] or in a comment", async () => {
+    const fixture = await createFixture();
+    const unit = await readFile(fixture.unitPath, "utf8");
+    await writeFile(
+      fixture.unitPath,
+      unit.replace("[Unit]\n", "[Unit]\nOOMPolicy=kill\n") +
+        "# OOMPolicy=kill\n[Install]\nOOMPolicy=kill\n",
+      "utf8",
+    );
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
+
+    await expect(
+      readFile(join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME), "utf8"),
+    ).resolves.toBe(OOM_POLICY_DROP_IN_CONTENT);
+  });
+
+  it("still migrates when a sibling drop-in sets OOMPolicy under a section other than [Service]", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    await writeFile(
+      join(fixture.dropInDir, "10-misplaced.conf"),
+      "[Unit]\nOOMPolicy=kill\n",
+      "utf8",
+    );
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
+  });
+
   it("does nothing for a unit that already declares OOMPolicy", async () => {
     const fixture = await createFixture("OOMPolicy=continue\n");
 
