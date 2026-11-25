@@ -101,9 +101,32 @@ async function createGeminiPool(
   };
   const calls: string[] = [];
   let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" | "load-http" = "normal";
+  const gates = new Map<string, { reached: () => void; waiting: Promise<void> }>();
+  const hold = (suffix: string) => {
+    let reached: () => void = () => {};
+    let release: () => void = () => {};
+    const reachedPromise = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    gates.set(suffix, { reached, waiting });
+    return { reached: reachedPromise, release };
+  };
   const transport: typeof fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
+    for (const [suffix, gate] of gates)
+      if (url.endsWith(suffix)) {
+        gates.delete(suffix);
+        gate.reached();
+        await gate.waiting;
+      }
+    if (url.includes(":streamGenerateContent"))
+      return new Response("data: {}\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
     if (url.endsWith("/token"))
       return Response.json({
         access_token: "access-fresh",
@@ -199,6 +222,38 @@ async function createGeminiPool(
   });
   const controller = new AbortController();
   const running = hub.start(controller.signal);
+  const requestToken = await threadTokens.forThread(
+    {
+      hostId: "synthetic-host",
+      threadId: "synthetic-thread",
+      provider: "gemini",
+      accountId: null,
+    },
+    await hubTokens.forHost("synthetic-host"),
+    "process",
+  );
+  const generateRoute =
+    "/gemini/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent";
+  const request = async () => {
+    const response = await hub.handle(
+      new Request(
+        `https://hub.invalid/api/v1/plugins/account-pool/http${generateRoute}?alt=sse`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${requestToken}`,
+            "content-type": "application/json",
+            "user-agent": RUNTIME_UA,
+          },
+          body: JSON.stringify({ contents: [], sessionId: "s" }),
+        },
+      ),
+      "gemini",
+      generateRoute,
+    );
+    await response.text();
+    return response.status;
+  };
   const operations = new PoolOperations(
     accounts,
     quotas,
@@ -229,6 +284,8 @@ async function createGeminiPool(
     operations,
     quotas,
     calls,
+    hold,
+    request,
     lookups: () => lookups,
     lookupTimes,
     settled: () => hub.refreshUsage(),
@@ -876,6 +933,166 @@ describe("Gemini usage refresh writes in the hub", () => {
     pool.advance(10 * MINUTE);
     const second = await pool.hub.refreshUsage(undefined, true);
     expect([second, pool.quotas.get(pool.account.id).error]).toEqual([true, null]);
+  });
+
+  const beginProjectChange = async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    const load = pool.hold("/v1internal:loadCodeAssist");
+    const usage = pool.hub.refreshUsage(undefined, true);
+    await load.reached;
+    await expireSecret(pool);
+    const token = pool.hold("/token");
+    const served = pool.request();
+    await token.reached;
+    const original = pool.accounts.setGeminiProject.bind(pool.accounts);
+    let written: () => void = () => {};
+    const projectWritten = new Promise<void>((resolve) => {
+      written = resolve;
+    });
+    let commit: () => void = () => {};
+    const commitGate = new Promise<void>((resolve) => {
+      commit = resolve;
+    });
+    let calls = 0;
+    let failRestore = false;
+    vi.spyOn(pool.accounts, "setGeminiProject").mockImplementation(
+      async (...args) => {
+        calls += 1;
+        if (calls > 1 && failRestore) throw new Error("disk full");
+        const account = await original(...args);
+        written();
+        await commitGate;
+        return account;
+      },
+    );
+    load.release();
+    await projectWritten;
+    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+    token.release();
+    await vi.waitFor(async () => {
+      expect((await pool.accounts.readSecret(pool.account.id)).kind).toBe("oauth");
+      const secret = await pool.accounts.readSecret(pool.account.id);
+      expect(secret.kind === "oauth" ? secret.accessToken : null).toBe("access-fresh");
+    });
+    await served;
+    return {
+      pool,
+      usage,
+      finish: (failCommit: boolean) => {
+        failRestore = failCommit;
+        if (failCommit)
+          vi.spyOn(pool.quotas, "commitReading").mockImplementation(() => {
+            throw new Error("disk full");
+          });
+        commit();
+        return usage;
+      },
+    };
+  };
+
+  it("keeps the marker blocking when a request refresh that began before it finishes during the project change, and a committed reading clears it", async () => {
+    const { pool, finish } = await beginProjectChange();
+
+    expect(await finish(true)).toBe(false);
+
+    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+
+    vi.restoreAllMocks();
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+    expect(await pool.eligible()).toBe(true);
+    expect(await pool.request()).toBe(200);
+  });
+
+  it("keeps the marker blocking after that refresh finishes while the project change has not committed at all", async () => {
+    const { pool, finish } = await beginProjectChange();
+
+    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+
+    expect(await finish(false)).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it("clears a credential error when a request refresh succeeds", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await expireSecret(pool);
+    const token = pool.hold("/token");
+    const served = pool.request();
+    await token.reached;
+    pool.quotas.put({ ...pool.quotas.get(pool.account.id), error: AUTH_ERROR });
+    token.release();
+    await served;
+
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  it("keeps a stored quota_read error through a successful request refresh, and the next committed reading clears it", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await expireSecret(pool);
+    const stored = `${QUOTA_READ_PREFIX}synthetic failure`;
+    pool.quotas.put({ ...pool.quotas.get(pool.account.id), error: stored });
+
+    expect(await pool.request()).toBe(200);
+    expect(pool.calls.some((url) => url.endsWith("/token"))).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBe(stored);
+
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+  });
+
+  const rejectOldToken = async (pool: Awaited<ReturnType<typeof createGeminiPool>>) => {
+    await pool.accounts.recordRejectedRefresh(pool.account.id, "refresh-old", AUTH_ERROR);
+    expect(await pool.accounts.rejectedRefresh(pool.account.id, "refresh-synthetic")).toEqual({
+      message: AUTH_ERROR,
+      sameToken: false,
+    });
+  };
+
+  it("deletes the stored rejection of an older token when a refresh succeeds, on a usage refresh and on a request", async () => {
+    const usagePool = await createGeminiPool(0);
+    await usagePool.settled();
+    await rejectOldToken(usagePool);
+    await expireSecret(usagePool);
+    usagePool.advance(10 * MINUTE);
+    expect(await usagePool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(await usagePool.accounts.rejectedRefresh(usagePool.account.id, "refresh-synthetic")).toBeNull();
+
+    const requestPool = await createGeminiPool(0);
+    await requestPool.settled();
+    await rejectOldToken(requestPool);
+    await expireSecret(requestPool);
+    expect(await requestPool.request()).toBe(200);
+    expect(await requestPool.accounts.rejectedRefresh(requestPool.account.id, "refresh-synthetic")).toBeNull();
+  });
+
+  it("fails the usage refresh without changing quota or error when deleting the stored rejection throws, and the next refresh deletes it", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    await rejectOldToken(pool);
+    await expireSecret(pool);
+    pool.advance(10 * MINUTE);
+    const before = pool.quotas.get(pool.account.id);
+    vi.spyOn(pool.accounts, "clearRejectedRefresh").mockRejectedValueOnce(new Error("disk full"));
+
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(false);
+
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(await pool.accounts.rejectedRefresh(pool.account.id, "refresh-synthetic")).not.toBeNull();
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(await pool.accounts.rejectedRefresh(pool.account.id, "refresh-synthetic")).toBeNull();
   });
 
   it("writes no affinity, active-account or automatic-choice row during a usage refresh", async () => {

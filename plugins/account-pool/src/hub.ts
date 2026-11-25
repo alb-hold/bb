@@ -2242,7 +2242,6 @@ export class AccountPoolHub {
                 const storedError = this.options.quotas.get(account.id).error;
                 if (
                   storedError === null ||
-                  !usageRefresh ||
                   adapter.isTransientUsageError?.(storedError) !== true
                 )
                   this.setError(account.id, null);
