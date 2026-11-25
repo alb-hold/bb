@@ -188,7 +188,7 @@ describe("experimental_thread.route", () => {
     });
   });
 
-  it("keeps the original provider and model when the catalog cannot be read", async () => {
+  it("applies the provider and the hook model when the catalog cannot be read", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness, ["codex"]);
       installRouteHook(() => ({
@@ -212,8 +212,8 @@ describe("experimental_thread.route", () => {
       );
       const warn = vi.spyOn(harness.deps.logger, "warn");
       const thread = await createThreadFromRequest(harness.deps, request);
-      expect(thread.providerId).toBe("codex");
-      expect(JSON.stringify(warn.mock.calls)).toContain("could not be read");
+      expect(thread.providerId).toBe("claude-code");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("keeping codex");
       const start = await waitForQueuedCommand(
         harness,
         ({ command }) =>
@@ -222,7 +222,7 @@ describe("experimental_thread.route", () => {
       if (start.command.type !== "thread.start") {
         throw new Error("Expected start command");
       }
-      expect(start.command.options.model).toBe("codex-model");
+      expect(start.command.options.model).toBe("claude-code-model");
     });
   });
 

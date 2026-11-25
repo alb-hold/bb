@@ -953,8 +953,6 @@ export async function createThreadFromRequest(
         });
         if (check === "unknown") {
           rejection = `model ${decidedModel} is not in the ${decision.providerId} catalog`;
-        } else if (check === "unreadable") {
-          rejection = `the ${decision.providerId} model catalog could not be read`;
         }
       }
       if (rejection !== null) {

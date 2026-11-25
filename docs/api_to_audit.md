@@ -903,8 +903,9 @@ one path every create takes. It skips forks and native-terminal creates. A
 decision applies when its provider or its model differs from the current
 choice. A thrown handler, a 2 s timeout, an invalid decision, an unknown
 provider, a provider without a bridge launch, or a model the chosen provider's
-catalog lacks, or a catalog that cannot be read, keeps the original provider
-and model and logs a warning. A
+catalog lacks keeps the original provider and model and logs a warning; a
+catalog that cannot be read applies the provider and the decision's model
+unchecked, because core cannot start a thread without a model. A
 rerouted thread clears the inherited default model, reasoning level and
 session options, and never overwrites the project's remembered execution
 defaults. Each reroute logs one line with the project, both providers, the
