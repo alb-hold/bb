@@ -1734,13 +1734,14 @@ export function createGeminiAdapter(options: {
         const newProject =
           found && quotaProject !== previousProject ? quotaProject : null;
         let rowBeforeMarker = context.quotas.get(context.account.id);
+        const instanceTag = ` [instance ${context.account.createdAt}]`;
         const marker =
           newProject === null
             ? null
-            : `${GEMINI_COMMIT_ERROR_PREFIX}project change to ${newProject} pending`.slice(
+            : `${`${GEMINI_COMMIT_ERROR_PREFIX}project change to ${newProject} pending`.slice(
                 0,
-                1_000,
-              );
+                1_000 - instanceTag.length,
+              )}${instanceTag}`;
         if (
           marker !== null &&
           !(await writeIfCurrent(() => {
@@ -1749,10 +1750,13 @@ export function createGeminiAdapter(options: {
           }, previousProject ?? null))
         )
           throw stale;
-        const dropMarker = (): void => {
-          const row = context.quotas.get(context.account.id);
-          if (marker !== null && row.error === marker)
-            context.quotas.put({ ...row, error: rowBeforeMarker.error });
+        const dropMarker = async (): Promise<void> => {
+          if (marker === null) return;
+          await writeIfCurrent(() => {
+            const row = context.quotas.get(context.account.id);
+            if (row.error === marker)
+              context.quotas.put({ ...row, error: rowBeforeMarker.error });
+          });
         };
         const restoreProject = async (error: unknown): Promise<never> => {
           try {
@@ -1763,7 +1767,7 @@ export function createGeminiAdapter(options: {
               context.account.createdAt,
             );
             if (restored === null) {
-              dropMarker();
+              await dropMarker();
               throw stale;
             }
             projectRestored = true;
@@ -1791,7 +1795,7 @@ export function createGeminiAdapter(options: {
             return await restoreProject(error);
           }
           if (written === null) {
-            dropMarker();
+            await dropMarker();
             context.signal?.throwIfAborted();
             throw stale;
           }
@@ -1810,7 +1814,7 @@ export function createGeminiAdapter(options: {
           }
         }, newProject ?? previousProject ?? null);
         if (!committed) {
-          dropMarker();
+          await dropMarker();
           throw stale;
         }
         if (outcome.failed) {

@@ -924,6 +924,8 @@ describe("usage refresh while requests are in flight", () => {
 describe("Gemini usage refresh writes in the hub", () => {
   const COMMIT_MARKER =
     "Gemini usage refresh stopped (commit): project change to proj-new pending";
+  const WRITTEN_COMMIT_MARKER =
+    /^Gemini usage refresh stopped \(commit\): project change to proj-new pending \[instance \d+\]$/u;
   const expireSecret = (pool: Awaited<ReturnType<typeof createGeminiPool>>) =>
     pool.accounts.writeSecret(pool.account.id, {
       kind: "oauth",
@@ -1033,7 +1035,7 @@ describe("Gemini usage refresh writes in the hub", () => {
     );
     load.release();
     await projectWritten;
-    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect(pool.quotas.get(pool.account.id).error).toMatch(WRITTEN_COMMIT_MARKER);
     expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
     token.release();
     if (heldRefresh === "succeeds")
@@ -1063,7 +1065,7 @@ describe("Gemini usage refresh writes in the hub", () => {
 
     expect(await finish(true)).toBe(false);
 
-    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect(pool.quotas.get(pool.account.id).error).toMatch(WRITTEN_COMMIT_MARKER);
     expect(await pool.eligible()).toBe(false);
     expect(await pool.request()).not.toBe(200);
 
@@ -1078,7 +1080,7 @@ describe("Gemini usage refresh writes in the hub", () => {
   it("keeps the marker blocking after that refresh finishes while the project change has not committed at all", async () => {
     const { pool, finish } = await beginProjectChange();
 
-    expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+    expect(pool.quotas.get(pool.account.id).error).toMatch(WRITTEN_COMMIT_MARKER);
     expect(await pool.eligible()).toBe(false);
     expect(await pool.request()).not.toBe(200);
 
@@ -1090,11 +1092,11 @@ describe("Gemini usage refresh writes in the hub", () => {
     "keeps the marker blocking when the held request refresh %s during the project change, and a committed reading clears it",
     async (heldRefresh) => {
       const { pool, finish } = await beginProjectChange(heldRefresh);
-      expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+      expect(pool.quotas.get(pool.account.id).error).toMatch(WRITTEN_COMMIT_MARKER);
 
       expect(await finish(true)).toBe(false);
 
-      expect(pool.quotas.get(pool.account.id).error).toBe(COMMIT_MARKER);
+      expect(pool.quotas.get(pool.account.id).error).toMatch(WRITTEN_COMMIT_MARKER);
       expect(await pool.eligible()).toBe(false);
       expect(await pool.request()).not.toBe(200);
 
@@ -1605,6 +1607,68 @@ describe("Gemini usage refresh writes in the hub", () => {
     await flush();
 
     expect(pool.quotas.get(pool.account.id).heldUntil).not.toBeNull();
+  });
+
+  const pauseAtProjectWrite = async (pool: Awaited<ReturnType<typeof createGeminiPool>>) => {
+    await pool.settled();
+    pool.setQuotaMode("new-project");
+    pool.advance(10 * MINUTE);
+    const original = pool.accounts.setGeminiProject.bind(pool.accounts);
+    const gate = pool.gatedBody();
+    let reached: () => void = () => {};
+    const atWrite = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    vi.spyOn(pool.accounts, "setGeminiProject").mockImplementationOnce(async (...args) => {
+      reached();
+      await gate.gate;
+      return original(...args);
+    });
+    const refresh = pool.hub.refreshUsage(undefined, true);
+    await atWrite;
+    return { gate, refresh };
+  };
+
+  it("leaves the marker on a replacement's quota row when a stale refresh was replaced after its marker write, and unblocks only on the replacement's own reading", async () => {
+    const pool = await createGeminiPool(0);
+    const { gate, refresh } = await pauseAtProjectWrite(pool);
+    const staleMarker = pool.quotas.get(pool.account.id).error;
+    expect(staleMarker).toContain("project change to proj-new pending [instance ");
+
+    await reAddSameId(pool, "synthetic-replacement", true);
+    const before = pool.quotas.get(pool.account.id);
+    const display = pool.quotas.modelWeekly(pool.account.id);
+    expect(before.error).toBe(staleMarker);
+    gate.release();
+    await refresh;
+    await flush();
+
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+    expect(pool.quotas.modelWeekly(pool.account.id)).toEqual(display);
+    expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("synthetic-replacement");
+    pool.setQuotaMode("normal");
+    expect(await pool.eligible()).toBe(false);
+    expect(await pool.request()).not.toBe(200);
+    expect(pool.quotas.get(pool.account.id)).toEqual(before);
+
+    pool.advance(10 * MINUTE);
+    expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
+    expect(await pool.eligible()).toBe(true);
+  });
+
+  it("leaves no marker behind when the refreshing account is removed with its quota row after the marker write", async () => {
+    const pool = await createGeminiPool(0);
+    const { gate, refresh } = await pauseAtProjectWrite(pool);
+    expect(pool.quotas.get(pool.account.id).error).toContain("pending");
+
+    expect(await pool.operations.remove(pool.account.id)).toBe(true);
+    gate.release();
+    await refresh;
+    await flush();
+
+    expect(await pool.accounts.get(pool.account.id)).toBeNull();
+    expect(pool.quotas.get(pool.account.id).error).toBeNull();
   });
 
   it("rejects a project write that lands after its account was removed and re-added", async () => {
