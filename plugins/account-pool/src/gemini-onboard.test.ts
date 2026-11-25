@@ -1091,6 +1091,7 @@ async function usageStores() {
 function pooledLiveAccount(): Account {
   return accountSchema.parse({
     id: randomUUID(),
+    generation: randomUUID(),
     provider: "gemini",
     kind: "oauth",
     label: EMAIL,

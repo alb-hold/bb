@@ -53,6 +53,7 @@ import {
   HubTokenStore,
   PoolAffinityStore,
   QuotaStore,
+  accountsSchema,
 } from "./store.js";
 import { ThreadTokenStore } from "./thread-tokens.js";
 import { createHostProxy } from "./host-proxy.js";
@@ -11876,7 +11877,7 @@ describe("sequential pool recovery", () => {
       second.id,
     ]);
     const persistedRaw = await fixture.host.bb.storage.kv.get("accounts:v1");
-    const persisted = z.array(accountSchema).parse(persistedRaw);
+    const persisted = accountsSchema.parse(persistedRaw);
     expect(
       persisted.find((account) => account.id === third.id)?.priority,
     ).toBeLessThan(

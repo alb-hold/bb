@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const CLAUDE_OAUTH_REDIRECT_URI =
@@ -163,7 +162,7 @@ export const draftSelectionSchema = z
   })
   .strict();
 
-const accountObjectSchema = z
+export const storedAccountSchema = z
   .object({
     id: z.string().uuid(),
     provider: providerSchema,
@@ -185,15 +184,9 @@ const accountObjectSchema = z
   })
   .strict();
 
-export const accountSchema = accountObjectSchema.transform((account) => ({
-  ...account,
-  generation:
-    account.generation ?? legacyGeneration(account.id, account.createdAt),
-}));
-
-export function legacyGeneration(id: string, createdAt: number): string {
-  return createHash("sha256").update(`${id}:${createdAt}`).digest("hex");
-}
+export const accountSchema = storedAccountSchema.extend({
+  generation: z.string().min(1),
+});
 
 export type Account = z.infer<typeof accountSchema>;
 
@@ -333,7 +326,7 @@ export const routingBindingNextSchema = z
   })
   .strict();
 
-export const accountSummarySchema = accountObjectSchema.extend({
+export const accountSummarySchema = storedAccountSchema.extend({
   lastUsedHostName: z.string().min(1).nullable(),
   active: z.boolean().default(false),
   balance: accountBalanceSchema,
