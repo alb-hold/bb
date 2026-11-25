@@ -1,6 +1,7 @@
 import {
   bbDesktopServerChoicesSchema,
   bbDesktopSignInWindowResultSchema,
+  DROPPED_FILE_MAX_BYTES,
   MACOS_TRAFFIC_LIGHT_INSET_PX,
   MACOS_TRAFFIC_LIGHT_TOP_INSET_PX,
   type BbDesktopServerChoice,
@@ -116,6 +117,7 @@ import {
   BB_DESKTOP_OPEN_DATA_DIRECTORY_CHANNEL,
   BB_DESKTOP_OPEN_SERVER_DAEMON_LOGS_CHANNEL,
   BB_DESKTOP_WINDOW_STATE_CHANGED_CHANNEL,
+  BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL,
   BB_DESKTOP_WRITE_CLIPBOARD_CHANNEL,
 } from "./desktop-window-command-ipc.js";
 import {
@@ -561,6 +563,19 @@ const bbDesktopApi: BbDesktopApi = {
   },
   getPathForFile(file: File): string {
     return webUtils.getPathForFile(file);
+  },
+  async stageDroppedFile(file: File): Promise<string> {
+    if (file.size > DROPPED_FILE_MAX_BYTES) {
+      throw new Error("Dropped file is too large to attach");
+    }
+    const stagedPath: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL,
+      { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+    );
+    if (typeof stagedPath !== "string" || stagedPath.length === 0) {
+      throw new Error("Staging a dropped file returned no path");
+    }
+    return stagedPath;
   },
 };
 

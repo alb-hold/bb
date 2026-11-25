@@ -174,7 +174,10 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { listenForTerminalSizeClaims } from "./terminal-size-claims";
-import { handleTerminalFileDrop } from "./terminal-file-drop";
+import {
+  handleStagedTerminalFileDrop,
+  handleTerminalFileDrop,
+} from "./terminal-file-drop";
 import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
@@ -1535,7 +1538,9 @@ export function ThreadTerminalView({
     return handlers;
   }, []);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
-  const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
+  const handleFileDropRef = useRef<
+    ((files: ArrayLike<File>) => void) | null
+  >(null);
   const onSessionChangeRef = useRef<
     ((session: TerminalSession) => void) | undefined
   >(onSessionChange);
@@ -4080,19 +4085,31 @@ export function ThreadTerminalView({
       ) => activeTransport.sendInput(dataBase64, inputEventAt, isUserInput);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
+        const sendInput = (input: string) =>
+          forwardTerminalData({
+            data: input,
+            isUserInput: true,
+            onInput: sendTerminalInput,
+            onUserInput: onUserInputRef.current,
+            replayWriteState,
+            sessionStatus: sessionStatusRef.current,
+          });
+        const stageFile = desktop?.stageDroppedFile;
+        if (stageFile !== undefined) {
+          void handleStagedTerminalFileDrop({
+            files: Array.from(files),
+            stageFile,
+            onStageFailure: (_file, message) => appToast.error(message),
+            isRunning: () => sessionStatusRef.current === "running",
+            sendInput,
+          });
+          return;
+        }
         handleTerminalFileDrop({
           files: Array.from(files),
           getPathForFile: desktop?.getPathForFile,
           isRunning: sessionStatusRef.current === "running",
-          sendInput: (input) =>
-            forwardTerminalData({
-              data: input,
-              isUserInput: true,
-              onInput: sendTerminalInput,
-              onUserInput: onUserInputRef.current,
-              replayWriteState,
-              sessionStatus: sessionStatusRef.current,
-            }),
+          sendInput,
         });
       };
       lifecycle.terminalInteractions = attachTerminalInteractions({
@@ -4124,6 +4141,13 @@ export function ThreadTerminalView({
           }
         },
         onFilesDrop: (files) => handleFileDropRef.current?.(files),
+        onFilesPaste: (files) => {
+          if (window.bbDesktop?.stageDroppedFile === undefined) return false;
+          const handleFiles = handleFileDropRef.current;
+          if (handleFiles === null) return false;
+          handleFiles(files);
+          return true;
+        },
       });
       lifecycle.terminalKeyDisposable = activeTerminal.onKey(() => {
         if (!lifecycle.terminalInputClaimed) {

@@ -276,4 +276,80 @@ describe("terminal interactions in the DOM", () => {
 
     expect(sendInput).not.toHaveBeenCalled();
   });
+  describe("paste", () => {
+    function pasteEvent(clipboardData: unknown): ClipboardEvent {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: clipboardData });
+      return event as ClipboardEvent;
+    }
+
+    function attach(
+      onFilesPaste: ((files: readonly File[]) => boolean) | undefined,
+    ) {
+      const terminal = document.createElement("div");
+      const inner = document.createElement("textarea");
+      terminal.append(inner);
+      document.body.append(terminal);
+      const innerPaste = vi.fn();
+      inner.addEventListener("paste", innerPaste);
+      const interactions = attachTerminalInteractions({
+        element: terminal,
+        getSelection: () => "",
+        onPointerDown: vi.fn(),
+        onPointerRelease: vi.fn(),
+        onPointerCancel: vi.fn(),
+        onSelection: vi.fn(),
+        copySelection: vi.fn(),
+        onFilesDrop: vi.fn(),
+        ...(onFilesPaste === undefined ? {} : { onFilesPaste }),
+      });
+      disposables.push(interactions.dispose);
+      return { inner, innerPaste };
+    }
+
+    it("hands a copied file to the file handler before xterm sees the paste", () => {
+      const onFilesPaste = vi.fn(() => true);
+      const { inner, innerPaste } = attach(onFilesPaste);
+      const file = new File(["x"], "Screenshot.png", { type: "image/png" });
+      const event = pasteEvent({ files: [file], items: [] });
+
+      inner.dispatchEvent(event);
+
+      expect(onFilesPaste).toHaveBeenCalledWith([file]);
+      expect(event.defaultPrevented).toBe(true);
+      expect(innerPaste).not.toHaveBeenCalled();
+    });
+
+    it("hands raw clipboard image data to the file handler", () => {
+      const onFilesPaste = vi.fn(() => true);
+      const { inner } = attach(onFilesPaste);
+      const image = new File(["png"], "image.png", { type: "image/png" });
+      const event = pasteEvent({
+        files: [],
+        items: [{ kind: "file", getAsFile: () => image }],
+      });
+
+      inner.dispatchEvent(event);
+
+      expect(onFilesPaste).toHaveBeenCalledWith([image]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("leaves text pastes and unsupported file pastes to xterm", () => {
+      const onFilesPaste = vi.fn(() => false);
+      const { inner, innerPaste } = attach(onFilesPaste);
+      const text = pasteEvent({
+        files: [],
+        items: [{ kind: "string", getAsFile: () => null }],
+      });
+      inner.dispatchEvent(text);
+      const file = pasteEvent({ files: [new File([""], "a.txt")], items: [] });
+      inner.dispatchEvent(file);
+
+      expect(onFilesPaste).toHaveBeenCalledTimes(1);
+      expect(text.defaultPrevented).toBe(false);
+      expect(file.defaultPrevented).toBe(false);
+      expect(innerPaste).toHaveBeenCalledTimes(2);
+    });
+  });
 });

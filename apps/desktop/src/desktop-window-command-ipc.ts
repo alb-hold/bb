@@ -17,6 +17,8 @@ export const CLOSE_WINDOW_REQUEST_TIMEOUT_MS = 1000;
 export const BB_DESKTOP_SET_SPLIT_NAVIGATION_ENABLED_CHANNEL =
   "bb-desktop:set-split-navigation-enabled";
 export const BB_DESKTOP_WRITE_CLIPBOARD_CHANNEL = "bb-desktop:write-clipboard";
+export const BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL =
+  "bb-desktop:stage-dropped-file";
 export const BB_DESKTOP_OPEN_WINDOW_FIND_CHANNEL =
   "bb-desktop:open-window-find";
 export const BB_DESKTOP_RELOAD_WINDOW_CHANNEL = "bb-desktop:reload-window";

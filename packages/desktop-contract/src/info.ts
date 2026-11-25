@@ -135,4 +135,7 @@ export interface BbDesktopApi extends BbDesktopInfo {
   setTheme(theme: BbDesktopTheme): void;
   writeClipboard?(content: BbDesktopClipboardContent): Promise<void>;
   getPathForFile?(file: File): string;
+  stageDroppedFile?(file: File): Promise<string>;
 }
+
+export const DROPPED_FILE_MAX_BYTES = 100 * 1024 * 1024;

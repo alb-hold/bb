@@ -13,9 +13,22 @@ interface AttachTerminalInteractionsArgs {
   onPointerCancel: () => void;
   onSelection: (text: string) => void;
   copySelection: (text: string) => void;
-  onFilesDrop: (files: FileList) => void;
+  onFilesDrop: (files: ArrayLike<File>) => void;
+  onFilesPaste?: (files: readonly File[]) => boolean;
   requestFrame?: (callback: FrameRequestCallback) => number;
   cancelFrame?: (handle: number) => void;
+}
+
+function clipboardFiles(
+  clipboard: Pick<DataTransfer, "files" | "items">,
+): File[] {
+  const files = Array.from(clipboard.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(clipboard.items ?? []).flatMap((item) => {
+    if (item.kind !== "file") return [];
+    const file = item.getAsFile();
+    return file === null ? [] : [file];
+  });
 }
 
 export function attachTerminalInteractions({
@@ -27,6 +40,7 @@ export function attachTerminalInteractions({
   onSelection,
   copySelection,
   onFilesDrop,
+  onFilesPaste,
   requestFrame = window.requestAnimationFrame.bind(window),
   cancelFrame = window.cancelAnimationFrame.bind(window),
 }: AttachTerminalInteractionsArgs): TerminalInteractions {
@@ -81,6 +95,15 @@ export function attachTerminalInteractions({
     onFilesDrop(files);
   };
 
+  const handlePaste = (event: ClipboardEvent) => {
+    if (onFilesPaste === undefined || event.clipboardData === null) return;
+    const files = clipboardFiles(event.clipboardData);
+    if (files.length === 0 || !onFilesPaste(files)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  element.addEventListener("paste", handlePaste, true);
   element.addEventListener("pointerdown", handlePointerDown);
   element.addEventListener("dragover", handleDragOver);
   element.addEventListener("drop", handleDrop);
@@ -90,6 +113,7 @@ export function attachTerminalInteractions({
   return {
     onSelectionChange: scheduleSelection,
     dispose: () => {
+      element.removeEventListener("paste", handlePaste, true);
       element.removeEventListener("pointerdown", handlePointerDown);
       element.removeEventListener("dragover", handleDragOver);
       element.removeEventListener("drop", handleDrop);
