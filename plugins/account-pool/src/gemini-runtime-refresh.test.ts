@@ -243,9 +243,11 @@ describe("Gemini usage refresh after a failed antigravity-acp runtime lookup", (
     expect(recovered.limitWindows[0]?.utilization).toBeCloseTo(0.25);
     expect(await pool.eligible()).toBe(true);
     expect(pool.lookups()).toBe(2);
-    expect(
-      pool.calls.filter((url) => url.endsWith(":retrieveUserQuotaSummary")),
-    ).toHaveLength(1);
+    const quota = pool.calls.filter((url) =>
+      url.endsWith(":retrieveUserQuotaSummary"),
+    );
+    expect(quota.filter((url) => url.includes("/daily/"))).toHaveLength(1);
+    expect(quota.filter((url) => url.includes("/prod/"))).toHaveLength(1);
   });
 
   it("retries a failed startup lookup within seconds, not on the five-minute cadence", async () => {
@@ -515,16 +517,22 @@ describe("usage refresh while requests are in flight", () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
     markInFlight(pool, pool.account.id);
-    const quotaCalls = () =>
-      pool.calls.filter((url) => url.endsWith(":retrieveUserQuotaSummary")).length;
-    const before = quotaCalls();
+    const quotaCalls = (endpoint: "daily" | "prod") =>
+      pool.calls.filter(
+        (url) =>
+          url.endsWith(":retrieveUserQuotaSummary") &&
+          url.includes(`/${endpoint}/`),
+      ).length;
+    const before = { daily: quotaCalls("daily"), prod: quotaCalls("prod") };
 
     await pool.hub.refreshUsage();
-    expect(quotaCalls()).toBe(before);
+    expect(quotaCalls("daily")).toBe(before.daily);
+    expect(quotaCalls("prod")).toBe(before.prod);
 
     pool.advance(6 * MINUTE);
     await pool.hub.refreshUsage();
-    expect(quotaCalls()).toBe(before + 1);
+    expect(quotaCalls("daily")).toBe(before.daily + 1);
+    expect(quotaCalls("prod")).toBe(before.prod + 1);
   });
 
   it("still skips a busy Claude account, even on a forced refresh", async () => {
