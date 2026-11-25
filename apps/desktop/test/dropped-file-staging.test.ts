@@ -3,7 +3,11 @@ import { randomBytes } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { stageDroppedFile } from "../src/dropped-file-staging.js";
+import { ipcMain } from "electron";
+import {
+  registerDroppedFileStagingIpc,
+  stageDroppedFile,
+} from "../src/dropped-file-staging.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -15,6 +19,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
+
+const CAP = 100 * 1024 * 1024;
 
 function expectNoDeletes() {
   expect(fsPromises.rm).not.toHaveBeenCalled();
@@ -97,5 +103,25 @@ describe("stageDroppedFile", () => {
     ).rejects.toThrow();
 
     expectNoDeletes();
+  });
+  it("rejects an over-cap payload in the main handler and stages one at the cap", async () => {
+    const tempDir = await makeTempDir("bb-temp-");
+    registerDroppedFileStagingIpc(new Set([1]), () => tempDir);
+    const handler = vi.mocked(ipcMain.handle).mock.calls.at(-1)?.[1] as (
+      event: { sender: { id: number } },
+      payload: unknown,
+    ) => Promise<string>;
+    await expect(
+      handler(
+        { sender: { id: 1 } },
+        { name: "big.bin", bytes: new Uint8Array(CAP + 1) },
+      ),
+    ).rejects.toThrow("too large");
+    expect(await fsPromises.readdir(tempDir)).toEqual([]);
+    const path = await handler(
+      { sender: { id: 1 } },
+      { name: "ok.bin", bytes: new Uint8Array(8) },
+    );
+    expect(basename(path)).toBe("ok.bin");
   });
 });

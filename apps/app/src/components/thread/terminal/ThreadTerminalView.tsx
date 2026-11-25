@@ -4099,10 +4099,7 @@ export function ThreadTerminalView({
           void handleStagedTerminalFileDrop({
             files: Array.from(files),
             stageFile,
-            onStageFailure: (file) =>
-              appToast.error(
-                `Couldn't attach ${file.name}. Try saving it first.`,
-              ),
+            onStageFailure: (_file, message) => appToast.error(message),
             isRunning: () => sessionStatusRef.current === "running",
             sendInput,
           });

@@ -1,6 +1,7 @@
 import {
   bbDesktopServerChoicesSchema,
   bbDesktopSignInWindowResultSchema,
+  DROPPED_FILE_MAX_BYTES,
   MACOS_TRAFFIC_LIGHT_INSET_PX,
   MACOS_TRAFFIC_LIGHT_TOP_INSET_PX,
   type BbDesktopServerChoice,
@@ -564,6 +565,9 @@ const bbDesktopApi: BbDesktopApi = {
     return webUtils.getPathForFile(file);
   },
   async stageDroppedFile(file: File): Promise<string> {
+    if (file.size > DROPPED_FILE_MAX_BYTES) {
+      throw new Error("Dropped file is too large to attach");
+    }
     const stagedPath: unknown = await ipcRenderer.invoke(
       BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL,
       { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },

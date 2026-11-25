@@ -1,12 +1,17 @@
 import { mkdtemp, open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ipcMain } from "electron";
+import { DROPPED_FILE_MAX_BYTES } from "@bb/desktop-contract";
 import { z } from "zod";
 import { BB_DESKTOP_STAGE_DROPPED_FILE_CHANNEL } from "./desktop-window-command-ipc.js";
 
 const stageDroppedFileRequestSchema = z.object({
   name: z.string(),
-  bytes: z.instanceof(Uint8Array),
+  bytes: z
+    .instanceof(Uint8Array)
+    .refine((bytes) => bytes.byteLength <= DROPPED_FILE_MAX_BYTES, {
+      message: "Dropped file is too large to attach",
+    }),
 });
 
 export async function stageDroppedFile({

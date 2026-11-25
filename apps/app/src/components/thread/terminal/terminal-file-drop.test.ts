@@ -58,6 +58,7 @@ describe("terminal file drop", () => {
 describe("staged terminal file drop", () => {
   const screenshot = {
     name: "Screenshot 2026-11-25 at 1.35.15 AM.png",
+    size: 1024,
   };
   const stagedPath = `/Users/alex/Library/Application Support/bb/dropped-files/abc/${screenshot.name}`;
 
@@ -89,7 +90,10 @@ describe("staged terminal file drop", () => {
     });
     expect(handled).toBe(false);
     expect(sendInput).not.toHaveBeenCalled();
-    expect(onStageFailure).toHaveBeenCalledWith(screenshot);
+    expect(onStageFailure).toHaveBeenCalledWith(
+      screenshot,
+      `Couldn't attach ${screenshot.name}. Try saving it first.`,
+    );
   });
 
   it("inserts the good file and reports only the failed one in a mixed drop", async () => {
@@ -108,7 +112,10 @@ describe("staged terminal file drop", () => {
     });
     expect(sendInput).toHaveBeenCalledWith(`'${stagedPath}'`);
     expect(onStageFailure).toHaveBeenCalledTimes(1);
-    expect(onStageFailure).toHaveBeenCalledWith(bad);
+    expect(onStageFailure).toHaveBeenCalledWith(
+      bad,
+      expect.stringContaining("bad.png"),
+    );
   });
 
   it("sends nothing once the session is no longer running", async () => {
@@ -126,5 +133,54 @@ describe("staged terminal file drop", () => {
     });
     expect(handled).toBe(false);
     expect(sendInput).not.toHaveBeenCalled();
+  });
+  it("reports an oversized file without reading it and still stages the others", async () => {
+    const sendInput = vi.fn();
+    const onStageFailure = vi.fn();
+    const huge = new File(["x"], "huge.mov");
+    Object.defineProperty(huge, "size", { value: 100 * 1024 * 1024 + 1 });
+    const arrayBuffer = vi.spyOn(huge, "arrayBuffer");
+    const stageFile = vi.fn(async (file: { name: string; size: number }) => {
+      if (file instanceof File) await file.arrayBuffer();
+      return stagedPath;
+    });
+    await handleStagedTerminalFileDrop({
+      files: [huge, screenshot],
+      stageFile,
+      onStageFailure,
+      isRunning: () => true,
+      sendInput,
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(stageFile).toHaveBeenCalledTimes(1);
+    expect(stageFile).toHaveBeenCalledWith(screenshot);
+    expect(onStageFailure).toHaveBeenCalledWith(
+      huge,
+      "huge.mov is too large to attach (over 100 MB).",
+    );
+    expect(sendInput).toHaveBeenCalledWith(`'${stagedPath}'`);
+  });
+
+  it("stages files one at a time", async () => {
+    const events: string[] = [];
+    const second = new File(["y"], "second.png", { type: "image/png" });
+    await handleStagedTerminalFileDrop({
+      files: [screenshot, second],
+      stageFile: async (file) => {
+        events.push(`start ${file.name}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`end ${file.name}`);
+        return stagedPath;
+      },
+      onStageFailure: vi.fn(),
+      isRunning: () => true,
+      sendInput: vi.fn(),
+    });
+    expect(events).toEqual([
+      `start ${screenshot.name}`,
+      `end ${screenshot.name}`,
+      "start second.png",
+      "end second.png",
+    ]);
   });
 });

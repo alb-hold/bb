@@ -137,3 +137,5 @@ export interface BbDesktopApi extends BbDesktopInfo {
   getPathForFile?(file: File): string;
   stageDroppedFile?(file: File): Promise<string>;
 }
+
+export const DROPPED_FILE_MAX_BYTES = 100 * 1024 * 1024;

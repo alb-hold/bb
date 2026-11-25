@@ -1,3 +1,5 @@
+import { DROPPED_FILE_MAX_BYTES } from "@bb/desktop-contract";
+
 export function quoteTerminalPath(path: string): string {
   return `'${path.replaceAll("'", "'\\''")}'`;
 }
@@ -41,7 +43,9 @@ export function getNewTerminalSelection(
   return text.trim().length > 0 && text !== previousText ? text : null;
 }
 
-export async function handleStagedTerminalFileDrop<T>({
+export async function handleStagedTerminalFileDrop<
+  T extends { name: string; size: number },
+>({
   files,
   stageFile,
   onStageFailure,
@@ -50,21 +54,29 @@ export async function handleStagedTerminalFileDrop<T>({
 }: {
   files: readonly T[];
   stageFile: (file: T) => Promise<string>;
-  onStageFailure: (file: T) => void;
+  onStageFailure: (file: T, message: string) => void;
   isRunning: () => boolean;
   sendInput: (input: string) => void;
 }): Promise<boolean> {
   if (!isRunning()) return false;
-  const paths = await Promise.all(
-    files.map(async (file) => {
-      try {
-        return await stageFile(file);
-      } catch {
-        onStageFailure(file);
-        return "";
-      }
-    }),
-  );
+  const paths: string[] = [];
+  for (const file of files) {
+    if (file.size > DROPPED_FILE_MAX_BYTES) {
+      onStageFailure(
+        file,
+        `${file.name} is too large to attach (over ${DROPPED_FILE_MAX_BYTES / (1024 * 1024)} MB).`,
+      );
+      continue;
+    }
+    try {
+      paths.push(await stageFile(file));
+    } catch {
+      onStageFailure(
+        file,
+        `Couldn't attach ${file.name}. Try saving it first.`,
+      );
+    }
+  }
   const input = formatTerminalFileDrop(paths);
   if (!input || !isRunning()) return false;
   sendInput(input);
