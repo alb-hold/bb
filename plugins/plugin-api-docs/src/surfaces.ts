@@ -1062,6 +1062,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "wire",
           "thread-events",
           "dispatch-hook",
+          "thread-route-hook",
           "environment-providers",
           "machine-providers",
           "server-access",
@@ -1350,6 +1351,21 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "MessageDispatchHookDecision",
         ],
         firstParty: ["Concurrency limit", "Drafts"],
+        experimental: true,
+      },
+      {
+        id: "thread-route-hook",
+        tagline: "Choose a new thread's provider",
+        title: "Thread route hook",
+        summary:
+          "Run a check before a new thread is created. With this, a plugin can:",
+        bullets: [
+          "See the project, parent thread, origin, title, and the start of the prompt",
+          "Send the thread to another provider, or change only its model",
+          "Leave the thread alone by returning nothing",
+          "Rely on bb keeping the original choice when a decision is invalid, slow, or fails",
+        ],
+        apiSymbols: ["PluginHookSignatures.experimental_thread.route"],
         experimental: true,
       },
       {

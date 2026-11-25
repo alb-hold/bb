@@ -5,6 +5,7 @@ import type {
   PluginHookSignatures,
 } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../src/errors.js";
 import {
   invokePluginInline,
   setPluginHookProvider,
@@ -54,7 +55,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function seedCreateTarget(harness: TestAppHarness) {
+async function seedCreateTarget(
+  harness: TestAppHarness,
+  catalogProviders: readonly string[] = ["codex", "claude-code"],
+) {
   const { host } = seedHostSession(harness.deps);
   const path = "/tmp/route-hook";
   const { project } = seedProjectWithSource(harness.deps, {
@@ -66,7 +70,7 @@ async function seedCreateTarget(harness: TestAppHarness) {
     projectId: project.id,
     path,
   });
-  for (const providerId of ["codex", "claude-code"]) {
+  for (const providerId of catalogProviders) {
     await seedModelCatalog(harness, {
       hostId: host.id,
       providerId,
@@ -181,6 +185,44 @@ describe("experimental_thread.route", () => {
       }
       expect(start.command.options.model).toBe("codex-model");
       expect(JSON.stringify(warn.mock.calls)).toContain("no-such-model");
+    });
+  });
+
+  it("keeps the original provider and model when the catalog cannot be read", async () => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness, ["codex"]);
+      installRouteHook(() => ({
+        providerId: "claude-code",
+        model: "claude-code-model",
+        reason: "balance",
+      }));
+      const requestHostOnlineRpc = harness.hub.requestHostOnlineRpc.bind(
+        harness.hub,
+      );
+      vi.spyOn(harness.hub, "requestHostOnlineRpc").mockImplementation(
+        async (args) => {
+          if (
+            args.message.command.type === "provider.list_models" &&
+            args.message.command.providerId === "claude-code"
+          ) {
+            throw new ApiError(504, "command_timeout", "catalog down");
+          }
+          return requestHostOnlineRpc(args);
+        },
+      );
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, request);
+      expect(thread.providerId).toBe("codex");
+      expect(JSON.stringify(warn.mock.calls)).toContain("could not be read");
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === thread.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected start command");
+      }
+      expect(start.command.options.model).toBe("codex-model");
     });
   });
 
