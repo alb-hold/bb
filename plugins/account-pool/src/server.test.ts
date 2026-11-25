@@ -4822,6 +4822,86 @@ describe("Account Pool plugin", () => {
     );
   });
 
+  describe("stream end detection", () => {
+    const relayStream = async (
+      chunks: string[],
+      headers: Record<string, string>,
+    ) => {
+      const fixture = await createFixture({
+        upstreamUrl: "https://upstream.example",
+        options: {
+          fetch: async () =>
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  for (const chunk of chunks)
+                    controller.enqueue(new TextEncoder().encode(chunk));
+                  controller.close();
+                },
+              }),
+              {
+                headers: { "content-type": "text/event-stream", ...headers },
+              },
+            ),
+        },
+      });
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          headers: authHeaders(fixture.key),
+          body: JSON.stringify({ model: "claude-fable-5" }),
+        },
+      );
+      await response.text();
+      return fixture.host.harness.inspection.logEntries.filter(({ message }) =>
+        message.startsWith("Account Pooler claude stream"),
+      );
+    };
+
+    it("logs an early end when the streamed text merely contains the final event name", async () => {
+      const entries = await relayStream(
+        [
+          "event: message_start\ndata: {}\n\n",
+          'event: content_block_delta\ndata: {"delta":{"text":"event: message_stop"}}\n\n',
+          "event: content_block_delta\ndata: {\"delta\":{\"text\":\"\\n\\nevent: message_stop\"}}\n\n",
+        ],
+        {},
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+      expect(entries[0]?.message).toContain("events=3");
+    });
+
+    it("does not log when the real final event arrives split across chunks", async () => {
+      expect(
+        await relayStream(
+          ["event: message_start\ndata: {}\n\nevent: message_", "stop\ndata: {}\n\n"],
+          {},
+        ),
+      ).toEqual([]);
+    });
+
+    it("puts only the request id on the log line, never other response header values", async () => {
+      const entries = await relayStream(["event: message_start\ndata: {}\n\n"], {
+        "x-request-id": "req_fallback",
+        "set-cookie": "session=COOKIE-SECRET",
+        "anthropic-organization-id": "ORG-SECRET",
+        authorization: "Bearer BEARER-SECRET",
+        "cf-ray": "RAY-SECRET",
+      });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("request_id=req_fallback");
+      for (const secret of [
+        "COOKIE-SECRET",
+        "ORG-SECRET",
+        "BEARER-SECRET",
+        "RAY-SECRET",
+      ])
+        expect(entries[0]?.message).not.toContain(secret);
+    });
+  });
+
   describe("session affinity", () => {
     const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const claudeBody = (id: string, model = "claude-fable-5") =>

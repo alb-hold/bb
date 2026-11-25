@@ -2335,7 +2335,7 @@ export class AccountPoolHub {
     let bytes = 0;
     let events = 0;
     let finalSeen = false;
-    let tail = "";
+    let pendingLine = "";
     let finished = false;
     const reportCut = (
       kind: StreamCut["kind"],
@@ -2380,11 +2380,19 @@ export class AccountPoolHub {
           } else {
             bytes += chunk.value.byteLength;
             if (eventStream && markers !== undefined) {
-              const text = tail + decoder.decode(chunk.value, { stream: true });
-              events += text.split("\n\n").length - 1;
-              if (markers.some((marker) => text.includes(marker)))
-                finalSeen = true;
-              tail = text.slice(-32);
+              const lines = (
+                pendingLine + decoder.decode(chunk.value, { stream: true })
+              ).split("\n");
+              pendingLine = (lines.pop() ?? "").slice(0, 256);
+              for (const line of lines) {
+                const field = line.endsWith("\r") ? line.slice(0, -1) : line;
+                if (field === "") events += 1;
+                else if (
+                  field.startsWith("event:") &&
+                  markers.includes(field.slice("event:".length).trim())
+                )
+                  finalSeen = true;
+              }
             }
             controller.enqueue(chunk.value);
           }
