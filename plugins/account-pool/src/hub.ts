@@ -1534,14 +1534,15 @@ export class AccountPoolHub {
             signal.throwIfAborted();
           }
           const { response } = upstream;
-          const observed = adapter.quotaFromHeaders(
-            selected.account.id,
-            response.headers,
-            this.options.quotas.get(selected.account.id),
-            family,
-            this.options.now(),
-          );
-          this.putQuota(observed);
+          const observe = (stored: AccountQuota): AccountQuota =>
+            adapter.quotaFromHeaders(
+              selected.account.id,
+              response.headers,
+              stored,
+              family,
+              this.options.now(),
+            );
+          this.putObservedQuota(selected.account, observe);
           if (pacing !== null && !response.ok) {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
@@ -1564,13 +1565,13 @@ export class AccountPoolHub {
                 this.options.now(),
               );
               if (rejection !== null) {
-                this.putQuota({
-                  ...observed,
+                this.putObservedQuota(selected.account, (stored) => ({
+                  ...observe(stored),
                   usageRestriction: {
                     reason: rejection.reason,
                     resetAt: rejection.resetAt,
                   },
-                });
+                }));
                 failure = {
                   status: 429,
                   message: rejection.message,
@@ -1585,10 +1586,10 @@ export class AccountPoolHub {
               this.options.now(),
             );
             const heldUntil = this.options.now() + waitMs;
-            this.putQuota({
-              ...observed,
+            this.putObservedQuota(selected.account, (stored) => ({
+              ...observe(stored),
               heldUntil,
-            });
+            }));
             if (
               !paced &&
               waitMs <= MAX_INLINE_HOLD_MS &&
@@ -1718,10 +1719,10 @@ export class AccountPoolHub {
                 url: requestUrl,
                 account: selected.account,
                 onQuotaRejection: ({ reason, resetAt }) =>
-                  this.putQuota({
-                    ...this.options.quotas.get(accountId),
+                  this.putObservedQuota(selected.account, (stored) => ({
+                    ...stored,
                     usageRestriction: { reason, resetAt },
-                  }),
+                  })),
               }),
             };
           }
@@ -2638,6 +2639,19 @@ export class AccountPoolHub {
         ? { ...quota, error: stored }
         : quota,
     );
+  }
+
+  private putObservedQuota(
+    sentOn: Account,
+    change: (stored: AccountQuota) => AccountQuota,
+  ): void {
+    const stored = this.options.quotas.get(sentOn.id);
+    if (stored.error?.startsWith(GEMINI_COMMIT_ERROR_PREFIX) === true) return;
+    if (sentOn.provider === "gemini") {
+      const current = this.options.accounts.currentGeminiProject(sentOn.id);
+      if (current === null || current.project !== sentOn.geminiProject) return;
+    }
+    this.putQuota(change(stored));
   }
 
   private setError(accountId: string, message: string | null): void {

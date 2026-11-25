@@ -102,6 +102,20 @@ async function createGeminiPool(
   const calls: string[] = [];
   let quotaMode: "normal" | "http" | "unreadable" | "missing" | "empty" | "unknown" | "empty-daily-http-prod" | "a-mixed-b-empty" | "third-party" | "new-project" | "load-http" = "normal";
   let tokenFails = false;
+  type GeneratePlan = {
+    status: number;
+    headers?: Record<string, string>;
+    body: string;
+    gate?: Promise<void>;
+  };
+  const generatePlans: GeneratePlan[] = [];
+  const gatedBody = () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { gate, release };
+  };
   const gates = new Map<string, { reached: () => void; waiting: Promise<void> }>();
   const hold = (suffix: string) => {
     let reached: () => void = () => {};
@@ -124,6 +138,29 @@ async function createGeminiPool(
         gate.reached();
         await gate.waiting;
       }
+    const plan = url.includes(":streamGenerateContent")
+      ? generatePlans.shift()
+      : undefined;
+    if (plan !== undefined) {
+      const gate = plan.gate;
+      const body =
+        gate === undefined
+          ? plan.body
+          : new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                await gate;
+                controller.enqueue(new TextEncoder().encode(plan.body));
+                controller.close();
+              },
+            });
+      return new Response(body, {
+        status: plan.status,
+        headers: {
+          "content-type": plan.status === 200 ? "text/event-stream" : "application/json",
+          ...plan.headers,
+        },
+      });
+    }
     if (url.includes(":streamGenerateContent"))
       return new Response("data: {}\n\n", {
         headers: { "content-type": "text/event-stream" },
@@ -302,6 +339,10 @@ async function createGeminiPool(
     setTokenFails: (value: boolean) => {
       tokenFails = value;
     },
+    planGenerate: (plan: GeneratePlan) => {
+      generatePlans.push(plan);
+    },
+    gatedBody,
     summary,
     eligible: async () =>
       (await hub.nextAccountPreview("gemini")).nextAccountId === account.id,
@@ -1067,6 +1108,112 @@ describe("Gemini usage refresh writes in the hub", () => {
     pool.setTokenFails(true);
     expect(await pool.request()).not.toBe(200);
     expect(pool.quotas.get(pool.account.id).error).toContain("invalid_grant");
+  });
+
+  const QUOTA_EXHAUSTED_BODY = JSON.stringify({
+    error: {
+      status: "RESOURCE_EXHAUSTED",
+      details: [
+        { reason: "QUOTA_EXHAUSTED", metadata: { quotaResetDelay: "3600s" } },
+      ],
+    },
+  });
+  const flush = async () => {
+    for (let index = 0; index < 5; index += 1)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  };
+  const streamCalls = (pool: Awaited<ReturnType<typeof createGeminiPool>>) =>
+    pool.calls.filter((url) => url.includes(":streamGenerateContent")).length;
+
+  it.each([
+    [
+      "a 429 with a retry-after",
+      { status: 429, headers: { "retry-after": "3600" }, body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }) },
+      429,
+    ],
+    [
+      "a 429 body rejection",
+      { status: 429, body: QUOTA_EXHAUSTED_BODY },
+      429,
+    ],
+    [
+      "a quota rejection inside a stream",
+      { status: 200, body: `data: ${QUOTA_EXHAUSTED_BODY}\n\n` },
+      200,
+    ],
+  ] as const)(
+    "does not let a late response from the old project write its %s over the committed new project",
+    async (_name, plan, status) => {
+      const pool = await createGeminiPool(0);
+      await pool.settled();
+      const body = pool.gatedBody();
+      pool.planGenerate({ ...plan, gate: body.gate });
+      const served = pool.request();
+      await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+      await flush();
+
+      pool.setQuotaMode("new-project");
+      pool.advance(10 * MINUTE);
+      expect(await pool.hub.refreshUsage(undefined, true)).toBe(true);
+      expect((await pool.accounts.get(pool.account.id))?.geminiProject).toBe("proj-new");
+      const committed = pool.quotas.get(pool.account.id);
+      expect(committed.error).toBeNull();
+
+      body.release();
+      expect(await served).toBe(status);
+      await flush();
+
+      expect(pool.quotas.get(pool.account.id)).toEqual(committed);
+      expect(await pool.eligible()).toBe(true);
+      expect(await pool.request()).toBe(200);
+    },
+  );
+
+  it("still writes the observed fields of a response on the current project", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    pool.planGenerate({ status: 429, body: QUOTA_EXHAUSTED_BODY });
+    expect(await pool.request()).toBe(429);
+    expect(pool.quotas.get(pool.account.id).usageRestriction?.reason).toBe("quota_exhausted");
+
+    const held = await createGeminiPool(0);
+    await held.settled();
+    held.planGenerate({
+      status: 429,
+      headers: { "retry-after": "3600" },
+      body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+    });
+    expect(await held.request()).toBe(429);
+    expect(held.quotas.get(held.account.id).heldUntil).not.toBeNull();
+  });
+
+  it("merges onto the stored row, so a later write from one request does not erase what another request wrote", async () => {
+    const pool = await createGeminiPool(0);
+    await pool.settled();
+    const first = pool.gatedBody();
+    pool.planGenerate({
+      status: 429,
+      headers: { "retry-after": "3600" },
+      body: JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }),
+      gate: first.gate,
+    });
+    const slow = pool.request();
+    await vi.waitFor(() => expect(streamCalls(pool)).toBe(1));
+    await flush();
+
+    pool.planGenerate({ status: 200, body: `data: ${QUOTA_EXHAUSTED_BODY}\n\n` });
+    expect(await pool.request()).toBe(200);
+    await flush();
+    const restriction = pool.quotas.get(pool.account.id).usageRestriction;
+    expect(restriction?.reason).toBe("quota_exhausted");
+
+    first.release();
+    expect(await slow).toBe(429);
+    await flush();
+
+    const stored = pool.quotas.get(pool.account.id);
+    expect(stored.usageRestriction).toEqual(restriction);
+    expect(stored.heldUntil).not.toBeNull();
   });
 
   it("clears a credential error when a request refresh succeeds", async () => {

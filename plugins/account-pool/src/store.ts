@@ -177,6 +177,11 @@ export class AccountStore {
       await this.kv.set(ACCOUNTS_KEY, others);
   }
 
+  currentGeminiProject(id: string): { project: string | undefined } | null {
+    const row = this.geminiCache?.rows?.find((account) => account.id === id);
+    return row === undefined ? null : { project: row.geminiProject };
+  }
+
   async get(id: string, signal?: AbortSignal): Promise<Account | null> {
     return (
       (await this.list(signal)).find((account) => account.id === id) ?? null
