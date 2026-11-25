@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createHolderScanScheduler,
   describeHolderScan,
@@ -14,7 +14,16 @@ import {
   type WorktreeHolderScan,
   mapLsofError,
   scanWorktreeHolders,
+  useDoubtRecheckWaitForTests,
 } from "../src/worktree-holders.js";
+
+beforeEach(() => {
+  useDoubtRecheckWaitForTests(async () => {});
+});
+
+afterEach(() => {
+  useDoubtRecheckWaitForTests(null);
+});
 
 const roots: string[] = [];
 const children: ReturnType<typeof spawn>[] = [];
@@ -1811,6 +1820,66 @@ describe("vanished proc entries", () => {
       });
     },
   );
+  it("clears a process whose thread exits while its fd list fails to read", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let taskListings = 0;
+    let taskFdReads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task")
+          return ++taskListings === 1 ? ["101", "102"] : ["101"];
+        if (target === "/proc/101/task/102/fd") {
+          taskFdReads += 1;
+          throw Object.assign(new Error("EIO"), { code: "EIO" });
+        }
+        return proc.readdir(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "clear",
+    });
+    expect(taskFdReads).toBe(1);
+  });
+  it("keeps the doubt when the unreadable thread is still there", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let taskFdReads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task") return ["101", "102"];
+        if (target === "/proc/101/task/102/fd") {
+          taskFdReads += 1;
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        }
+        return proc.readdir(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "uncertain",
+    });
+    expect(taskFdReads).toBe(3);
+  });
+  it("reports a holder that a recheck of a doubted process finds", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let reads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) =>
+        target === "/proc/101/fd" ? ["3"] : proc.readdir(target),
+      readlink: async (target) => {
+        if (target === "/proc/101/fd/3") {
+          if (++reads === 1)
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          return "/work/tree/file";
+        }
+        return proc.readlink(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "held",
+    });
+  });
   it("skips a process that exits after an earlier denied read", async () => {
     const proc = mountAliasProc("/work/tree", "outside", 107473);
     let statuses = 0;

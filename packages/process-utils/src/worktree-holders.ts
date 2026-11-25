@@ -11,6 +11,7 @@ import {
 
 const LSOF_TIMEOUT_MS = 30_000;
 const LINUX_SCAN_CONCURRENCY = 32;
+const LINUX_DOUBT_RECHECK_DELAYS_MS = [100, 400] as const;
 const PERMISSION_RETRIES = 3;
 const PERMISSION_RETRY_MS = 40;
 const SCAN_SLICE_MS = 8;
@@ -1985,40 +1986,56 @@ export async function scanLinux(
     },
     acls: new Map(),
   };
-  for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
-    if (offset > 0) await new Promise((resolve) => setImmediate(resolve));
-    const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
-    const results = await Promise.all(
-      batch.map(async (pid) => {
-        const identity = await readProcessIdentity(proc, pid);
-        const result = await scanLinuxProcess(
-          proc,
-          pid,
-          directory,
-          visibility.mountNamespace,
-          visibility.self,
-          context,
-        );
-        return { pid, identity, result };
-      }),
-    );
-    for (const { pid, identity, result } of results) {
-      if (result === null) continue;
-      if ("cleared" in result) {
-        clearances.push(...result.cleared);
-        continue;
+  const scanPids = async (targets: readonly number[]): Promise<void> => {
+    for (
+      let offset = 0;
+      offset < targets.length;
+      offset += LINUX_SCAN_CONCURRENCY
+    ) {
+      if (offset > 0) await new Promise((resolve) => setImmediate(resolve));
+      const batch = targets.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (pid) => {
+          const identity = await readProcessIdentity(proc, pid);
+          const result = await scanLinuxProcess(
+            proc,
+            pid,
+            directory,
+            visibility.mountNamespace,
+            visibility.self,
+            context,
+          );
+          return { pid, identity, result };
+        }),
+      );
+      for (const { pid, identity, result } of results) {
+        if (result === null) continue;
+        if ("cleared" in result) {
+          clearances.push(...result.cleared);
+          continue;
+        }
+        if ("otherUser" in result) continue;
+        if ("uncertain" in result) {
+          uncertain.push({ pid, detail: result.uncertain, identity });
+          continue;
+        }
+        if ("unknown" in result) {
+          unknown.push({ pid, detail: result.unknown, identity });
+          continue;
+        }
+        holders.push(result);
       }
-      if ("otherUser" in result) continue;
-      if ("uncertain" in result) {
-        uncertain.push({ pid, detail: result.uncertain, identity });
-        continue;
-      }
-      if ("unknown" in result) {
-        unknown.push({ pid, detail: result.unknown, identity });
-        continue;
-      }
-      holders.push(result);
     }
+  };
+  await scanPids(pids);
+  for (const delay of LINUX_DOUBT_RECHECK_DELAYS_MS) {
+    if (holders.length > 0) break;
+    const doubted = [...uncertain, ...unknown].map(({ pid }) => pid);
+    if (doubted.length === 0) break;
+    await activeWait(delay);
+    uncertain.length = 0;
+    unknown.length = 0;
+    await scanPids(doubted);
   }
   if (holders.length > 0) return { status: "held", holders };
   const doubts = [...uncertain, ...unknown];
