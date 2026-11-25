@@ -46,6 +46,8 @@ interface Fixture {
   ownDropInPath: string;
   commands: string[][];
   shown: { value: string };
+  extraCat: { value: string };
+  catFails: { value: boolean };
   args: Parameters<typeof ensureUnitOomPolicy>[0];
 }
 
@@ -61,7 +63,22 @@ async function createFixture(extra = ""): Promise<Fixture> {
   await writeFile(unitPath, unitText({ dataDir, extra }), "utf8");
   const commands: string[][] = [];
   const shown = { value: "OOMPolicy=stop\n" };
+  const extraCat = { value: "" };
+  const catFails = { value: false };
   const dropInDir = `${unitPath}.d`;
+  const renderCat = async (): Promise<string> => {
+    let out = `# ${unitPath}\n${await readFile(unitPath, "utf8")}`;
+    let names: string[] = [];
+    try {
+      names = (await readdir(dropInDir)).filter((n) => n.endsWith(".conf"));
+    } catch {
+      names = [];
+    }
+    for (const name of names.sort()) {
+      out += `\n# ${join(dropInDir, name)}\n${await readFile(join(dropInDir, name), "utf8")}`;
+    }
+    return out + extraCat.value;
+  };
   return {
     dataDir,
     unitPath,
@@ -69,6 +86,8 @@ async function createFixture(extra = ""): Promise<Fixture> {
     ownDropInPath: join(dropInDir, OOM_POLICY_DROP_IN_NAME),
     commands,
     shown,
+    extraCat,
+    catFails,
     args: {
       dataDir,
       homeDir,
@@ -79,12 +98,19 @@ async function createFixture(extra = ""): Promise<Fixture> {
       },
       readCommandOutput: async (command, commandArgs) => {
         commands.push([command, ...commandArgs]);
+        if (commandArgs[1] === "cat") {
+          if (catFails.value) {
+            throw new Error("cat failed");
+          }
+          return renderCat();
+        }
         return shown.value;
       },
     },
   };
 }
 
+const CAT = ["systemctl", "--user", "cat", "bb-host-daemon-test.service"];
 const SHOW = [
   "systemctl",
   "--user",
@@ -104,7 +130,7 @@ describe("ensureUnitOomPolicy", () => {
     await expect(readFile(fixture.ownDropInPath, "utf8")).resolves.toBe(
       OOM_POLICY_DROP_IN_CONTENT,
     );
-    expect(fixture.commands).toEqual([SHOW, RELOAD]);
+    expect(fixture.commands).toEqual([CAT, SHOW, RELOAD]);
   });
 
   it("is idempotent once systemd reports continue, leaving other drop-ins and the unit untouched", async () => {
@@ -124,7 +150,7 @@ describe("ensureUnitOomPolicy", () => {
       "already-current",
     );
 
-    expect(fixture.commands).toEqual([SHOW]);
+    expect(fixture.commands).toEqual([CAT, SHOW]);
     expect((await readdir(fixture.dropInDir)).sort()).toEqual([
       "10-bb-killmode.conf",
       OOM_POLICY_DROP_IN_NAME,
@@ -149,7 +175,7 @@ describe("ensureUnitOomPolicy", () => {
     await expect(readFile(fixture.ownDropInPath, "utf8")).resolves.toBe(
       OOM_POLICY_DROP_IN_CONTENT,
     );
-    expect(fixture.commands).toEqual([SHOW, RELOAD]);
+    expect(fixture.commands).toEqual([CAT, SHOW, RELOAD]);
   });
 
   it("reloads when its drop-in is already present but systemd has not loaded it", async () => {
@@ -159,7 +185,7 @@ describe("ensureUnitOomPolicy", () => {
 
     await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
 
-    expect(fixture.commands).toEqual([SHOW, RELOAD]);
+    expect(fixture.commands).toEqual([CAT, SHOW, RELOAD]);
   });
 
   it("keeps the drop-in when the reload fails and retries on the next start", async () => {
@@ -179,7 +205,7 @@ describe("ensureUnitOomPolicy", () => {
 
     fixture.commands.length = 0;
     await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
-    expect(fixture.commands).toEqual([SHOW, RELOAD]);
+    expect(fixture.commands).toEqual([CAT, SHOW, RELOAD]);
   });
 
   it("skips when another drop-in sets OOMPolicy under [Service]", async () => {
@@ -198,7 +224,32 @@ describe("ensureUnitOomPolicy", () => {
     await expect(readdir(fixture.dropInDir)).resolves.toEqual([
       "10-custom.conf",
     ]);
-    expect(fixture.commands).toEqual([]);
+    expect(fixture.commands).toEqual([CAT]);
+  });
+
+  it("skips when a drop-in outside the unit's own directory sets OOMPolicy", async () => {
+    const fixture = await createFixture();
+    fixture.extraCat.value =
+      "\n# /etc/systemd/user/bb-host-daemon-test.service.d/10-admin.conf\n[Service]\nOOMPolicy=kill\n";
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe(
+      "already-current",
+    );
+
+    await expect(readdir(fixture.dropInDir)).rejects.toThrow();
+    expect(fixture.commands).toEqual([CAT]);
+  });
+
+  it("writes nothing when systemctl cat fails", async () => {
+    const fixture = await createFixture();
+    fixture.catFails.value = true;
+
+    await expect(ensureUnitOomPolicy(fixture.args)).rejects.toThrow(
+      "cat failed",
+    );
+
+    await expect(readdir(fixture.dropInDir)).rejects.toThrow();
+    expect(fixture.commands).toEqual([CAT]);
   });
 
   it("skips when the unit itself sets OOMPolicy under [Service]", async () => {
@@ -209,7 +260,7 @@ describe("ensureUnitOomPolicy", () => {
     );
 
     await expect(readdir(fixture.dropInDir)).rejects.toThrow();
-    expect(fixture.commands).toEqual([]);
+    expect(fixture.commands).toEqual([CAT]);
   });
 
   it("still migrates when OOMPolicy appears only outside [Service] or in a comment", async () => {

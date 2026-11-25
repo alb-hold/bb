@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -17,10 +17,31 @@ export const OOM_POLICY_DROP_IN_CONTENT = "[Service]\nOOMPolicy=continue\n";
 
 const OOM_POLICY_DIRECTIVE = /^OOMPolicy\s*=/u;
 const SECTION_HEADER = /^\[([^\]]*)\]\s*$/u;
+const FILE_HEADER = /^# (\/\S+\.(?:service|conf))\s*$/u;
 
-function setsServiceOomPolicy(text: string): boolean {
+interface CatFile {
+  path: string;
+  lines: string[];
+}
+
+function splitCatOutput(output: string): CatFile[] {
+  const files: CatFile[] = [];
+  let current: CatFile | null = null;
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const header = FILE_HEADER.exec(rawLine);
+    if (header !== null) {
+      current = { path: header[1] ?? "", lines: [] };
+      files.push(current);
+      continue;
+    }
+    current?.lines.push(rawLine);
+  }
+  return files;
+}
+
+function setsServiceOomPolicy(lines: readonly string[]): boolean {
   let section = "";
-  for (const rawLine of text.split(/\r?\n/u)) {
+  for (const rawLine of lines) {
     const line = rawLine.trim();
     const header = SECTION_HEADER.exec(line);
     if (header !== null) {
@@ -58,33 +79,6 @@ export interface EnsureUnitOomPolicyArgs extends FindServiceDefinitionArgs {
   readCommandOutput: CommandOutputReader;
 }
 
-async function otherDropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
-  let names: string[];
-  try {
-    names = await readdir(dropInDir);
-  } catch (error) {
-    if (isFileNotFoundError(error)) {
-      return false;
-    }
-    throw error;
-  }
-  for (const name of names) {
-    if (!name.endsWith(".conf") || name === OOM_POLICY_DROP_IN_NAME) {
-      continue;
-    }
-    try {
-      if (setsServiceOomPolicy(await readFile(join(dropInDir, name), "utf8"))) {
-        return true;
-      }
-    } catch (error) {
-      if (!isFileNotFoundError(error)) {
-        throw error;
-      }
-    }
-  }
-  return false;
-}
-
 async function readOwnDropIn(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");
@@ -103,14 +97,18 @@ export async function ensureUnitOomPolicy(
   if (definition === null || definition.manager !== "systemd-user") {
     return "not-applicable";
   }
-  const dropInDir = `${definition.path}.d`;
-  if (
-    setsServiceOomPolicy(definition.content) ||
-    (await otherDropInSetsOomPolicy(dropInDir))
-  ) {
+  const dropInPath = join(`${definition.path}.d`, OOM_POLICY_DROP_IN_NAME);
+  const catOutput = await args.readCommandOutput("systemctl", [
+    "--user",
+    "cat",
+    definition.unitName,
+  ]);
+  const setByOthers = splitCatOutput(catOutput).some(
+    (file) => file.path !== dropInPath && setsServiceOomPolicy(file.lines),
+  );
+  if (setByOthers) {
     return "already-current";
   }
-  const dropInPath = join(dropInDir, OOM_POLICY_DROP_IN_NAME);
   if ((await readOwnDropIn(dropInPath)) !== OOM_POLICY_DROP_IN_CONTENT) {
     await writeFileAtomically({
       path: dropInPath,
