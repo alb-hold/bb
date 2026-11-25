@@ -1713,6 +1713,10 @@ async function unreadableCause(
 
 const CAP_WAKE_ALARM = 1n << 35n;
 const SD_PAM_MAX_START_DELTA_TICKS = 200n;
+const SSH_AGENT_BINARY = "/usr/bin/ssh-agent";
+const FILE_TYPE_MASK = 0o170000;
+const REGULAR_FILE_TYPE = 0o100000;
+const SETGID_BIT = 0o2000;
 
 interface SessionFacts {
   comm: string;
@@ -1746,9 +1750,23 @@ function ownedBy(facts: SessionFacts, uid: number): boolean {
   return facts.uids.every((value) => value === uid);
 }
 
+async function sshAgentSetgidGid(proc: ProcReader): Promise<number | null> {
+  const binary = await readOptional(() => proc.statAccess(SSH_AGENT_BINARY));
+  if (!("value" in binary)) return null;
+  const { uid, gid, mode } = binary.value;
+  if (
+    uid !== 0 ||
+    (mode & FILE_TYPE_MASK) !== REGULAR_FILE_TYPE ||
+    (mode & SETGID_BIT) === 0
+  )
+    return null;
+  return gid;
+}
+
 function hasForeignSavedGid(
   facts: SessionFacts,
   ownGids: readonly number[],
+  expectedGid: number,
 ): boolean {
   if (facts.gids === null || ownGids.length === 0) return false;
   const realGid = facts.gids[0];
@@ -1756,6 +1774,7 @@ function hasForeignSavedGid(
   return (
     realGid !== undefined &&
     savedGid !== undefined &&
+    savedGid === expectedGid &&
     savedGid !== realGid &&
     !ownGids.includes(savedGid)
   );
@@ -1844,7 +1863,12 @@ async function isSessionProcess(
     );
   }
   if (facts.comm === "ssh-agent") {
-    if (!hasForeignSavedGid(facts, self.gids)) return false;
+    const expectedGid = await sshAgentSetgidGid(proc);
+    if (
+      expectedGid === null ||
+      !hasForeignSavedGid(facts, self.gids, expectedGid)
+    )
+      return false;
     if (facts.parent === 1) return true;
     const parent = await sessionFacts(proc, facts.parent);
     if (parent === null) return false;

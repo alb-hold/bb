@@ -2236,6 +2236,10 @@ describe("faked session processes (systemd, (sd-pam), ssh-agent)", () => {
     ownCapPrm?: string | null;
     fdOwner?: number;
     startTicks?: number | null;
+    sshAgentBinary?:
+      | { uid: number; gid: number; mode: number }
+      | "missing"
+      | "error";
     ancestors?: readonly AncestorSpec[];
     aliasCwd?: string;
   }
@@ -2285,10 +2289,23 @@ describe("faked session processes (systemd, (sd-pam), ssh-agent)", () => {
       readdir: async (target) =>
         own(target) ? denied() : base.readdir(target),
       statId: async (target) => (own(target) ? denied() : base.statId(target)),
-      statAccess: async (target) =>
-        target === "/proc/101/fd"
-          ? { uid: spec.fdOwner ?? 0, gid: 0, mode: 0o40500 }
-          : base.statAccess(target),
+      statAccess: async (target) => {
+        if (target === "/proc/101/fd")
+          return { uid: spec.fdOwner ?? 0, gid: 0, mode: 0o40500 };
+        if (target === "/usr/bin/ssh-agent") {
+          const binary = spec.sshAgentBinary ?? {
+            uid: 0,
+            gid: 102,
+            mode: 0o102755,
+          };
+          if (binary === "missing")
+            throw Object.assign(new Error("missing"), { code: "ENOENT" });
+          if (binary === "error")
+            throw Object.assign(new Error("io error"), { code: "EIO" });
+          return binary;
+        }
+        return base.statAccess(target);
+      },
       readFile: async (target) => {
         if (target === "/proc/self/status") {
           const cap =
@@ -2700,6 +2717,93 @@ describe("faked session processes (systemd, (sd-pam), ssh-agent)", () => {
       },
     ],
     [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) with parent 1",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+      },
+    ],
+    [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) under user systemd",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+        ancestors: [validSystemdParent],
+      },
+    ],
+    [
+      "forged ssh-agent (different foreign saved GID 103 != binary gid 102) under valid sshd-session",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 200,
+        gids: "1000\t1000\t103\t1000",
+        fdOwner: 0,
+        ancestors: [validSshdUserParent, validSshdRootParent],
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is missing",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: "missing",
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not setgid",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 102, mode: 0o100755 },
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not root-owned",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 1000, gid: 102, mode: 0o102755 },
+      },
+    ],
+    [
+      "ssh-agent when /usr/bin/ssh-agent is not a regular file",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 102, mode: 0o042755 },
+      },
+    ],
+    [
+      "ssh-agent when stat on /usr/bin/ssh-agent fails",
+      "unknown",
+      {
+        comm: "ssh-agent",
+        ppid: 1,
+        gids: "1000\t1000\t102\t1000",
+        fdOwner: 0,
+        sshAgentBinary: "error",
+      },
+    ],
+    [
       "ssh-agent whose saved GID is in the daemon's groups",
       "unknown",
       {
@@ -2708,6 +2812,7 @@ describe("faked session processes (systemd, (sd-pam), ssh-agent)", () => {
         gids: "1000\t1000\t27\t1000",
         ownGroups: "4 24 27 30 46 100 1000",
         fdOwner: 0,
+        sshAgentBinary: { uid: 0, gid: 27, mode: 0o102755 },
       },
     ],
     [
