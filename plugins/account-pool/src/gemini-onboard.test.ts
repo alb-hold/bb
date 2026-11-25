@@ -1630,7 +1630,7 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
     expect(quotaProjects(google)).toEqual(["proj-own", "proj-other"]);
     expect(setProject).toHaveBeenCalledTimes(1);
-    expect(setProject).toHaveBeenCalledWith(account.id, "proj-other", undefined);
+    expect(setProject).toHaveBeenCalledWith(account.id, "proj-other");
   });
 
   it("saves the Claude and GPT display, keeps the stored windows and project, and does not throw when no candidate has Gemini buckets", async () => {
@@ -1802,4 +1802,84 @@ describe("Antigravity companion project for consumer accounts", () => {
       expect((await stores.accounts.get(account.id))?.geminiProject).toBe(expectedProject);
     },
   );
+
+  const abortingContext = (
+    stores: Awaited<ReturnType<typeof usageStores>>,
+    account: Account,
+    google: ReturnType<typeof fakeCodeAssist>,
+    controller: AbortController,
+    now: () => number,
+  ): AdapterUsageContext => ({
+    ...usageContext(stores, account, google.fetch, now),
+    signal: controller.signal,
+  });
+  const seededForCommit = async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-token");
+    const seed = fakeCodeAssist({ loads: [LIVE_AGY_DAILY], quota: ONE_WINDOW });
+    await seed.adapter.refreshUsage(usageContext(stores, account, seed.fetch, () => NOW));
+    const seeded = stores.quotas.get(account.id);
+    const storedProject = (await stores.accounts.get(account.id))?.geminiProject;
+    const live = (await stores.accounts.get(account.id)) ?? account;
+    const google = ownAndOtherCompanions({
+      "proj-own": { buckets: [bucket("gemini-4-neon", 0.1)] },
+    });
+    return { stores, account: live, seeded, storedProject, google };
+  };
+
+  it("never mixes the new project with the old windows when the refresh is aborted right after the project commits", async () => {
+    const { stores, account, seeded, google } = await seededForCommit();
+    const controller = new AbortController();
+    const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+    vi.spyOn(stores.accounts, "setGeminiProject").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      controller.abort();
+      return result;
+    });
+    await google.adapter
+      .refreshUsage(abortingContext(stores, account, google, controller, () => NOW + 60_000))
+      .catch(() => undefined);
+    const project = (await stores.accounts.get(account.id))?.geminiProject;
+    const utilization = stores.quotas.get(account.id).limitWindows[0]?.utilization;
+    expect([project, utilization?.toFixed(2)]).toEqual(["proj-own", "0.90"]);
+    expect(seeded.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+  });
+
+  it("commits the windows and the project together when the abort lands as the project write starts", async () => {
+    const { stores, account, google } = await seededForCommit();
+    const controller = new AbortController();
+    const original = stores.accounts.setGeminiProject.bind(stores.accounts);
+    vi.spyOn(stores.accounts, "setGeminiProject").mockImplementation(async (...args) => {
+      controller.abort();
+      return original(...args);
+    });
+    await google.adapter
+      .refreshUsage(abortingContext(stores, account, google, controller, () => NOW + 60_000))
+      .catch(() => undefined);
+    const project = (await stores.accounts.get(account.id))?.geminiProject;
+    const utilization = stores.quotas.get(account.id).limitWindows[0]?.utilization;
+    expect([project, utilization?.toFixed(2)]).toEqual(["proj-own", "0.90"]);
+  });
+
+  it("changes neither the project nor the quota when the abort lands before the commit point", async () => {
+    const { stores, account, seeded, storedProject, google } = await seededForCommit();
+    const controller = new AbortController();
+    const setProject = vi.spyOn(stores.accounts, "setGeminiProject");
+    let calls = 0;
+    const result = await google.adapter
+      .refreshUsage(
+        abortingContext(stores, account, google, controller, () => {
+          calls += 1;
+          controller.abort();
+          return NOW + 60_000;
+        }),
+      )
+      .catch((error: unknown) => error);
+    expect(calls).toBeGreaterThan(0);
+    expect(result).toBeInstanceOf(Error);
+    expect(setProject).not.toHaveBeenCalled();
+    expect((await stores.accounts.get(account.id))?.geminiProject).toBe(storedProject);
+    expect(stores.quotas.get(account.id).limitWindows).toEqual(seeded.limitWindows);
+    expect(stores.quotas.get(account.id).observedAt).toBe(seeded.observedAt);
+  });
 });

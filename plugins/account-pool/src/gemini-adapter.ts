@@ -1540,12 +1540,6 @@ export function createGeminiAdapter(options: {
         if (quotaSummary === null || !geminiQuotaBuckets(quotaSummary)?.length)
           quotaSummary = merged;
       }
-      if (found && quotaProject !== null && quotaProject !== context.account.geminiProject)
-        await context.accounts.setGeminiProject(
-          context.account.id,
-          quotaProject,
-          context.signal,
-        );
       if (quotaSummary === null) {
         if (quotaFailure !== null) throw quotaFailure;
         throw new Error("Usage refresh returned unreadable data.");
@@ -1565,9 +1559,6 @@ export function createGeminiAdapter(options: {
         Object.keys(winnerDisplay).length > 0 || thirdPartySummary === null
           ? winnerDisplay
           : geminiThirdPartyDisplay(thirdPartySummary, now);
-      if (Object.keys(thirdParty).length > 0)
-        context.quotas.putModelWeekly(context.account.id, thirdParty);
-      context.signal?.throwIfAborted();
       const previous = context.quotas.get(context.account.id);
       const rejected = windows.filter((window) => window.status === "rejected");
       const quota: AccountQuota = {
@@ -1594,7 +1585,19 @@ export function createGeminiAdapter(options: {
         observedAt: now,
         error: null,
       };
+      context.signal?.throwIfAborted();
+      if (Object.keys(thirdParty).length > 0)
+        context.quotas.putModelWeekly(context.account.id, thirdParty);
       context.quotas.put(quota);
+      if (
+        found &&
+        quotaProject !== null &&
+        quotaProject !== context.account.geminiProject
+      )
+        await context.accounts.setGeminiProject(
+          context.account.id,
+          quotaProject,
+        );
     },
     errorResponse(status, message, headers) {
       try {
