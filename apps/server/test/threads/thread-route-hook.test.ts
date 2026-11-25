@@ -368,6 +368,33 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it.each([
+    ["rejects", "reject"],
+    ["throws synchronously", "sync"],
+  ] as const)("keeps the original provider when invokeHook %s", async (_label, mode) => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      setPluginHookProvider({
+        listHooks: (hook) =>
+          hook === "experimental_thread.route"
+            ? [{ pluginId: "route-test", handler: () => null }]
+            : [],
+        invokeHook: (() => {
+          if (mode === "sync") throw new Error("HIV");
+          return Promise.reject(new Error("HIV"));
+        }) as never,
+        decisionTimeoutMs: 10_000,
+      });
+      const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, request);
+      expect(thread.providerId).toBe("codex");
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+      expect(lines).not.toContain("HIV");
+      expect(lines).toContain("host_error");
+    });
+  });
+
   it("logs a benign reason", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);

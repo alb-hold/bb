@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { PluginHookSignatures } from "@get-bb/plugin-sdk";
-import { pluginHookProvider } from "../plugins/plugin-hook-registry.js";
+import {
+  pluginHookProvider,
+  type PluginHookRegistration,
+} from "../plugins/plugin-hook-registry.js";
 import { decideWithinBox } from "./dispatch-hooks.js";
 
 type RouteContext =
@@ -65,82 +68,105 @@ type HandlerResult =
   | { threw: false; value: unknown }
   | { threw: true; errorName: string };
 
+type HookEvaluation =
+  | { type: "failure"; failure: ThreadRouteFailure }
+  | { type: "pass" }
+  | { type: "decision"; decision: ThreadRouteDecision };
+
+type RouteHookProvider = NonNullable<ReturnType<typeof pluginHookProvider>>;
+type RouteHook = PluginHookRegistration<"experimental_thread.route">;
+
+async function evaluateHook(
+  provider: RouteHookProvider,
+  hook: RouteHook,
+  context: RouteContext,
+): Promise<HookEvaluation> {
+  const pluginId = hook.pluginId;
+  const failure = (
+    kind: ThreadRouteFailureKind,
+    errorName: string | null = null,
+  ): HookEvaluation => ({
+    type: "failure",
+    failure: { pluginId, kind, errorName },
+  });
+  const invocation = await provider.invokeHook(hook, "thread route", () =>
+    decideWithinBox(
+      async (): Promise<HandlerResult> => {
+        try {
+          const raw = hook.handler(context);
+          return {
+            threw: false,
+            value: raw instanceof Promise ? await raw : raw,
+          };
+        } catch (error) {
+          return {
+            threw: true,
+            errorName: builtInErrorLabel(
+              error instanceof Error ? error.name : "NonError",
+            ),
+          };
+        }
+      },
+      Math.min(provider.decisionTimeoutMs, THREAD_ROUTE_HOOK_TIMEOUT_MS),
+    ),
+  );
+  if (!invocation.ok) return failure("host_error");
+  if (!invocation.value.ok) return failure("timeout");
+  if (invocation.value.value.threw) {
+    return failure("threw", invocation.value.value.errorName);
+  }
+  let parsed: ReturnType<typeof routeDecisionSchema.safeParse>;
+  try {
+    parsed = routeDecisionSchema.safeParse(invocation.value.value.value);
+  } catch {
+    return failure("invalid_decision");
+  }
+  if (!parsed.success) return failure("invalid_decision");
+  if (parsed.data === null) return { type: "pass" };
+  return {
+    type: "decision",
+    decision: {
+      pluginId,
+      providerId: parsed.data.providerId,
+      model: parsed.data.model ?? null,
+      reason: parsed.data.reason ?? null,
+    },
+  };
+}
+
 export async function runThreadRouteHooks(
   context: RouteContext,
 ): Promise<ThreadRouteOutcome> {
-  const provider = pluginHookProvider();
   const failures: ThreadRouteFailure[] = [];
-  if (provider === undefined) return { decision: null, failures };
-  for (const hook of provider.listHooks("experimental_thread.route")) {
-    const invocation = await provider.invokeHook(hook, "thread route", () =>
-      decideWithinBox(
-        async (): Promise<HandlerResult> => {
-          try {
-            const raw = hook.handler(context);
-            return {
-              threw: false,
-              value: raw instanceof Promise ? await raw : raw,
-            };
-          } catch (error) {
-            return {
-              threw: true,
-              errorName: builtInErrorLabel(
-                error instanceof Error ? error.name : "NonError",
-              ),
-            };
-          }
-        },
-        Math.min(provider.decisionTimeoutMs, THREAD_ROUTE_HOOK_TIMEOUT_MS),
-      ),
-    );
-    if (!invocation.ok) {
-      failures.push({
-        pluginId: hook.pluginId,
-        kind: "host_error",
-        errorName: null,
-      });
-      continue;
+  try {
+    const provider = pluginHookProvider();
+    if (provider === undefined) return { decision: null, failures };
+    for (const hook of provider.listHooks("experimental_thread.route")) {
+      let evaluation: HookEvaluation;
+      try {
+        evaluation = await evaluateHook(provider, hook, context);
+      } catch {
+        let pluginId = "unknown";
+        try {
+          pluginId = hook.pluginId;
+        } catch {
+          pluginId = "unknown";
+        }
+        evaluation = {
+          type: "failure",
+          failure: { pluginId, kind: "host_error", errorName: null },
+        };
+      }
+      if (evaluation.type === "failure") {
+        failures.push(evaluation.failure);
+        continue;
+      }
+      if (evaluation.type === "decision") {
+        return { decision: evaluation.decision, failures };
+      }
     }
-    if (!invocation.value.ok) {
-      failures.push({
-        pluginId: hook.pluginId,
-        kind: "timeout",
-        errorName: null,
-      });
-      continue;
-    }
-    if (invocation.value.value.threw) {
-      failures.push({
-        pluginId: hook.pluginId,
-        kind: "threw",
-        errorName: invocation.value.value.errorName,
-      });
-      continue;
-    }
-    let parsed: ReturnType<typeof routeDecisionSchema.safeParse>;
-    try {
-      parsed = routeDecisionSchema.safeParse(invocation.value.value.value);
-    } catch {
-      parsed = { success: false } as typeof parsed;
-    }
-    if (!parsed.success) {
-      failures.push({
-        pluginId: hook.pluginId,
-        kind: "invalid_decision",
-        errorName: null,
-      });
-      continue;
-    }
-    if (parsed.data === null) continue;
-    return {
-      decision: {
-        pluginId: hook.pluginId,
-        providerId: parsed.data.providerId,
-        model: parsed.data.model ?? null,
-        reason: parsed.data.reason ?? null,
-      },
-      failures,
-    };
+  } catch {
+    failures.push({ pluginId: "unknown", kind: "host_error", errorName: null });
   }
   return { decision: null, failures };
 }
