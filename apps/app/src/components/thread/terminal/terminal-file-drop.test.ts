@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatTerminalFileDrop,
   getNewTerminalSelection,
+  handleStagedTerminalFileDrop,
   quoteTerminalPath,
   resolveTerminalFileDropPaths,
 } from "./terminal-file-drop";
@@ -51,5 +52,58 @@ describe("terminal file drop", () => {
     expect(getNewTerminalSelection(" word ", "word")).toBe(" word ");
     expect(getNewTerminalSelection("word", "word")).toBeNull();
     expect(getNewTerminalSelection("  ", "word")).toBeNull();
+  });
+});
+
+describe("staged terminal file drop", () => {
+  const screenshot = {
+    name: "Screenshot 2026-11-25 at 1.35.15 AM.png",
+  };
+  const protectedPath = `/var/folders/4n/x/T/TemporaryItems/NSIRD_screencaptureui_YVUwM8/${screenshot.name}`;
+  const stagedPath = `/Users/alex/Library/Application Support/bb/dropped-files/abc/${screenshot.name}`;
+
+  it("inserts the staged copy instead of the protected original path", async () => {
+    const sendInput = vi.fn();
+    const handled = await handleStagedTerminalFileDrop({
+      files: [screenshot],
+      getPathForFile: () => protectedPath,
+      stageFile: async () => stagedPath,
+      isRunning: () => true,
+      sendInput,
+    });
+    expect(handled).toBe(true);
+    expect(sendInput).toHaveBeenCalledWith(`'${stagedPath}'`);
+    expect(sendInput.mock.calls[0]?.[0]).not.toContain("TemporaryItems");
+  });
+
+  it("falls back to the original path when staging fails", async () => {
+    const sendInput = vi.fn();
+    await handleStagedTerminalFileDrop({
+      files: [screenshot],
+      getPathForFile: () => "/Users/alex/Desktop/a.png",
+      stageFile: async () => {
+        throw new Error("disk full");
+      },
+      isRunning: () => true,
+      sendInput,
+    });
+    expect(sendInput).toHaveBeenCalledWith("'/Users/alex/Desktop/a.png'");
+  });
+
+  it("sends nothing once the session is no longer running", async () => {
+    const sendInput = vi.fn();
+    let running = true;
+    const handled = await handleStagedTerminalFileDrop({
+      files: [screenshot],
+      getPathForFile: undefined,
+      stageFile: async () => {
+        running = false;
+        return stagedPath;
+      },
+      isRunning: () => running,
+      sendInput,
+    });
+    expect(handled).toBe(false);
+    expect(sendInput).not.toHaveBeenCalled();
   });
 });

@@ -174,7 +174,10 @@ import {
   type TerminalGridSize,
 } from "./terminal-shared-size";
 import { listenForTerminalSizeClaims } from "./terminal-size-claims";
-import { handleTerminalFileDrop } from "./terminal-file-drop";
+import {
+  handleStagedTerminalFileDrop,
+  handleTerminalFileDrop,
+} from "./terminal-file-drop";
 import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
@@ -4080,19 +4083,31 @@ export function ThreadTerminalView({
       ) => activeTransport.sendInput(dataBase64, inputEventAt, isUserInput);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
+        const sendInput = (input: string) =>
+          forwardTerminalData({
+            data: input,
+            isUserInput: true,
+            onInput: sendTerminalInput,
+            onUserInput: onUserInputRef.current,
+            replayWriteState,
+            sessionStatus: sessionStatusRef.current,
+          });
+        const stageFile = desktop?.stageDroppedFile;
+        if (stageFile !== undefined) {
+          void handleStagedTerminalFileDrop({
+            files: Array.from(files),
+            getPathForFile: desktop?.getPathForFile,
+            stageFile,
+            isRunning: () => sessionStatusRef.current === "running",
+            sendInput,
+          });
+          return;
+        }
         handleTerminalFileDrop({
           files: Array.from(files),
           getPathForFile: desktop?.getPathForFile,
           isRunning: sessionStatusRef.current === "running",
-          sendInput: (input) =>
-            forwardTerminalData({
-              data: input,
-              isUserInput: true,
-              onInput: sendTerminalInput,
-              onUserInput: onUserInputRef.current,
-              replayWriteState,
-              sessionStatus: sessionStatusRef.current,
-            }),
+          sendInput,
         });
       };
       lifecycle.terminalInteractions = attachTerminalInteractions({

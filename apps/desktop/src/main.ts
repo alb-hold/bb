@@ -61,6 +61,7 @@ import {
 } from "@bb/server-contract";
 import { z } from "zod";
 import { registerDesktopClipboardIpc } from "./desktop-clipboard.js";
+import { registerDroppedFileStagingIpc } from "./dropped-file-staging.js";
 import { registerDesktopAttentionIpc } from "./desktop-attention.js";
 import { registerDesktopWindowFocusIpc } from "./desktop-window-focus.js";
 import {
@@ -2423,6 +2424,11 @@ function registerDesktopUpdateIpc(): void {
   registerDesktopWindowFocusIpc(applicationWindowWebContentsIds);
   registerDesktopAttentionIpc(applicationWindowWebContentsIds);
   registerDesktopClipboardIpc(applicationWindowWebContentsIds);
+  registerDroppedFileStagingIpc(applicationWindowWebContentsIds, () =>
+    desktopUserDataPath === null
+      ? null
+      : join(desktopUserDataPath, "dropped-files"),
+  );
   ipcMain.on(BB_DESKTOP_ZOOM_COMMAND_CHANNEL, (event, payload: unknown) => {
     const parsed = bbDesktopZoomCommandSchema.safeParse(payload);
     if (parsed.success) {

@@ -40,3 +40,32 @@ export function getNewTerminalSelection(
 ): string | null {
   return text.trim().length > 0 && text !== previousText ? text : null;
 }
+
+export async function handleStagedTerminalFileDrop<T>({
+  files,
+  getPathForFile,
+  stageFile,
+  isRunning,
+  sendInput,
+}: {
+  files: readonly T[];
+  getPathForFile: ((file: T) => string) | undefined;
+  stageFile: (file: T) => Promise<string>;
+  isRunning: () => boolean;
+  sendInput: (input: string) => void;
+}): Promise<boolean> {
+  if (!isRunning()) return false;
+  const paths = await Promise.all(
+    files.map(async (file) => {
+      try {
+        return await stageFile(file);
+      } catch {
+        return getPathForFile === undefined ? "" : getPathForFile(file);
+      }
+    }),
+  );
+  const input = formatTerminalFileDrop(paths);
+  if (!input || !isRunning()) return false;
+  sendInput(input);
+  return true;
+}
