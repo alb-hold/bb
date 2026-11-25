@@ -155,6 +155,29 @@ describe("ensureUnitOomPolicy", () => {
     expect(fixture.commands).toEqual([]);
   });
 
+  it("never overwrites a pre-existing 50-oom-policy.conf that sets other directives", async () => {
+    const fixture = await createFixture();
+    await mkdir(fixture.dropInDir, { recursive: true });
+    const unrelated = "[Service]\nNice=5\n";
+    await writeFile(
+      join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME),
+      unrelated,
+      "utf8",
+    );
+
+    await expect(ensureUnitOomPolicy(fixture.args)).resolves.toBe("migrated");
+
+    await expect(
+      readFile(join(fixture.dropInDir, OOM_POLICY_DROP_IN_NAME), "utf8"),
+    ).resolves.toBe(unrelated);
+    await expect(
+      readFile(join(fixture.dropInDir, "50-oom-policy-2.conf"), "utf8"),
+    ).resolves.toBe(OOM_POLICY_DROP_IN_CONTENT);
+    expect(fixture.commands).toEqual([
+      ["systemctl", "--user", "daemon-reload"],
+    ]);
+  });
+
   it("does nothing for a unit that already declares OOMPolicy", async () => {
     const fixture = await createFixture("OOMPolicy=continue\n");
 

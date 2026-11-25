@@ -19,13 +19,18 @@ export interface EnsureUnitOomPolicyArgs extends FindServiceDefinitionArgs {
   runCommand: ServerMoveCommandRunner;
 }
 
-async function dropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
+interface DropInScan {
+  names: ReadonlySet<string>;
+  setsOomPolicy: boolean;
+}
+
+async function scanDropIns(dropInDir: string): Promise<DropInScan> {
   let names: string[];
   try {
     names = await readdir(dropInDir);
   } catch (error) {
     if (isFileNotFoundError(error)) {
-      return false;
+      return { names: new Set(), setsOomPolicy: false };
     }
     throw error;
   }
@@ -34,10 +39,9 @@ async function dropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
       continue;
     }
     try {
-      if (
-        OOM_POLICY_DIRECTIVE.test(await readFile(join(dropInDir, name), "utf8"))
-      ) {
-        return true;
+      const text = await readFile(join(dropInDir, name), "utf8");
+      if (OOM_POLICY_DIRECTIVE.test(text)) {
+        return { names: new Set(names), setsOomPolicy: true };
       }
     } catch (error) {
       if (!isFileNotFoundError(error)) {
@@ -45,7 +49,18 @@ async function dropInSetsOomPolicy(dropInDir: string): Promise<boolean> {
       }
     }
   }
-  return false;
+  return { names: new Set(names), setsOomPolicy: false };
+}
+
+function freeDropInName(names: ReadonlySet<string>): string {
+  if (!names.has(OOM_POLICY_DROP_IN_NAME)) {
+    return OOM_POLICY_DROP_IN_NAME;
+  }
+  let suffix = 2;
+  while (names.has(`50-oom-policy-${suffix}.conf`)) {
+    suffix += 1;
+  }
+  return `50-oom-policy-${suffix}.conf`;
 }
 
 export async function ensureUnitOomPolicy(
@@ -59,11 +74,12 @@ export async function ensureUnitOomPolicy(
     return "already-current";
   }
   const dropInDir = `${definition.path}.d`;
-  if (await dropInSetsOomPolicy(dropInDir)) {
+  const scan = await scanDropIns(dropInDir);
+  if (scan.setsOomPolicy) {
     return "already-current";
   }
   await writeFileAtomically({
-    path: join(dropInDir, OOM_POLICY_DROP_IN_NAME),
+    path: join(dropInDir, freeDropInName(scan.names)),
     content: OOM_POLICY_DROP_IN_CONTENT,
     mode: 0o644,
   });
