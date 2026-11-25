@@ -13,6 +13,9 @@ const LSOF_TIMEOUT_MS = 30_000;
 const LINUX_SCAN_CONCURRENCY = 32;
 const PERMISSION_RETRIES = 3;
 const PERMISSION_RETRY_MS = 40;
+const SCAN_SLICE_MS = 8;
+const MAX_RUNNING_LINUX_SCANS = 2;
+const MAX_WAITING_LINUX_SCANS = 16;
 
 export type LsofResult = {
   code: number | null;
@@ -395,7 +398,24 @@ const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
 
 type Read<T> = { value: T } | { gone: true } | { failed: string };
 
+let sliceStartedAt = performance.now();
+let sliceYield: Promise<void> | null = null;
+
+function yieldToEventLoop(): Promise<void> {
+  sliceYield ??= new Promise<void>((resolve) => {
+    setImmediate(() => {
+      sliceStartedAt = performance.now();
+      sliceYield = null;
+      resolve();
+    });
+  });
+  return sliceYield;
+}
+
 async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
+  if (performance.now() - sliceStartedAt >= SCAN_SLICE_MS) {
+    await yieldToEventLoop();
+  }
   try {
     return { value: await read() };
   } catch (error) {
@@ -2354,15 +2374,74 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   };
 }
 
+export interface HolderScanScheduler {
+  (directory: string, final: boolean): Promise<WorktreeHolderScan>;
+}
+
+export function createHolderScanScheduler(
+  run: (directory: string, final: boolean) => Promise<WorktreeHolderScan>,
+  limits: { running: number; waiting: number },
+): HolderScanScheduler {
+  const waiting = new Map<
+    string,
+    { promise: Promise<WorktreeHolderScan>; start: () => void }
+  >();
+  let running = 0;
+  const startWaiting = () => {
+    while (running < limits.running) {
+      const next = waiting.entries().next();
+      if (next.done === true) return;
+      waiting.delete(next.value[0]);
+      next.value[1].start();
+    }
+  };
+  return (directory, final) => {
+    const key = `${final ? "final" : "check"}:${directory}`;
+    const queued = waiting.get(key);
+    if (queued !== undefined) return queued.promise;
+    if (running >= limits.running && waiting.size >= limits.waiting) {
+      return Promise.resolve<WorktreeHolderScan>({
+        status: "unknown",
+        reason: `too many process scans are already waiting (${waiting.size}); try again shortly`,
+      });
+    }
+    let start = () => {};
+    const promise = new Promise<WorktreeHolderScan>((resolve, reject) => {
+      start = () => {
+        running += 1;
+        void (async () => {
+          try {
+            resolve(await run(directory, final));
+          } catch (error) {
+            reject(error);
+          } finally {
+            running -= 1;
+            startWaiting();
+          }
+        })();
+      };
+    });
+    waiting.set(key, { promise, start });
+    startWaiting();
+    return promise;
+  };
+}
+
+const scheduleLinuxScan = createHolderScanScheduler(
+  (directory, final) =>
+    scanLinux(directory, activeProc, process.pid, {
+      maxDirectories: MAX_TREE_DIRECTORIES,
+      final,
+    }),
+  { running: MAX_RUNNING_LINUX_SCANS, waiting: MAX_WAITING_LINUX_SCANS },
+);
+
 export async function scanWorktreeHolders(
   directory: string,
   options: { final?: boolean } = {},
 ): Promise<WorktreeHolderScan> {
   if (process.platform === "linux")
-    return scanLinux(directory, activeProc, process.pid, {
-      maxDirectories: MAX_TREE_DIRECTORIES,
-      final: options.final === true,
-    });
+    return scheduleLinuxScan(directory, options.final === true);
   if (process.platform === "win32") {
     return {
       status: "unknown",
