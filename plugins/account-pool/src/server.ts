@@ -254,8 +254,16 @@ export function createAccountPoolPlugin(
       thread.archivedAt + ARCHIVE_UNDO_GRACE_MS > now();
     const hubTokens = new HubTokenStore(secretDir, now);
     await hubTokens.initialize();
-    const enrolledHosts = await bb.sdk.hosts.list();
-    await hubTokens.prune(enrolledHosts.map((host) => host.id));
+    const enrolledHostIds = bb.sdk.hosts
+      .list()
+      .then((hosts) => hosts.map((host) => host.id));
+    const enrolledHostsSettled = { value: false };
+    enrolledHostIds
+      .catch(() => undefined)
+      .then(() => {
+        enrolledHostsSettled.value = true;
+      });
+    const hubTokensStarted = hubTokens.startWhen(enrolledHostIds);
     const lookupThread: ThreadLookup = async (threadId, signal) => {
       try {
         const thread = await bb.sdk.threads.get({ threadId, signal });
@@ -278,7 +286,18 @@ export function createAccountPoolPlugin(
       (message) => bb.log.warn(message),
       bb.storage.kv,
     );
-    await threadTokens.initialize(enrolledHosts.map((host) => host.id));
+    const threadTokensStarted = threadTokens.startWhen(enrolledHostIds);
+    const startupFailed = (store: string) => (error: unknown) => {
+      bb.log.error(
+        `Account Pooler could not load ${store}; routing stays unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    };
+    hubTokensStarted.catch(startupFailed("hub tokens"));
+    threadTokensStarted.catch(startupFailed("thread credentials"));
+    bb.onDispose(async () => {
+      if (!enrolledHostsSettled.value) return;
+      await Promise.allSettled([hubTokensStarted, threadTokensStarted]);
+    });
     const routing = new RoutingStore(bb.storage.kv, now);
     const env = options.env ?? process.env;
     const configuredParentPool = readParentPool(env);
@@ -1468,6 +1487,7 @@ export function createAccountPoolPlugin(
     });
     bb.background.service("hub", {
       start: async (signal) => {
+        await Promise.all([hubTokensStarted, threadTokensStarted]);
         const startupComplete = await sweepThreadCredentialsOnce(signal);
         await Promise.all([
           hub.start(signal),

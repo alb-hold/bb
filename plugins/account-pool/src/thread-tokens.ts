@@ -301,6 +301,7 @@ export class ThreadTokenStore {
   }
 
   async activeTokenDigests(hostId: string): Promise<string[]> {
+    await this.ready();
     const digests = new Set<string>();
     for (const record of this.routes.values()) {
       if (record.hostId !== hostId || record.provider !== "claude") continue;
@@ -317,6 +318,7 @@ export class ThreadTokenStore {
     hostId: string,
     provider: ThreadRoute["provider"],
   ): Promise<string[]> {
+    await this.ready();
     const ids = new Set<string>();
     for (const record of this.routes.values()) {
       if (record.hostId !== hostId || record.provider !== provider) continue;
@@ -324,6 +326,23 @@ export class ThreadTokenStore {
       ids.add(record.threadId);
     }
     return [...ids];
+  }
+
+  private startup: Promise<void> | null = null;
+
+  startWhen(hostIds: Promise<readonly string[]>): Promise<void> {
+    const started = hostIds.then((ids) => this.initialize(ids));
+    this.startup = started;
+    started.catch(() => undefined);
+    return started;
+  }
+
+  whenReady(): Promise<void> {
+    return this.ready();
+  }
+
+  private async ready(): Promise<void> {
+    if (this.startup !== null) await this.startup;
   }
 
   async initialize(hostIds: readonly string[]): Promise<void> {
@@ -667,6 +686,7 @@ export class ThreadTokenStore {
     hostToken: string,
     lifetime: "durable" | "process" = "durable",
   ): Promise<string> {
+    await this.ready();
     const parsed = routeSchema
       .omit({
         token: true,
@@ -723,6 +743,7 @@ export class ThreadTokenStore {
     hostToken: string,
     lifetime: "durable" | "process" = "durable",
   ): Promise<string> {
+    await this.ready();
     const parsed = nestedRouteSchema
       .omit({
         token: true,
@@ -779,6 +800,7 @@ export class ThreadTokenStore {
     hostToken: string,
     options: { rotate?: boolean } = {},
   ): Promise<{ token: string; generation: string }> {
+    await this.ready();
     const parsed = actorRouteSchema
       .omit({ tokenDigest: true, generation: true, hostTokenDigest: true })
       .parse(route);
@@ -813,6 +835,7 @@ export class ThreadTokenStore {
     token: string | null,
     provider?: ThreadRoute["provider"],
   ): Promise<ActorRoute | null> {
+    await this.ready();
     const record =
       token === null || token.length !== 43
         ? undefined
@@ -856,6 +879,7 @@ export class ThreadTokenStore {
     threadId?: string;
     generation?: string;
   }): Promise<number> {
+    await this.ready();
     const actorId = actorIdSchema.parse(filter.actorId);
     const generation =
       filter.generation === undefined
@@ -883,6 +907,7 @@ export class ThreadTokenStore {
     provider: ThreadRoute["provider"],
     hostToken: string,
   ): Promise<string> {
+    await this.ready();
     const token = randomBytes(32).toString("base64url");
     const { issuedAt, expiresAt } = this.processLifetime();
     this.catalogTokenIndex.set(digest(token), {
@@ -899,6 +924,7 @@ export class ThreadTokenStore {
     token: string | null,
     provider?: ThreadRoute["provider"],
   ): Promise<ThreadRoute | null> {
+    await this.ready();
     const match = lookup(this.tokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     if (this.deletionRecordsUnloaded) return null;
@@ -927,6 +953,7 @@ export class ThreadTokenStore {
     token: string | null,
     provider: ThreadRoute["provider"],
   ): Promise<string | null> {
+    await this.ready();
     if (token === null) return null;
     const tokenDigest = digest(token);
     const record = this.catalogTokenIndex.get(tokenDigest);
@@ -959,6 +986,7 @@ export class ThreadTokenStore {
   }
 
   async authenticateNested(token: string | null): Promise<NestedRoute | null> {
+    await this.ready();
     const match = lookup(this.nestedTokenIndex, token);
     if (match === null || this.credentialExpired(match)) return null;
     if (this.deletionRecordsUnloaded) return null;
@@ -978,12 +1006,14 @@ export class ThreadTokenStore {
   }
 
   async authenticateThreadProof(token: string | null): Promise<string | null> {
+    await this.ready();
     const route =
       (await this.authenticate(token)) ?? (await this.authenticateNested(token));
     return route?.threadId ?? null;
   }
 
   async removeThread(threadId: string): Promise<void> {
+    await this.ready();
     this.commitArchiveState(
       threadId,
       () => {
@@ -1209,6 +1239,7 @@ export class ThreadTokenStore {
   }
 
   async suspendThread(threadId: string): Promise<void> {
+    await this.ready();
     this.commitArchiveState(
       threadId,
       () => {
@@ -1282,6 +1313,7 @@ export class ThreadTokenStore {
     lookup: ThreadLookup,
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
+    await this.ready();
     await this.retryDeletionRecords();
     const routed = new Set<string>();
     for (const record of this.routes.values()) routed.add(record.threadId);
@@ -1470,6 +1502,7 @@ export class ThreadTokenStore {
     threadId: string,
     expectedVersion: number,
   ): Promise<boolean> {
+    await this.ready();
     if (this.archiveVersion(threadId) !== expectedVersion) return false;
     await this.removeThread(threadId);
     return true;
@@ -1479,6 +1512,7 @@ export class ThreadTokenStore {
     threadId: string,
     expectedVersion: number,
   ): Promise<boolean> {
+    await this.ready();
     if (this.archiveVersion(threadId) !== expectedVersion) return false;
     await this.suspendThread(threadId);
     return true;
@@ -1489,10 +1523,12 @@ export class ThreadTokenStore {
   }
 
   async unarchiveThread(threadId: string): Promise<boolean> {
+    await this.ready();
     return (await this.settle(threadId, true)) !== null;
   }
 
   async settleThread(threadId: string): Promise<boolean> {
+    await this.ready();
     return (await this.settle(threadId)) !== null;
   }
 
@@ -1518,6 +1554,7 @@ export class ThreadTokenStore {
     expectedVersion: number,
     unarchived = false,
   ): Promise<number | null> {
+    await this.ready();
     return this.serialize(async () => {
       const current = () =>
         !this.isDeleted(threadId) &&

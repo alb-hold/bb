@@ -201,6 +201,7 @@ export class ActorRouteIssuer {
   }
 
   async list(): Promise<Array<ActorRouteListing & { lastRoutedAt: number | null }>> {
+    await this.deps.threadTokens.whenReady();
     return Promise.all(
       this.deps.threadTokens.listActors().map(async (route) => ({
         ...route,
