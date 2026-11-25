@@ -2250,6 +2250,29 @@ describe("Antigravity companion project for consumer accounts", () => {
       expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
     });
 
+    it("changes neither the endpoint, the tier, the project nor the quota when the reading does not validate after the load reports a new endpoint and tier", async () => {
+      const { stores, account, staleDisplay, seeded, storedProject } = await seededForRollback();
+      const changed = {
+        ...LIVE_AGY_DAILY,
+        paidTier: { id: "g1-ultra-tier", usesGcpTos: true },
+      };
+      const google = fakeCodeAssist({ loads: [changed], quota: ONE_WINDOW });
+      const setEndpoint = vi.spyOn(stores.accounts, "setGeminiEndpoint");
+      const setTier = vi.spyOn(stores.accounts, "setSubscriptionType");
+      await expect(
+        google.adapter.refreshUsage(usageContext(stores, account, google.fetch, () => NOW + 60_000.5)),
+      ).rejects.toBeDefined();
+      expect(setEndpoint).not.toHaveBeenCalled();
+      expect(setTier).not.toHaveBeenCalled();
+      const stored = await stores.accounts.get(account.id);
+      expect(stored?.geminiEndpoint).toBe(account.geminiEndpoint);
+      expect(stored?.subscriptionType).toBe(account.subscriptionType);
+      expect(stored?.geminiProject).toBe(storedProject);
+      const kept = stores.quotas.get(account.id);
+      expect({ ...kept, error: null }).toEqual({ ...seeded, error: null });
+      expect(stores.quotas.modelWeekly(account.id)).toEqual(staleDisplay);
+    });
+
     it("records a blocking commit error when the restore fails too, and the next successful commit clears it", async () => {
       const { stores, account, google, staleDisplay, seeded, storedProject } = await seededForRollback();
       const original = stores.accounts.setGeminiProject.bind(stores.accounts);
