@@ -462,7 +462,7 @@ describe("Gemini usage refresh results", () => {
     },
   );
 
-  it("recovers on the next scheduled refresh after a stored quota read failure, so the account is not stuck in error", async () => {
+  it("recovers on the next scheduled refresh after a stored quota read failure, and the account stays eligible throughout", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
     setStaleUsage(pool);
@@ -472,7 +472,7 @@ describe("Gemini usage refresh results", () => {
     expect((await pool.summary()).error).toBe(
       `${QUOTA_READ_PREFIX}Usage refresh returned unreadable data.`,
     );
-    expect(await pool.eligible()).toBe(false);
+    expect(await pool.eligible()).toBe(true);
 
     pool.advance(5 * MINUTE + 1_000);
     pool.setQuotaMode("normal");
@@ -484,7 +484,7 @@ describe("Gemini usage refresh results", () => {
     expect(await pool.eligible()).toBe(true);
   });
 
-  it("reports one endpoint empty and the other failed as a failed refresh that records its error and keeps the cached reading", async () => {
+  it("reports one endpoint empty and the other failed as a failed refresh that records its error, keeps the cached reading and leaves eligibility unchanged", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
     const observedAt = setStaleUsage(pool);
@@ -497,10 +497,10 @@ describe("Gemini usage refresh results", () => {
     expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
     expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(0.54);
     expect(pool.quotas.get(pool.account.id).error).toMatch(QUOTA_READ_ERROR);
-    expect(await pool.eligible()).toBe(false);
+    expect(await pool.eligible()).toBe(true);
   });
 
-  it("reports an empty read from a later candidate after a mixed failure on an earlier one as a failed refresh that records its error and keeps the cached reading", async () => {
+  it("reports an empty read from a later candidate after a mixed failure on an earlier one as a failed refresh that records its error, keeps the cached reading and leaves eligibility unchanged", async () => {
     const pool = await createGeminiPool(0);
     await pool.settled();
     const observedAt = setStaleUsage(pool);
@@ -513,7 +513,7 @@ describe("Gemini usage refresh results", () => {
     expect(pool.quotas.get(pool.account.id).observedAt).toBe(observedAt);
     expect(pool.quotas.get(pool.account.id).limitWindows[0]?.utilization).toBe(0.54);
     expect(pool.quotas.get(pool.account.id).error).toMatch(QUOTA_READ_ERROR);
-    expect(await pool.eligible()).toBe(false);
+    expect(await pool.eligible()).toBe(true);
   });
 
   it.each(["http", "unreadable", "missing", "unknown"] as const)(

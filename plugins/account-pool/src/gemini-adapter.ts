@@ -67,6 +67,10 @@ const GEMINI_USAGE_REFRESH_ERROR_PREFIX = "Gemini usage refresh stopped (";
 export const GEMINI_RUNTIME_REFRESH_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}runtime_version): `;
 export const GEMINI_QUOTA_READ_ERROR_PREFIX = `${GEMINI_USAGE_REFRESH_ERROR_PREFIX}quota_read): `;
 
+export function isGeminiQuotaReadError(error: string): boolean {
+  return error.startsWith(GEMINI_QUOTA_READ_ERROR_PREFIX);
+}
+
 export function isGeminiUsageRefreshError(error: string): boolean {
   return error.startsWith(GEMINI_USAGE_REFRESH_ERROR_PREFIX);
 }
@@ -1504,6 +1508,7 @@ export function createGeminiAdapter(options: {
       return { secret: refreshed, refreshed: true };
     },
     isTransientUsageError: isGeminiUsageRefreshError,
+    isNonBlockingUsageError: isGeminiQuotaReadError,
     async refreshUsage(context) {
       context.signal?.throwIfAborted();
       const agent = await userAgent().catch((error: unknown) => {

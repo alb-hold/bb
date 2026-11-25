@@ -1249,8 +1249,8 @@ export class AccountPoolHub {
         quota: this.options.quotas.get(account.id),
       }))
       .filter(
-        ({ quota }) =>
-          quota.error === null &&
+        ({ account, quota }) =>
+          !this.usageErrorBlocks(account.provider, quota.error) &&
           !isUsageRestricted(quota, now) &&
           (!isQuotaExhausted(quota, null, now) ||
             hasExtraUsage(quota)),
@@ -1893,7 +1893,9 @@ export class AccountPoolHub {
         };
       })
       .filter(
-        ({ quota }) => quota.error === null && !isUsageRestricted(quota, now),
+        ({ account, quota }) =>
+          !this.usageErrorBlocks(account.provider, quota.error) &&
+          !isUsageRestricted(quota, now),
       )
       .filter(
         ({ quota }) =>
@@ -2177,7 +2179,11 @@ export class AccountPoolHub {
                   )
                 : null;
             const error = this.options.quotas.get(account.id).error;
-            if (error !== null && !recover) throw new Error(error);
+            if (
+              !recover &&
+              this.usageErrorBlocks(account.provider, error)
+            )
+              throw new Error(error);
             if (rejection?.sameToken && !recover && secret.kind === "oauth") {
               if (
                 !forceRefresh &&
@@ -2540,7 +2546,7 @@ export class AccountPoolHub {
     let unknown = false;
     for (const account of enabled) {
       const quota = this.options.quotas.get(account.id);
-      if (quota.error !== null) continue;
+      if (this.usageErrorBlocks(account.provider, quota.error)) continue;
       if (isUsageRestricted(quota, now)) {
         unknown = true;
         continue;
@@ -2624,6 +2630,16 @@ export class AccountPoolHub {
   private releasePacing(accountId: string, pacing: PacingFlight): void {
     if (this.pacingByAccount.get(accountId) === pacing)
       this.pacingByAccount.delete(accountId);
+  }
+
+  private usageErrorBlocks(
+    provider: PoolProvider,
+    error: string | null,
+  ): error is string {
+    return (
+      error !== null &&
+      this.adapter(provider).isNonBlockingUsageError?.(error) !== true
+    );
   }
 
   private adapter(provider: PoolProvider): ProviderAdapter {

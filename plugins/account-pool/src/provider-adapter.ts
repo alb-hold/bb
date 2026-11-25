@@ -156,6 +156,7 @@ export interface ProviderAdapter {
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
   refreshUsage(context: AdapterUsageContext): Promise<void>;
   isTransientUsageError?(error: string): boolean;
+  isNonBlockingUsageError?(error: string): boolean;
   refreshProfile?(context: AdapterUsageContext): Promise<void>;
   errorResponse(
     status: number,
