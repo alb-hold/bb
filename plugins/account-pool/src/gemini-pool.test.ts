@@ -2629,6 +2629,20 @@ describe("Gemini account pool", () => {
       ).toEqual([]);
     });
 
+    it("logs an early end when the final data line is never terminated by a blank line", async () => {
+      const entries = await relay([
+        'data: {"candidates":[{"finishReason":"STOP"}]}\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("does not log when a terminated bare finishReason event completes the stream", async () => {
+      expect(
+        await relay(['data: {"candidates":[{"finishReason":"STOP"}]}\n\n']),
+      ).toEqual([]);
+    });
+
     it("logs an early end when the stream is cut inside the final event", async () => {
       const entries = await relay([
         'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\ndata: {"response":{"candidates":[{"finishReason":"ST',

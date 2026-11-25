@@ -2432,10 +2432,6 @@ export class AccountPoolHub {
           const chunk = await reader.read();
           if (chunk.done) {
             if (eventStream && markers !== undefined) {
-              if (markers.isFinalData !== undefined) {
-                if (pendingLine !== "") readLine(pendingLine);
-                if (dataLines.length > 0) endEvent();
-              }
               if (!finalSeen) reportCut("ended-early", undefined, false);
             }
             finished = true;
