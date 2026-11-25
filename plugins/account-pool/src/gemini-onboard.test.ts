@@ -1460,6 +1460,49 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect(load?.body).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
   });
 
+  it("prefers the other endpoint's companion over a non-consumer token project", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      loadsByBase: {
+        daily: [NO_PROJECT_DAILY],
+        prod: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],
+      },
+      quotaByProject: {
+        "proj-companion": ONE_WINDOW,
+        "proj-token": { buckets: [bucket("gemini-4-neon", 0.9)] },
+      },
+    });
+    const { quota } = await refreshed(google, {
+      ...pooledLiveAccount(),
+      geminiProject: "proj-token",
+    });
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(quota.limitWindows[0]?.utilization).toBeCloseTo(0.5);
+    expect(
+      new Set(
+        google.calls
+          .filter((call) => call.method === "retrieveUserQuotaSummary")
+          .map((call) => call.body?.project),
+      ),
+    ).toEqual(new Set(["proj-companion"]));
+  });
+
+  it("tries quota with no project and keeps its buckets when no project is stored and no endpoint returns a companion", async () => {
+    const google = fakeCodeAssist({
+      loads: [NO_PROJECT_DAILY],
+      quotaByProject: { "": ONE_WINDOW },
+    });
+    const { geminiProject: _stored, ...withoutProject } = pooledLiveAccount();
+    const { quota } = await refreshed(google, withoutProject);
+    expect(quota.error).toBeNull();
+    expect(quota.limitWindows).toHaveLength(1);
+    expect(
+      google.calls
+        .filter((call) => call.method === "retrieveUserQuotaSummary")
+        .every((call) => call.body?.project === undefined),
+    ).toBe(true);
+  });
+
   it("falls back from the companion project to the token project, then to none", async () => {
     const google = fakeCodeAssist({
       loads: [{ ...LIVE_AGY_DAILY, cloudaicompanionProject: "proj-companion" }],

@@ -397,7 +397,6 @@ export function geminiWindowsFromQuota(
 }
 
 const THIRD_PARTY_QUOTA = /(?:^|[^a-z0-9])3p(?:[^a-z0-9]|$)|claude|gpt/iu;
-const CONSUMER_PROJECT = "aicode-consumers";
 
 export const THIRD_PARTY_QUOTA_LABELS: Record<GeminiQuotaWindow, string> = {
   "5h": "Claude and GPT models · 5 hour",
@@ -1460,9 +1459,8 @@ export function createGeminiAdapter(options: {
       );
       if (info === null) throw new Error("Usage refresh returned unreadable data.");
       const stored = context.account.geminiProject ?? null;
-      const needsCompanion = stored === null || stored === CONSUMER_PROJECT;
       let companion = info.project;
-      if (companion === null && needsCompanion) {
+      if (companion === null) {
         const otherBase =
           baseFor(context.account) === bases.daily ? bases.prod : bases.daily;
         companion = await codeAssistCall(
@@ -1478,18 +1476,9 @@ export function createGeminiAdapter(options: {
           .catch(() => null);
         context.signal?.throwIfAborted();
       }
-      const project = companion ?? stored;
-      if (project === null)
-        throw new Error("This Gemini account has no Code Assist project.");
       const candidates: Array<string | null> = [
-        ...new Set([project, ...(needsCompanion ? [stored, null] : [])]),
+        ...new Set([companion, stored, null]),
       ];
-      if (project !== context.account.geminiProject)
-        await context.accounts.setGeminiProject(
-          context.account.id,
-          project,
-          context.signal,
-        );
       if (info.endpoint !== context.account.geminiEndpoint)
         await context.accounts.setGeminiEndpoint(
           context.account.id,
@@ -1504,6 +1493,7 @@ export function createGeminiAdapter(options: {
         );
       let quotaSummary: unknown = null;
       let quotaFailure: unknown = null;
+      let quotaProject: string | null = null;
       for (const candidate of candidates) {
         const settled = await Promise.allSettled(
           [...new Set([bases.daily, bases.prod])].map((base) =>
@@ -1530,8 +1520,17 @@ export function createGeminiAdapter(options: {
         );
         if (merged === null) continue;
         quotaSummary = merged;
-        if (geminiQuotaBuckets(merged)?.length) break;
+        if (geminiQuotaBuckets(merged)?.length) {
+          quotaProject = candidate;
+          break;
+        }
       }
+      if (quotaProject !== null && quotaProject !== context.account.geminiProject)
+        await context.accounts.setGeminiProject(
+          context.account.id,
+          quotaProject,
+          context.signal,
+        );
       if (quotaSummary === null) {
         if (quotaFailure !== null) throw quotaFailure;
         throw new Error("Usage refresh returned unreadable data.");
