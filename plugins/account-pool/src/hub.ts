@@ -2381,6 +2381,7 @@ export class AccountPoolHub {
     let events = 0;
     let finalSeen = false;
     let pendingLine = "";
+    let skipLeadingLineFeed = false;
     let eventName = "";
     let dataLines: string[] = [];
     let finished = false;
@@ -2450,8 +2451,13 @@ export class AccountPoolHub {
           } else {
             bytes += chunk.value.byteLength;
             if (eventStream && markers !== undefined) {
-              const text = decoder.decode(chunk.value, { stream: true });
-              const lines = (pendingLine + text).split("\n");
+              let text = decoder.decode(chunk.value, { stream: true });
+              if (skipLeadingLineFeed && text !== "") {
+                if (text.startsWith("\n")) text = text.slice(1);
+                skipLeadingLineFeed = false;
+              }
+              if (text.endsWith("\r")) skipLeadingLineFeed = true;
+              const lines = (pendingLine + text).split(/\r\n|\r|\n/u);
               pendingLine = (lines.pop() ?? "").slice(0, MAX_PENDING_LINE);
               for (const line of lines) readLine(line);
             }

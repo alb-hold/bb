@@ -2688,6 +2688,27 @@ describe("Gemini account pool", () => {
       ).toEqual([]);
     });
 
+    it("does not log when a CR-only stream ends its last event with two carriage returns", async () => {
+      expect(
+        await relay(['data: {"candidates":[{"finishReason":"STOP"}]}\r\r']),
+      ).toEqual([]);
+    });
+
+    it("does not log when a CRLF pair is split across chunks after the final event", async () => {
+      expect(
+        await relay([
+          'data: {"candidates":[{"finishReason":"STOP"}]}\r\n\r',
+          "\n",
+        ]),
+      ).toEqual([]);
+    });
+
+    it("logs an early end when a CR-only stream has no finishReason", async () => {
+      const entries = await relay(['data: {"candidates":[{}]}\r\r']);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
     it("logs an early end when the final data line is never terminated by a blank line", async () => {
       const entries = await relay([
         'data: {"candidates":[{"finishReason":"STOP"}]}\n',
