@@ -1,15 +1,18 @@
+import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
 interface ResolveNonSymlinkDirectoryPathArgs {
   description: string;
   path: string;
+  lstat?: (target: string) => Promise<Stats>;
+  realpath?: (target: string) => Promise<string>;
 }
 
 export async function resolveNonSymlinkDirectoryPath(
   args: ResolveNonSymlinkDirectoryPathArgs,
 ): Promise<string> {
-  const rootStat = await fs.lstat(args.path);
+  const rootStat = await (args.lstat ?? fs.lstat)(args.path);
   if (rootStat.isSymbolicLink()) {
     throw new CommandDispatchError(
       "invalid_path",
@@ -23,5 +26,5 @@ export async function resolveNonSymlinkDirectoryPath(
     );
   }
 
-  return fs.realpath(args.path);
+  return (args.realpath ?? fs.realpath)(args.path);
 }

@@ -6,6 +6,7 @@ import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
 import { isPathWithinDirectory } from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 import type { CommandOf } from "../command-dispatch-support.js";
+import { boundedLstat, boundedRealpath } from "./bounded-fs.js";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 import { resolveWriteTarget } from "./file-write.js";
@@ -29,6 +30,8 @@ async function requireRoot(
   return resolveNonSymlinkDirectoryPath({
     description: "Root path",
     path: rootPath,
+    lstat: boundedLstat,
+    realpath: boundedRealpath,
   });
 }
 
@@ -55,7 +58,7 @@ async function requireExistingWithin(
   rootPath: string | undefined,
 ): Promise<{ target: string; root: string | null }> {
   assertAbsolute(targetPath, "Path");
-  const targetInfo = await fs.lstat(targetPath);
+  const targetInfo = await boundedLstat(targetPath);
   if (targetInfo.isSymbolicLink()) {
     throw new CommandDispatchError(
       "invalid_path",
@@ -63,7 +66,7 @@ async function requireExistingWithin(
     );
   }
   const [target, root] = await Promise.all([
-    fs.realpath(targetPath),
+    boundedRealpath(targetPath),
     requireRoot(rootPath),
   ]);
   refuseAlias(targetPath, target);
@@ -294,7 +297,7 @@ export async function removeHostPath(
       "Cannot remove the declared root",
     );
   }
-  const targetInfo = await fs.lstat(target);
+  const targetInfo = await boundedLstat(target);
   if (targetInfo.isDirectory()) {
     await removeDirectoryAfterHolderRecheck({
       directory: target,
