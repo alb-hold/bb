@@ -274,6 +274,31 @@ describe("experimental_thread.route", () => {
     });
   });
 
+  it("never logs the text of a plugin host invocation failure", async () => {
+    await withTestHarness(async (harness) => {
+      const { request } = await seedCreateTarget(harness);
+      const title = "Patient Jane Doe needs a refill";
+      setPluginHookProvider({
+        listHooks: (hook) =>
+          hook === "experimental_thread.route"
+            ? [{ pluginId: "route-test", handler: () => null }]
+            : [],
+        invokeHook: async () => ({ ok: false, error: title }),
+        decisionTimeoutMs: 10_000,
+      });
+      const info = vi.spyOn(harness.deps.logger, "info");
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const thread = await createThreadFromRequest(harness.deps, {
+        ...request,
+        title,
+      });
+      expect(thread.providerId).toBe("codex");
+      const lines = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
+      expect(lines).not.toContain(title);
+      expect(lines).toContain("host_error");
+    });
+  });
+
   it("logs a benign reason", async () => {
     await withTestHarness(async (harness) => {
       const { request } = await seedCreateTarget(harness);
