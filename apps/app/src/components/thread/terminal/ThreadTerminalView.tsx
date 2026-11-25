@@ -1538,7 +1538,9 @@ export function ThreadTerminalView({
     return handlers;
   }, []);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
-  const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
+  const handleFileDropRef = useRef<
+    ((files: ArrayLike<File>) => void) | null
+  >(null);
   const onSessionChangeRef = useRef<
     ((session: TerminalSession) => void) | undefined
   >(onSessionChange);
@@ -4139,6 +4141,13 @@ export function ThreadTerminalView({
           }
         },
         onFilesDrop: (files) => handleFileDropRef.current?.(files),
+        onFilesPaste: (files) => {
+          if (window.bbDesktop?.stageDroppedFile === undefined) return false;
+          const handleFiles = handleFileDropRef.current;
+          if (handleFiles === null) return false;
+          handleFiles(files);
+          return true;
+        },
       });
       lifecycle.terminalKeyDisposable = activeTerminal.onKey(() => {
         if (!lifecycle.terminalInputClaimed) {

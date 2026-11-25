@@ -61,7 +61,10 @@ import {
 } from "@bb/server-contract";
 import { z } from "zod";
 import { registerDesktopClipboardIpc } from "./desktop-clipboard.js";
-import { registerDroppedFileStagingIpc } from "./dropped-file-staging.js";
+import {
+  pruneDroppedFiles,
+  registerDroppedFileStagingIpc,
+} from "./dropped-file-staging.js";
 import { registerDesktopAttentionIpc } from "./desktop-attention.js";
 import { registerDesktopWindowFocusIpc } from "./desktop-window-focus.js";
 import {
@@ -3145,6 +3148,7 @@ async function runDesktopApp(): Promise<void> {
   });
   const userDataPath = app.getPath("userData");
   desktopUserDataPath = userDataPath;
+  void pruneDroppedFiles({ rootDir: join(userDataPath, "dropped-files") });
 
   assertPathExists({ label: "bb-app bridge", path: bridgePath });
   assertPathExists({
