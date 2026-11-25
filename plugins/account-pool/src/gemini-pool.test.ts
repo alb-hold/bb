@@ -2588,6 +2588,56 @@ describe("Gemini account pool", () => {
     expect(binding).toMatchObject({ nextAccountId: ids.b });
   });
 
+  describe("stream end detection", () => {
+    const relay = async (sse: string[]) => {
+      const { fixture, post } = await twoAccounts(() => ({
+        status: 200,
+        body: OK_BODY,
+        sse,
+      }));
+      const response = await post("s-end");
+      expect(response.status).toBe(200);
+      await response.text();
+      return fixture.host.harness.inspection.logEntries.filter(({ message }) =>
+        message.startsWith("Account Pooler gemini stream"),
+      );
+    };
+
+    it("logs an early end when a part's function arguments merely contain a finishReason key", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{"finishReason":"STOP"}}}]}}]}}\r\n\r\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("logs an early end when no event carries a finishReason", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\n',
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"FINISH_REASON_UNSPECIFIED"}]}}\r\n\r\n',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+
+    it("does not log when the final event arrives split across chunks", async () => {
+      expect(
+        await relay([
+          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\ndata: {"response":{"candidates":[{"fini',
+          'shReason":"STOP"}]}}\r\n\r\n',
+        ]),
+      ).toEqual([]);
+    });
+
+    it("logs an early end when the stream is cut inside the final event", async () => {
+      const entries = await relay([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}}\r\n\r\ndata: {"response":{"candidates":[{"finishReason":"ST',
+      ]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toContain("stream ended-early");
+    });
+  });
+
   it("returns the last Google error when every account is out", async () => {
     const { post } = await twoAccounts(() => ({ status: 429, body: QUOTA_BODY }));
     const response = await post();

@@ -235,16 +235,37 @@ export interface StreamCut {
 
 interface FinalMarkers {
   events: readonly string[];
-  data: readonly string[];
+  isFinalData?: (payload: unknown) => boolean;
+}
+
+const MAX_PENDING_LINE = 4 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function geminiCandidates(payload: unknown): unknown[] {
+  if (!isRecord(payload)) return [];
+  const body = isRecord(payload.response) ? payload.response : payload;
+  return Array.isArray(body.candidates) ? body.candidates : [];
+}
+
+function isGeminiFinalEvent(payload: unknown): boolean {
+  return geminiCandidates(payload).some(
+    (candidate) =>
+      isRecord(candidate) &&
+      typeof candidate.finishReason === "string" &&
+      candidate.finishReason !== "" &&
+      candidate.finishReason !== "FINISH_REASON_UNSPECIFIED",
+  );
 }
 
 const FINAL_EVENT_MARKERS: Partial<Record<PoolProvider, FinalMarkers>> = {
-  claude: { events: ["message_stop"], data: [] },
+  claude: { events: ["message_stop"] },
   codex: {
     events: ["response.completed", "response.failed", "response.incomplete"],
-    data: [],
   },
-  gemini: { events: [], data: ['"finishReason"'] },
+  gemini: { events: [], isFinalData: isGeminiFinalEvent },
 };
 
 interface RefreshBackoff {
@@ -2351,8 +2372,30 @@ export class AccountPoolHub {
     let finalSeen = false;
     let pendingLine = "";
     let eventName = "";
-    let dataTail = "";
+    let dataLines: string[] = [];
     let finished = false;
+    const endEvent = () => {
+      events += 1;
+      if (markers?.events.includes(eventName)) finalSeen = true;
+      if (markers?.isFinalData !== undefined && dataLines.length > 0) {
+        try {
+          if (markers.isFinalData(JSON.parse(dataLines.join("\n"))))
+            finalSeen = true;
+        } catch {
+          dataLines = [];
+        }
+      }
+      eventName = "";
+      dataLines = [];
+    };
+    const readLine = (line: string) => {
+      const field = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (field === "") endEvent();
+      else if (field.startsWith("event:"))
+        eventName = field.slice("event:".length).trim();
+      else if (field.startsWith("data:"))
+        dataLines.push(field.slice("data:".length).replace(/^ /u, ""));
+    };
     const reportCut = (
       kind: StreamCut["kind"],
       error: unknown,
@@ -2388,8 +2431,13 @@ export class AccountPoolHub {
         try {
           const chunk = await reader.read();
           if (chunk.done) {
-            if (eventStream && markers !== undefined && !finalSeen)
-              reportCut("ended-early", undefined, false);
+            if (eventStream && markers !== undefined) {
+              if (markers.isFinalData !== undefined) {
+                if (pendingLine !== "") readLine(pendingLine);
+                if (dataLines.length > 0) endEvent();
+              }
+              if (!finalSeen) reportCut("ended-early", undefined, false);
+            }
             finished = true;
             upstream.release();
             controller.close();
@@ -2397,25 +2445,9 @@ export class AccountPoolHub {
             bytes += chunk.value.byteLength;
             if (eventStream && markers !== undefined) {
               const text = decoder.decode(chunk.value, { stream: true });
-              if (markers.data.length > 0) {
-                const window = dataTail + text;
-                if (markers.data.some((marker) => window.includes(marker)))
-                  finalSeen = true;
-                dataTail = window.slice(
-                  -(Math.max(...markers.data.map((marker) => marker.length)) - 1),
-                );
-              }
               const lines = (pendingLine + text).split("\n");
-              pendingLine = (lines.pop() ?? "").slice(0, 256);
-              for (const line of lines) {
-                const field = line.endsWith("\r") ? line.slice(0, -1) : line;
-                if (field === "") {
-                  events += 1;
-                  if (markers.events.includes(eventName)) finalSeen = true;
-                  eventName = "";
-                } else if (field.startsWith("event:"))
-                  eventName = field.slice("event:".length).trim();
-              }
+              pendingLine = (lines.pop() ?? "").slice(0, MAX_PENDING_LINE);
+              for (const line of lines) readLine(line);
             }
             controller.enqueue(chunk.value);
           }
