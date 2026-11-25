@@ -1907,4 +1907,23 @@ describe("Antigravity companion project for consumer accounts", () => {
     expect((await stores.accounts.get(account.id))?.geminiProject).toBe("proj-own");
     expect(stores.quotas.get(account.id).limitWindows[0]?.utilization).toBeCloseTo(0.9);
   });
+
+  it("stores a changed tier on a refresh when the endpoint is unchanged, and leaves the endpoint alone", async () => {
+    const stores = await usageStores();
+    const account = await storedAccount(stores, "proj-live-agy");
+    expect(account.geminiEndpoint).toBe("daily");
+    expect(account.subscriptionType).toBe("g1-ultra-lite-tier");
+    const google = fakeCodeAssist({
+      loads: [{ ...LIVE_AGY_DAILY, paidTier: { id: "g1-ultra-tier" } }],
+      quota: ONE_WINDOW,
+    });
+    const setEndpoint = vi.spyOn(stores.accounts, "setGeminiEndpoint");
+    await google.adapter.refreshUsage(
+      usageContext(stores, account, google.fetch, () => NOW),
+    );
+    const stored = await stores.accounts.get(account.id);
+    expect(stored?.subscriptionType).toBe("g1-ultra-tier");
+    expect(stored?.geminiEndpoint).toBe("daily");
+    expect(setEndpoint).not.toHaveBeenCalled();
+  });
 });
