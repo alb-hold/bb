@@ -458,6 +458,41 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("keeps the closing callback when synchronized chunks are queued back to back", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const closing = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hpaint").toString("base64"),
+    );
+    state.pushBase64(
+      1,
+      Buffer.from("\u001b[?2026l").toString("base64"),
+      closing,
+    );
+    await state.snapshot();
+    expect(closing).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
+  it("keeps the opener callback when synchronized chunks are queued back to back", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const opening = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hpaint").toString("base64"),
+      opening,
+    );
+    state.pushBase64(
+      1,
+      Buffer.from("\u001b[?2026l").toString("base64"),
+      undefined,
+    );
+    await state.snapshot();
+    expect(opening).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
   it("does not report a synchronized frame while the update remains open", async () => {
     const state = new TerminalScreenState(40, 5);
     const rendered = vi.fn();
