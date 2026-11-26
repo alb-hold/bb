@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  createEmptyFixedPanelTabsState,
+  createNewTabFixedPanelTab,
+  createThreadInfoFixedPanelTab,
+  serializeFixedPanelTabsState,
+} from "@bb/client-core";
 import { readTerminalFontMetrics } from "./terminal-font";
 
 beforeEach(() => {
@@ -385,9 +391,7 @@ it("uses the tab sidebar state and normalizes persisted initial defaults", async
 });
 
 it("ignores panel recency updates but rejects a different panel open state", async () => {
-  const { createEmptyFixedPanelTabsState, serializeFixedPanelTabsState } =
-    await import("@bb/client-core");
-  const key = "bb.thread.fixedPanelTabsState-thread";
+    const key = "bb.thread.fixedPanelTabsState-thread";
   const state = createEmptyFixedPanelTabsState({ lastUsedAt: Date.now() });
   localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
   const cache = await import("./terminal-grid-cache");
@@ -416,12 +420,7 @@ it("ignores panel recency updates but rejects a different panel open state", asy
 it.each([false, true])(
   "misses before mount when a populated panel changes from open=%s",
   async (isOpen) => {
-    const {
-      createEmptyFixedPanelTabsState,
-      createThreadInfoFixedPanelTab,
-      serializeFixedPanelTabsState,
-    } = await import("@bb/client-core");
-    const tab = createThreadInfoFixedPanelTab();
+        const tab = createThreadInfoFixedPanelTab();
     const state = createEmptyFixedPanelTabsState({
       lastUsedAt: Date.now(),
       secondary: { tabs: [tab], activeTabId: tab.id, isOpen },
@@ -451,13 +450,7 @@ it.each([false, true])(
 it.each([false, true])(
   "ignores tab selection and order while a panel stays open=%s",
   async (isOpen) => {
-    const {
-      createEmptyFixedPanelTabsState,
-      createThreadInfoFixedPanelTab,
-      createNewTabFixedPanelTab,
-      serializeFixedPanelTabsState,
-    } = await import("@bb/client-core");
-    const tabs = [createThreadInfoFixedPanelTab(), createNewTabFixedPanelTab()];
+        const tabs = [createThreadInfoFixedPanelTab(), createNewTabFixedPanelTab()];
     const state = createEmptyFixedPanelTabsState({
       lastUsedAt: Date.now(),
       secondary: { tabs, activeTabId: tabs[0]!.id, isOpen },
