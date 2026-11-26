@@ -19,6 +19,7 @@ import {
 } from "../commands/thread/native.js";
 import {
   NativeHolderFrame,
+  claimNativeHolderLaunch,
   encodeNativeHolderFrame,
   nativeHolderPidMarkerPath,
   nativeHolderProcessIsAlive,
@@ -600,13 +601,18 @@ describe("native holder app fallback", () => {
     const liveMarkerContent = readFileSync(liveMarkerPath, "utf8");
     expect(liveMarkerContent.trim()).toBe(String(process.pid));
     expect(nativeHolderProcessIsAlive(socket)).toBe(true);
-    spawnNativeHolder("thr_abc", socket, deps, 1);
+    spawnNativeHolder("thr_abc", socket, deps, 1, "0123456789abcdef");
     expect(existsSync(liveMarkerPath)).toBe(true);
     expect(readFileSync(liveMarkerPath, "utf8")).toBe(liveMarkerContent);
     expect(nativeHolderProcessIsAlive(socket)).toBe(true);
     const openCall = ran.find((call) => call.command === "/usr/bin/open");
     expect(openCall?.args).toEqual(
-      expect.arrayContaining(["--marker-generation", "1"]),
+      expect.arrayContaining([
+        "--marker-generation",
+        "1",
+        "--marker-token",
+        "0123456789abcdef",
+      ]),
     );
 
     const pendingSocket = socketIn();
@@ -651,15 +657,23 @@ describe("native holder app fallback", () => {
           genIndex >= 0
             ? Number.parseInt(args[genIndex + 1] ?? "", 10)
             : undefined;
-        writeNativeHolderPidMarker(staleSocket, process.pid, gen);
+        const tokenIndex = args.indexOf("--marker-token");
+        const token = tokenIndex >= 0 ? args[tokenIndex + 1] : undefined;
+        writeNativeHolderPidMarker(staleSocket, process.pid, gen, token);
         holder = startOwnedHolder(staleSocket, counters);
       },
     };
     const connection = await openNativeHolderConnection({
       socketPath: staleSocket,
       reattachOnly: false,
-      startHolder: (markerGeneration) => {
-        spawnNativeHolder("thr_abc", staleSocket, staleDeps, markerGeneration);
+      startHolder: (markerGeneration, markerToken) => {
+        spawnNativeHolder(
+          "thr_abc",
+          staleSocket,
+          staleDeps,
+          markerGeneration,
+          markerToken,
+        );
       },
       holderHasStarted: () => nativeHolderProcessIsAlive(staleSocket),
       startTimeoutMs: 6_000,
@@ -704,5 +718,74 @@ describe("native holder app fallback", () => {
       else process.env.BB_NATIVE_HOLD_ENV_FILE = previous;
     }
     expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+  });
+
+  it("forwards marker generation and token to fallback and aborts holdNativeHarness before touching files when a marker claim fails", async () => {
+    const fallbackSocket = socketIn();
+    const fallbackEnv = path.join(path.dirname(fallbackSocket), "app.env");
+    writeFileSync(fallbackEnv, "{}", { mode: 0o600 });
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      startNativeHolderFallback(
+        "thr_abc",
+        fallbackSocket,
+        fallbackEnv,
+        2,
+        "fedcba9876543210",
+      );
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.args).toEqual(
+      expect.arrayContaining([
+        "--marker-generation",
+        "2",
+        "--marker-token",
+        "fedcba9876543210",
+      ]),
+    );
+
+    const socket = socketIn();
+    const claim = claimNativeHolderLaunch(socket);
+    expect(claim.claimed).toBe(true);
+    const generation = claim.generation ?? 1;
+    const token = claim.token ?? "";
+    const envFile = path.join(path.dirname(socket), "protected.env");
+    writeFileSync(envFile, JSON.stringify({ PLAIN: "1" }), { mode: 0o600 });
+    const previous = process.env.BB_NATIVE_HOLD_ENV_FILE;
+    process.env.BB_NATIVE_HOLD_ENV_FILE = envFile;
+    try {
+      await expect(
+        holdNativeHarness("http://127.0.0.1:1", "thr_abc", socket, {
+          markerGeneration: generation,
+          markerToken: "deadbeefdeadbeef",
+        }),
+      ).resolves.toBe(1);
+      expect(existsSync(envFile)).toBe(true);
+      expect(existsSync(socket)).toBe(false);
+      expect(existsSync(socket.replace(/\.sock$/u, ".log"))).toBe(false);
+
+      expect(
+        writeNativeHolderPidMarker(socket, process.ppid, generation, token),
+      ).toBe(generation);
+      await expect(
+        holdNativeHarness("http://127.0.0.1:1", "thr_abc", socket, {
+          markerGeneration: generation,
+          markerToken: token,
+        }),
+      ).resolves.toBe(1);
+      expect(existsSync(envFile)).toBe(true);
+      expect(existsSync(socket)).toBe(false);
+      expect(readFileSync(nativeHolderPidMarkerPath(socket), "utf8").trim()).toBe(
+        String(process.ppid),
+      );
+    } finally {
+      claim.release();
+      if (previous === undefined) delete process.env.BB_NATIVE_HOLD_ENV_FILE;
+      else process.env.BB_NATIVE_HOLD_ENV_FILE = previous;
+    }
   });
 });

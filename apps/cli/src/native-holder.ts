@@ -387,6 +387,9 @@ function writeFrame(
 export async function runNativeHolder(
   options: RunNativeHolderOptions,
 ): Promise<number> {
+  if (options.holderMarkerGeneration === null) {
+    return 1;
+  }
   mkdirSync(path.dirname(options.socketPath), { recursive: true, mode: 0o700 });
   const holderPid = options.holderPid ?? process.pid;
   const ownedMarkerGeneration =
@@ -690,6 +693,13 @@ export async function runNativeHolder(
     if (mainSocketIdentity !== null) {
       removeSocketFile(options.socketPath, mainSocketIdentity);
     }
+    if (ownedMarkerGeneration !== null) {
+      closeGenerationMarkerForHolder(
+        options.socketPath,
+        ownedMarkerGeneration,
+        holderPid,
+      );
+    }
     statusServer.close();
     if (statusSocketIdentity !== null) {
       removeSocketFile(statusSocketPath, statusSocketIdentity);
@@ -821,6 +831,20 @@ function nativeHolderPidMarkerGenerationPath(
   return `${nativeHolderPidMarkerPrefix(socketPath)}.${generation}`;
 }
 
+function nativeHolderPidMarkerHolderPath(
+  socketPath: string,
+  generation: number,
+): string {
+  return `${nativeHolderPidMarkerGenerationPath(socketPath, generation)}.holder`;
+}
+
+function nativeHolderPidMarkerClosedPath(
+  socketPath: string,
+  generation: number,
+): string {
+  return `${nativeHolderPidMarkerGenerationPath(socketPath, generation)}.closed`;
+}
+
 function listNativeHolderMarkerGenerations(socketPath: string): number[] {
   const dir = path.dirname(socketPath);
   const prefix = `${path.basename(nativeHolderPidMarkerPrefix(socketPath))}.`;
@@ -846,11 +870,13 @@ export function nativeHolderPidMarkerPath(
   socketPath: string,
   generation?: number,
 ): string {
-  if (generation !== undefined) {
-    return nativeHolderPidMarkerGenerationPath(socketPath, generation);
-  }
-  const highest = listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 1;
-  return nativeHolderPidMarkerGenerationPath(socketPath, highest);
+  const target =
+    generation ?? (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 1);
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, target);
+  if (existsSync(closedPath)) return closedPath;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, target);
+  if (existsSync(holderPath)) return holderPath;
+  return nativeHolderPidMarkerGenerationPath(socketPath, target);
 }
 
 function firstMarkerLine(raw: string): string {
@@ -875,7 +901,7 @@ function parseNativeHolderMarkerText(
   return null;
 }
 
-function readNativeHolderPidMarkerAt(
+function readNativeHolderSingleFileState(
   markerPath: string,
 ): NativeHolderPidMarkerState | { kind: "enoent" } {
   let raw: string;
@@ -903,6 +929,30 @@ function readNativeHolderPidMarkerAt(
   return { kind: "corrupt" };
 }
 
+function readNativeHolderGenerationState(
+  socketPath: string,
+  generation: number,
+): NativeHolderPidMarkerState | { kind: "enoent" } {
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+  for (;;) {
+    if (existsSync(closedPath)) {
+      return existsSync(basePath) ? { kind: "closed" } : { kind: "enoent" };
+    }
+    const holderState = readNativeHolderSingleFileState(holderPath);
+    if (holderState.kind !== "enoent") {
+      if (!existsSync(basePath)) return { kind: "enoent" };
+      if (existsSync(closedPath)) return { kind: "closed" };
+      return holderState;
+    }
+    const baseState = readNativeHolderSingleFileState(basePath);
+    if (baseState.kind === "enoent") return { kind: "enoent" };
+    if (existsSync(closedPath) || existsSync(holderPath)) continue;
+    return baseState;
+  }
+}
+
 function readHighestNativeHolderPidMarker(socketPath: string): {
   generation: number;
   state: NativeHolderPidMarkerState;
@@ -912,49 +962,9 @@ function readHighestNativeHolderPidMarker(socketPath: string): {
     if (highest === undefined) {
       return { generation: 0, state: { kind: "missing" } };
     }
-    const state = readNativeHolderPidMarkerAt(
-      nativeHolderPidMarkerGenerationPath(socketPath, highest),
-    );
+    const state = readNativeHolderGenerationState(socketPath, highest);
     if (state.kind === "enoent") continue;
     return { generation: highest, state };
-  }
-}
-
-function overwriteGenerationMarkerInPlace(
-  markerPath: string,
-  nextLine: string,
-  allowOverwrite: (currentRaw: string) => boolean,
-): "updated" | "missing" | "rejected" {
-  let fd: number;
-  try {
-    fd = openSync(markerPath, "r+");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
-    return "rejected";
-  }
-  try {
-    const existingSize = fstatSync(fd).size;
-    const currentRaw = readFileSync(fd, "utf8");
-    if (!allowOverwrite(currentRaw)) return "rejected";
-    const targetSize = Math.min(existingSize, 256);
-    const base = `${nextLine}\n`;
-    const padded =
-      Buffer.byteLength(base) < targetSize
-        ? `${nextLine}${" ".repeat(targetSize - Buffer.byteLength(base))}\n`
-        : base;
-    const record = Buffer.from(padded, "utf8");
-    let offset = 0;
-    while (offset < record.length) {
-      offset += writeSync(fd, record, offset, record.length - offset, offset);
-    }
-    if (existingSize > record.length) {
-      ftruncateSync(fd, record.length);
-    }
-    return "updated";
-  } catch {
-    return "rejected";
-  } finally {
-    closeSync(fd);
   }
 }
 
@@ -962,12 +972,37 @@ function pruneLowerMarkerGenerations(
   socketPath: string,
   keepGeneration: number,
 ): void {
-  for (const generation of listNativeHolderMarkerGenerations(socketPath)) {
-    if (generation >= keepGeneration) continue;
-    try {
-      unlinkSync(nativeHolderPidMarkerGenerationPath(socketPath, generation));
-    } catch {
-      continue;
+  const dir = path.dirname(socketPath);
+  const prefix = `${path.basename(nativeHolderPidMarkerPrefix(socketPath))}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const lowerGenerations = new Set<number>();
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const suffix = entry.slice(prefix.length);
+    const match = /^([1-9]\d*)(?:\.(?:holder|closed))?$/u.exec(suffix);
+    if (match === null) continue;
+    const generation = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isSafeInteger(generation) && generation < keepGeneration) {
+      lowerGenerations.add(generation);
+    }
+  }
+  const sorted = [...lowerGenerations].sort((a, b) => a - b);
+  for (const generation of sorted) {
+    for (const filePath of [
+      nativeHolderPidMarkerGenerationPath(socketPath, generation),
+      nativeHolderPidMarkerHolderPath(socketPath, generation),
+      nativeHolderPidMarkerClosedPath(socketPath, generation),
+    ]) {
+      try {
+        unlinkSync(filePath);
+      } catch {
+        continue;
+      }
     }
   }
 }
@@ -988,16 +1023,64 @@ function closeGenerationMarkerForHolder(
   generation: number,
   holderPid: number,
 ): void {
-  overwriteGenerationMarkerInPlace(
-    nativeHolderPidMarkerGenerationPath(socketPath, generation),
-    "closed",
-    (raw) => firstMarkerLine(raw) === String(holderPid),
+  if (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) > generation
+  ) {
+    return;
+  }
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  if (!existsSync(basePath)) return;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  const ownerPath = existsSync(holderPath) ? holderPath : basePath;
+  try {
+    const parsed = parseNativeHolderMarkerText(readFileSync(ownerPath, "utf8"));
+    if (
+      parsed === null ||
+      parsed.kind !== "holder" ||
+      parsed.pid !== holderPid
+    ) {
+      return;
+    }
+  } catch {
+    return;
+  }
+  tryCreateExclusiveFile(
+    nativeHolderPidMarkerClosedPath(socketPath, generation),
+    "closed\n",
   );
+}
+
+function canAdvanceToFallbackGeneration(
+  socketPath: string,
+  generation: number,
+): boolean {
+  if (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) > generation
+  ) {
+    return false;
+  }
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  if (!existsSync(basePath)) return false;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  if (tryCreateExclusiveFile(holderPath, "closed\n")) {
+    return true;
+  }
+  const state = readNativeHolderGenerationState(socketPath, generation);
+  if (state.kind === "enoent") return false;
+  if (
+    state.kind === "closed" ||
+    state.kind === "corrupt" ||
+    (state.kind === "holder" && !state.alive)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export interface NativeHolderLaunchClaim {
   claimed: boolean;
   generation: number | null;
+  token: string | null;
   release(): void;
 }
 
@@ -1014,7 +1097,31 @@ export function claimNativeHolderLaunch(
       state.kind === "pending" ||
       ((state.kind === "holder" || state.kind === "launch") && state.alive)
     ) {
-      return { claimed: false, generation: null, release: () => undefined };
+      return {
+        claimed: false,
+        generation: null,
+        token: null,
+        release: () => undefined,
+      };
+    }
+    if (generation > 0 && state.kind === "launch") {
+      const prevBasePath = nativeHolderPidMarkerGenerationPath(
+        socketPath,
+        generation,
+      );
+      const prevHolderPath = nativeHolderPidMarkerHolderPath(
+        socketPath,
+        generation,
+      );
+      if (!tryCreateExclusiveFile(prevHolderPath, "closed\n")) {
+        continue;
+      }
+      if (!existsSync(prevBasePath)) {
+        try {
+          unlinkSync(prevHolderPath);
+        } catch {}
+        continue;
+      }
     }
     const nextGeneration = generation + 1;
     const nextPath = nativeHolderPidMarkerGenerationPath(
@@ -1033,14 +1140,21 @@ export function claimNativeHolderLaunch(
       continue;
     }
     pruneLowerMarkerGenerations(socketPath, nextGeneration);
+    const holderPath = nativeHolderPidMarkerHolderPath(
+      socketPath,
+      nextGeneration,
+    );
     const release = (): void => {
-      overwriteGenerationMarkerInPlace(
-        nextPath,
-        "closed",
-        (raw) => firstMarkerLine(raw) === payload,
-      );
+      if (
+        (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) >
+        nextGeneration
+      ) {
+        return;
+      }
+      if (!existsSync(nextPath)) return;
+      tryCreateExclusiveFile(holderPath, "closed\n");
     };
-    return { claimed: true, generation: nextGeneration, release };
+    return { claimed: true, generation: nextGeneration, token, release };
   }
 }
 
@@ -1048,31 +1162,61 @@ export function writeNativeHolderPidMarker(
   socketPath: string,
   pid: number = process.pid,
   generation?: number,
+  token?: string,
 ): number | null {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   if (generation !== undefined) {
     const currentHighest =
       listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0;
-    if (currentHighest > generation) return null;
-    const markerPath = nativeHolderPidMarkerGenerationPath(
+    if (currentHighest !== generation) return null;
+    const basePath = nativeHolderPidMarkerGenerationPath(
       socketPath,
       generation,
     );
-    const result = overwriteGenerationMarkerInPlace(
-      markerPath,
-      String(pid),
-      (raw) => {
-        const parsed = parseNativeHolderMarkerText(raw);
-        if (parsed === null) return true;
-        if (parsed.kind === "closed") return false;
-        if (parsed.kind === "holder" && parsed.alive && parsed.pid !== pid) {
-          return false;
+    const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+    if (existsSync(closedPath)) return null;
+    let baseRaw: string;
+    try {
+      baseRaw = readFileSync(basePath, "utf8");
+    } catch {
+      return null;
+    }
+    const baseParsed = parseNativeHolderMarkerText(baseRaw);
+    if (baseParsed === null || baseParsed.kind !== "launch") return null;
+    if (token === undefined || baseParsed.token !== token) return null;
+    const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+    if (!tryCreateExclusiveFile(holderPath, `${pid}\n`)) {
+      try {
+        const existing = parseNativeHolderMarkerText(
+          readFileSync(holderPath, "utf8"),
+        );
+        if (
+          existing !== null &&
+          existing.kind === "holder" &&
+          existing.pid === pid &&
+          !existsSync(closedPath)
+        ) {
+          return generation;
         }
-        return true;
-      },
-    );
-    return result === "updated" ? generation : null;
+      } catch {
+        return null;
+      }
+      return null;
+    }
+    if (
+      (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) >
+        generation ||
+      !existsSync(basePath) ||
+      existsSync(closedPath)
+    ) {
+      try {
+        unlinkSync(holderPath);
+      } catch {}
+      return null;
+    }
+    return generation;
   }
+  if (token !== undefined) return null;
   for (;;) {
     const { generation: highest, state } =
       readHighestNativeHolderPidMarker(socketPath);
@@ -1082,23 +1226,14 @@ export function writeNativeHolderPidMarker(
         return state.pid === pid ? highest : null;
       }
       if (state.kind === "launch" && state.alive) {
-        const markerPath = nativeHolderPidMarkerGenerationPath(
+        if (state.pid !== pid) return null;
+        const claimed = writeNativeHolderPidMarker(
           socketPath,
+          pid,
           highest,
+          state.token,
         );
-        const result = overwriteGenerationMarkerInPlace(
-          markerPath,
-          String(pid),
-          (raw) => {
-            const parsed = parseNativeHolderMarkerText(raw);
-            return (
-              parsed !== null &&
-              ((parsed.kind === "launch" && parsed.alive) ||
-                (parsed.kind === "holder" && parsed.pid === pid))
-            );
-          },
-        );
-        if (result === "updated") return highest;
+        if (claimed !== null) return claimed;
         continue;
       }
     }
@@ -1152,8 +1287,8 @@ export type NativeHolderConnection =
 export async function openNativeHolderConnection(args: {
   socketPath: string;
   reattachOnly: boolean;
-  startHolder(markerGeneration: number): void;
-  startFallbackHolder?(markerGeneration: number): void;
+  startHolder(markerGeneration: number, markerToken: string): void;
+  startFallbackHolder?(markerGeneration: number, markerToken: string): void;
   holderHasStarted?(): boolean;
   onWaiting?(progress: NativeHolderWaitProgress): void;
   fallbackWindowMs?: number;
@@ -1173,7 +1308,7 @@ export async function openNativeHolderConnection(args: {
     });
   };
   const claim = claimNativeHolderLaunch(args.socketPath);
-  if (!claim.claimed || claim.generation === null) {
+  if (!claim.claimed || claim.generation === null || claim.token === null) {
     report();
     const joined = await waitForNativeHolder(
       args.socketPath,
@@ -1184,11 +1319,11 @@ export async function openNativeHolderConnection(args: {
       ? { kind: "did-not-start" }
       : { kind: "attached", socket: joined };
   }
-  const claimedGeneration = claim.generation;
+  let activeClaim = claim;
   try {
     const raced = await connectNativeHolder(args.socketPath);
     if (raced !== null) return { kind: "attached", socket: raced };
-    args.startHolder(claimedGeneration);
+    args.startHolder(claim.generation, claim.token);
     report();
     let remainingMs = args.startTimeoutMs - (Date.now() - beganAt);
     if (args.startFallbackHolder !== undefined) {
@@ -1204,7 +1339,23 @@ export async function openNativeHolderConnection(args: {
       if (early !== null) return { kind: "attached", socket: early };
       const late = await connectNativeHolder(args.socketPath);
       if (late !== null) return { kind: "attached", socket: late };
-      if (!holderHasStarted()) args.startFallbackHolder(claimedGeneration);
+      if (
+        !holderHasStarted() &&
+        canAdvanceToFallbackGeneration(args.socketPath, claim.generation)
+      ) {
+        const fallbackClaim = claimNativeHolderLaunch(args.socketPath);
+        if (
+          fallbackClaim.claimed &&
+          fallbackClaim.generation !== null &&
+          fallbackClaim.token !== null
+        ) {
+          activeClaim = fallbackClaim;
+          args.startFallbackHolder(
+            fallbackClaim.generation,
+            fallbackClaim.token,
+          );
+        }
+      }
       remainingMs = args.startTimeoutMs - (Date.now() - beganAt);
     }
     const started = await waitForNativeHolder(
@@ -1216,7 +1367,7 @@ export async function openNativeHolderConnection(args: {
       ? { kind: "did-not-start" }
       : { kind: "attached", socket: started };
   } finally {
-    claim.release();
+    activeClaim.release();
   }
 }
 
