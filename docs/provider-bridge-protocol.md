@@ -129,7 +129,7 @@ do `bb machine provider-cli status` and `bb updates`.
 
 Every handshake capability gates a request method, which is why the set holds
 no compaction fact: there is no compact request method. Compaction is a
-standalone builtin `/compact` prompt travelling the normal turn pipeline,
+standalone builtin `/compact` prompt traveling the normal turn pipeline,
 which each bridge maps to its provider's compaction command, and the
 affordance is gated solely by the declaration's `supportsManualCompaction`.
 
@@ -737,7 +737,7 @@ next listed model. The second redacts the raw recordings through
 `package-cells.mjs`, applies the normalizations each manifest notes, marks
 where the provider died in `provider-exit`, and replaces those cells under
 `recordings/scenarios`. Check that the new cell keeps every rule, and update
-`known-gaps.json` if the bridge's behaviour changed.
+`known-gaps.json` if the bridge's behavior changed.
 
 The recorder keeps each CLI's own config and state out of the user's real
 directories (`scripts/provider-recordings/isolate-agent-state.mjs`). Codex runs

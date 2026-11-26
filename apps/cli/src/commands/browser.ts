@@ -132,7 +132,7 @@ export function registerBrowserCommands(
   scoped(
     browser
       .command("create")
-      .description("Create a tab in the BB browser profile"),
+      .description("Create a tab in the bb browser profile"),
   )
     .option("--url <url>", "Initial HTTP(S) URL; defaults to about:blank")
     .option("--reveal", "Show the new native tab")
@@ -293,7 +293,7 @@ export function registerBrowserCommands(
     browser
       .command("import-cookies")
       .description(
-        "Copy signed-in cookies from an installed browser into the BB browser",
+        "Copy signed-in cookies from an installed browser into the bb browser",
       ),
   )
     .requiredOption(

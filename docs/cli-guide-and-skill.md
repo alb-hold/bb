@@ -7,7 +7,7 @@ copied from `bb pull-request show`. The host compares those displayed values
 with a fresh pull request read before starting `gh pr ready` or
 `gh pr merge`.
 
-`bb terminal attach <id> --report-timing` writes one JSON line to stderr after the first live nonblank frame finishes rendering on the server for this attachment. The record contains `terminalId`, the last rendered `seq`, epoch milliseconds `at`, and `provenance: "live"`. Timing requires a change to visible nonblank content in the server’s terminal model. Colour-palette-only changes are not counted. Replay, control-only writes that leave the screen unchanged, and intermediate synchronized writes do not trigger it. An idle terminal may produce no timing line. The first frame for the whole session is available as `firstLiveFrame` from `bb terminal show <id> --json` and `sdk.terminals.get({ terminalId })`. Older servers omit timing data.
+`bb terminal attach <id> --report-timing` writes one JSON line to stderr after the first live nonblank frame finishes rendering on the server for this attachment. The record contains `terminalId`, the last rendered `seq`, epoch milliseconds `at`, and `provenance: "live"`. Timing requires a change to visible nonblank content in the server’s terminal model. Color-palette-only changes are not counted. Replay, control-only writes that leave the screen unchanged, and intermediate synchronized writes do not trigger it. An idle terminal may produce no timing line. The first frame for the whole session is available as `firstLiveFrame` from `bb terminal show <id> --json` and `sdk.terminals.get({ terminalId })`. Older servers omit timing data.
 
 Thread terminal actions are available through `bb terminal surfaces --thread
 <id> [--json]`, `bb terminal focus <terminalId> [--all] [--json]`, `bb terminal open-link
@@ -103,7 +103,7 @@ equivalents are `threads.experimental_rowState` and
 `bb terminal colors <terminalId> --foreground <r,g,b> --background <r,g,b>
 --viewer-token <token> [--json]` updates OSC 10/11 replies using sRGB integers
 from 0 to 255. Only the app viewer currently holding terminal size control may
-update colours; its live viewer token is required. Read-only observers are rejected.
+update colors; its live viewer token is required. Read-only observers are rejected.
 The SDK method is `terminals.experimental_setDefaultColors({ terminalId,
-foreground, background, viewerToken })`. Accepted colours survive daemon reconnect;
+foreground, background, viewerToken })`. Accepted colors survive daemon reconnect;
 native sessions use the dark fallback until the first accepted viewer update.

@@ -294,7 +294,7 @@ socket and moves it to each window it pushes there.
   in one synchronous step, so a change either lands in that read or comes after
   it, and the tag that follows brings a delta for it.
 - A subscription without `timelineTags`, from a client from before this
-  protocol, gets the earlier behaviour: a delta against the window last pushed
+  protocol, gets the earlier behavior: a delta against the window last pushed
   to that subscription or, for a new subscription, the window most recently
   served for the same request, which the client applies only if its tag
   matches `afterTag`.

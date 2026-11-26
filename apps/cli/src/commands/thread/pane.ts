@@ -39,13 +39,13 @@ export function registerPaneCommand(
 ): void {
   parent
     .command("pane")
-    .description("Control an open thread pane in connected BB apps")
+    .description("Control an open thread pane in connected bb apps")
     .usage("<maximize|restore|toggle|spotlight|clear-spotlight> [id] [options]")
     .argument(
       "<action>",
       "Pane action: maximize, restore, toggle, spotlight, or clear-spotlight",
     )
-    .argument("[id]", "Thread ID. Omit inside a BB thread.")
+    .argument("[id]", "Thread ID. Omit inside a bb thread.")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(

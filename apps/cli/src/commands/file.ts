@@ -71,7 +71,7 @@ export function registerFileCommands(
 ): void {
   const file = program
     .command("file")
-    .description("Read and manage files on BB machines");
+    .description("Read and manage files on bb machines");
 
   file
     .command("read <path>")

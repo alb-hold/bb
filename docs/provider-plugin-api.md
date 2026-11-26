@@ -440,11 +440,11 @@ and draw the SVG tinted with `currentColor`. If the plugin is gone or the name
 unknown when the row renders, the per-kind fallback glyph draws — rows are
 never rewritten when a plugin changes its map.
 
-`tint` is a plain CSS colour per theme, and the forms every client paints are
+`tint` is a plain CSS color per theme, and the forms every client paints are
 hex, `rgb()`/`rgba()`/`hsl()`/`hsla()`/`hwb()` with a numeric alpha, and named
-colours. The web also paints `oklch()`, `lab()`, `lch()`, `color()` and a
-percentage alpha through CSS; React Native's colour parser does not, so on
-mobile such a tint falls back to the neutral row colour (never to black).
+colors. The web also paints `oklch()`, `lab()`, `lch()`, `color()` and a
+percentage alpha through CSS; React Native's color parser does not, so on
+mobile such a tint falls back to the neutral row color (never to black).
 
 Genericity rule: model fallback, context cleared, compaction skipped, and
 background work stay core. Provider-specific concepts (Codex goals, the Codex

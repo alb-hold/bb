@@ -47,12 +47,12 @@ export function registerOpenCommand(
   parent
     .command("open")
     .description(
-      "Open a BB thread, optionally with a file in its panel, in the app clients viewing the current thread",
+      "Open a bb thread, optionally with a file in its panel, in the app clients viewing the current thread",
     )
     .usage("[id] [path] [options]")
     .argument(
       "[id]",
-      "Thread ID. Inside a BB thread, omit it to target the current thread; a lone argument that is not a thread ID opens that file in the current thread",
+      "Thread ID. Inside a bb thread, omit it to target the current thread; a lone argument that is not a thread ID opens that file in the current thread",
     )
     .argument("[path]", "Thread-relative or absolute file path to open")
     .option("--line <number>", "Line number to focus")

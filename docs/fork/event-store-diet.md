@@ -44,7 +44,7 @@ the pruner only sees events that were stored, so it is removed from that trigger
 set too rather than left as an entry that can never match. Three triggers remain.
 Nothing depends on it: every root turn completion that moves a thread to idle
 prunes unconditionally, as does archiving, and the in-turn path is only an
-optimisation for long turns.
+optimization for long turns.
 
 Dropping at ingest needs no protocol change. The daemon dequeues a batch on any
 2xx and never reconciles which events came back in `acceptedEvents`, so a
@@ -91,7 +91,7 @@ is longer, so truncating one side alone would let the other re-inflate it.
 
 On a thread older than 7 days, a command that printed more than 8 KB now shows
 its first and last 4 KB with a marker between them, instead of up to 32 KB.
-This is not a new behaviour — it is what the product already did to any output
+This is not a new behavior — it is what the product already did to any output
 over 32 KiB, applied to more rows. Nothing changes inside the 7-day window.
 
 Nothing else is affected, and this was checked rather than assumed:
