@@ -242,38 +242,59 @@ function concatenateBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
 }
 
 function synchronizedOutputEnableProgress(
-  previousTail: Buffer<ArrayBufferLike>,
-  data: Buffer<ArrayBufferLike>,
-): { opened: boolean; tail: Buffer<ArrayBufferLike> } {
+  previousTail: Uint8Array<ArrayBufferLike>,
+  data: Uint8Array<ArrayBufferLike>,
+): { opened: boolean; tail: Uint8Array<ArrayBufferLike> } {
   const marker = SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE;
   const markerLength = marker.length;
-  const opensInChunk = data.indexOf(marker) !== -1;
+  const opensInChunk = containsBytes(data, marker);
   const continuationLength = markerLength - previousTail.length;
   const opensAcrossChunks =
     previousTail.length > 0 &&
     continuationLength > 0 &&
     data.length >= continuationLength &&
-    previousTail.equals(marker.subarray(0, previousTail.length)) &&
-    data
-      .subarray(0, continuationLength)
-      .equals(marker.subarray(previousTail.length));
+    equalBytes(previousTail, marker.subarray(0, previousTail.length)) &&
+    equalBytes(
+      data.subarray(0, continuationLength),
+      marker.subarray(previousTail.length),
+    );
   const candidate =
     data.length >= markerLength - 1
       ? data.subarray(data.length - markerLength + 1)
-      : Buffer.concat([previousTail, data]);
+      : concatenateBytes(previousTail, data);
   let tailLength = Math.min(candidate.length, markerLength - 1);
   while (
     tailLength > 0 &&
-    !candidate
-      .subarray(candidate.length - tailLength)
-      .equals(marker.subarray(0, tailLength))
+    !equalBytes(
+      candidate.subarray(candidate.length - tailLength),
+      marker.subarray(0, tailLength),
+    )
   ) {
     tailLength -= 1;
   }
   return {
     opened: opensInChunk || opensAcrossChunks,
-    tail: Buffer.from(candidate.subarray(candidate.length - tailLength)),
+    tail: new Uint8Array(candidate.subarray(candidate.length - tailLength)),
   };
+}
+
+function containsBytes(data: Uint8Array, needle: Uint8Array): boolean {
+  for (let start = 0; start <= data.length - needle.length; start += 1) {
+    if (data[start] !== needle[0]) continue;
+    let offset = 1;
+    while (offset < needle.length && data[start + offset] === needle[offset])
+      offset += 1;
+    if (offset === needle.length) return true;
+  }
+  return false;
+}
+
+function equalBytes(first: Uint8Array, second: Uint8Array): boolean {
+  if (first.length !== second.length) return false;
+  for (let index = 0; index < first.length; index += 1) {
+    if (first[index] !== second[index]) return false;
+  }
+  return true;
 }
 
 function encodeUtf8(value: string): Buffer {
@@ -498,8 +519,8 @@ export class TerminalScreenState {
   private replayBatchBytes = 8 * 1024;
   private frameBaseline?: string;
   private synchronizedRenderCallback?: () => void;
-  private synchronizedOutputEnableTail: Buffer<ArrayBufferLike> =
-    Buffer.alloc(0);
+  private synchronizedOutputEnableTail: Uint8Array<ArrayBufferLike> =
+    new Uint8Array(0);
 
   constructor(
     cols: number,
@@ -732,15 +753,11 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
-                let data: Buffer<ArrayBufferLike> =
+                let data: Uint8Array<ArrayBufferLike> =
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
-                    : Buffer.from(
-                        next.data.buffer,
-                        next.data.byteOffset,
-                        next.data.byteLength,
-                      );
-                const batch = [data];
+                    : next.data;
+                const batch: Uint8Array<ArrayBufferLike>[] = [data];
                 let bytes = data.byteLength;
                 while (
                   this.pendingWork.length > 0 &&
@@ -767,11 +784,7 @@ export class TerminalScreenState {
                   batch.push(
                     queued.kind === "base64"
                       ? Buffer.from(queued.data, "base64")
-                      : Buffer.from(
-                          queued.data.buffer,
-                          queued.data.byteOffset,
-                          queued.data.byteLength,
-                        ),
+                      : queued.data,
                   );
                   bytes += size;
                 }
