@@ -36,6 +36,7 @@ import {
   readBoundedLines,
 } from "@bb/provider-bridge-protocol/bridge-kit";
 import {
+  BRIDGE_WORKER_APP_CLAIMED_WAIT_MS,
   BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
   type BridgeWorkerAppLaunch,
   cancelBridgeWorkerAppLaunch,
@@ -530,13 +531,27 @@ export class SocketBridgeWorker
     launch: BridgeWorkerAppLaunch,
     env: NodeJS.ProcessEnv,
   ): Promise<void> {
-    const pid = await waitForBridgeWorkerPid(
+    let pid = await waitForBridgeWorkerPid(
       launch.pidFile,
       BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
     );
-    const identity = pid === null ? null : await readProcessStartIdentity(pid);
-    if (pid === null || identity === null) {
-      cancelBridgeWorkerAppLaunch(launch);
+    let claimed = false;
+    if (pid === null && !cancelBridgeWorkerAppLaunch(launch)) {
+      claimed = true;
+      pid = await waitForBridgeWorkerPid(
+        launch.pidFile,
+        BRIDGE_WORKER_APP_CLAIMED_WAIT_MS,
+      );
+    }
+    if (pid === null && claimed) {
+      late.emit(
+        "error",
+        new Error("Bridge worker app started but never reported its pid"),
+      );
+      late.fail();
+      return;
+    }
+    if (pid === null) {
       try {
         const direct = this.spawnDirect(args, env);
         this.managedProcess = direct.managedProcess;
@@ -549,6 +564,15 @@ export class SocketBridgeWorker
         );
         late.fail();
       }
+      return;
+    }
+    const identity = await readProcessStartIdentity(pid);
+    if (identity === null) {
+      late.emit(
+        "error",
+        new Error("Bridge worker exited before it was adopted"),
+      );
+      late.fail();
       return;
     }
     removeBridgeWorkerAppFiles(launch);

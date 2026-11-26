@@ -11,7 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppLaunchDeps } from "@bb/process-utils";
 import { afterEach, describe, expect, it } from "vitest";
-import { startBridgeWorkerAsApp } from "./bridge-worker-app.js";
+import {
+  cancelBridgeWorkerAppLaunch,
+  startBridgeWorkerAsApp,
+} from "./bridge-worker-app.js";
 import { SocketBridgeWorker } from "./bridge-worker-socket.js";
 
 const directories: string[] = [];
@@ -146,6 +149,50 @@ describe("bridge worker app launch", () => {
   });
 });
 
+describe("bridge worker fallback claim", () => {
+  function launchScript(dir: string, argv: string[]) {
+    const { deps } = recordingDeps("darwin");
+    const result = startBridgeWorkerAsApp(
+      { ...request(dir), command: argv[0] ?? "", args: argv.slice(1), env: {} },
+      deps,
+    );
+    if (!result.ok) throw new Error("launch failed");
+    const run = join(dir, "bb-bridge-worker.app", "Contents", "MacOS", "run");
+    const envFile = join(
+      dir,
+      readdirSync(dir).find((name) => name.endsWith(".env")) ?? "",
+    );
+    const env = {
+      PATH: process.env.PATH ?? "",
+      BB_APP_LAUNCH_SHELL_ENV_FILE: envFile,
+      BB_APP_LAUNCH_CWD: dir,
+      BB_APP_LAUNCH_PID_FILE: result.pidFile,
+      BB_APP_LAUNCH_LOG: join(dir, "abc123.log"),
+      BB_APP_LAUNCH_CANCEL_FILE: result.cancelFile,
+    };
+    return { result, run, env };
+  }
+
+  it("a launch that starts after the parent cancelled never runs the worker", () => {
+    const dir = workerDir();
+    const marker = join(dir, "ran");
+    const { result, run, env } = launchScript(dir, ["/usr/bin/touch", marker]);
+    expect(cancelBridgeWorkerAppLaunch(result)).toBe(true);
+    execFileSync("/bin/bash", [run, "/usr/bin/touch", marker], { env });
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(result.pidFile)).toBe(false);
+  });
+
+  it("a launch that already started cannot be cancelled and still runs", () => {
+    const dir = workerDir();
+    const marker = join(dir, "ran");
+    const { result, run, env } = launchScript(dir, ["/usr/bin/touch", marker]);
+    execFileSync("/bin/bash", [run, "/usr/bin/touch", marker], { env });
+    expect(existsSync(marker)).toBe(true);
+    expect(cancelBridgeWorkerAppLaunch(result)).toBe(false);
+  });
+});
+
 const COALITION_PROBE = [
   "import ctypes, ctypes.util, sys",
   "lib = ctypes.CDLL(ctypes.util.find_library('proc'))",
@@ -174,7 +221,7 @@ describe.skipIf(process.platform !== "darwin")(
         cwd: dir,
         env: {},
         workerDir: dir,
-        connectTimeoutMs: 100,
+        connectTimeoutMs: 120_000,
         registration: {
           environmentId: "env-1",
           pluginId: "p",
@@ -187,8 +234,9 @@ describe.skipIf(process.platform !== "darwin")(
           personalWorkspaceRoot: null,
         },
       });
+
       worker.on("error", () => undefined);
-      for (let i = 0; i < 300 && worker.pid === undefined; i++) {
+      for (let i = 0; i < 700 && worker.pid === undefined; i++) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       const pid = worker.pid;
@@ -198,6 +246,6 @@ describe.skipIf(process.platform !== "darwin")(
       } finally {
         await worker.stop({ gracePeriodMs: 0 });
       }
-    });
+    }, 90_000);
   },
 );

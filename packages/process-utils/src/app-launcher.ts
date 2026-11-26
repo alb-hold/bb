@@ -24,9 +24,8 @@ const COMMAND_TIMEOUT_MS = 10_000;
 const STALE_ENV_FILE_MS = 60_000;
 
 const RUN_SCRIPT = `#!/bin/bash
-if [ -n "\${${APP_LAUNCH_CANCEL_FILE_ENV}:-}" ] && [ -e "\$${APP_LAUNCH_CANCEL_FILE_ENV}" ]; then
-  rm -f "\$${APP_LAUNCH_CANCEL_FILE_ENV}"
-  exit 0
+if [ -n "\${${APP_LAUNCH_CANCEL_FILE_ENV}:-}" ]; then
+  mkdir "\$${APP_LAUNCH_CANCEL_FILE_ENV}" 2>/dev/null || exit 0
 fi
 if [ -n "\${${APP_LAUNCH_SHELL_ENV_FILE_ENV}:-}" ]; then
   __bb_env_file="\$${APP_LAUNCH_SHELL_ENV_FILE_ENV}"
