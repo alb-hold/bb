@@ -393,6 +393,9 @@ export class SocketBridgeWorker
   private registryEntry: BridgeWorkerRegistryEntry | null;
   private managedProcess: ManagedProcess | null;
   private readonly registrationReady: Promise<void>;
+  private pendingLaunch: BridgeWorkerAppLaunch | null = null;
+  private lateHandle: LateWorkerHandle | null = null;
+  private launchCancelled = false;
   private resumeRequested: boolean;
   private readonly connectTimeoutMs: number;
   private socket: Socket | null = null;
@@ -452,6 +455,8 @@ export class SocketBridgeWorker
       if (launched.ok) {
         const late = new LateWorkerHandle();
         this.child = late;
+        this.lateHandle = late;
+        this.pendingLaunch = launched;
         this.managedProcess = null;
         this.registryEntry = null;
         this.registrationReady = this.adoptAppWorker(args, late, launched, env);
@@ -487,13 +492,26 @@ export class SocketBridgeWorker
     });
     this.connectTimeoutMs = args.connectTimeoutMs;
     const connectDeadline = Date.now() + args.connectTimeoutMs;
-    void this.registrationReady.then(() => this.connect(connectDeadline));
+    void this.registrationReady.then(() => {
+      if (!this.launchCancelled) this.connect(connectDeadline);
+    });
   }
 
-  stop(options?: { gracePeriodMs: number }) {
-    return this.managedProcess === null
-      ? createProcessStop(this.child)(options)
-      : this.managedProcess.stop(options);
+  async stop(options?: { gracePeriodMs: number }) {
+    const launch = this.pendingLaunch;
+    if (launch !== null) {
+      if (cancelBridgeWorkerAppLaunch(launch)) {
+        this.launchCancelled = true;
+        this.pendingLaunch = null;
+        this.lateHandle?.fail();
+        return { treeTermination: "confirmed" as const };
+      }
+      await this.registrationReady;
+    }
+    if (this.managedProcess === null) {
+      return createProcessStop(this.child)(options);
+    }
+    return this.managedProcess.stop(options);
   }
 
   private spawnDirect(
@@ -535,6 +553,7 @@ export class SocketBridgeWorker
       launch.pidFile,
       BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
     );
+    if (this.launchCancelled) return;
     let claimed = false;
     if (pid === null && !cancelBridgeWorkerAppLaunch(launch)) {
       claimed = true;
@@ -554,6 +573,7 @@ export class SocketBridgeWorker
     if (pid === null) {
       try {
         const direct = this.spawnDirect(args, env);
+        this.pendingLaunch = null;
         this.managedProcess = direct.managedProcess;
         late.bind(direct.child);
         await this.registerSpawnedWorker(args, direct.child.pid);
@@ -576,6 +596,7 @@ export class SocketBridgeWorker
       return;
     }
     removeBridgeWorkerAppFiles(launch);
+    this.pendingLaunch = null;
     late.bind(new AdoptedProcessHandle({ pid, processIdentity: identity }));
     const entry: BridgeWorkerRegistryEntry = {
       ...args.registration,

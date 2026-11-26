@@ -149,6 +149,56 @@ describe("bridge worker app launch", () => {
   });
 });
 
+describe("bridge worker stop before adoption", () => {
+  it("cancels a pending app launch so the worker never starts after stop", async () => {
+    const dir = workerDir();
+    const marker = join(dir, "ran");
+    const { deps } = recordingDeps("darwin");
+    const worker = new SocketBridgeWorker({
+      kind: "spawn",
+      command: "/usr/bin/touch",
+      args: [marker],
+      cwd: dir,
+      env: {},
+      workerDir: dir,
+      connectTimeoutMs: 100,
+      appLaunch: deps,
+      registration: {
+        environmentId: "env-1",
+        pluginId: "p",
+        processKey: "k",
+        providerId: "f",
+      },
+      workspace: {
+        workspacePath: dir,
+        workspaceProvisionType: "unmanaged",
+        personalWorkspaceRoot: null,
+      },
+    });
+    worker.on("error", () => undefined);
+    await worker.stop({ gracePeriodMs: 0 });
+    const names = readdirSync(dir);
+    const cancel = names.find((name) => name.endsWith(".pid.cancel"));
+    const envFile = names.find((name) => name.endsWith(".env"));
+    const pidName = names.find((name) => name.endsWith(".pid.cancel"))?.replace(/\.cancel$/, "");
+    expect(cancel).toBeDefined();
+    execFileSync(
+      "/bin/bash",
+      [join(dir, "bb-bridge-worker.app", "Contents", "MacOS", "run"), "/usr/bin/touch", marker],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          BB_APP_LAUNCH_SHELL_ENV_FILE: join(dir, envFile ?? ""),
+          BB_APP_LAUNCH_CWD: dir,
+          BB_APP_LAUNCH_PID_FILE: join(dir, pidName ?? ""),
+          BB_APP_LAUNCH_CANCEL_FILE: join(dir, cancel ?? ""),
+        },
+      },
+    );
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
 describe("bridge worker fallback claim", () => {
   function launchScript(dir: string, argv: string[]) {
     const { deps } = recordingDeps("darwin");
