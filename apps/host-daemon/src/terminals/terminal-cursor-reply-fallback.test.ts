@@ -3,6 +3,7 @@ import {
   CURSOR_REPLY_FALLBACK_DELAY_MS,
   CURSOR_REPLY_HOLD_FLUSH_MS,
   CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS,
+  CURSOR_REPLY_SWALLOW_MS,
   isShortKeypressPrefix,
   TerminalCursorReplyFallback,
 } from "./terminal-cursor-reply-fallback.js";
@@ -99,6 +100,30 @@ describe("TerminalCursorReplyFallback split replies", () => {
       delivered.push(fallback.filterInput(reply.slice(offset)));
       expect(written).toEqual([reply.slice(0, offset)]);
       expect(delivered).toEqual(["", reply.slice(offset)]);
+    },
+  );
+
+  it.each(
+    REPLY_FORMS.flatMap((reply) =>
+      Array.from({ length: reply.length - 1 }, (_, i) => i + 1).map(
+        (offset) => ({ reply, offset }),
+      ),
+    ),
+  )(
+    "releases $reply prefix of length $offset at the window end when it arrives 10 ms before and nothing follows",
+    ({ reply, offset }) => {
+      const { fallback, written } = setup();
+      const windowEnd =
+        CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
+      vi.advanceTimersByTime(windowEnd - 10);
+      expect(fallback.filterInput(reply.slice(0, offset))).toBe("");
+      vi.advanceTimersByTime(9);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, reply.slice(0, offset)]);
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS);
+      expect(written).toEqual([ESTIMATE, reply.slice(0, offset)]);
+      expect(fallback.filterInput("x")).toBe("x");
     },
   );
 

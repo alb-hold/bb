@@ -16,6 +16,7 @@ export const CURSOR_REPLY_HOLD_FLUSH_MS =
 export class TerminalCursorReplyFallback {
   private waiting: Array<{
     estimate: string;
+    windowEnd: number;
     timer: ReturnType<typeof setTimeout>;
   }> = [];
   private lateUntil: number[] = [];
@@ -31,6 +32,7 @@ export class TerminalCursorReplyFallback {
   expect(estimate: string): void {
     const entry = {
       estimate,
+      windowEnd: this.now() + this.delayMs + CURSOR_REPLY_SWALLOW_MS,
       timer: setTimeout(() => {
         this.waiting = this.waiting.filter((candidate) => candidate !== entry);
         this.lateUntil.push(this.now() + CURSOR_REPLY_SWALLOW_MS);
@@ -77,9 +79,10 @@ export class TerminalCursorReplyFallback {
       return out + partial;
     }
     this.held = partial;
+    const remaining = Math.max(0, this.windowEnd() - now);
     const holdMs = isShortKeypressPrefix(partial)
-      ? CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS
-      : CURSOR_REPLY_HOLD_FLUSH_MS;
+      ? Math.min(CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS, remaining)
+      : remaining;
     this.holdTimer = setTimeout(() => {
       this.holdTimer = null;
       const flushed = this.held;
@@ -88,6 +91,14 @@ export class TerminalCursorReplyFallback {
     }, holdMs);
     this.holdTimer.unref();
     return out;
+  }
+
+  private windowEnd(): number {
+    return Math.max(
+      0,
+      ...this.waiting.map((entry) => entry.windowEnd),
+      ...this.lateUntil,
+    );
   }
 
   private clearHold(): void {
