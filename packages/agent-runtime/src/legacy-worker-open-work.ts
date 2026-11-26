@@ -20,7 +20,9 @@ export const FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS = {
 export function legacyWorkerAssumesZeroOpenBackgroundWork(
   pluginId: string,
 ): boolean {
-  if (!(pluginId in FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS)) {
+  if (
+    !Object.hasOwn(FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS, pluginId)
+  ) {
     return false;
   }
   const items =

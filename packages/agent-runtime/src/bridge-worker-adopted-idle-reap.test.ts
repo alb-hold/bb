@@ -777,14 +777,15 @@ describe("idle reaping of adopted provider sessions", () => {
   }, WORKER_EXIT_TIMEOUT_MS);
 
   it.each([
-    { label: "legacy transport", transportVersion: 2 },
-    { label: "unanswered current transport", transportVersion: BRIDGE_SOCKET_TRANSPORT_VERSION },
+    { label: "legacy transport", pluginId: "provider-scripted-echo", transportVersion: 2 },
+    { label: "unanswered current transport", pluginId: "provider-scripted-echo", transportVersion: BRIDGE_SOCKET_TRANSPORT_VERSION },
+    { label: "inherited prototype key toString", pluginId: "toString", transportVersion: 2 },
   ])(
     "never reaps an old worker ($label) that cannot answer the open-work query and does not write a guessed count",
-    async ({ transportVersion }) => {
+    async ({ pluginId, transportVersion }) => {
       const events: ThreadEvent[] = [];
       const { pid } = await spawnLegacyUnansweredWorker({
-        pluginId: "provider-scripted-echo",
+        pluginId,
         transportVersion,
       });
 

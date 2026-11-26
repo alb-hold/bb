@@ -389,7 +389,7 @@ export function createBridgeSocketServer(
   }
 
   function snapshotOpenWork(): BridgeOpenWorkSnapshot["threads"] {
-    const threads: BridgeOpenWorkSnapshot["threads"] = {};
+    const threads = Object.create(null) as BridgeOpenWorkSnapshot["threads"];
     for (const [threadId, items] of openWorkByThread) {
       if (items.size > 0) {
         threads[threadId] = [...items.values()];

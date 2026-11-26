@@ -971,7 +971,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         }
         adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
         legacyUnansweredClaudeThreadIds.delete(adoption.threadId);
-        const openItems = snapshot.threads[adoption.threadId] ?? [];
+        const openItems = Object.hasOwn(snapshot.threads, adoption.threadId)
+          ? (snapshot.threads[adoption.threadId] ?? [])
+          : [];
         const seeded = adoption.proc.adapter.seedOpenBackgroundItems({
           threadId: adoption.threadId,
           items: openItems,

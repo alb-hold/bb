@@ -1279,6 +1279,12 @@ export function make(raw: string): ThreadDelta {
     expect(
       legacyWorkerAssumesZeroOpenBackgroundWork("provider-scripted-echo"),
     ).toBe(false);
+    expect(legacyWorkerAssumesZeroOpenBackgroundWork("toString")).toBe(false);
+    expect(legacyWorkerAssumesZeroOpenBackgroundWork("valueOf")).toBe(false);
+    expect(legacyWorkerAssumesZeroOpenBackgroundWork("constructor")).toBe(
+      false,
+    );
+    expect(legacyWorkerAssumesZeroOpenBackgroundWork("__proto__")).toBe(false);
   });
 });
 
