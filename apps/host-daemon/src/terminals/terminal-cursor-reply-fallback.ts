@@ -3,7 +3,8 @@ const PARTIAL_CURSOR_POSITION_REPLY = /\u001b(?:\[\??(?:\d+(?:;\d*)?)?)?$/;
 
 export const CURSOR_REPLY_FALLBACK_DELAY_MS = 250;
 export const CURSOR_REPLY_SWALLOW_MS = 5_000;
-export const CURSOR_REPLY_HOLD_FLUSH_MS = 500;
+export const CURSOR_REPLY_HOLD_FLUSH_MS =
+  CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
 
 export class TerminalCursorReplyFallback {
   private waiting: Array<{

@@ -41,12 +41,17 @@ describe("TerminalCursorReplyFallback split replies", () => {
     },
   );
 
-  it.each(offsets)(
-    "delivers exactly one reply when split at byte %i across the timeout",
-    (offset) => {
+  const delays = [CURSOR_REPLY_FALLBACK_DELAY_MS + 50, 499, 501, 4_900, 5_100];
+  const cases = offsets.flatMap((offset) =>
+    delays.map((delay) => ({ offset, delay })),
+  );
+
+  it.each(cases)(
+    "delivers exactly one reply when split at byte $offset with a $delay ms gap",
+    ({ offset, delay }) => {
       const { fallback, written } = setup();
       const delivered = [fallback.filterInput(REPLY.slice(0, offset))];
-      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 50);
+      vi.advanceTimersByTime(delay);
       delivered.push(fallback.filterInput(REPLY.slice(offset)));
       vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS * 2);
       expect(delivered.join("") + written.join("")).toBe(ESTIMATE);
