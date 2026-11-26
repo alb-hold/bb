@@ -15,8 +15,8 @@ export function ThreadActivityLabel({
   indicator: ThreadListIndicatorKind;
   label?: string;
 }) {
-  const showError = indicator === "none" && error && !exited;
-  const showExited = indicator === "none" && exited;
+  const showError = indicator === "none" && error;
+  const showExited = indicator === "none" && exited && !error;
   return (
     <div
       role="status"
