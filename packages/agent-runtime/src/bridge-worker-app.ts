@@ -115,14 +115,35 @@ export function removeBridgeWorkerAppFiles(launch: BridgeWorkerAppLaunch): void 
 export async function waitForBridgeWorkerPid(
   pidFile: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    if (signal?.aborted) return null;
     try {
       const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
       if (Number.isSafeInteger(pid) && pid > 0) return pid;
     } catch {}
     if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, PID_POLL_MS));
+    await waitForPollInterval(PID_POLL_MS, signal);
   }
+}
+
+function waitForPollInterval(
+  ms: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    timer.unref();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
