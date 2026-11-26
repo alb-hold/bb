@@ -241,6 +241,41 @@ function concatenateBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
   return joined;
 }
 
+function synchronizedOutputEnableProgress(
+  previousTail: Buffer,
+  data: Buffer,
+): { opened: boolean; tail: Buffer } {
+  const marker = SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE;
+  const markerLength = marker.length;
+  const opensInChunk = data.indexOf(marker) !== -1;
+  const continuationLength = markerLength - previousTail.length;
+  const opensAcrossChunks =
+    previousTail.length > 0 &&
+    continuationLength > 0 &&
+    data.length >= continuationLength &&
+    previousTail.equals(marker.subarray(0, previousTail.length)) &&
+    data
+      .subarray(0, continuationLength)
+      .equals(marker.subarray(previousTail.length));
+  const candidate =
+    data.length >= markerLength - 1
+      ? data.subarray(data.length - markerLength + 1)
+      : Buffer.concat([previousTail, data]);
+  let tailLength = Math.min(candidate.length, markerLength - 1);
+  while (
+    tailLength > 0 &&
+    !candidate
+      .subarray(candidate.length - tailLength)
+      .equals(marker.subarray(0, tailLength))
+  ) {
+    tailLength -= 1;
+  }
+  return {
+    opened: opensInChunk || opensAcrossChunks,
+    tail: Buffer.from(candidate.subarray(candidate.length - tailLength)),
+  };
+}
+
 function encodeUtf8(value: string): Buffer {
   const buffer = Buffer.allocUnsafe(Buffer.byteLength(value, "utf8"));
   buffer.write(value, 0, "utf8");
@@ -463,6 +498,7 @@ export class TerminalScreenState {
   private replayBatchBytes = 8 * 1024;
   private frameBaseline?: string;
   private synchronizedRenderCallback?: () => void;
+  private synchronizedOutputEnableTail = Buffer.alloc(0);
 
   constructor(
     cols: number,
@@ -739,15 +775,23 @@ export class TerminalScreenState {
                 }
                 const rendered =
                   next.kind === "base64" ? next.rendered : undefined;
+                const syncOutputProgress = synchronizedOutputEnableProgress(
+                  this.synchronizedOutputEnableTail,
+                  data,
+                );
+                this.synchronizedOutputEnableTail = syncOutputProgress.tail;
                 const opensSynchronizedOutput =
                   !this.terminal.modes.synchronizedOutputMode &&
-                  data.includes(SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE);
+                  syncOutputProgress.opened;
                 if (rendered) {
                   this.frameBaseline ??= visibleFrameContent(this.terminal);
                   if (this.terminal.modes.synchronizedOutputMode) {
                     this.synchronizedRenderCallback ??= rendered;
                   }
-                } else if (opensSynchronizedOutput) {
+                } else if (
+                  opensSynchronizedOutput ||
+                  syncOutputProgress.tail.length > 0
+                ) {
                   this.frameBaseline ??= visibleFrameContent(this.terminal);
                 } else if (
                   !this.terminal.modes.synchronizedOutputMode &&
@@ -770,6 +814,8 @@ export class TerminalScreenState {
                         frameCallback();
                       this.frameBaseline = undefined;
                       this.synchronizedRenderCallback = undefined;
+                    } else {
+                      this.synchronizedRenderCallback ??= frameCallback;
                     }
                   }
                   const elapsed = performance.now() - started;

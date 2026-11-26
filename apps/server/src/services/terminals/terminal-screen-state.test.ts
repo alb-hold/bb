@@ -405,6 +405,36 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("retains the opener callback when the synchronized marker is split across chunks", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const opening = vi.fn();
+    state.pushBase64(0, Buffer.from("\u001b[?20").toString("base64"), opening);
+    await state.snapshot();
+    state.pushBase64(1, Buffer.from("26hfirst paint").toString("base64"));
+    await state.snapshot();
+    state.pushBase64(2, Buffer.from("\u001b[?2026l").toString("base64"));
+    await state.snapshot();
+    expect(opening).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
+  it("uses the closer callback when the callback-free opener is split across chunks", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const closing = vi.fn();
+    state.pushBase64(0, Buffer.from("\u001b[?20").toString("base64"));
+    await state.snapshot();
+    state.pushBase64(1, Buffer.from("26hfirst paint").toString("base64"));
+    await state.snapshot();
+    state.pushBase64(
+      2,
+      Buffer.from("\u001b[?2026l").toString("base64"),
+      closing,
+    );
+    await state.snapshot();
+    expect(closing).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
   it("does not report a synchronized frame while the update remains open", async () => {
     const state = new TerminalScreenState(40, 5);
     const rendered = vi.fn();
