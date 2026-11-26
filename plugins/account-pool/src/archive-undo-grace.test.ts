@@ -277,6 +277,7 @@ describe("Account Pooler archive undo grace", () => {
     let clock = Date.now();
     let threadReads = 0;
     let failSettleLookup = true;
+    const sweepSpy = vi.spyOn(ThreadTokenStore.prototype, "sweepThreads");
     let thread = makeThreadResponse({
       id: "thr_race_settle_fail",
       providerId: "claude-code",
@@ -315,8 +316,8 @@ describe("Account Pooler archive undo grace", () => {
       now: () => clock,
       env: {},
       fetch: upstream,
-      threadSweepIntervalMs: 25,
-      threadSweepRetryMs: 25,
+      threadSweepIntervalMs: 86_400_000,
+      threadSweepRetryMs: 86_400_000,
     })(host.bb);
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
@@ -338,6 +339,7 @@ describe("Account Pooler archive undo grace", () => {
       ).toBe(true);
     });
 
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
     mintedTokens.length = 0;
     await expect(
       host.harness.behavior.resolveProviderEnv("claude-code", {
@@ -347,6 +349,7 @@ describe("Account Pooler archive undo grace", () => {
       }),
     ).rejects.toThrow("lookup failed while settling");
     expect(threadReads).toBe(5);
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
     expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
 
     const secretDir = path.join(
@@ -356,10 +359,15 @@ describe("Account Pooler archive undo grace", () => {
       "secrets",
       "accounts",
     );
-    const scopedFiles = (await readdir(secretDir)).filter((name) =>
+    const postMintFiles = await readdir(secretDir);
+    const scopedFiles = postMintFiles.filter((name) =>
       name.startsWith("scoped-route-"),
     );
     expect(scopedFiles).toHaveLength(1);
+    const initialMarkers = postMintFiles.filter((name) =>
+      name.startsWith("archived-thread-"),
+    );
+    expect(initialMarkers).toHaveLength(1);
     const scopedRecord = JSON.parse(
       await readFile(path.join(secretDir, scopedFiles[0]!), "utf8"),
     ) as { threadId: string; tokenDigest: string };
@@ -393,17 +401,89 @@ describe("Account Pooler archive undo grace", () => {
     };
 
     expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
 
     failSettleLookup = false;
     expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
 
+    service.controller.abort();
+    await service.done;
+
+    const sweepService = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      sweepService.controller.abort();
+      await sweepService.done;
+    });
     await vi.waitFor(async () => {
+      expect(sweepSpy).toHaveBeenCalledTimes(2);
       const afterSweep = await readdir(secretDir);
       expect(
         afterSweep.filter((name) => name.startsWith("archived-thread-")),
       ).toHaveLength(1);
     });
     expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+
+    sweepService.controller.abort();
+    await sweepService.done;
+    await host.harness.lifecycle.dispose();
+
+    const reloadedHost = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: {
+        hosts: {
+          list: async () => [{ id: "host-one", name: "One" }] as never[],
+        },
+        threads: {
+          get: async () => thread,
+        },
+        system: { providerStates: async () => ({ providers: [] }) },
+      },
+    });
+    await createAccountPoolPlugin({
+      now: () => clock,
+      env: {},
+      fetch: upstream,
+      threadSweepIntervalMs: 86_400_000,
+      threadSweepRetryMs: 86_400_000,
+    })(reloadedHost.bb);
+    const reloadedService = reloadedHost.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      reloadedService.controller.abort();
+      await reloadedService.done;
+      await reloadedHost.harness.lifecycle.dispose();
+    });
+    await vi.waitFor(async () => {
+      const result = await reloadedHost.harness.behavior.runCli([
+        "status",
+        "--json",
+      ]);
+      expect(
+        statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
+      ).toBe(true);
+    });
+    const reloadedResponse = await reloadedHost.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${leakedToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-opus-4-1",
+          messages: [],
+          max_tokens: 1,
+        }),
+      },
+    );
+    await reloadedResponse.text();
+    expect(reloadedResponse.status).toBe(401);
     expect(upstream).not.toHaveBeenCalled();
 
     const verifyHubTokens = new HubTokenStore(secretDir, () => clock);
@@ -418,7 +498,7 @@ describe("Account Pooler archive undo grace", () => {
       await verifyThreadTokens.authenticate(leakedToken!, "claude"),
     ).toBeNull();
     expect(
-      await host.harness.behavior.resolveProviderEnv("claude-code", {
+      await reloadedHost.harness.behavior.resolveProviderEnv("claude-code", {
         threadId: thread.id,
         projectId: thread.projectId,
         hostId: "host-one",
