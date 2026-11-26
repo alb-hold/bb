@@ -149,11 +149,11 @@ describe("TerminalCursorReplyFallback split replies", () => {
       vi.advanceTimersByTime(10);
       expect(fallback.filterInput("\u001b[4;")).toBe("");
       const out = fallback.filterInput("1R\u001b[?");
-      expect(out).toBe("\u001b[4;1R");
-      vi.advanceTimersByTime(WINDOW_END - (CURSOR_REPLY_FALLBACK_DELAY_MS + 760) - 1);
-      expect(written).toEqual([ESTIMATE]);
+      expect(out).toBe("");
+      vi.advanceTimersByTime(WINDOW_END - 10 - 1);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
       vi.advanceTimersByTime(1);
-      expect(written).toEqual([ESTIMATE, "\u001b[?"]);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R", "\u001b[?"]);
     });
 
     it("swallows a completed late split reply when a new prefix follows in the same chunk", () => {
@@ -221,6 +221,64 @@ describe("TerminalCursorReplyFallback split replies", () => {
       fallback.dispose();
       vi.advanceTimersByTime(WINDOW_END * 2);
       expect(written).toEqual([]);
+    });
+  });
+
+  describe("FIFO reply matching across outstanding queries", () => {
+    it("swallows reply A for late slot 1 then forwards reply B for armed query 2 with no fallback", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 100);
+      expect(written).toEqual([ESTIMATE]);
+      fallback.expect("\u001b[9;9R");
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("");
+      expect(fallback.filterInput("\u001b[8;2R")).toBe("\u001b[8;2R");
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS);
+      expect(written).toEqual([ESTIMATE]);
+      expect(fallback.isIdle()).toBe(true);
+    });
+
+    it("swallows reply A for late slot 1 and fires armed query 2's fallback once when reply B never arrives", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 100);
+      expect(written).toEqual([ESTIMATE]);
+      fallback.expect("\u001b[9;9R");
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("");
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      expect(fallback.isIdle()).toBe(true);
+    });
+
+    it("swallows two replies in order when two late slots are open", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 100);
+      fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 10);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("");
+      vi.advanceTimersByTime(
+        CURSOR_REPLY_HOLD_FLUSH_MS -
+          (2 * CURSOR_REPLY_FALLBACK_DELAY_MS + 110) +
+          50,
+      );
+      expect(fallback.isIdle()).toBe(false);
+      expect(fallback.filterInput("\u001b[8;2R")).toBe("");
+      expect(fallback.isIdle()).toBe(true);
+      expect(fallback.filterInput("\u001b[1;1R")).toBe("\u001b[1;1R");
+    });
+
+    it("forwards reply A for armed query 1 while keeping query 2 armed", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(100);
+      fallback.expect("\u001b[9;9R");
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("\u001b[4;1R");
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS - 1);
+      expect(written).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual(["\u001b[9;9R"]);
     });
   });
 

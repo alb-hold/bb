@@ -13,13 +13,20 @@ export const CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS = 50;
 export const CURSOR_REPLY_HOLD_FLUSH_MS =
   CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
 
+type PendingCursorReply =
+  | {
+      kind: "waiting";
+      estimate: string;
+      windowEnd: number;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  | {
+      kind: "late";
+      windowEnd: number;
+    };
+
 export class TerminalCursorReplyFallback {
-  private waiting: Array<{
-    estimate: string;
-    windowEnd: number;
-    timer: ReturnType<typeof setTimeout>;
-  }> = [];
-  private lateUntil: number[] = [];
+  private pending: PendingCursorReply[] = [];
   private held = "";
   private heldAt = 0;
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,35 +38,39 @@ export class TerminalCursorReplyFallback {
   ) {}
 
   expect(estimate: string): void {
-    const entry = {
+    const entry: Extract<PendingCursorReply, { kind: "waiting" }> = {
+      kind: "waiting",
       estimate,
       windowEnd: this.now() + this.delayMs + CURSOR_REPLY_SWALLOW_MS,
       timer: setTimeout(() => {
-        this.waiting = this.waiting.filter((candidate) => candidate !== entry);
-        this.lateUntil.push(
-          Math.max(entry.windowEnd, this.now() + CURSOR_REPLY_SWALLOW_MS),
-        );
+        const index = this.pending.indexOf(entry);
+        if (index === -1) return;
+        this.pending[index] = {
+          kind: "late",
+          windowEnd: Math.max(
+            entry.windowEnd,
+            this.now() + CURSOR_REPLY_SWALLOW_MS,
+          ),
+        };
         this.write(estimate);
         this.rescheduleHold();
       }, this.delayMs),
     };
     entry.timer.unref();
-    this.waiting.push(entry);
+    this.pending.push(entry);
     this.rescheduleHold();
   }
 
   private pruneLate(): void {
     const now = this.now();
-    this.lateUntil = this.lateUntil.filter((until) => until > now);
+    this.pending = this.pending.filter(
+      (entry) => entry.kind === "waiting" || entry.windowEnd > now,
+    );
   }
 
   isIdle(): boolean {
     this.pruneLate();
-    return (
-      this.waiting.length === 0 &&
-      this.lateUntil.length === 0 &&
-      this.held === ""
-    );
+    return this.pending.length === 0 && this.held === "";
   }
 
   filterInput(data: string): string {
@@ -76,21 +87,21 @@ export class TerminalCursorReplyFallback {
       text = text.slice(0, tail.index);
     }
     const out = text.replace(CURSOR_POSITION_REPLY, (reply) => {
-      const answered = this.waiting.shift();
-      if (answered !== undefined) {
-        clearTimeout(answered.timer);
+      this.pruneLate();
+      const oldest = this.pending.shift();
+      if (oldest === undefined) return reply;
+      if (oldest.kind === "waiting") {
+        clearTimeout(oldest.timer);
         return reply;
       }
-      const now = this.now();
-      this.lateUntil = this.lateUntil.filter((until) => until > now);
-      return this.lateUntil.shift() === undefined ? reply : "";
+      return "";
     });
     if (partial === "") return out;
-    const now = this.now();
-    this.lateUntil = this.lateUntil.filter((until) => until > now);
-    if (this.waiting.length === 0 && this.lateUntil.length === 0) {
+    this.pruneLate();
+    if (this.pending.length === 0) {
       return out + partial;
     }
+    const now = this.now();
     this.held = partial;
     this.heldAt =
       previousHeld !== "" && tail !== null && tail.index === 0
@@ -115,17 +126,15 @@ export class TerminalCursorReplyFallback {
       this.clearHold();
       const flushed = this.held;
       this.held = "";
+      this.heldAt = 0;
       if (flushed !== "") this.write(flushed);
     }, holdMs);
     this.holdTimer.unref();
   }
 
   private windowEnd(): number {
-    return Math.max(
-      0,
-      ...this.waiting.map((entry) => entry.windowEnd),
-      ...this.lateUntil,
-    );
+    this.pruneLate();
+    return Math.max(0, ...this.pending.map((entry) => entry.windowEnd));
   }
 
   private clearHold(): void {
@@ -134,9 +143,10 @@ export class TerminalCursorReplyFallback {
   }
 
   dispose(): void {
-    for (const entry of this.waiting) clearTimeout(entry.timer);
-    this.waiting = [];
-    this.lateUntil = [];
+    for (const entry of this.pending) {
+      if (entry.kind === "waiting") clearTimeout(entry.timer);
+    }
+    this.pending = [];
     this.held = "";
     this.heldAt = 0;
     this.clearHold();
