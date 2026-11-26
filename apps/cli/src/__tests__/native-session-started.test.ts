@@ -791,6 +791,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
     }
     const baseUrl = `http://127.0.0.1:${address.port}`;
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(baseUrl, threadId, socketPath, {
       activityPollIntervalMs: 25,
       cwd: root,
@@ -799,6 +801,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       },
       home,
+      markerGeneration: claim.generation ?? 1,
+      markerToken: claim.token ?? "",
       tmpDir: blockedTmpFile,
     });
 
@@ -811,6 +815,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
     );
 
     expect(await holderDone).toBe(1);
+    claim.release();
     expect(existsSync(spawnMarkerPath)).toBe(false);
     expect(recordSessionCalls).toEqual([]);
   });

@@ -27,6 +27,7 @@ import {
   pipeNativeHolderClient,
   runNativeHolder,
   writeNativeHolderAttachMarker,
+  writeNativeHolderPidMarker,
 } from "../native-holder.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
@@ -279,7 +280,7 @@ export function registerTerminalCommands(
               session.status === "exited" ||
               process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY === "1",
             startTimeoutMs: 20_000,
-            startHolder: () => {
+            startHolder: (markerGeneration, markerToken) => {
               const holder = spawn(
                 process.execPath,
                 [
@@ -290,6 +291,10 @@ export function registerTerminalCommands(
                   terminalId,
                   shell,
                   shellArgsBase64,
+                  "--marker-generation",
+                  String(markerGeneration),
+                  "--marker-token",
+                  markerToken,
                 ],
                 {
                   cwd: process.cwd(),
@@ -319,14 +324,50 @@ export function registerTerminalCommands(
     .command("holder-shell <terminalId> <shell> <shellArgsBase64>", {
       hidden: true,
     })
+    .requiredOption(
+      "--marker-generation <generation>",
+      "Generation of the native holder pid marker claimed for this launch",
+    )
+    .requiredOption(
+      "--marker-token <token>",
+      "Token of the native holder pid marker claimed for this launch",
+    )
     .action(
       action(
-        async (terminalId: string, shell: string, shellArgsBase64: string) => {
+        async (
+          terminalId: string,
+          shell: string,
+          shellArgsBase64: string,
+          opts: { markerGeneration: string; markerToken: string },
+        ) => {
+          if (
+            !/^[1-9]\d*$/u.test(opts.markerGeneration) ||
+            !/^[0-9a-f]+$/u.test(opts.markerToken)
+          ) {
+            process.exitCode = 1;
+            return;
+          }
+          const parsedGeneration = Number.parseInt(opts.markerGeneration, 10);
+          if (!Number.isSafeInteger(parsedGeneration) || parsedGeneration <= 0) {
+            process.exitCode = 1;
+            return;
+          }
           const socketPath = defaultNativeHolderSocketPath(
             getUrl(),
             terminalId,
           );
-          ignoreNativeHolderSignals(process, socketPath);
+          const holderMarkerGeneration = writeNativeHolderPidMarker(
+            socketPath,
+            process.pid,
+            parsedGeneration,
+            opts.markerToken,
+          );
+          if (holderMarkerGeneration === null) {
+            process.exitCode = 1;
+            return;
+          }
+          let ownsSocket = false;
+          ignoreNativeHolderSignals(process, socketPath, () => ownsSocket);
           delete process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY;
           const shellArgs: unknown = JSON.parse(
             Buffer.from(shellArgsBase64, "base64").toString("utf8"),
@@ -341,8 +382,16 @@ export function registerTerminalCommands(
           const sdk = createCliBbSdk(getUrl());
           const exitCode = await runNativeHolder({
             socketPath,
+            holderMarkerGeneration,
+            holderMarkerToken: opts.markerToken,
             cwd: process.cwd(),
             env: process.env,
+            onSocketReady: () => {
+              ownsSocket = true;
+            },
+            onSocketClosed: () => {
+              ownsSocket = false;
+            },
             prepare: async () => ({ command: shell, args: shellArgs }),
             spawnPty: (child, options) =>
               nodePty.spawn(child.command, child.args, {

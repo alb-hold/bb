@@ -92,12 +92,16 @@ async function startRealHolder(
   const holderModule = pathToFileURL(
     path.join(import.meta.dirname, "..", "native-holder.ts"),
   ).href;
-  const script = `const { runNativeHolder, ignoreNativeHolderSignals } = await import(${JSON.stringify(holderModule)});
+  const script = `const { claimNativeHolderLaunch, runNativeHolder, ignoreNativeHolderSignals, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});
 const nodePty = await import("node-pty");
+const claim = claimNativeHolderLaunch(${JSON.stringify(socket)});
+const ownedGen = writeNativeHolderPidMarker(${JSON.stringify(socket)}, process.pid, claim.generation ?? 1, claim.token ?? "");
 ignoreNativeHolderSignals(process);
 await new Promise((resolve) => setTimeout(resolve, ${startupDelayMs}));
 const code = await runNativeHolder({
   socketPath: ${JSON.stringify(socket)},
+  holderMarkerGeneration: ownedGen ?? 1,
+  holderMarkerToken: claim.token ?? "",
   credentialRoot: ${JSON.stringify(dir)},
   reapAfterMs: ${reapAfterMs},
   onSocketReady: () => process.stdout.write("holder-ready\\n"),

@@ -257,7 +257,8 @@ export interface NativeHolderProcess {
 
 export interface RunNativeHolderOptions {
   socketPath: string;
-  holderMarkerGeneration?: number | null;
+  holderMarkerGeneration: number;
+  holderMarkerToken: string;
   holderPid?: number;
   holderPgid?: number;
   holderSid?: number;
@@ -387,20 +388,27 @@ function writeFrame(
 export async function runNativeHolder(
   options: RunNativeHolderOptions,
 ): Promise<number> {
+  const holderPid = options.holderPid ?? process.pid;
+  const ownedMarkerGeneration = options.holderMarkerGeneration;
+  const markerToken = options.holderMarkerToken;
   if (
-    options.holderMarkerGeneration !== undefined &&
-    (options.holderMarkerGeneration === null ||
-      !Number.isSafeInteger(options.holderMarkerGeneration) ||
-      options.holderMarkerGeneration <= 0)
+    !Number.isInteger(holderPid) ||
+    holderPid <= 0 ||
+    typeof ownedMarkerGeneration !== "number" ||
+    !Number.isSafeInteger(ownedMarkerGeneration) ||
+    ownedMarkerGeneration <= 0 ||
+    typeof markerToken !== "string" ||
+    !/^[0-9a-f]+$/u.test(markerToken) ||
+    !holderOwnsClaimedGeneration(
+      options.socketPath,
+      holderPid,
+      ownedMarkerGeneration,
+      markerToken,
+    )
   ) {
     return 1;
   }
   mkdirSync(path.dirname(options.socketPath), { recursive: true, mode: 0o700 });
-  const holderPid = options.holderPid ?? process.pid;
-  const ownedMarkerGeneration =
-    options.holderMarkerGeneration !== undefined
-      ? options.holderMarkerGeneration
-      : currentMatchingHolderGeneration(options.socketPath, holderPid);
   const reapAfterMs = options.reapAfterMs ?? NATIVE_HOLDER_REAP_AFTER_MS;
   let client: net.Socket | null = null;
   let detachedSince = Date.now();
@@ -456,13 +464,11 @@ export async function runNativeHolder(
     server.close();
     if (mainSocketIdentity !== null) {
       removeSocketFile(options.socketPath, mainSocketIdentity);
-      if (ownedMarkerGeneration !== null) {
-        closeGenerationMarkerForHolder(
-          options.socketPath,
-          ownedMarkerGeneration,
-          holderPid,
-        );
-      }
+      closeGenerationMarkerForHolder(
+        options.socketPath,
+        ownedMarkerGeneration,
+        holderPid,
+      );
     }
     statusServer.close();
     if (statusSocketIdentity !== null) {
@@ -698,13 +704,11 @@ export async function runNativeHolder(
     if (mainSocketIdentity !== null) {
       removeSocketFile(options.socketPath, mainSocketIdentity);
     }
-    if (ownedMarkerGeneration !== null) {
-      closeGenerationMarkerForHolder(
-        options.socketPath,
-        ownedMarkerGeneration,
-        holderPid,
-      );
-    }
+    closeGenerationMarkerForHolder(
+      options.socketPath,
+      ownedMarkerGeneration,
+      holderPid,
+    );
     statusServer.close();
     if (statusSocketIdentity !== null) {
       removeSocketFile(statusSocketPath, statusSocketIdentity);
@@ -1012,15 +1016,43 @@ function pruneLowerMarkerGenerations(
   }
 }
 
-function currentMatchingHolderGeneration(
+function holderOwnsClaimedGeneration(
   socketPath: string,
   holderPid: number,
-): number | null {
-  const { generation, state } = readHighestNativeHolderPidMarker(socketPath);
-  if (generation > 0 && state.kind === "holder" && state.pid === holderPid) {
-    return generation;
+  generation: number,
+  token: string,
+): boolean {
+  const currentHighest =
+    listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0;
+  if (currentHighest !== generation) return false;
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+  if (existsSync(closedPath)) return false;
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  let baseRaw: string;
+  let holderRaw: string;
+  try {
+    baseRaw = readFileSync(basePath, "utf8");
+    holderRaw = readFileSync(holderPath, "utf8");
+  } catch {
+    return false;
   }
-  return null;
+  const baseParsed = parseNativeHolderMarkerText(baseRaw);
+  const holderParsed = parseNativeHolderMarkerText(holderRaw);
+  if (
+    baseParsed === null ||
+    baseParsed.kind !== "launch" ||
+    baseParsed.token !== token ||
+    holderParsed === null ||
+    holderParsed.kind !== "holder" ||
+    holderParsed.pid !== holderPid
+  ) {
+    return false;
+  }
+  if (existsSync(closedPath)) return false;
+  return (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) === generation
+  );
 }
 
 function closeGenerationMarkerForHolder(

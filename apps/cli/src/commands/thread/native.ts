@@ -465,6 +465,7 @@ export async function holdNativeHarness(
     const exitCode = await runNativeHolder({
       socketPath,
       holderMarkerGeneration,
+      holderMarkerToken: options.markerToken,
       holderPid: process.pid,
       holderPgid: process.pid,
       holderSid: process.pid,
