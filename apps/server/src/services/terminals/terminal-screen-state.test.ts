@@ -347,6 +347,46 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("uses the closing callback when both synchronized chunks have callbacks", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const opening = vi.fn();
+    const closing = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+      opening,
+    );
+    await state.snapshot();
+    state.pushBase64(
+      1,
+      Buffer.from("second paint\u001b[?2026l").toString("base64"),
+      closing,
+    );
+    await state.snapshot();
+    expect(closing).toHaveBeenCalledOnce();
+    expect(opening).not.toHaveBeenCalled();
+    state.dispose();
+  });
+
+  it("uses the opening callback when the synchronized closing chunk has none", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const opening = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+      opening,
+    );
+    await state.snapshot();
+    state.pushBase64(
+      1,
+      Buffer.from("second paint\u001b[?2026l").toString("base64"),
+      undefined,
+    );
+    await state.snapshot();
+    expect(opening).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
   it("does not report a synchronized frame while the update remains open", async () => {
     const state = new TerminalScreenState(40, 5);
     const rendered = vi.fn();
