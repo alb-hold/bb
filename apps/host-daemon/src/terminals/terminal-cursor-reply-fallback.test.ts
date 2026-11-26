@@ -305,6 +305,15 @@ describe("TerminalCursorReplyFallback split replies", () => {
       };
     }
 
+    it("forwards a reply arriving after windowEnd when the fallback timer has not yet run and cancels the fallback", () => {
+      const { fallback, written, setClock } = blockedSetup();
+      setClock(WINDOW_END + 1_000);
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("\u001b[4;1R");
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS * 2);
+      expect(written).toEqual([]);
+      expect(fallback.isIdle()).toBe(true);
+    });
+
     it("swallows a late reply after a fire delayed past the deadline", () => {
       const { fallback, written, setClock } = blockedSetup();
       setClock(WINDOW_END + 1_000);
@@ -313,6 +322,42 @@ describe("TerminalCursorReplyFallback split replies", () => {
       setClock(WINDOW_END + 1_500);
       expect(fallback.filterInput("\u001b[4;1R")).toBe("");
       expect(fallback.isIdle()).toBe(true);
+    });
+
+    it("preserves FIFO and exactly one answer per query across two queries when the first stalls past windowEnd", () => {
+      const { fallback, written, setClock } = blockedSetup();
+      setClock(WINDOW_END + 1_000);
+      fallback.expect("\u001b[9;9R");
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("\u001b[4;1R");
+      expect(written).toEqual([]);
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      expect(written).toEqual(["\u001b[9;9R"]);
+      setClock(WINDOW_END + 1_500);
+      expect(fallback.filterInput("\u001b[8;2R")).toBe("");
+      expect(fallback.isIdle()).toBe(true);
+
+      const second = blockedSetup();
+      second.setClock(WINDOW_END + 1_000);
+      second.fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      expect(second.written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      second.setClock(WINDOW_END + 1_500);
+      expect(second.fallback.filterInput("\u001b[4;1R")).toBe("");
+      expect(second.fallback.filterInput("\u001b[8;2R")).toBe("");
+      expect(second.fallback.isIdle()).toBe(true);
+
+      const bothRepliedBeforeTimer = blockedSetup();
+      bothRepliedBeforeTimer.setClock(WINDOW_END + 1_000);
+      bothRepliedBeforeTimer.fallback.expect("\u001b[9;9R");
+      expect(bothRepliedBeforeTimer.fallback.filterInput("\u001b[4;1R")).toBe(
+        "\u001b[4;1R",
+      );
+      expect(bothRepliedBeforeTimer.fallback.filterInput("\u001b[8;2R")).toBe(
+        "\u001b[8;2R",
+      );
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS * 2);
+      expect(bothRepliedBeforeTimer.written).toEqual([]);
+      expect(bothRepliedBeforeTimer.fallback.isIdle()).toBe(true);
     });
 
     it("reschedules a held prefix to the new slot end after a delayed fire", () => {
