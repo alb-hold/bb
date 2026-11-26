@@ -214,11 +214,6 @@ export function createBridgeSocketServer(
     const internalId = `${INTERNAL_RELEASE_ID_PREFIX}${nextInternalReleaseSeq}`;
     nextInternalReleaseSeq += 1;
     pendingThreadReleases.set(internalId, entry);
-    while (pendingThreadReleases.size > 4096) {
-      const oldest = pendingThreadReleases.keys().next();
-      if (oldest.done === true) break;
-      pendingThreadReleases.delete(oldest.value);
-    }
     return internalId;
   }
 
@@ -544,6 +539,8 @@ export function createBridgeSocketServer(
     if (closed) return;
     closed = true;
     clearReattachTimer();
+    pendingThreadReleases.clear();
+    openWorkByThread.clear();
     current?.destroy();
     current = null;
     updateBackpressure();
