@@ -275,60 +275,6 @@ describe("idle reaping of adopted provider sessions", () => {
     expect(isPidAlive(worker.pid)).toBe(true);
   }, WORKER_EXIT_TIMEOUT_MS);
 
-  it("reaps an adopted session only after its background command settles and the idle threshold passes", async () => {
-    const events: ThreadEvent[] = [];
-    const before = createRuntime(events);
-    await before.startThread({
-      environmentId: "env-1",
-      threadId: "t1",
-      projectId: "p1",
-      providerId: PROVIDER_ID,
-      options: fullRuntimeOptions,
-    });
-    const [worker] = trackWorkers();
-    if (worker === undefined) throw new Error("no registered worker");
-    await before.runTurn({
-      clientRequestId: "creq_adptt5555b",
-      threadId: "t1",
-      input: [promptTextInput({ text: "bg_task" })],
-      options: fullRuntimeOptions,
-    });
-    await waitForThreadTurnCompleted({ events, threadId: "t1" });
-    await before.detach();
-
-    const after = createRuntime(events);
-    adoptAll(after);
-    const turnsBefore = events.filter(
-      (event) => event.type === "turn/completed",
-    ).length;
-    await after.runTurn({
-      clientRequestId: "creq_adptt6666b",
-      threadId: "t1",
-      input: [promptTextInput({ text: "bg_task_done" })],
-      options: fullRuntimeOptions,
-    });
-    await waitForRuntimeState({
-      label: "settling turn completed",
-      predicate: () =>
-        events.filter((event) => event.type === "turn/completed").length >
-        turnsBefore,
-      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
-    });
-
-    const early = await after.reapIdleProviderSessions({
-      idleForMs: IDLE_FOR_MS,
-      nowMs: Date.now(),
-    });
-    expect(early.reapedSessions).toEqual([]);
-    const late = await after.reapIdleProviderSessions({
-      idleForMs: IDLE_FOR_MS,
-      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
-    });
-    expect(late.reapedSessions.map((session) => session.threadId)).toEqual([
-      "t1",
-    ]);
-  }, WORKER_EXIT_TIMEOUT_MS);
-
   it("never reaps an idle session with a running background command", async () => {
     const events: ThreadEvent[] = [];
     const runtime = createRuntime(events);
