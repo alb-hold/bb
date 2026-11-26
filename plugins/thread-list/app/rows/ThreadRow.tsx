@@ -603,17 +603,13 @@ function useThreadSplitMiniMap(
 }
 
 function PhoneBranchLabel({ branch }: { branch: string }) {
-  const suffix = branch.match(/(?:thr_[^-/:]+|[^-/:]+)$/u)?.[0] ?? branch;
-  const tail = Array.from(suffix).slice(-14).join("");
-  const head = branch.slice(0, branch.length - tail.length);
   return (
     <span
       data-sidebar-thread-phone-context=""
       title={branch}
-      className="flex min-w-0 flex-1 whitespace-nowrap md:hidden"
+      className="block min-w-0 flex-1 truncate md:hidden"
     >
-      <span className="min-w-0 truncate">{head}</span>
-      <span className="shrink-0">{tail}</span>
+      {branch}
     </span>
   );
 }

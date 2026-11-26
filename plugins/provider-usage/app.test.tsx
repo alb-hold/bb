@@ -322,7 +322,7 @@ describe("provider usage footer disclosure", () => {
       kind: "disclosure",
       id: "usage",
       label: "Provider usage",
-      icon: "ChartColumn",
+      icon: "Limitation",
     });
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(

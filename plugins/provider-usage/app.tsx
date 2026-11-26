@@ -1038,7 +1038,7 @@ export default definePluginApp((app) => {
     kind: "disclosure",
     id: "usage",
     label: "Provider usage",
-    icon: "ChartColumn",
+    icon: "Limitation",
     component: ProviderUsageStatus,
   });
   app.contentScripts.register({

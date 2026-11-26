@@ -1272,7 +1272,7 @@ describe("CommandPalette", () => {
         query === "" ? "No threads" : "No matching threads",
       );
       expectClasses(message.parentElement, "justify-center", "px-3", "py-4");
-      expectClasses(message, "text-xs", "text-subtle-foreground/60");
+      expectClasses(message, "text-xs", "text-sidebar-metadata-foreground");
       expect(
         message.parentElement?.querySelector('[data-icon="MessageSquare"]'),
       ).not.toBeNull();

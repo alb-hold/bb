@@ -392,7 +392,7 @@ export function PluginSidebarFooterItems({
                   }}
                   className={SIDEBAR_FOOTER_ACTION_CLASS}
                 >
-                  <Icon name="MoreHorizontal" />
+                  <Icon name="SlidersHorizontal" aria-hidden="true" />
                   <span className="sr-only">More</span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>

@@ -697,7 +697,11 @@ describe("sidebar and drawer row accessibility", () => {
     expect(context?.classList.contains("max-md:items-stretch")).toBe(false);
     expect(context?.classList.contains("flex")).toBe(true);
     expect(branch).not.toBeNull();
-    expect(branch?.firstElementChild?.classList.contains("truncate")).toBe(true);
-    expect(branch?.lastElementChild?.classList.contains("shrink-0")).toBe(true);
+    expect(branch?.textContent).toBe("bb/serves-p3-identical-prefix-thr_zzu7nae7rh");
+    expect(branch?.classList.contains("truncate")).toBe(true);
+    expect(branch?.classList.contains("min-w-0")).toBe(true);
+    expect(branch?.classList.contains("flex-1")).toBe(true);
+    expect(branch?.childElementCount).toBe(0);
+    expect(branch?.querySelector(".shrink-0")).toBeNull();
   });
 });

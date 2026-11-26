@@ -698,3 +698,32 @@ it("gives dark structural borders a visible step without changing light or text"
   expect(rampSteps(modeBlock("light")).get("border")).toBe(14);
   expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
 });
+
+it("keeps thread-list empty state on a derived sidebar token above 4.5:1 in both themes", () => {
+  const emptyStateSource = readFileSync(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../../../packages/shared-ui/src/components/ui/thread-list-empty-state.tsx",
+    ),
+    "utf8",
+  );
+  expect(emptyStateSource).toContain("text-sidebar-metadata-foreground");
+  expect(emptyStateSource).not.toMatch(/text-subtle-foreground\/\d+/);
+  for (const scheme of MODES) {
+    const block = modeBlock(scheme);
+    const ink = parseOklch(variableValue(block, "ink"));
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const steps = rampSteps(block);
+    const mixed = (token: string) => {
+      const share = steps.get(token);
+      if (share === undefined) throw new Error(`Missing ramp token ${token}`);
+      return {
+        ...canvas,
+        lightness: canvas.lightness + ((ink.lightness - canvas.lightness) * share) / 100,
+      };
+    };
+    const emptyText = mixed("sidebar-metadata-foreground");
+    expect(contrastRatio(emptyText, mixed("sidebar"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(emptyText, canvas)).toBeGreaterThanOrEqual(4.5);
+  }
+});

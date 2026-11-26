@@ -763,9 +763,9 @@ describe("ThreadRow", () => {
           name: `Open Investigate timeout · Atlas · bb/serves-p3-identical-prefix-thr_${branch}`,
         });
         const context = screen.getByTitle(`bb/serves-p3-identical-prefix-thr_${branch}`);
-        expect(context.lastElementChild?.textContent).toBe(`thr_${branch}`);
-        expect(context.lastElementChild?.classList.contains("shrink-0")).toBe(true);
-        expect(context.firstElementChild?.classList.contains("truncate")).toBe(true);
+        expect(context.classList.contains("truncate")).toBe(true);
+        expect(context.childElementCount).toBe(0);
+        expect(context.querySelector(".shrink-0")).toBeNull();
         expect(context.textContent).toBe(context.title);
         expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
       }

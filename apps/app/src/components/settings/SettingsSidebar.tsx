@@ -28,18 +28,16 @@ import { PluginIcon } from "@/components/plugin/PluginIcon";
 import {
   SectionSidebar,
   SectionSidebarIcon,
-  SectionSidebarLabel,
-  SectionSidebarActionRow,
-  SectionSidebarRow,
 } from "@/components/sidebar/SectionSidebar";
 import { useSidebarHeaderControlAxisClass } from "@/components/sidebar/SidebarChrome";
 import { useCloseMobileSidebar, useSidebar } from "@/components/ui/sidebar.js";
 import { isEditableKeyboardTarget } from "@/lib/app-keybindings";
 import { MACOS_APP_REGION_NO_DRAG_CLASS } from "@/lib/bb-desktop";
-import { canOpenNativeScreen, shellOpenNative } from "@/lib/native-shell";
-import { getPluginConfigurationRoutePath } from "@/lib/route-paths";
 import { useSettingsNavState } from "./settings-nav";
-import type { SettingsNavState } from "./settings-nav";
+import {
+  SettingsCategoryList,
+  type SettingsCategoryNavigation,
+} from "./SettingsCategoryNav";
 import {
   buildSettingsSearchItems,
   searchSettings,
@@ -48,7 +46,6 @@ import {
   type SettingsSearchCondition,
   type SettingsSearchItem,
 } from "./settings-search";
-import { getSettingsSectionRoutePath } from "./settings-sections";
 import { usePluginSettingSearch } from "./usePluginSettingSearch";
 import { useSettingsSearchConditions } from "./useSettingsSearchConditions";
 
@@ -58,10 +55,7 @@ interface SettingsSidebarProps {
   isResizing: boolean;
 }
 
-type SettingsSidebarNavigation = Pick<
-  SettingsNavState,
-  "activePluginId" | "activeSection" | "pluginEntries" | "sections"
->;
+type SettingsSidebarNavigation = SettingsCategoryNavigation;
 
 export interface SettingsSidebarPluginSettingSearch {
   entries: readonly PluginSettingSearchEntry[];
@@ -298,8 +292,7 @@ export function SettingsSidebarContent({
   searchConditions,
   testIdPrefix = "settings",
 }: SettingsSidebarContentProps) {
-  const { activePluginId, activeSection, pluginEntries, sections } = navigation;
-  const hasPlugins = pluginEntries.length > 0;
+  const { pluginEntries, sections } = navigation;
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const closeOnMobile = useCloseMobileSidebar();
@@ -412,82 +405,10 @@ export function SettingsSidebarContent({
           results={results}
         />
       ) : (
-        <>
-          <div className="mt-1 space-y-0.5">
-            {sections
-              .filter((section) => section.id !== "archived")
-              .map((section) => (
-                <SectionSidebarRow
-                  key={section.id}
-                  active={activeSection === section.id}
-                  label={section.label}
-                  to={getSettingsSectionRoutePath(section.id)}
-                >
-                  <SectionSidebarIcon name={section.icon} />
-                </SectionSidebarRow>
-              ))}
-          </div>
-          {hasPlugins ? (
-            <>
-              <div className="mt-4">
-                <SectionSidebarLabel>Plugins</SectionSidebarLabel>
-              </div>
-              <div className="mt-1 space-y-0.5">
-                {pluginEntries.map((entry) => (
-                  <SectionSidebarRow
-                    key={entry.id}
-                    active={activePluginId === entry.id}
-                    label={entry.label}
-                    to={getPluginConfigurationRoutePath({ pluginId: entry.id })}
-                  >
-                    <PluginIcon
-                      pluginId={entry.id}
-                      icon={entry.icon}
-                      className="size-4 shrink-0"
-                    />
-                  </SectionSidebarRow>
-                ))}
-              </div>
-            </>
-          ) : null}
-          {canOpenNativeScreen() ? (
-            <>
-              <div className="mt-4">
-                <SectionSidebarLabel>This phone</SectionSidebarLabel>
-              </div>
-              <div className="mt-1 space-y-0.5">
-                <SectionSidebarActionRow
-                  label="This device"
-                  testId="settings-nav-native-device"
-                  onClick={() => shellOpenNative("device-settings")}
-                >
-                  <SectionSidebarIcon name="Smartphone" />
-                </SectionSidebarActionRow>
-              </div>
-            </>
-          ) : null}
-          {sections.some((section) => section.id === "archived") ? (
-            <>
-              <div className="mt-4">
-                <SectionSidebarLabel>Archived</SectionSidebarLabel>
-              </div>
-              <div className="mt-1 space-y-0.5">
-                {sections
-                  .filter((section) => section.id === "archived")
-                  .map((section) => (
-                    <SectionSidebarRow
-                      key={section.id}
-                      active={activeSection === section.id}
-                      label={section.label}
-                      to={getSettingsSectionRoutePath(section.id)}
-                    >
-                      <SectionSidebarIcon name={section.icon} />
-                    </SectionSidebarRow>
-                  ))}
-              </div>
-            </>
-          ) : null}
-        </>
+        <SettingsCategoryList
+          navigation={navigation}
+          onSelect={closeOnMobile}
+        />
       )}
     </SectionSidebar>
   );
