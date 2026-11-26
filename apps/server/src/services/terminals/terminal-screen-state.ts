@@ -461,6 +461,7 @@ export class TerminalScreenState {
   private replayCursorStyle = "";
   private replayBatchBytes = 8 * 1024;
   private frameBaseline?: string;
+  private synchronizedRenderCallback?: () => void;
 
   constructor(
     cols: number,
@@ -736,18 +737,33 @@ export class TerminalScreenState {
                   return;
                 }
                 const rendered = next.kind === "base64" && next.rendered;
-                if (rendered)
+                if (rendered) {
                   this.frameBaseline ??= visibleFrameContent(this.terminal);
-                else this.frameBaseline = undefined;
+                  if (this.terminal.modes.synchronizedOutputMode) {
+                    this.synchronizedRenderCallback ??= rendered;
+                  }
+                } else if (
+                  !this.terminal.modes.synchronizedOutputMode &&
+                  this.synchronizedRenderCallback === undefined
+                ) {
+                  this.frameBaseline = undefined;
+                }
                 this.terminal.write(data, () => {
-                  if (
-                    rendered &&
-                    !this.disposed &&
-                    isTerminalReplaySafeBoundary(this.parserState)
-                  ) {
-                    const current = visibleFrameContent(this.terminal);
-                    if (current && current !== this.frameBaseline) rendered();
-                    this.frameBaseline = undefined;
+                  const synchronizedRenderCallback =
+                    this.synchronizedRenderCallback;
+                  const frameCallback = rendered ?? synchronizedRenderCallback;
+                  if (frameCallback && !this.disposed) {
+                    if (this.terminal.modes.synchronizedOutputMode) {
+                      this.synchronizedRenderCallback ??= frameCallback;
+                    } else if (
+                      isTerminalReplaySafeBoundary(this.parserState)
+                    ) {
+                      const current = visibleFrameContent(this.terminal);
+                      if (current && current !== this.frameBaseline)
+                        frameCallback();
+                      this.frameBaseline = undefined;
+                      this.synchronizedRenderCallback = undefined;
+                    }
                   }
                   const elapsed = performance.now() - started;
                   if (elapsed > 8)

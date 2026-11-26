@@ -331,7 +331,7 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
-  it("reports changed output while synchronized output remains enabled", async () => {
+  it("reports a synchronized frame when a later chunk closes the update", async () => {
     const state = new TerminalScreenState(40, 5);
     const rendered = vi.fn();
     state.pushBase64(
@@ -340,7 +340,25 @@ describe("TerminalScreenState", () => {
       rendered,
     );
     await state.snapshot();
+    expect(rendered).not.toHaveBeenCalled();
+    state.push(1, Buffer.from("second paint\u001b[?2026l"));
+    await state.snapshot();
     expect(rendered).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
+  it("does not report a synchronized frame while the update remains open", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const rendered = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+      rendered,
+    );
+    await state.snapshot();
+    state.push(1, Buffer.from("second paint"));
+    await state.snapshot();
+    expect(rendered).not.toHaveBeenCalled();
     state.dispose();
   });
 
