@@ -212,6 +212,7 @@ interface PendingAdoption {
   threadId: string;
   activeTurnId: string | null;
   activeProviderTurnId: string | null;
+  openBackgroundWorkCount: number;
 }
 
 const adoptedThreadConfigSchema = z
@@ -332,6 +333,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   >();
   const threadsRetryingBridgeRestartOnIdle = new Set<string>();
   const idleProviderSessionSinceMsByThreadId = new Map<string, number>();
+  const adoptedUnverifiedBackgroundWorkThreadIds = new Set<string>();
   const pendingTurnStarts = new Map<
     string,
     { clientRequestId: string; sinceMs: number; watchdogFired: boolean }
@@ -834,6 +836,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         activeTurnId === null
           ? null
           : target.proc.adapter.getProviderTurnId(threadId, activeTurnId),
+      openBackgroundWorkCount:
+        (backgroundWorkState
+          .listOpenWork()
+          .find((work) => work.threadId === threadId)?.itemIds.length ?? 0) +
+        (adoptedUnverifiedBackgroundWorkThreadIds.has(threadId) ? 1 : 0),
       config: Object.fromEntries(
         Object.entries({ ...config, envVars: {}, contributedEnv: [] }),
       ),
@@ -878,6 +885,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           threadId,
           activeTurnId: thread.activeTurnId,
           activeProviderTurnId: thread.activeProviderTurnId,
+          openBackgroundWorkCount: thread.openBackgroundWorkCount ?? 1,
         });
         adoptedThreads.push({ threadId, activeTurnId: thread.activeTurnId });
       }
@@ -912,6 +920,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         });
         if (!continuesServerTurn) options.onEvent(seed);
       }
+      if (adoption.openBackgroundWorkCount > 0) {
+        adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
+      }
+      markHostedProviderSessionIdle(adoption.threadId);
       persistAdoptableThread(adoption.threadId);
     }
     for (const proc of new Set(adoptions.map((adoption) => adoption.proc))) {
@@ -1044,6 +1056,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     clearThreadRuntimeConfig(threadId);
     turnState.clearThread(threadId);
     backgroundWorkState.clearThread(threadId);
+    adoptedUnverifiedBackgroundWorkThreadIds.delete(threadId);
     threadEventGrammar.clearThread(threadId);
   }
 
@@ -1494,7 +1507,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         );
       }
       turnState.observe(normalizedEvent);
+      const hadBackgroundWork =
+        backgroundWorkState.hasOpenThreadWork(targetThreadId);
       backgroundWorkState.observe(normalizedEvent);
+      if (
+        hadBackgroundWork !==
+        backgroundWorkState.hasOpenThreadWork(targetThreadId)
+      ) {
+        persistAdoptableThread(targetThreadId);
+      }
       observeProviderSessionIdleState(normalizedEvent);
       options.onEvent(normalizedEvent, activeLineAckTracker?.delivery());
       threadGoalState.observe(normalizedEvent);
@@ -2959,7 +2980,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           } catch {
             return null;
           }
-          if (backgroundWorkState.hasOpenThreadWork(candidate.threadId)) {
+          if (
+            backgroundWorkState.hasOpenThreadWork(candidate.threadId) ||
+            adoptedUnverifiedBackgroundWorkThreadIds.has(candidate.threadId)
+          ) {
             return null;
           }
 
