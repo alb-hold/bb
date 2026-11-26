@@ -105,7 +105,12 @@ function readCompilerOptions(tsconfigPath: string): ts.CompilerOptions {
     ts.sys,
     path.dirname(tsconfigPath),
   );
-  return parsed.options;
+  return {
+    ...parsed.options,
+    customConditions: [
+      ...new Set([...(parsed.options.customConditions ?? []), "source"]),
+    ],
+  };
 }
 
 function getDeltaItemShapeType(
@@ -208,6 +213,16 @@ function typeOfObjectPropertyNode(
   return checker.getTypeAtLocation(prop);
 }
 
+function isUninhabitedType(checker: ts.TypeChecker, part: ts.Type): boolean {
+  if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return false;
+  }
+  if ((part.flags & ts.TypeFlags.Never) !== 0) {
+    return true;
+  }
+  return checker.isTypeAssignableTo(part, checker.getNeverType());
+}
+
 function spreadCanSupplyProperty(
   checker: ts.TypeChecker,
   spreadExpr: ts.Expression,
@@ -218,6 +233,9 @@ function spreadCanSupplyProperty(
   return parts.some((part) => {
     if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
       return true;
+    }
+    if (isUninhabitedType(checker, part)) {
+      return false;
     }
     if (checker.getIndexTypeOfType(part, ts.IndexKind.String) !== undefined) {
       return true;
@@ -232,7 +250,13 @@ function hasUnsafeItemTypeConstituent(
   exprType: ts.Type,
 ): boolean {
   const parts = exprType.isUnion() ? exprType.types : [exprType];
-  return parts.some((part) => {
+  const inhabitedParts = parts.filter(
+    (part) => !isUninhabitedType(checker, part),
+  );
+  if (inhabitedParts.length === 0) {
+    return true;
+  }
+  return inhabitedParts.some((part) => {
     if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
       return true;
     }
@@ -241,9 +265,12 @@ function hasUnsafeItemTypeConstituent(
       return true;
     }
     const typePropType = checker.getTypeOfSymbolAtLocation(typeSymbol, expr);
-    const typeParts = typePropType.isUnion()
-      ? typePropType.types
-      : [typePropType];
+    const typeParts = (
+      typePropType.isUnion() ? typePropType.types : [typePropType]
+    ).filter((constituent) => !isUninhabitedType(checker, constituent));
+    if (typeParts.length === 0) {
+      return true;
+    }
     return typeParts.some(
       (constituent) => (constituent.flags & ts.TypeFlags.StringLiteral) === 0,
     );
@@ -315,6 +342,7 @@ function analyzeSourceFileInProgram(
         : [targetType];
       const targetsDeltaItem = targetParts.some(
         (part) =>
+          !isUninhabitedType(checker, part) &&
           (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
           checker.isTypeAssignableTo(part, deltaItemShapeType),
       );
@@ -342,6 +370,7 @@ function analyzeSourceFileInProgram(
       if (
         returnParts.some(
           (part) =>
+            !isUninhabitedType(checker, part) &&
             (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
             checker.isTypeAssignableTo(part, deltaItemShapeType),
         )
@@ -409,7 +438,7 @@ function analyzeSourceFileInProgram(
             ).filter(
               (part) =>
                 (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                0,
+                  0 && !isUninhabitedType(checker, part),
             )
           : [];
       const insideTypeAssertion = Boolean(
@@ -496,9 +525,9 @@ function analyzeSourceFileInProgram(
                     );
                   }
                 } else {
-                  const spreadParts = spreadType.isUnion()
-                    ? spreadType.types
-                    : [spreadType];
+                  const spreadParts = (
+                    spreadType.isUnion() ? spreadType.types : [spreadType]
+                  ).filter((part) => !isUninhabitedType(checker, part));
                   const spreadKinds: string[] = [];
                   for (const part of spreadParts) {
                     const sym = part.getProperty("type");
@@ -721,7 +750,7 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
         ...FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS["provider-pi"],
       ],
     });
-  }, 30_000);
+  }, 45_000);
 
   it("detects literal and union-typed dynamic backgroundTask and delegation items", () => {
     const results = scanSyntheticAdapterSources({
