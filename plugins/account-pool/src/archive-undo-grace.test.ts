@@ -1,11 +1,13 @@
 import { createAccountPoolTestHost } from "./test-host.js";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { statusReportSchema } from "./contracts.js";
 import { createAccountPoolPlugin } from "./server.js";
+import { HubTokenStore } from "./store.js";
+import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
 
 const ARCHIVE_UNDO_GRACE_MS = 30_000;
 
@@ -249,6 +251,7 @@ describe("Account Pooler archive undo grace", () => {
   it("fails closed when settling a half-minted credential rejects after forNested sees an archived thread", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-mint-settle-fail-"));
     let threadReads = 0;
+    let failSettleLookup = true;
     let thread = makeThreadResponse({
       id: "thr_race_settle_fail",
       status: "idle",
@@ -270,7 +273,7 @@ describe("Account Pooler archive undo grace", () => {
                 archivedAt: Date.now(),
               });
             }
-            if (threadReads >= 4) {
+            if (failSettleLookup && threadReads >= 4) {
               throw new Error("lookup failed while settling");
             }
             return thread;
@@ -312,5 +315,82 @@ describe("Account Pooler archive undo grace", () => {
     ).rejects.toThrow("lookup failed while settling");
     expect(threadReads).toBe(5);
     expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
+
+    const secretDir = path.join(
+      dataDir,
+      "plugins",
+      "account-pool",
+      "secrets",
+      "accounts",
+    );
+    expect(
+      (await readdir(secretDir)).filter((name) =>
+        name.startsWith("scoped-route-"),
+      ),
+    ).toHaveLength(1);
+
+    failSettleLookup = false;
+    const service = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+    });
+    await vi.waitFor(async () => {
+      const result = await host.harness.behavior.runCli(["status", "--json"]);
+      expect(
+        statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
+      ).toBe(true);
+      const afterSweep = await readdir(secretDir);
+      expect(
+        afterSweep.filter((name) => name.startsWith("archived-thread-")),
+      ).toHaveLength(1);
+    });
+    expect(
+      await host.harness.behavior.resolveProviderEnv("codex", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).toEqual([]);
+
+    const storeDir = await mkdtemp(path.join(tmpdir(), "bb-pool-half-mint-sweep-"));
+    cleanups.push(async () => {
+      await rm(storeDir, { recursive: true, force: true });
+    });
+    let lookupMode: "live" | "fail" | "archived" = "live";
+    const lookup: ThreadLookup = async () => {
+      if (lookupMode === "fail") {
+        throw new Error("lookup failed while settling");
+      }
+      return lookupMode;
+    };
+    const hubTokens = new HubTokenStore(storeDir);
+    await hubTokens.initialize();
+    const hostToken = await hubTokens.forHost("host-one");
+    const threadTokens = new ThreadTokenStore(
+      storeDir,
+      hubTokens,
+      Date.now,
+      lookup,
+    );
+    await threadTokens.initialize(["host-one"]);
+    const halfMintedToken = await threadTokens.forThread(
+      {
+        threadId: "thr_half_minted_token",
+        hostId: "host-one",
+        provider: "codex",
+        accountId: null,
+      },
+      hostToken,
+    );
+    expect(await threadTokens.authenticate(halfMintedToken, "codex")).not.toBeNull();
+    lookupMode = "fail";
+    await expect(
+      threadTokens.settleThread("thr_half_minted_token"),
+    ).rejects.toThrow("lookup failed while settling");
+    lookupMode = "archived";
+    const sweepResult = await threadTokens.sweepThreads(lookup);
+    expect(sweepResult).toMatchObject({ checked: 1, failed: 0, deferred: 0 });
+    expect(await threadTokens.authenticate(halfMintedToken, "codex")).toBeNull();
   });
 });
