@@ -173,4 +173,76 @@ describe("Account Pooler archive undo grace", () => {
     expect(await f.request()).toBe(401);
     expect(f.upstream).not.toHaveBeenCalled();
   });
+
+  it("returns unrouted entries without throwing when a thread is archived or deleted while minting environment credentials", async () => {
+    for (const mode of ["archived-on-thread", "archived-on-nested", "deleted-on-thread"] as const) {
+      let threadReads = 0;
+      const dataDir = await mkdtemp(path.join(tmpdir(), "pool-archive-mint-race-"));
+      let thread = makeThreadResponse({
+        id: `thread-${mode}`,
+        providerId: "codex",
+        status: "idle",
+      });
+      const host = createAccountPoolTestHost({
+        pluginId: "account-pool",
+        dataDir,
+        sdk: {
+          hosts: { list: async () => [{ id: "host-one", name: "One" }] },
+          threads: {
+            get: async () => {
+              threadReads += 1;
+              if (
+                (mode === "archived-on-thread" && threadReads === 2) ||
+                (mode === "archived-on-nested" && threadReads === 3)
+              ) {
+                thread = makeThreadResponse({
+                  ...thread,
+                  archivedAt: Date.now(),
+                });
+              }
+              if (mode === "deleted-on-thread" && threadReads === 2) {
+                thread = makeThreadResponse({
+                  ...thread,
+                  deletedAt: Date.now(),
+                });
+              }
+              return thread;
+            },
+          },
+          system: { providerStates: async () => ({ providers: [] }) },
+        },
+      });
+      await createAccountPoolPlugin({
+        env: {},
+        codexUsageUrl: "https://usage.invalid/wham/usage",
+        fetch: async () => Response.json({}),
+        importCodexCredentials: async () => ({
+          accessToken: "codex-access-test",
+          refreshToken: "codex-refresh-test",
+          idToken: null,
+          accountId: "codex-acc-1",
+          planType: "pro",
+          email: null,
+          expiresAt: Date.now() + 3_600_000,
+        }),
+      })(host.bb);
+      cleanups.push(async () => {
+        await host.harness.lifecycle.dispose();
+        await rm(dataDir, { recursive: true, force: true });
+      });
+      await host.harness.behavior.callRpc("account.add", {
+        provider: "codex",
+        source: { kind: "import" },
+        label: null,
+        priority: 100,
+      });
+      const entries = await host.harness.behavior.resolveProviderEnv("codex", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      });
+      expect(entries).toEqual([]);
+      expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
+    }
+  });
 });

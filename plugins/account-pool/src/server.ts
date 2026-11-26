@@ -202,6 +202,14 @@ export function helloResponse(): Response {
   return new Response(null, { status: 200 });
 }
 
+function isInactiveThreadMintError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === "Cannot mint a credential for an archived thread." ||
+      error.message === "Cannot mint a credential for a deleted thread.")
+  );
+}
+
 export function createAccountPoolPlugin(
   options: AccountPoolPluginOptions = {},
 ) {
@@ -1106,22 +1114,36 @@ export function createAccountPoolPlugin(
           if (archive.status === "unknown") throw archive.error;
           await bb.storage.kv.set(`retry-route:${context.threadId}`, provider);
           const hostToken = await hubTokens.forHost(context.hostId);
-          const token = await threadTokens.forThread(
-            {
-              threadId: context.threadId,
-              hostId: context.hostId,
-              provider,
-              accountId,
-            },
-            hostToken,
-            lifetime,
-          );
-          const nestedToken = await threadTokens.forNested(
-            { threadId: context.threadId, hostId: context.hostId },
-            hostToken,
-            lifetime,
-          );
-          if (await revokeIfArchived(context.threadId)) return unrouted();
+          let token: string | undefined;
+          let nestedToken: string;
+          try {
+            token = await threadTokens.forThread(
+              {
+                threadId: context.threadId,
+                hostId: context.hostId,
+                provider,
+                accountId,
+              },
+              hostToken,
+              lifetime,
+            );
+            nestedToken = await threadTokens.forNested(
+              { threadId: context.threadId, hostId: context.hostId },
+              hostToken,
+              lifetime,
+            );
+          } catch (error) {
+            if (!isInactiveThreadMintError(error)) throw error;
+            await bb.storage.kv.delete(`retry-route:${context.threadId}`);
+            if (token !== undefined) {
+              await revokeIfArchived(context.threadId).catch(() => undefined);
+            }
+            return unrouted();
+          }
+          if (await revokeIfArchived(context.threadId)) {
+            await bb.storage.kv.delete(`retry-route:${context.threadId}`);
+            return unrouted();
+          }
           const served = await serving(token, "thread", context);
           if (served === null) {
             if (accountId !== null)

@@ -15343,8 +15343,11 @@ describe("Account Pool credential scoping", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).rejects.toThrow("Cannot mint a credential for an archived thread.");
+    ).resolves.toEqual([]);
     expect(lookups).toBe(2);
+    expect(await host.bb.storage.kv.get("retry-route:thread-racing")).toBe(
+      undefined,
+    );
     expect(
       (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
         (name) => name.includes("thread-racing"),
