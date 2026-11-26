@@ -6,6 +6,7 @@ export const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
 export const HOST_RETAINED_OUTPUT_BYTES = 2 * 1024 * 1024;
 export const HOST_RETAINED_TERMINAL_LIMIT = 128;
 export const TERMINAL_OUTPUT_RETENTION_MS = 30 * 60_000;
+export const NATIVE_TERMINAL_OUTPUT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const PRUNE_BATCH_ROWS = 128;
 
 export interface RetainedTerminalOutputChunk {
@@ -403,9 +404,20 @@ export function markRetainedTerminalOutputExited(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_terminal_output SET expires_at = ? WHERE terminal_session_id = ? AND host_id = ?`,
+      `UPDATE fork_terminal_output
+       SET expires_at = ? + CASE WHEN EXISTS (
+         SELECT 1 FROM fork_native_terminal_threads n
+         WHERE n.terminal_session_id = fork_terminal_output.terminal_session_id
+       ) THEN ? ELSE ? END
+       WHERE terminal_session_id = ? AND host_id = ?`,
     )
-    .run(now + TERMINAL_OUTPUT_RETENTION_MS, terminalSessionId, hostId);
+    .run(
+      now,
+      NATIVE_TERMINAL_OUTPUT_RETENTION_MS,
+      TERMINAL_OUTPUT_RETENTION_MS,
+      terminalSessionId,
+      hostId,
+    );
 }
 
 export function dismissRetainedTerminalOutput(

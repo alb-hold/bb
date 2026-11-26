@@ -182,6 +182,7 @@ export function NativeThreadTerminalMain({
     ? createPortal(
         <NativeTerminalActivity
           error={effectiveStatus === "error"}
+          exited={state.kind === "ended"}
           indicator={
             interactionsQuery.data?.some(
               (interaction) => interaction.status === "pending",
@@ -323,7 +324,7 @@ export function NativeThreadTerminalMain({
     );
   const endedLabel =
     runtime.nativeSessionExit === "clean"
-      ? "Exited, resume to continue"
+      ? "Resume to continue"
       : `${providerLabel} session ended`;
 
   if (session?.status === "exited" && !historyExpired) {
@@ -342,7 +343,7 @@ export function NativeThreadTerminalMain({
                 ? ` (exit ${state.exitCode})`
                 : ""}
             </span>
-            {session.closeReason ? (
+            {session.closeReason && session.closeReason !== "process-exit" ? (
               <span className="text-muted-foreground">{session.closeReason.replaceAll("-", " ")}</span>
             ) : null}
             {view.nativeSessionId === null ? null : (

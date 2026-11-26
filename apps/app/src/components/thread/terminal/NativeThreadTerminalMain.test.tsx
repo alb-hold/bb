@@ -277,6 +277,33 @@ describe("NativeThreadTerminalMain", () => {
     },
   );
 
+  it("shows an exited header state instead of Idle for an ended terminal", () => {
+    const terminal = {
+      id: "term-exited",
+      status: "exited",
+      exitCode: 0,
+      closeReason: "process-exit",
+    } as NonNullable<NativeTerminalThread["terminal"]>;
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [terminal] },
+      dataUpdatedAt: 1,
+      isLoading: false,
+    });
+    render(
+      <TerminalWithHeader
+        projectId="proj_native"
+        runtime={{ displayStatus: "idle", nativeSessionExit: "clean" }}
+        threadId="thr_native"
+        threadIsProvisioning={false}
+        view={{ ...nativeView, terminal }}
+      />,
+    );
+    const status = screen.getByRole("status", { name: "Terminal activity" });
+    expect(status.textContent).toBe("Exited");
+    expect(screen.queryByText("Idle")).toBeNull();
+    expect(screen.getAllByText(/exited/i)).toHaveLength(1);
+  });
+
   it("keeps the terminal layout unchanged when attention clears", () => {
     const terminal = {
       id: "term-live",
@@ -529,7 +556,7 @@ describe("NativeThreadTerminalMain", () => {
       if (original) Object.defineProperty(navigator, "clipboard", original);
       else Reflect.deleteProperty(navigator, "clipboard");
     }
-    expect(screen.getByText("process exit")).toBeTruthy();
+    expect(screen.queryByText("process exit")).toBeNull();
     expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(screen.getByTestId("terminal-panel")).toBeTruthy();
     expect(
@@ -737,7 +764,7 @@ it("labels a proven clean exit as resumable", () => {
       view={nativeView}
     />,
   );
-  expect(screen.getByText("Exited, resume to continue")).toBeTruthy();
+  expect(screen.getByText("Resume to continue")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
 });
 
