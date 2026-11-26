@@ -205,6 +205,40 @@ describe("idle reaping of adopted provider sessions", () => {
     WORKER_EXIT_TIMEOUT_MS,
   );
 
+  it("never reaps an adopted session whose background command was still running at detach", async () => {
+    const events: ThreadEvent[] = [];
+    const before = createRuntime(events);
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptt4444b",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    expect(before.hasOpenBackgroundWork()).toBe(true);
+    await before.detach();
+
+    const after = createRuntime(events);
+    adoptAll(after);
+    const result = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(result.reapedSessions).toEqual([]);
+    expect(after.hasThread("t1")).toBe(true);
+    expect(isPidAlive(worker.pid)).toBe(true);
+  }, WORKER_EXIT_TIMEOUT_MS);
+
   it("never reaps an idle session with a running background command", async () => {
     const events: ThreadEvent[] = [];
     const runtime = createRuntime(events);

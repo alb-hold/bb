@@ -212,6 +212,7 @@ interface PendingAdoption {
   threadId: string;
   activeTurnId: string | null;
   activeProviderTurnId: string | null;
+  backgroundWorkMayBeOpen: boolean;
 }
 
 const adoptedThreadConfigSchema = z
@@ -834,6 +835,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         activeTurnId === null
           ? null
           : target.proc.adapter.getProviderTurnId(threadId, activeTurnId),
+      backgroundWorkOpen: backgroundWorkState.hasOpenThreadWork(threadId),
       config: Object.fromEntries(
         Object.entries({ ...config, envVars: {}, contributedEnv: [] }),
       ),
@@ -878,6 +880,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           threadId,
           activeTurnId: thread.activeTurnId,
           activeProviderTurnId: thread.activeProviderTurnId,
+          backgroundWorkMayBeOpen: thread.backgroundWorkOpen !== false,
         });
         adoptedThreads.push({ threadId, activeTurnId: thread.activeTurnId });
       }
@@ -912,7 +915,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         });
         if (!continuesServerTurn) options.onEvent(seed);
       }
-      markHostedProviderSessionIdle(adoption.threadId);
+      if (!adoption.backgroundWorkMayBeOpen) {
+        markHostedProviderSessionIdle(adoption.threadId);
+      }
       persistAdoptableThread(adoption.threadId);
     }
     for (const proc of new Set(adoptions.map((adoption) => adoption.proc))) {
@@ -1495,7 +1500,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         );
       }
       turnState.observe(normalizedEvent);
+      const hadBackgroundWork =
+        backgroundWorkState.hasOpenThreadWork(targetThreadId);
       backgroundWorkState.observe(normalizedEvent);
+      if (
+        hadBackgroundWork !==
+        backgroundWorkState.hasOpenThreadWork(targetThreadId)
+      ) {
+        persistAdoptableThread(targetThreadId);
+      }
       observeProviderSessionIdleState(normalizedEvent);
       options.onEvent(normalizedEvent, activeLineAckTracker?.delivery());
       threadGoalState.observe(normalizedEvent);
