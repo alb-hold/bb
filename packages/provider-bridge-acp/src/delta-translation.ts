@@ -1232,7 +1232,7 @@ export function createAcpDeltaTranslator(
     if (classified.item.type !== "delegation") {
       return [];
     }
-    const item: DeltaItemShape = {
+    const item: AcpClassifiedToolCall["item"] = {
       ...classified.item,
       childRef: report.childRef,
       label: report.label,

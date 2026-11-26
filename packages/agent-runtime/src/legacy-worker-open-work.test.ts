@@ -115,9 +115,10 @@ function readCompilerOptions(tsconfigPath: string): ts.CompilerOptions {
   };
 }
 
-function getDeltaItemShapeType(
+function getProtocolDeclaredType(
   program: ts.Program,
   checker: ts.TypeChecker,
+  typeName: string,
 ): ts.Type {
   const protocolFile = program.getSourceFile(PROTOCOL_THREAD_DELTA_PATH);
   if (protocolFile === undefined) {
@@ -126,7 +127,7 @@ function getDeltaItemShapeType(
   for (const statement of protocolFile.statements) {
     if (
       ts.isTypeAliasDeclaration(statement) &&
-      statement.name.text === "DeltaItemShape"
+      statement.name.text === typeName
     ) {
       const symbol = checker.getSymbolAtLocation(statement.name);
       if (symbol !== undefined) {
@@ -134,7 +135,7 @@ function getDeltaItemShapeType(
       }
     }
   }
-  throw new Error("DeltaItemShape not found in thread-delta.ts");
+  throw new Error(`${typeName} not found in thread-delta.ts`);
 }
 
 function isZodSchemaObjectLiteral(node: ts.ObjectLiteralExpression): boolean {
@@ -268,9 +269,12 @@ function spreadCanSupplyProperty(
 
 function hasUnsafeItemTypeConstituent(
   checker: ts.TypeChecker,
-  expr: ts.Expression,
+  expr: ts.Node,
   exprType: ts.Type,
 ): boolean {
+  if ((exprType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return true;
+  }
   const parts = exprType.isUnion() ? exprType.types : [exprType];
   const inhabitedParts = parts.filter(
     (part) => !isUninhabitedType(checker, part),
@@ -295,6 +299,62 @@ function hasUnsafeItemTypeConstituent(
     }
     return typeParts.some(
       (constituent) => (constituent.flags & ts.TypeFlags.StringLiteral) === 0,
+    );
+  });
+}
+
+function hasUnsafeThreadDeltaConstituent(
+  checker: ts.TypeChecker,
+  expr: ts.Node,
+  exprType: ts.Type,
+): boolean {
+  if ((exprType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return true;
+  }
+  const parts = (exprType.isUnion() ? exprType.types : [exprType]).filter(
+    (part) => !isUninhabitedType(checker, part),
+  );
+  if (parts.length === 0) {
+    return true;
+  }
+  return parts.some((part) => {
+    if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+      return true;
+    }
+    const elementType = checker.getIndexTypeOfType(part, ts.IndexKind.Number);
+    if (elementType !== undefined) {
+      return hasUnsafeThreadDeltaConstituent(checker, expr, elementType);
+    }
+    const kindSymbol = part.getProperty("kind");
+    if (kindSymbol === undefined) {
+      return true;
+    }
+    const kindType = checker.getTypeOfSymbolAtLocation(kindSymbol, expr);
+    const kindParts = (
+      kindType.isUnion() ? kindType.types : [kindType]
+    ).filter((constituent) => !isUninhabitedType(checker, constituent));
+    if (
+      kindParts.length === 0 ||
+      kindParts.some(
+        (constituent) => (constituent.flags & ts.TypeFlags.StringLiteral) === 0,
+      )
+    ) {
+      return true;
+    }
+    const includesItemDelta = kindParts.some((constituent) =>
+      ITEM_DELTA_KINDS.has((constituent as ts.StringLiteralType).value),
+    );
+    if (!includesItemDelta) {
+      return false;
+    }
+    const itemSymbol = part.getProperty("item");
+    if (itemSymbol === undefined) {
+      return true;
+    }
+    return hasUnsafeItemTypeConstituent(
+      checker,
+      expr,
+      checker.getTypeOfSymbolAtLocation(itemSymbol, expr),
     );
   });
 }
@@ -358,10 +418,37 @@ function recordScopedKindsFromTypedValue(
   }
 }
 
+function typeTargetsProtocolType(
+  checker: ts.TypeChecker,
+  candidateType: ts.Type,
+  protocolType: ts.Type,
+): boolean {
+  const parts = candidateType.isUnion() ? candidateType.types : [candidateType];
+  return parts.some((part) => {
+    if (
+      isUninhabitedType(checker, part) ||
+      (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    ) {
+      return false;
+    }
+    if (checker.isTypeAssignableTo(part, protocolType)) {
+      return true;
+    }
+    const elem = checker.getIndexTypeOfType(part, ts.IndexKind.Number);
+    return (
+      elem !== undefined &&
+      !isUninhabitedType(checker, elem) &&
+      (elem.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+      checker.isTypeAssignableTo(elem, protocolType)
+    );
+  });
+}
+
 function analyzeSourceFileInProgram(
   sourceFile: ts.SourceFile,
   checker: ts.TypeChecker,
   deltaItemShapeType: ts.Type,
+  threadDeltaType: ts.Type,
 ): BackgroundScopedItemScanResult {
   const discovered = new Set<BackgroundScopedItemKind>();
   const unresolvedItemTypes: string[] = [];
@@ -374,6 +461,30 @@ function analyzeSourceFileInProgram(
       ? path.relative(REPO_ROOT, sourceFile.fileName)
       : path.basename(sourceFile.fileName);
     return `${displayPath}:${line + 1}`;
+  };
+
+  const inspectReturnedItemExpression = (expr: ts.Expression): void => {
+    if (ts.isObjectLiteralExpression(expr)) {
+      return;
+    }
+    const exprType = checker.getTypeAtLocation(expr);
+    const inhabitedParts = (
+      exprType.isUnion() ? exprType.types : [exprType]
+    ).filter((part) => !isUninhabitedType(checker, part));
+    const returnsDeltaItem = inhabitedParts.some(
+      (part) =>
+        (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+        checker.isTypeAssignableTo(part, deltaItemShapeType),
+    );
+    if (!returnsDeltaItem) {
+      return;
+    }
+    if (hasUnsafeItemTypeConstituent(checker, expr, exprType)) {
+      unresolvedItemTypes.push(
+        `${formatLocation(expr)} (returned DeltaItemShape with unresolved type)`,
+      );
+    }
+    recordScopedKindsFromTypedValue(checker, expr, exprType, discovered);
   };
 
   const recordKindsFromStringLiterals = (
@@ -411,22 +522,30 @@ function analyzeSourceFileInProgram(
   };
 
   const visit = (node: ts.Node): void => {
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      inspectReturnedItemExpression(node.expression);
+    }
+
+    if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+      inspectReturnedItemExpression(node.body);
+    }
+
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
       const targetType = checker.getTypeAtLocation(node);
-      const targetParts = targetType.isUnion()
-        ? targetType.types
-        : [targetType];
-      const targetsDeltaItem = targetParts.some(
-        (part) =>
-          !isUninhabitedType(checker, part) &&
-          (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
-          checker.isTypeAssignableTo(part, deltaItemShapeType),
-      );
-      if (targetsDeltaItem) {
+      if (typeTargetsProtocolType(checker, targetType, deltaItemShapeType)) {
         const sourceType = checker.getTypeAtLocation(node.expression);
         if (hasUnsafeItemTypeConstituent(checker, node.expression, sourceType)) {
           unresolvedItemTypes.push(
             `${formatLocation(node)} (unsafe type assertion to DeltaItemShape)`,
+          );
+        }
+      } else if (typeTargetsProtocolType(checker, targetType, threadDeltaType)) {
+        const sourceType = checker.getTypeAtLocation(node.expression);
+        if (
+          hasUnsafeThreadDeltaConstituent(checker, node.expression, sourceType)
+        ) {
+          unresolvedItemTypes.push(
+            `${formatLocation(node)} (unsafe type assertion to ThreadDelta)`,
           );
         }
       }
@@ -440,19 +559,13 @@ function analyzeSourceFileInProgram(
       node.expression.name.text === "assign"
     ) {
       const returnType = checker.getTypeAtLocation(node);
-      const returnParts = returnType.isUnion()
-        ? returnType.types
-        : [returnType];
-      if (
-        returnParts.some(
-          (part) =>
-            !isUninhabitedType(checker, part) &&
-            (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
-            checker.isTypeAssignableTo(part, deltaItemShapeType),
-        )
-      ) {
+      if (typeTargetsProtocolType(checker, returnType, deltaItemShapeType)) {
         unresolvedItemTypes.push(
           `${formatLocation(node)} (Object.assign producing DeltaItemShape)`,
+        );
+      } else if (typeTargetsProtocolType(checker, returnType, threadDeltaType)) {
+        unresolvedItemTypes.push(
+          `${formatLocation(node)} (Object.assign producing ThreadDelta)`,
         );
       }
     }
@@ -564,38 +677,17 @@ function analyzeSourceFileInProgram(
             ? deltaItemProp.initializer
             : deltaItemProp.name;
           const itemExprType = typeOfObjectPropertyNode(checker, deltaItemProp);
-          if (
-            (itemExprType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-            0
-          ) {
+          if (hasUnsafeItemTypeConstituent(checker, itemExpr, itemExprType)) {
             unresolvedItemTypes.push(
               `${formatLocation(deltaItemProp)} (unresolved ThreadDelta item expression)`,
             );
-          } else {
-            const itemSym = ts.isShorthandPropertyAssignment(deltaItemProp)
-              ? checker.getShorthandAssignmentValueSymbol(deltaItemProp)
-              : ts.isIdentifier(itemExpr)
-                ? checker.getSymbolAtLocation(itemExpr)
-                : undefined;
-            if (
-              itemSym?.valueDeclaration !== undefined &&
-              ts.isParameter(itemSym.valueDeclaration)
-            ) {
-              if (
-                hasUnsafeItemTypeConstituent(checker, itemExpr, itemExprType)
-              ) {
-                unresolvedItemTypes.push(
-                  `${formatLocation(deltaItemProp)} (parameter ThreadDelta item with unresolved type)`,
-                );
-              }
-              recordScopedKindsFromTypedValue(
-                checker,
-                itemExpr,
-                itemExprType,
-                discovered,
-              );
-            }
           }
+          recordScopedKindsFromTypedValue(
+            checker,
+            itemExpr,
+            itemExprType,
+            discovered,
+          );
         }
       }
 
@@ -777,7 +869,16 @@ export function scanPluginAdapterSources(
     options,
   });
   const checker = program.getTypeChecker();
-  const deltaItemShapeType = getDeltaItemShapeType(program, checker);
+  const deltaItemShapeType = getProtocolDeclaredType(
+    program,
+    checker,
+    "DeltaItemShape",
+  );
+  const threadDeltaType = getProtocolDeclaredType(
+    program,
+    checker,
+    "ThreadDelta",
+  );
   const targetSet = new Set(files);
 
   const kinds = new Set<BackgroundScopedItemKind>();
@@ -788,6 +889,7 @@ export function scanPluginAdapterSources(
       sourceFile,
       checker,
       deltaItemShapeType,
+      threadDeltaType,
     );
     for (const kind of result.kinds) {
       kinds.add(kind);
@@ -850,7 +952,16 @@ export function scanSyntheticAdapterSources(
     host,
   });
   const checker = program.getTypeChecker();
-  const deltaItemShapeType = getDeltaItemShapeType(program, checker);
+  const deltaItemShapeType = getProtocolDeclaredType(
+    program,
+    checker,
+    "DeltaItemShape",
+  );
+  const threadDeltaType = getProtocolDeclaredType(
+    program,
+    checker,
+    "ThreadDelta",
+  );
 
   const output: Record<string, BackgroundScopedItemScanResult> = {};
   for (const [name] of Object.entries(sources)) {
@@ -863,6 +974,7 @@ export function scanSyntheticAdapterSources(
       sourceFile,
       checker,
       deltaItemShapeType,
+      threadDeltaType,
     );
   }
   return output;
@@ -937,7 +1049,7 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
     });
   }, 45_000);
 
-  it("detects literal, union-typed, and typed-union-spread backgroundTask and delegation items", () => {
+  it("detects literal, union-typed, spread, and local-alias backgroundTask and delegation items", () => {
     const results = scanSyntheticAdapterSources({
       "fg.ts": `export const item = { type: "delegation", childRef: "c1", label: "fg", background: false };`,
       "bg-del.ts": `export const item = { type: "delegation", childRef: "c1", label: "bg", background: true };`,
@@ -974,6 +1086,27 @@ export function make(incoming: Extract<DeltaItemShape, { type: "delegation" }>):
       "param-passthrough-delta.ts": `import type { DeltaItemShape, ThreadDelta } from "@bb/provider-bridge-protocol";
 export function make(item: DeltaItemShape): ThreadDelta {
   return { kind: "item.open", key: { providerItemId: "1" }, item };
+}`,
+      "local-alias-delta.ts": `import type { DeltaItemShape, ThreadDelta } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape): ThreadDelta {
+  const item: DeltaItemShape = incoming;
+  return { kind: "item.open", key: { providerItemId: "1" }, item };
+}`,
+      "let-alias-delta.ts": `import type { DeltaItemShape, ThreadDelta } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape): ThreadDelta {
+  let item: DeltaItemShape = incoming;
+  return { kind: "item.open", key: { providerItemId: "1" }, item };
+}`,
+      "map-lookup-delta.ts": `import type { DeltaItemShape, ThreadDelta } from "@bb/provider-bridge-protocol";
+const cache = new Map<string, DeltaItemShape>();
+export function make(id: string): ThreadDelta {
+  const found = cache.get(id)!;
+  return { kind: "item.open", key: { providerItemId: id }, item: found };
+}`,
+      "standalone-return-alias.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape): DeltaItemShape {
+  const item: DeltaItemShape = incoming;
+  return item;
 }`,
     });
 
@@ -1027,6 +1160,20 @@ export function make(item: DeltaItemShape): ThreadDelta {
         results["param-passthrough-delta.ts"]!,
       ),
     ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(results["local-alias-delta.ts"]!),
+    ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(results["let-alias-delta.ts"]!),
+    ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(results["map-lookup-delta.ts"]!),
+    ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["standalone-return-alias.ts"]!,
+      ),
+    ).toEqual(["backgroundTask", "delegation"]);
   });
 
   it("fails closed when an adapter emits a dynamic-kind item with an unresolved discriminator", () => {
@@ -1042,6 +1189,10 @@ export function make(incoming: DeltaItemShape | { type: string }) {
       "unsafe-cast.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
 export function make(raw: Record<string, unknown>): DeltaItemShape {
   return raw as unknown as DeltaItemShape;
+}`,
+      "unsafe-cast-thread-delta.ts": `import type { ThreadDelta } from "@bb/provider-bridge-protocol";
+export function make(raw: Record<string, unknown>): ThreadDelta {
+  return raw as unknown as ThreadDelta;
 }`,
       "json-parse-delta-item.ts": `import type { ThreadDelta } from "@bb/provider-bridge-protocol";
 export function make(raw: string): ThreadDelta {
@@ -1085,6 +1236,15 @@ export function make(raw: string): ThreadDelta {
     expect(() =>
       assertCertifiedBackgroundScopedItems(results["unsafe-cast.ts"]!),
     ).toThrow(/unsafe type assertion to DeltaItemShape/);
+
+    expect(
+      results["unsafe-cast-thread-delta.ts"]!.unresolvedItemTypes,
+    ).toHaveLength(1);
+    expect(() =>
+      assertCertifiedBackgroundScopedItems(
+        results["unsafe-cast-thread-delta.ts"]!,
+      ),
+    ).toThrow(/unsafe type assertion to ThreadDelta/);
 
     expect(
       results["json-parse-delta-item.ts"]!.unresolvedItemTypes,
