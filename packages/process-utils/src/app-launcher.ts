@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-export const APP_LAUNCH_CWD_ENV = "BB_APP_LAUNCH_CWD";
+const APP_LAUNCH_RESERVED_PREFIX = "BB_APP_LAUNCH_";
+export const APP_LAUNCH_CWD_ENV ="BB_APP_LAUNCH_CWD";
 export const APP_LAUNCH_PID_FILE_ENV = "BB_APP_LAUNCH_PID_FILE";
 export const APP_LAUNCH_LOG_ENV = "BB_APP_LAUNCH_LOG";
 export const APP_LAUNCH_SHELL_ENV_FILE_ENV = "BB_APP_LAUNCH_SHELL_ENV_FILE";
@@ -174,6 +175,7 @@ export function shellEnvironmentContent(environment: NodeJS.ProcessEnv): string 
   const lines: string[] = [];
   for (const [key, value] of Object.entries(environment)) {
     if (value === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (key.startsWith(APP_LAUNCH_RESERVED_PREFIX)) continue;
     lines.push(`export ${key}='${value.replaceAll("'", `'\\''`)}'`);
   }
   return `${lines.join("\n")}\n`;
@@ -182,7 +184,8 @@ export function shellEnvironmentContent(environment: NodeJS.ProcessEnv): string 
 export function jsonEnvironmentContent(environment: NodeJS.ProcessEnv): string {
   const entries: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment)) {
-    if (value !== undefined) entries[key] = value;
+    if (value === undefined || key.startsWith(APP_LAUNCH_RESERVED_PREFIX)) continue;
+    entries[key] = value;
   }
   return JSON.stringify(entries);
 }

@@ -175,6 +175,53 @@ describe("shell environment loader", () => {
   });
 });
 
+describe("launcher-owned variables", () => {
+  it("never lets a worker environment redirect the pid or control paths", () => {
+    const dir = workerDir();
+    const marker = join(dir, "ran");
+    const hostile = join(dir, "hijacked.pid");
+    const { deps } = recordingDeps("darwin");
+    const result = startBridgeWorkerAsApp(
+      {
+        ...request(dir),
+        command: "/usr/bin/touch",
+        args: [marker],
+        env: {
+          BB_APP_LAUNCH_PID_FILE: hostile,
+          BB_APP_LAUNCH_CANCEL_FILE: join(dir, "hijacked.cancel"),
+          KEEP: "yes",
+        },
+      },
+      deps,
+    );
+    if (!result.ok) throw new Error("launch failed");
+    expect(readFileSync(result.environmentFile, "utf8")).not.toContain(
+      "BB_APP_LAUNCH_",
+    );
+    expect(readFileSync(result.environmentFile, "utf8")).toContain("KEEP");
+    execFileSync(
+      "/bin/bash",
+      [
+        join(dir, "bb-bridge-worker.app", "Contents", "MacOS", "run"),
+        "/usr/bin/touch",
+        marker,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          BB_APP_LAUNCH_SHELL_ENV_FILE: result.environmentFile,
+          BB_APP_LAUNCH_CWD: dir,
+          BB_APP_LAUNCH_PID_FILE: result.pidFile,
+          BB_APP_LAUNCH_LOG: join(dir, "abc123.log"),
+          BB_APP_LAUNCH_CANCEL_FILE: result.cancelFile,
+        },
+      },
+    );
+    expect(existsSync(result.pidFile)).toBe(true);
+    expect(existsSync(hostile)).toBe(false);
+  });
+});
+
 describe("bridge worker stop before adoption", () => {
   it("cancels a pending app launch so the worker never starts after stop", async () => {
     const dir = workerDir();
