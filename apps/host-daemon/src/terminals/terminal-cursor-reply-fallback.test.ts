@@ -199,6 +199,64 @@ describe("TerminalCursorReplyFallback split replies", () => {
     });
   });
 
+  describe("fallback fired after its scheduled deadline", () => {
+    const WINDOW_END = CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
+
+    function blockedSetup() {
+      let clock = 0;
+      const written: string[] = [];
+      const fallback = new TerminalCursorReplyFallback(
+        (data) => {
+          written.push(data);
+        },
+        CURSOR_REPLY_FALLBACK_DELAY_MS,
+        () => clock,
+      );
+      fallback.expect(ESTIMATE);
+      return {
+        fallback,
+        written,
+        setClock: (value: number) => {
+          clock = value;
+        },
+      };
+    }
+
+    it("swallows a late reply after a fire delayed past the deadline", () => {
+      const { fallback, written, setClock } = blockedSetup();
+      setClock(WINDOW_END + 1_000);
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      expect(written).toEqual([ESTIMATE]);
+      setClock(WINDOW_END + 1_500);
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("");
+      expect(fallback.isIdle()).toBe(true);
+    });
+
+    it("reschedules a held prefix to the new slot end after a delayed fire", () => {
+      const { fallback, written, setClock } = blockedSetup();
+      setClock(100);
+      expect(fallback.filterInput("\u001b[4")).toBe("");
+      setClock(WINDOW_END + 1_000);
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(CURSOR_REPLY_SWALLOW_MS - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[4"]);
+    });
+
+    it("keeps the scheduled slot end for an on-time fire", () => {
+      const { fallback, written, setClock } = blockedSetup();
+      setClock(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+      expect(written).toEqual([ESTIMATE]);
+      setClock(WINDOW_END - 1);
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("");
+      setClock(WINDOW_END);
+      expect(fallback.filterInput("\u001b[4;1R")).toBe("\u001b[4;1R");
+    });
+  });
+
   it("keeps ESC[? held past 50 ms so a private reply arrives whole", () => {
     const { fallback, written } = setup();
     const delivered = [fallback.filterInput("\u001b[?")];

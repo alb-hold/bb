@@ -35,7 +35,9 @@ export class TerminalCursorReplyFallback {
       windowEnd: this.now() + this.delayMs + CURSOR_REPLY_SWALLOW_MS,
       timer: setTimeout(() => {
         this.waiting = this.waiting.filter((candidate) => candidate !== entry);
-        this.lateUntil.push(entry.windowEnd);
+        this.lateUntil.push(
+          Math.max(entry.windowEnd, this.now() + CURSOR_REPLY_SWALLOW_MS),
+        );
         this.write(estimate);
         this.rescheduleHold();
       }, this.delayMs),
