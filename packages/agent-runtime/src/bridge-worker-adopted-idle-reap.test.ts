@@ -239,6 +239,42 @@ describe("idle reaping of adopted provider sessions", () => {
     expect(isPidAlive(worker.pid)).toBe(true);
   }, WORKER_EXIT_TIMEOUT_MS);
 
+  it("keeps blocking reaping across a second restart until the background command settles", async () => {
+    const events: ThreadEvent[] = [];
+    const first = createRuntime(events);
+    await first.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await first.runTurn({
+      clientRequestId: "creq_adptt7777b",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    await first.detach();
+
+    const second = createRuntime(events);
+    adoptAll(second);
+    await second.detach();
+
+    const third = createRuntime(events);
+    adoptAll(third);
+    const result = await third.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(result.reapedSessions).toEqual([]);
+    expect(isPidAlive(worker.pid)).toBe(true);
+  }, WORKER_EXIT_TIMEOUT_MS);
+
   it("reaps an adopted session only after its background command settles and the idle threshold passes", async () => {
     const events: ThreadEvent[] = [];
     const before = createRuntime(events);

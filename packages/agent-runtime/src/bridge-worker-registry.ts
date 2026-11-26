@@ -28,7 +28,7 @@ const bridgeWorkerThreadSchema = z.object({
   providerThreadId: z.string().min(1).nullable(),
   activeTurnId: z.string().min(1).nullable(),
   activeProviderTurnId: z.string().min(1).nullable(),
-  backgroundWorkOpen: z.boolean().optional(),
+  openBackgroundWorkCount: z.number().int().nonnegative().optional(),
   config: z.record(z.string(), z.unknown()),
 });
 
