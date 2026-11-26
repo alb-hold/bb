@@ -2095,6 +2095,11 @@ describe("native holder app fallback window", () => {
           activeRoles: number[],
         ): Promise<void> => {
           const entry = getCase(caseId);
+          await waitForCaseCondition(
+            caseId + ":bound",
+            entry,
+            () => entry.boundEvents.length >= 1,
+          );
           expect(entry.boundEvents).toHaveLength(1);
           expect(entry.boundEvents[0]).toEqual({
             role: expectedPid === worker0.pid ? 0 : 1,
