@@ -16,6 +16,7 @@ import {
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
 } from "@bb/provider-bridge-protocol";
 import {
+  BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION,
   BRIDGE_SOCKET_TRANSPORT_VERSION,
   createBridgeSocketServer,
 } from "@bb/provider-bridge-protocol/bridge-kit";
@@ -524,6 +525,59 @@ describe("bridge worker adoption safety", () => {
       await plantEntryWithListener("protocol-version", (entry) => ({
         ...entry,
         bridgeProtocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION + 1,
+      }));
+    try {
+      await manager.reconcileBridgeWorkers();
+    } finally {
+      worker.close();
+      await manager.shutdownAll("detach");
+    }
+
+    expect(shutdowns).toEqual(["requested"]);
+    expect(await registryFileNames(dir)).toEqual([]);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adopted: [],
+        retired: [
+          expect.objectContaining({
+            reason: "incompatible-protocol-or-framing",
+          }),
+        ],
+      }),
+      "Reconciled provider bridge workers left by a previous host daemon",
+    );
+  });
+
+  it("adopts a worker running the previous transport version so pre-bump workers survive a daemon swap", async () => {
+    const { createManager, dir, registered } =
+      await startTurnThenDetach("transport-v2-adopt");
+    const entryFile = (await fs.readdir(dir)).find((name) =>
+      name.endsWith(".json"),
+    );
+    if (entryFile === undefined) throw new Error("expected registry entry");
+    const entry = JSON.parse(
+      await fs.readFile(path.join(dir, entryFile), "utf8"),
+    ) as Record<string, unknown>;
+    entry.transportVersion = BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION;
+    await fs.writeFile(path.join(dir, entryFile), JSON.stringify(entry));
+
+    const adopting = createManager([]);
+    try {
+      await adopting.reconcileBridgeWorkers();
+      expect(adopting.listAdoptedBridgeThreads()).toEqual([
+        expect.objectContaining({ threadId: "t1" }),
+      ]);
+      expect(isProcessAlive(registered.pid)).toBe(true);
+    } finally {
+      await adopting.shutdownAll("detach");
+    }
+  }, 60_000);
+
+  it("retires a worker below the minimum adoptable transport version", async () => {
+    const { dir, logger, manager, shutdowns, worker } =
+      await plantEntryWithListener("transport-version-too-old", (entry) => ({
+        ...entry,
+        transportVersion: BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION - 1,
       }));
     try {
       await manager.reconcileBridgeWorkers();

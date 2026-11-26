@@ -209,6 +209,10 @@ const openBackgroundTasks = new Map<
   string,
   { providerItemId: string; familyId: string }[]
 >();
+const openBackgroundDelegations = new Map<
+  string,
+  { providerItemId: string; childRef: string }[]
+>();
 let discardFailed = false;
 let providerThreadCounter = 0;
 const providerThreadNonce = randomUUID().slice(0, 8);
@@ -275,6 +279,8 @@ interface TurnPlan {
   recoverKind: ProviderRecoveryHint["kind"] | null;
   recoverNowKind: ProviderRecoveryHint["kind"] | null;
   backgroundTask: boolean;
+  backgroundTaskDurationMs: number | null;
+  backgroundDelegation: boolean;
   settleBackgroundTasks: boolean;
   streamChunks: number;
   stream: { chunks: number; intervalMs: number } | null;
@@ -320,7 +326,14 @@ function parseTurnPlan(inputText: string): TurnPlan {
     recoverKind: recoverKind.success ? recoverKind.data : null,
     recoverNowKind: recoverNowKind.success ? recoverNowKind.data : null,
     backgroundTask: /(?:^|\s)bg_task(?:\s|$)/u.test(inputText),
-    settleBackgroundTasks: /(?:^|\s)bg_task_done(?:\s|$)/u.test(inputText),
+    backgroundTaskDurationMs: (() => {
+      const m = /(?:^|\s)bg_task_ms:(\d+)(?:\s|$)/u.exec(inputText);
+      return m?.[1] === undefined ? null : Number(m[1]);
+    })(),
+    backgroundDelegation: /(?:^|\s)bg_delegation(?:\s|$)/u.test(inputText),
+    settleBackgroundTasks:
+      /(?:^|\s)bg_task_done(?:\s|$)/u.test(inputText) ||
+      /(?:^|\s)bg_delegation_done(?:\s|$)/u.test(inputText),
     approvalKind,
     delayMs: delayMatch?.[1] === undefined ? 0 : Number(delayMatch[1]),
     streamChunks: Number(
@@ -520,27 +533,72 @@ function openBackgroundTask(session: Session, providerTurnId: string): void {
   logProcessStep(`bg_task/open:${process.pid}:${session.threadId}`);
 }
 
+function openBackgroundDelegation(
+  session: Session,
+  providerTurnId: string,
+): void {
+  const providerItemId = `bg-del-${session.turnCount}`;
+  const childRef = `subagent-${session.threadId}-${session.turnCount}`;
+  emitDeltas(session.threadId, [
+    {
+      kind: "item.open",
+      key: { providerItemId },
+      item: {
+        type: "delegation",
+        childRef,
+        label: "scripted subagent",
+        background: true,
+      },
+      providerTurnId,
+    },
+  ]);
+  const open = openBackgroundDelegations.get(session.threadId) ?? [];
+  open.push({ providerItemId, childRef });
+  openBackgroundDelegations.set(session.threadId, open);
+  logProcessStep(`bg_delegation/open:${process.pid}:${session.threadId}`);
+}
+
 function settleBackgroundTasks(session: Session): void {
   const open = openBackgroundTasks.get(session.threadId) ?? [];
   openBackgroundTasks.delete(session.threadId);
-  emitDeltas(
-    session.threadId,
-    open.map((task) => ({
-      kind: "item.close",
-      key: { providerItemId: task.providerItemId },
-      status: "completed",
-      item: {
-        type: "backgroundTask",
-        familyId: task.familyId,
-        taskType: "workflow",
-        description: "scripted background task",
+  const openDelegations = openBackgroundDelegations.get(session.threadId) ?? [];
+  openBackgroundDelegations.delete(session.threadId);
+  const deltas: ThreadDelta[] = [
+    ...open.map(
+      (task): ThreadDelta => ({
+        kind: "item.close",
+        key: { providerItemId: task.providerItemId },
         status: "completed",
-        taskStatus: "completed",
-        skipTranscript: false,
-        foreground: false,
-      },
-    })),
-  );
+        item: {
+          type: "backgroundTask",
+          familyId: task.familyId,
+          taskType: "workflow",
+          description: "scripted background task",
+          status: "completed",
+          taskStatus: "completed",
+          skipTranscript: false,
+          foreground: false,
+        },
+      }),
+    ),
+    ...openDelegations.map(
+      (delegation): ThreadDelta => ({
+        kind: "item.close",
+        key: { providerItemId: delegation.providerItemId },
+        status: "completed",
+        item: {
+          type: "delegation",
+          childRef: delegation.childRef,
+          label: "scripted subagent",
+          background: true,
+        },
+      }),
+    ),
+  ];
+  if (deltas.length > 0) {
+    emitDeltas(session.threadId, deltas);
+    logProcessStep(`bg_task/closed:${process.pid}:${session.threadId}`);
+  }
 }
 
 function scheduleCompletion(
@@ -674,8 +732,16 @@ function beginTurn(args: {
   deltas.push({ kind: "turn.open", providerTurnId });
   emitDeltas(session.threadId, deltas);
   emitRecoveryHint(session.threadId, plan.recoverNowKind);
-  if (plan.backgroundTask) {
+  if (plan.backgroundTask || plan.backgroundTaskDurationMs !== null) {
     openBackgroundTask(session, providerTurnId);
+    if (plan.backgroundTaskDurationMs !== null) {
+      setTimeout(() => {
+        settleBackgroundTasks(session);
+      }, plan.backgroundTaskDurationMs).unref();
+    }
+  }
+  if (plan.backgroundDelegation) {
+    openBackgroundDelegation(session, providerTurnId);
   }
   if (plan.settleBackgroundTasks) {
     settleBackgroundTasks(session);
@@ -1335,6 +1401,7 @@ const handlers: Record<string, RequestHandler> = {
     }
     sessions.delete(parsed.data.threadId);
     openBackgroundTasks.delete(parsed.data.threadId);
+    openBackgroundDelegations.delete(parsed.data.threadId);
     io.sendResult(id, {});
   },
 
@@ -1356,6 +1423,8 @@ const handlers: Record<string, RequestHandler> = {
       return;
     }
     sessions.delete(parsed.data.threadId);
+    openBackgroundTasks.delete(parsed.data.threadId);
+    openBackgroundDelegations.delete(parsed.data.threadId);
     io.sendResult(id, {});
   },
 

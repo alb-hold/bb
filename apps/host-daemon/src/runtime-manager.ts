@@ -53,7 +53,10 @@ import {
   type BridgeCapabilities,
 } from "@bb/provider-bridge-protocol";
 import { ASSEMBLER_GRAMMAR_VERSIONS } from "@bb/provider-bridge-protocol/assembler";
-import { BRIDGE_SOCKET_TRANSPORT_VERSION } from "@bb/provider-bridge-protocol/bridge-kit";
+import {
+  BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION,
+  BRIDGE_SOCKET_TRANSPORT_VERSION,
+} from "@bb/provider-bridge-protocol/bridge-kit";
 import {
   createProviderInstallationGate,
   PROVIDER_INSTALLATION_GATE_TTL_MS,
@@ -1821,7 +1824,8 @@ function isAdoptableBridgeWorker(entry: BridgeWorkerRegistryEntry): boolean {
   return (
     entry.formatVersion === BRIDGE_WORKER_REGISTRY_FORMAT_VERSION &&
     entry.bridgeProtocolVersion === PROVIDER_BRIDGE_PROTOCOL_VERSION &&
-    entry.transportVersion === BRIDGE_SOCKET_TRANSPORT_VERSION &&
+    entry.transportVersion >= BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION &&
+    entry.transportVersion <= BRIDGE_SOCKET_TRANSPORT_VERSION &&
     entry.capabilities !== null &&
     Object.keys(entry.threads).length > 0
   );

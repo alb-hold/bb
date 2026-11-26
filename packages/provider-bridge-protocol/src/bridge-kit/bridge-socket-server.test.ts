@@ -7,9 +7,11 @@ import {
   createShortSocketDir,
 } from "../testing/bridge-socket-client.js";
 import {
+  BRIDGE_OPEN_WORK_METHOD,
   type BridgeSocketServer,
   type BridgeSocketShutdownReason,
   createBridgeSocketServer,
+  parseBridgeOpenWorkMessage,
 } from "./bridge-socket-server.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -316,5 +318,162 @@ describe("createBridgeSocketServer", () => {
 
     expect(shutdowns).toEqual(["requested"]);
     expect(received).toEqual([]);
+  });
+
+  it("reports currently open background tasks and background delegations on bridge/resume when reportOpenWork is requested", async () => {
+    const { server, socketPath } = await startServer();
+    const first = await connectBridgeSocket(socketPath);
+    server.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "thread/delta",
+        params: {
+          threadId: "t1",
+          deltas: [
+            {
+              kind: "item.open",
+              key: { providerItemId: "cmd-1" },
+              item: { type: "command", command: "echo hi", cwd: "/tmp" },
+            },
+            {
+              kind: "item.open",
+              key: { providerItemId: "del-fg" },
+              item: {
+                type: "delegation",
+                childRef: "child-fg",
+                label: "foreground subagent",
+                background: false,
+              },
+            },
+            {
+              kind: "item.open",
+              key: { providerItemId: "bg-1" },
+              item: {
+                type: "backgroundTask",
+                familyId: "fam-1",
+                taskType: "bash",
+                description: "long server",
+                status: "pending",
+                taskStatus: "running",
+                skipTranscript: false,
+              },
+            },
+            {
+              kind: "item.open",
+              key: { providerItemId: "bg-2" },
+              item: {
+                type: "backgroundTask",
+                familyId: "fam-2",
+                taskType: "bash",
+                description: "short task",
+                status: "pending",
+                taskStatus: "running",
+                skipTranscript: false,
+              },
+            },
+            {
+              kind: "item.open",
+              key: { providerItemId: "del-bg" },
+              item: {
+                type: "delegation",
+                childRef: "child-bg",
+                label: "background subagent",
+                background: true,
+              },
+            },
+          ],
+        },
+      })}\n`,
+    );
+    await first.waitForLine((line) => line.includes('"del-bg"'));
+    first.ack(first.lastWseq());
+    await wait(20);
+    first.socket.destroy();
+    await first.closed;
+
+    server.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "thread/delta",
+        params: {
+          threadId: "t1",
+          deltas: [
+            {
+              kind: "item.close",
+              key: { providerItemId: "bg-2" },
+              status: "completed",
+              item: {
+                type: "backgroundTask",
+                familyId: "fam-2",
+                taskType: "bash",
+                description: "short task",
+                status: "completed",
+                taskStatus: "completed",
+                skipTranscript: false,
+              },
+            },
+          ],
+        },
+      })}\n`,
+    );
+
+    const second = await connectBridgeSocket(socketPath, {
+      resumeAfter: 1,
+      reportOpenWork: true,
+    });
+    const openWorkLine = await second.waitForLine((line) =>
+      line.includes(BRIDGE_OPEN_WORK_METHOD),
+    );
+    expect(parseBridgeOpenWorkMessage(openWorkLine)).toEqual({
+      threads: {
+        t1: [
+          {
+            key: { providerItemId: "bg-1" },
+            item: {
+              type: "backgroundTask",
+              familyId: "fam-1",
+              taskType: "bash",
+              description: "long server",
+              status: "pending",
+              taskStatus: "running",
+              skipTranscript: false,
+            },
+          },
+          {
+            key: { providerItemId: "del-bg" },
+            item: {
+              type: "delegation",
+              childRef: "child-bg",
+              label: "background subagent",
+              background: true,
+            },
+          },
+        ],
+      },
+    });
+    expect(second.frames.map((frame) => frame.wseq)).toEqual([2]);
+
+    second.send({
+      id: 99,
+      method: "thread/stop",
+      params: { threadId: "t1", providerThreadId: "pt1", intent: "release" },
+    });
+    await wait(20);
+    server.write(`${JSON.stringify({ jsonrpc: "2.0", id: 99, result: {} })}\n`);
+    await second.waitForLine((line) => line.includes('"id":99'));
+    second.ack(second.lastWseq());
+    await wait(20);
+    second.socket.destroy();
+    await second.closed;
+
+    const third = await connectBridgeSocket(socketPath, {
+      resumeAfter: 3,
+      reportOpenWork: true,
+    });
+    const clearedLine = await third.waitForLine((line) =>
+      line.includes(BRIDGE_OPEN_WORK_METHOD),
+    );
+    expect(parseBridgeOpenWorkMessage(clearedLine)).toEqual({ threads: {} });
+    third.socket.destroy();
   });
 });

@@ -14,6 +14,7 @@ import {
 import type { AdapterCommand } from "./provider-adapter.js";
 import {
   BRIDGE_JSON_RPC_ERRORS,
+  type BridgeOpenWorkSnapshot,
   commandListResultSchema,
   providerHealthResultSchema,
   providerInstallationRunResultSchema,
@@ -85,6 +86,7 @@ import {
 import { bridgeLaunchProcessKey } from "./bridge-launch-process-key.js";
 import type { BridgeLineAckTracker } from "./bridge-line-ack-tracker.js";
 import { SocketBridgeWorker } from "./bridge-worker-socket.js";
+import { legacyWorkerAssumesZeroOpenBackgroundWork } from "./legacy-worker-open-work.js";
 
 interface RecordThreadExecutionOptionsArgs {
   options: AgentRuntimeExecutionOptions;
@@ -209,10 +211,10 @@ type ProviderProcess = RuntimeProviderProcess;
 
 interface PendingAdoption {
   proc: ProviderProcess;
+  pluginId: string;
   threadId: string;
   activeTurnId: string | null;
   activeProviderTurnId: string | null;
-  openBackgroundWorkCount: number;
 }
 
 const adoptedThreadConfigSchema = z
@@ -334,6 +336,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const threadsRetryingBridgeRestartOnIdle = new Set<string>();
   const idleProviderSessionSinceMsByThreadId = new Map<string, number>();
   const adoptedUnverifiedBackgroundWorkThreadIds = new Set<string>();
+  const adoptedOpenWorkReconciliations = new Map<string, Promise<void>>();
   const pendingTurnStarts = new Map<
     string,
     { clientRequestId: string; sinceMs: number; watchdogFired: boolean }
@@ -882,10 +885,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         });
         pendingAdoptions.push({
           proc,
+          pluginId: entry.pluginId,
           threadId,
           activeTurnId: thread.activeTurnId,
           activeProviderTurnId: thread.activeProviderTurnId,
-          openBackgroundWorkCount: thread.openBackgroundWorkCount ?? 1,
         });
         adoptedThreads.push({ threadId, activeTurnId: thread.activeTurnId });
       }
@@ -920,14 +923,96 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         });
         if (!continuesServerTurn) options.onEvent(seed);
       }
-      if (adoption.openBackgroundWorkCount > 0) {
-        adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
-      }
+      adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
       markHostedProviderSessionIdle(adoption.threadId);
       persistAdoptableThread(adoption.threadId);
     }
-    for (const proc of new Set(adoptions.map((adoption) => adoption.proc))) {
-      if (proc.child instanceof SocketBridgeWorker) proc.child.resume();
+    const adoptionsByProc = new Map<ProviderProcess, PendingAdoption[]>();
+    for (const adoption of adoptions) {
+      const group = adoptionsByProc.get(adoption.proc);
+      if (group !== undefined) {
+        group.push(adoption);
+      } else {
+        adoptionsByProc.set(adoption.proc, [adoption]);
+      }
+    }
+    const applyOpenWorkSnapshot = (
+      procAdoptions: readonly PendingAdoption[],
+      snapshot: BridgeOpenWorkSnapshot,
+    ): void => {
+      for (const adoption of procAdoptions) {
+        if (
+          threadRuntimeConfigs.get(adoption.threadId)?.processKey !==
+          adoption.proc.processKey
+        ) {
+          continue;
+        }
+        adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
+        const openItems = snapshot.threads[adoption.threadId] ?? [];
+        const seeded = adoption.proc.adapter.seedOpenBackgroundItems({
+          threadId: adoption.threadId,
+          items: openItems,
+        });
+        const providerThreadId =
+          threadIdentityRegistry.getProviderThreadId(adoption.threadId) ?? "";
+        backgroundWorkState.replaceThreadOpenWork(
+          adoption.threadId,
+          seeded.map(({ item }) => ({ item, providerThreadId })),
+        );
+        markHostedProviderSessionIdle(adoption.threadId);
+        persistAdoptableThread(adoption.threadId);
+      }
+    };
+    const applyLegacyOpenWorkFallback = (
+      procAdoptions: readonly PendingAdoption[],
+    ): void => {
+      for (const adoption of procAdoptions) {
+        if (
+          threadRuntimeConfigs.get(adoption.threadId)?.processKey !==
+          adoption.proc.processKey
+        ) {
+          continue;
+        }
+        if (legacyWorkerAssumesZeroOpenBackgroundWork(adoption.pluginId)) {
+          adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
+          markHostedProviderSessionIdle(adoption.threadId);
+          persistAdoptableThread(adoption.threadId);
+        } else {
+          adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
+          persistAdoptableThread(adoption.threadId);
+        }
+      }
+    };
+    for (const [proc, procAdoptions] of adoptionsByProc) {
+      if (!(proc.child instanceof SocketBridgeWorker)) {
+        applyLegacyOpenWorkFallback(procAdoptions);
+        continue;
+      }
+      const worker = proc.child;
+      worker.onOpenWorkReport((snapshot) => {
+        applyOpenWorkSnapshot(procAdoptions, snapshot);
+      });
+      worker.resume();
+      const reconciliation = worker
+        .waitForOpenWorkReport()
+        .then((result) => {
+          if (result.kind !== "reported") {
+            applyLegacyOpenWorkFallback(procAdoptions);
+          }
+        })
+        .finally(() => {
+          for (const adoption of procAdoptions) {
+            if (
+              adoptedOpenWorkReconciliations.get(adoption.threadId) ===
+              reconciliation
+            ) {
+              adoptedOpenWorkReconciliations.delete(adoption.threadId);
+            }
+          }
+        });
+      for (const adoption of procAdoptions) {
+        adoptedOpenWorkReconciliations.set(adoption.threadId, reconciliation);
+      }
     }
   }
 
@@ -946,6 +1031,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
   function clearThreadRuntimeConfig(threadId: string): void {
     socketWorkerForThread(threadId)?.worker.recordThread(threadId, null);
+    adoptedOpenWorkReconciliations.delete(threadId);
     threadsAwaitingBridgeRestart.delete(threadId);
     threadsRetryingBridgeRestartOnIdle.delete(threadId);
     idleProviderSessionSinceMsByThreadId.delete(threadId);
@@ -1510,10 +1596,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const hadBackgroundWork =
         backgroundWorkState.hasOpenThreadWork(targetThreadId);
       backgroundWorkState.observe(normalizedEvent);
-      if (
-        hadBackgroundWork !==
-        backgroundWorkState.hasOpenThreadWork(targetThreadId)
-      ) {
+      const hasBackgroundWorkNow =
+        backgroundWorkState.hasOpenThreadWork(targetThreadId);
+      if (hadBackgroundWork !== hasBackgroundWorkNow) {
+        if (
+          hadBackgroundWork &&
+          !hasBackgroundWorkNow &&
+          threadIdentityRegistry.getProviderSession(targetThreadId) !== null &&
+          turnState.getActiveTurnId(targetThreadId) === null &&
+          !pendingTurnStarts.has(targetThreadId)
+        ) {
+          idleProviderSessionSinceMsByThreadId.set(targetThreadId, Date.now());
+        }
         persistAdoptableThread(targetThreadId);
       }
       observeProviderSessionIdleState(normalizedEvent);
@@ -2963,6 +3057,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       const reapedSessions: ReapedIdleProviderSession[] = [];
       for (const threadId of [...threadRuntimeConfigs.keys()]) {
         const release = async (): Promise<ReapedIdleProviderSession | null> => {
+          await adoptedOpenWorkReconciliations.get(threadId);
           const candidate = findReapableIdleProviderSession({
             idleForMs,
             nowMs,
@@ -3060,6 +3155,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         discardStagedThreadRewind(leaseId),
       ),
     );
+    adoptedOpenWorkReconciliations.clear();
+    adoptedUnverifiedBackgroundWorkThreadIds.clear();
     idleProviderSessionSinceMsByThreadId.clear();
     pendingTurnStarts.clear();
     pendingTurnStartAttempts.clear();

@@ -23,6 +23,7 @@ import {
 } from "@bb/process-utils";
 import {
   type BridgeCapabilities,
+  type BridgeOpenWorkSnapshot,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
 } from "@bb/provider-bridge-protocol";
 import {
@@ -33,6 +34,7 @@ import {
   BRIDGE_SOCKET_TRANSPORT_VERSION,
   BRIDGE_SPILL_ENV,
   decodeBridgeFrame,
+  parseBridgeOpenWorkMessage,
   readBoundedLines,
 } from "@bb/provider-bridge-protocol/bridge-kit";
 import {
@@ -57,6 +59,11 @@ import {
   socketDirectoryFor,
   writeBridgeWorkerEntry,
 } from "./bridge-worker-registry.js";
+
+export type BridgeWorkerOpenWorkQueryResult =
+  | { kind: "reported"; snapshot: BridgeOpenWorkSnapshot }
+  | { kind: "unsupported" }
+  | { kind: "unavailable" };
 
 export interface BridgeWorkerProcess {
   readonly pid?: number | undefined;
@@ -282,6 +289,7 @@ export interface BridgeWorkerRegistration {
 }
 
 export const BRIDGE_WORKER_CONNECT_TIMEOUT_MS = 15_000;
+export const BRIDGE_WORKER_OPEN_WORK_QUERY_TIMEOUT_MS = 500;
 const BRIDGE_WORKER_CONNECT_RETRY_MS = 25;
 const BRIDGE_WORKER_ACK_INTERVAL_MS = 25;
 const BRIDGE_WORKER_LOG_TAIL_BYTES = 4_000;
@@ -393,6 +401,13 @@ export class SocketBridgeWorker
   private registryEntry: BridgeWorkerRegistryEntry | null;
   private managedProcess: ManagedProcess | null;
   private readonly registrationReady: Promise<void>;
+  private readonly adoptedTransportVersion: number | null;
+  private openWorkReport: BridgeOpenWorkSnapshot | null = null;
+  private openWorkListener: ((snapshot: BridgeOpenWorkSnapshot) => void) | null =
+    null;
+  private readonly openWorkWaiters = new Set<
+    (result: BridgeWorkerOpenWorkQueryResult) => void
+  >();
   private pendingLaunch: BridgeWorkerAppLaunch | null = null;
   private lateHandle: LateWorkerHandle | null = null;
   private readonly launchAbort = new AbortController();
@@ -428,6 +443,7 @@ export class SocketBridgeWorker
       this.logPath = join(args.workerDir, `${args.entry.id}.log`);
       this.child = new AdoptedProcessHandle(args.entry);
       this.registryEntry = args.entry;
+      this.adoptedTransportVersion = args.entry.transportVersion;
       this.managedProcess = null;
       this.registrationReady = Promise.resolve();
       this.resumeRequested = false;
@@ -436,6 +452,7 @@ export class SocketBridgeWorker
       this.id = paths.id;
       this.socketPath = paths.socketPath;
       this.logPath = paths.logPath;
+      this.adoptedTransportVersion = null;
       this.resumeRequested = true;
       const env = {
         ...args.env,
@@ -512,6 +529,7 @@ export class SocketBridgeWorker
 
   async stop(options?: { gracePeriodMs: number }) {
     this.stopping = true;
+    this.settleOpenWorkWaiters({ kind: "unavailable" });
     const launch = this.pendingLaunch;
     if (launch !== null) {
       if (cancelBridgeWorkerAppLaunch(launch)) {
@@ -731,6 +749,51 @@ export class SocketBridgeWorker
     writeBridgeWorkerEntry(this.workerDir, entry);
   }
 
+  onOpenWorkReport(listener: (snapshot: BridgeOpenWorkSnapshot) => void): void {
+    this.openWorkListener = listener;
+    if (this.openWorkReport !== null) {
+      listener(this.openWorkReport);
+    }
+  }
+
+  waitForOpenWorkReport(
+    timeoutMs = BRIDGE_WORKER_OPEN_WORK_QUERY_TIMEOUT_MS,
+  ): Promise<BridgeWorkerOpenWorkQueryResult> {
+    if (this.openWorkReport !== null) {
+      return Promise.resolve({
+        kind: "reported",
+        snapshot: this.openWorkReport,
+      });
+    }
+    if (
+      this.adoptedTransportVersion === null ||
+      this.adoptedTransportVersion < BRIDGE_SOCKET_TRANSPORT_VERSION
+    ) {
+      return Promise.resolve({ kind: "unsupported" });
+    }
+    if (this.exited || this.released || this.stopping) {
+      return Promise.resolve({ kind: "unavailable" });
+    }
+    return new Promise((resolve) => {
+      const settle = (result: BridgeWorkerOpenWorkQueryResult): void => {
+        clearTimeout(timer);
+        this.openWorkWaiters.delete(settle);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        settle({ kind: "unavailable" });
+      }, timeoutMs);
+      timer.unref();
+      this.openWorkWaiters.add(settle);
+    });
+  }
+
+  private settleOpenWorkWaiters(result: BridgeWorkerOpenWorkQueryResult): void {
+    for (const waiter of [...this.openWorkWaiters]) {
+      waiter(result);
+    }
+  }
+
   resume(): void {
     if (this.resumeRequested) return;
     this.resumeRequested = true;
@@ -738,11 +801,18 @@ export class SocketBridgeWorker
   }
 
   private sendResume(socket: Socket): void {
+    const requestOpenWork =
+      this.adoptedTransportVersion !== null &&
+      this.adoptedTransportVersion >= BRIDGE_SOCKET_TRANSPORT_VERSION &&
+      this.openWorkReport === null;
     socket.write(
       `${JSON.stringify({
         jsonrpc: "2.0",
         method: BRIDGE_RESUME_METHOD,
-        params: { afterWseq: this.ackTracker.ackableThrough() },
+        params: {
+          afterWseq: this.ackTracker.ackableThrough(),
+          ...(requestOpenWork ? { reportOpenWork: true } : {}),
+        },
       })}\n`,
     );
   }
@@ -750,6 +820,7 @@ export class SocketBridgeWorker
   release(): void {
     if (this.released) return;
     this.released = true;
+    this.settleOpenWorkWaiters({ kind: "unavailable" });
     this.launchAbort.abort();
     if (this.child instanceof AdoptedProcessHandle) this.child.stopWatching();
     this.child.removeAllListeners("exit");
@@ -851,6 +922,13 @@ export class SocketBridgeWorker
     }
     const decoded = decodeBridgeFrame(frame);
     if (decoded === null) {
+      const openWork = parseBridgeOpenWorkMessage(frame);
+      if (openWork !== null) {
+        this.openWorkReport = openWork;
+        this.openWorkListener?.(openWork);
+        this.settleOpenWorkWaiters({ kind: "reported", snapshot: openWork });
+        return;
+      }
       this.lineHandler?.(frame, null);
       return;
     }
@@ -986,6 +1064,7 @@ export class SocketBridgeWorker
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     this.exited = true;
+    this.settleOpenWorkWaiters({ kind: "unavailable" });
     this.emit("exit", code, signal);
     const tail = readFileTail(this.logPath, BRIDGE_WORKER_LOG_TAIL_BYTES);
     removeBridgeWorkerFiles({

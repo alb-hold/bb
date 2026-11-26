@@ -23,6 +23,7 @@ export interface BridgeSocketTestClient {
 
 export interface ConnectBridgeSocketOptions {
   resumeAfter?: number | null;
+  reportOpenWork?: boolean;
   timeoutMs?: number;
 }
 
@@ -44,7 +45,12 @@ export async function connectBridgeSocket(
       if (resumeAfter !== null) {
         client.send({
           method: "bridge/resume",
-          params: { afterWseq: resumeAfter },
+          params: {
+            afterWseq: resumeAfter,
+            ...(options.reportOpenWork === true
+              ? { reportOpenWork: true }
+              : {}),
+          },
         });
       }
       return client;
