@@ -20,11 +20,30 @@ function percentage(value: number | null): string {
   return value === null ? "unknown" : `${Math.round(value * 100)}%`;
 }
 
+function pickerPoolProvider(providerId: string): PoolProvider | null {
+  if (providerId === "claude-code") return "claude";
+  if (providerId === "codex") return "codex";
+  if (providerId === "acp-antigravity-acp") return "gemini";
+  return null;
+}
+
+function composerProviderFor(provider: PoolProvider): string {
+  if (provider === "claude") return "claude-code";
+  if (provider === "gemini") return "acp-antigravity-acp";
+  return "codex";
+}
+
+function pickerProviderLabel(provider: PoolProvider): string {
+  if (provider === "claude") return "Claude";
+  if (provider === "gemini") return "Antigravity";
+  return "Codex";
+}
+
 function label(account: AccountSummary): string {
   const usage = account.limitWindows
     .map((window) => {
       let name: string = window.slot;
-      if (account.provider === "claude") {
+      if (account.provider === "claude" || account.provider === "gemini") {
         if (window.windowMinutes === 300) name = "5h";
         if (window.windowMinutes === 10_080) name = "weekly";
       }
@@ -44,12 +63,7 @@ export function SubscriptionPicker({ providerId }: { providerId: string }) {
   const rpc = useRpc<
     typeof accountPoolRpcContract & typeof accountPoolBypassReadRpcContract
   >();
-  const provider: PoolProvider | null =
-    providerId === "claude-code"
-      ? "claude"
-      : providerId === "codex"
-        ? "codex"
-        : null;
+  const provider = pickerPoolProvider(providerId);
   const scope = composer.scope;
   const threadId = scope.kind === "new-thread" ? null : scope.threadId;
   const lookupKey = `${provider}:${threadId ?? composer.key}`;
@@ -82,8 +96,7 @@ export function SubscriptionPicker({ providerId }: { providerId: string }) {
     );
     if (
       data.success &&
-      actualProvider !==
-        (data.data.provider === "claude" ? "claude-code" : "codex")
+      actualProvider !== composerProviderFor(data.data.provider)
     ) {
       composer.experimental_setCreateData(null);
     }
@@ -185,7 +198,7 @@ export function SubscriptionPicker({ providerId }: { providerId: string }) {
     status?.parent?.mode === "proxy"
       ? "A parent pool decides which subscription to use."
       : status !== null && !status.routing[provider]
-        ? `${provider === "claude" ? "Claude" : "Codex"} routing is off.`
+        ? `${pickerProviderLabel(provider)} routing is off.`
         : bypassed
           ? "Pool routing is bypassed for this conversation."
           : null;
@@ -194,7 +207,7 @@ export function SubscriptionPicker({ providerId }: { providerId: string }) {
       ? status?.parent?.mode === "proxy"
         ? "This new conversation can't use the selected subscription while a parent pool is in proxy mode. Choose Automatic or switch the parent to local mode before sending."
         : status !== null && !status.routing[provider]
-          ? `This new conversation can't use the selected subscription while ${provider === "claude" ? "Claude" : "Codex"} routing is off. Choose Automatic or turn routing back on before sending.`
+          ? `This new conversation can't use the selected subscription while ${pickerProviderLabel(provider)} routing is off. Choose Automatic or turn routing back on before sending.`
           : null
       : null;
   const disabled =

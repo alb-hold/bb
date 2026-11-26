@@ -2526,8 +2526,9 @@ export class AccountPoolHub {
             controller.enqueue(chunk.value);
           }
         } catch (error) {
+          const shouldReport = eventStream && !finished;
           finished = true;
-          reportCut("error", error, false);
+          if (shouldReport) reportCut("error", error, false);
           upstream.release();
           if (!eventStream) {
             controller.error(
@@ -2544,7 +2545,9 @@ export class AccountPoolHub {
         }
       },
       async cancel(reason: unknown) {
-        if (!finished && !finalSeen)
+        const shouldReport = eventStream && !finished && !finalSeen;
+        finished = true;
+        if (shouldReport)
           reportCut(
             "client-closed",
             reason ?? trace?.clientSignal.reason,
