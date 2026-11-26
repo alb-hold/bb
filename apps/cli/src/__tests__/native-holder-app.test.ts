@@ -18,9 +18,12 @@ import {
   startNativeHolderFallback,
 } from "../commands/thread/native.js";
 import {
+  NativeHolderFrame,
+  encodeNativeHolderFrame,
   nativeHolderPidMarkerPath,
   nativeHolderProcessIsAlive,
   openNativeHolderConnection,
+  runNativeHolder,
   writeNativeHolderPidMarker,
 } from "../native-holder.js";
 import {
@@ -413,15 +416,236 @@ describe("native holder app fallback", () => {
     }
   });
 
-  it("clears a stale marker on spawn and treats a dead pid as not started", () => {
+  function startOwnedHolder(
+    socket: string,
+    counters: { socketOwners: number; ptyStarts: number },
+  ): { exited: Promise<number>; stop: () => void } {
+    let finishPty:
+      | ((event: { exitCode: number; signal?: number }) => void)
+      | null = null;
+    const exited = runNativeHolder({
+      socketPath: socket,
+      cwd: os.tmpdir(),
+      env: {},
+      firstClientTimeoutMs: 5_000,
+      onSocketReady: () => {
+        counters.socketOwners += 1;
+      },
+      prepare: async () => ({ command: "fake", args: [] }),
+      spawnPty: () => {
+        counters.ptyStarts += 1;
+        return {
+          pid: 4242,
+          onData: () => undefined,
+          onExit: (listener) => {
+            finishPty = listener;
+          },
+          write: () => undefined,
+          resize: () => undefined,
+          kill: () => {
+            finishPty?.({ exitCode: 0 });
+          },
+        };
+      },
+    });
+    return {
+      exited,
+      stop: () => {
+        finishPty?.({ exitCode: 0 });
+      },
+    };
+  }
+
+  it("launches one holder and connects both callers when two launchers start together", async () => {
+    const socket = socketIn();
+    let appLaunches = 0;
+    const counters = { socketOwners: 0, ptyStarts: 0 };
+    let holder: { exited: Promise<number>; stop: () => void } | null = null;
+    const deps: NativeHolderAppDeps = {
+      platform: "darwin",
+      run: (command) => {
+        if (command !== "/usr/bin/open") return;
+        appLaunches += 1;
+        setTimeout(() => writeNativeHolderPidMarker(socket), 40);
+        setTimeout(() => {
+          holder = startOwnedHolder(socket, counters);
+        }, 350);
+      },
+    };
+    const launch = () => {
+      let environmentFile: string | null = null;
+      return openNativeHolderConnection({
+        socketPath: socket,
+        reattachOnly: false,
+        startHolder: () => {
+          environmentFile = spawnNativeHolder("thr_abc", socket, deps);
+        },
+        startFallbackHolder: () => {
+          if (environmentFile === null) return;
+          startNativeHolderFallback("thr_abc", socket, environmentFile);
+        },
+        holderHasStarted: () => nativeHolderProcessIsAlive(socket),
+        fallbackWindowMs: 200,
+        startTimeoutMs: 6_000,
+      });
+    };
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      const [first, second] = await Promise.all([launch(), launch()]);
+      if (first.kind !== "attached") throw new Error(first.kind);
+      if (second.kind !== "attached") throw new Error(second.kind);
+      expect(appLaunches).toBe(1);
+      expect(spawned).toHaveLength(0);
+      expect(counters.socketOwners).toBe(1);
+      const resize = encodeNativeHolderFrame(
+        NativeHolderFrame.resize,
+        Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
+      );
+      first.socket.on("error", () => undefined);
+      second.socket.on("error", () => undefined);
+      if (!first.socket.destroyed) first.socket.write(resize);
+      if (!second.socket.destroyed) second.socket.write(resize);
+      await expect.poll(() => counters.ptyStarts).toBe(1);
+      first.socket.destroy();
+      second.socket.destroy();
+      const activeHolder = holder as {
+        exited: Promise<number>;
+        stop: () => void;
+      } | null;
+      activeHolder?.stop();
+      await expect(activeHolder?.exited).resolves.toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("keeps a live pid marker and launches no second holder when a second launcher starts mid-boot", async () => {
+    const socket = socketIn();
+    let appLaunches = 0;
+    const environmentFiles: string[] = [];
+    const counters = { socketOwners: 0, ptyStarts: 0 };
+    let holder: { exited: Promise<number>; stop: () => void } | null = null;
+    const deps: NativeHolderAppDeps = {
+      platform: "darwin",
+      run: (command) => {
+        if (command !== "/usr/bin/open") return;
+        appLaunches += 1;
+        setTimeout(() => writeNativeHolderPidMarker(socket), 30);
+      },
+    };
+    const launch = () => {
+      let environmentFile: string | null = null;
+      return openNativeHolderConnection({
+        socketPath: socket,
+        reattachOnly: false,
+        startHolder: () => {
+          environmentFile = spawnNativeHolder("thr_abc", socket, deps);
+          if (environmentFile !== null) environmentFiles.push(environmentFile);
+        },
+        startFallbackHolder: () => {
+          if (environmentFile === null) return;
+          startNativeHolderFallback("thr_abc", socket, environmentFile);
+        },
+        holderHasStarted: () => nativeHolderProcessIsAlive(socket),
+        fallbackWindowMs: 200,
+        startTimeoutMs: 6_000,
+      });
+    };
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      const firstPromise = launch();
+      await expect.poll(() => nativeHolderProcessIsAlive(socket)).toBe(true);
+      const secondPromise = launch();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(true);
+      expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+      expect(appLaunches).toBe(1);
+      expect(spawned).toHaveLength(0);
+      expect(existsSync(environmentFiles[0] ?? "")).toBe(true);
+      holder = startOwnedHolder(socket, counters);
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      if (first.kind !== "attached") throw new Error(first.kind);
+      if (second.kind !== "attached") throw new Error(second.kind);
+      expect(appLaunches).toBe(1);
+      expect(spawned).toHaveLength(0);
+      expect(counters.socketOwners).toBe(1);
+      const resize = encodeNativeHolderFrame(
+        NativeHolderFrame.resize,
+        Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
+      );
+      first.socket.on("error", () => undefined);
+      second.socket.on("error", () => undefined);
+      if (!first.socket.destroyed) first.socket.write(resize);
+      if (!second.socket.destroyed) second.socket.write(resize);
+      await expect.poll(() => counters.ptyStarts).toBe(1);
+      first.socket.destroy();
+      second.socket.destroy();
+      holder.stop();
+      await expect(holder.exited).resolves.toBe(0);
+    } finally {
+      stderr.mockRestore();
+      holder?.stop();
+    }
+  });
+
+  it("clears a stale marker on spawn, preserves a live marker, and launches once after a dead pid", async () => {
     const socket = socketIn();
     writeFileSync(nativeHolderPidMarkerPath(socket), "2147483646");
     expect(nativeHolderProcessIsAlive(socket)).toBe(false);
-    writeNativeHolderPidMarker(socket);
-    expect(nativeHolderProcessIsAlive(socket)).toBe(true);
     const { deps } = recordingDeps("darwin");
     spawnNativeHolder("thr_abc", socket, deps);
     expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(false);
+
+    writeNativeHolderPidMarker(socket);
+    expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+    spawnNativeHolder("thr_abc", socket, deps);
+    expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(true);
+    expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+
+    const staleSocket = socketIn();
+    writeFileSync(nativeHolderPidMarkerPath(staleSocket), "2147483646");
+    let launches = 0;
+    const counters = { socketOwners: 0, ptyStarts: 0 };
+    let holder: { exited: Promise<number>; stop: () => void } | null = null;
+    const staleDeps: NativeHolderAppDeps = {
+      platform: "darwin",
+      run: (command) => {
+        if (command !== "/usr/bin/open") return;
+        launches += 1;
+        writeNativeHolderPidMarker(staleSocket);
+        holder = startOwnedHolder(staleSocket, counters);
+      },
+    };
+    const connection = await openNativeHolderConnection({
+      socketPath: staleSocket,
+      reattachOnly: false,
+      startHolder: () => {
+        spawnNativeHolder("thr_abc", staleSocket, staleDeps);
+      },
+      holderHasStarted: () => nativeHolderProcessIsAlive(staleSocket),
+      startTimeoutMs: 6_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    expect(launches).toBe(1);
+    expect(counters.socketOwners).toBe(1);
+    const resize = encodeNativeHolderFrame(
+      NativeHolderFrame.resize,
+      Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
+    );
+    connection.socket.on("error", () => undefined);
+    connection.socket.write(resize);
+    await expect.poll(() => counters.ptyStarts).toBe(1);
+    connection.socket.destroy();
+    const activeHolder = holder as {
+      exited: Promise<number>;
+      stop: () => void;
+    } | null;
+    activeHolder?.stop();
+    await expect(activeHolder?.exited).resolves.toBe(0);
   });
 
   it("writes the pid marker before it reads the environment file", async () => {

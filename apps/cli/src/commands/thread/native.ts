@@ -41,7 +41,7 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
-  clearNativeHolderPidMarker,
+  clearDeadNativeHolderPidMarker,
   formatNativeHolderBootProgress,
   nativeHolderProcessIsAlive,
   writeNativeHolderPidMarker,
@@ -161,7 +161,7 @@ export function spawnNativeHolder(
   app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
 ): string | null {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  clearNativeHolderPidMarker(socketPath);
+  clearDeadNativeHolderPidMarker(socketPath);
   const argv = nativeHolderArgv(threadId, socketPath);
   const started = startNativeHolderAsApp(
     { argv, cwd: process.cwd(), environment: process.env, socketPath },
@@ -187,16 +187,24 @@ export function startNativeHolderFallback(
   spawnDetachedNativeHolder(nativeHolderArgv(threadId, socketPath));
 }
 
-function nativeBootProgressWriter(
-  output: NodeJS.WriteStream,
-): (progress: NativeHolderWaitProgress) => void {
+function nativeBootProgressWriter(output: NodeJS.WriteStream): {
+  onWaiting: (progress: NativeHolderWaitProgress) => void;
+  clear: () => void;
+} {
   let lastSecond = -1;
-  return (progress) => {
-    if (output.isTTY !== true) return;
-    const second = Math.floor(progress.elapsedMs / 1_000);
-    if (second === lastSecond) return;
-    lastSecond = second;
-    output.write(`\r\x1b[2K${formatNativeHolderBootProgress(progress)}`);
+  let wrote = false;
+  return {
+    onWaiting: (progress) => {
+      if (output.isTTY !== true) return;
+      const second = Math.floor(progress.elapsedMs / 1_000);
+      if (second === lastSecond) return;
+      lastSecond = second;
+      wrote = true;
+      output.write(`\r\x1b[2K${formatNativeHolderBootProgress(progress)}`);
+    },
+    clear: () => {
+      if (wrote) output.write("\r\x1b[2K");
+    },
   };
 }
 
@@ -208,6 +216,7 @@ async function runNativeHarness(
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
   const credential = takeNativeToolCredentialFromEnv(process.env);
   let appEnvironmentFile: string | null = null;
+  const progress = nativeBootProgressWriter(process.stdout);
   const connection = await openNativeHolderConnection({
     socketPath,
     reattachOnly,
@@ -219,9 +228,10 @@ async function runNativeHarness(
       startNativeHolderFallback(threadId, socketPath, appEnvironmentFile);
     },
     holderHasStarted: () => nativeHolderProcessIsAlive(socketPath),
-    onWaiting: nativeBootProgressWriter(process.stdout),
+    onWaiting: progress.onWaiting,
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
+  progress.clear();
   if (connection.kind === "ended") {
     process.stdout.write(
       "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",

@@ -1215,6 +1215,114 @@ describe("native holder app fallback window", () => {
     ).toBe("Starting the agent... 9s");
   });
 
+  it("launches one holder across two concurrent child-process launchers racing on the pid marker", async () => {
+    const socketPath = socketIn();
+    const dir = path.dirname(socketPath);
+    const launchesPath = path.join(dir, "launches.txt");
+    const fallbacksPath = path.join(dir, "fallbacks.txt");
+    const ownersPath = path.join(dir, "owners.txt");
+    const holderModule = pathToFileURL(
+      path.join(import.meta.dirname, "..", "native-holder.ts"),
+    ).href;
+    const holderScript = [
+      `import { appendFileSync } from "node:fs";`,
+      `const { runNativeHolder, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});`,
+      `writeNativeHolderPidMarker(${JSON.stringify(socketPath)});`,
+      `await new Promise((resolve) => setTimeout(resolve, 1_500));`,
+      `let onData = () => undefined;`,
+      `let onExit = () => undefined;`,
+      `await runNativeHolder({`,
+      `  socketPath: ${JSON.stringify(socketPath)},`,
+      `  cwd: ${JSON.stringify(os.tmpdir())},`,
+      `  env: {},`,
+      `  firstClientTimeoutMs: 5_000,`,
+      `  reapAfterMs: 1_000,`,
+      `  onSocketReady: () => appendFileSync(${JSON.stringify(ownersPath)}, String(process.pid) + "\\n"),`,
+      `  prepare: async () => ({ command: "fake", args: [] }),`,
+      `  spawnPty: () => {`,
+      `    setTimeout(() => onData("owner:" + String(process.pid) + "\\r\\n"), 10);`,
+      `    return {`,
+      `      pid: process.pid,`,
+      `      onData: (cb) => { onData = cb; },`,
+      `      onExit: (cb) => { onExit = cb; },`,
+      `      write: (input) => { if (input.includes("\\u0004")) onExit({ exitCode: 0 }); },`,
+      `      resize: () => undefined,`,
+      `      kill: () => onExit({ exitCode: 0 }),`,
+      `    };`,
+      `  },`,
+      `});`,
+    ].join("\n");
+    const launcherScript = [
+      `import { spawn } from "node:child_process";`,
+      `import { appendFileSync } from "node:fs";`,
+      `const { openNativeHolderConnection } = await import(${JSON.stringify(holderModule)});`,
+      `const connection = await openNativeHolderConnection({`,
+      `  socketPath: ${JSON.stringify(socketPath)},`,
+      `  reattachOnly: false,`,
+      `  startHolder: () => {`,
+      `    appendFileSync(${JSON.stringify(launchesPath)}, String(process.pid) + "\\n");`,
+      `    spawn(`,
+      `      process.execPath,`,
+      `      ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", ${JSON.stringify(holderScript)}],`,
+      `      { detached: true, stdio: "ignore" },`,
+      `    ).unref();`,
+      `  },`,
+      `  startFallbackHolder: () => {`,
+      `    appendFileSync(${JSON.stringify(fallbacksPath)}, String(process.pid) + "\\n");`,
+      `  },`,
+      `  fallbackWindowMs: 1_200,`,
+      `  startTimeoutMs: 10_000,`,
+      `});`,
+      `if (connection.kind === "attached") connection.socket.destroy();`,
+      `process.stdout.write(connection.kind + "\\n");`,
+    ].join("\n");
+    const runLauncher = (): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const child = spawnProcess(
+          process.execPath,
+          [
+            "--experimental-strip-types",
+            "--no-warnings",
+            "--input-type=module",
+            "-e",
+            launcherScript,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code === 0 && signal === null) resolve(stdout.trim());
+          else reject(new Error(`launcher exited ${code} ${signal}: ${stderr}`));
+        });
+      });
+
+    const [firstResult, secondResult] = await Promise.all([
+      runLauncher(),
+      runLauncher(),
+    ]);
+    expect(firstResult).toBe("attached");
+    expect(secondResult).toBe("attached");
+    const launches = readFileSync(launchesPath, "utf8").trim().split("\n");
+    expect(launches).toHaveLength(1);
+    expect(existsSync(fallbacksPath)).toBe(false);
+    const owners = readFileSync(ownersPath, "utf8").trim().split("\n");
+    expect(owners).toHaveLength(1);
+    const client = await attach(socketPath);
+    const match = await client.waitFor(/owner:(\d+)/u);
+    expect(match[1]).toBe(owners[0]);
+    client.type("\u0004");
+    await expect.poll(() => existsSync(socketPath)).toBe(false);
+    client.socket.destroy();
+  });
+
   it("reports did-not-start after the fallback also never listens", async () => {
     let fallbacks = 0;
     const connection = await openNativeHolderConnection({
