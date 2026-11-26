@@ -156,7 +156,7 @@ export async function reconcileNativeThreadStatus(
   if (
     nativeTerminal != null &&
     native.nativeSessionId !== null &&
-    session?.kind === "assigned" &&
+    (session?.kind === "assigned" || session?.kind === "sqlite-discovered") &&
     transcript !== undefined
   ) {
     const environment =

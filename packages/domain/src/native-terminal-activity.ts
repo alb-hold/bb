@@ -29,6 +29,12 @@ function recordMatches(
     const value = readRecordField(record, field);
     if (typeof value !== "string" || !value.startsWith(prefix)) return false;
   }
+  for (const field of match.present ?? []) {
+    if (readRecordField(record, field) === undefined) return false;
+  }
+  for (const field of match.absent ?? []) {
+    if (readRecordField(record, field) !== undefined) return false;
+  }
   return true;
 }
 

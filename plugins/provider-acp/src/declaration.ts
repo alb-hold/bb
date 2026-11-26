@@ -23,6 +23,85 @@ const ACP_SERVICE_TIERS = [
 
 const DEFAULT_FORK = "none" as const;
 
+const AGY_NATIVE_TERMINAL: NonNullable<
+  PluginProviderDeclaration["experimental_nativeTerminal"]
+> = {
+  executable: "agy",
+  launchArgs: ["--dangerously-skip-permissions"],
+  workspaceArgs: ["--settings", '{"trustedWorkspaces":[{cwdJson}]}'],
+  modelArgs: ["--model", "{model}"],
+  promptArgs: ["-i", "{prompt}"],
+  pastePlaceholders: ["[Pasted text #"],
+  sessionRoot: { env: null, home: ".gemini/antigravity-cli" },
+  session: {
+    kind: "sqlite-discovered",
+    resumeArgs: ["--resume", "{sessionId}"],
+    sessionLog: {
+      args: ["--log-file", "{logFile}"],
+      prefixes: ["Created conversation ", "Streaming conversation "],
+    },
+    database: "conversation_summaries.db",
+    transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+    table: "conversation_summaries",
+    idColumn: "conversation_id",
+    workspaceUrisColumn: "workspace_uris",
+    startedAtColumn: "last_user_input_time",
+    transcriptStartedAtField: "created_at",
+  },
+  activity: {
+    transcript: {
+      working: [
+        {
+          equals: { type: "PLANNER_RESPONSE", source: "MODEL" },
+          present: ["tool_calls.0"],
+        },
+        {
+          equals: { type: "GENERIC", source: "MODEL", status: "RUNNING" },
+        },
+      ],
+      idle: [
+        {
+          equals: {
+            type: "PLANNER_RESPONSE",
+            source: "MODEL",
+            status: "DONE",
+          },
+          absent: ["tool_calls.0"],
+        },
+      ],
+      prompt: [
+        {
+          match: {
+            equals: { type: "USER_INPUT", source: "USER_EXPLICIT" },
+          },
+          text: "content",
+        },
+      ],
+      reply: [
+        {
+          match: {
+            equals: {
+              type: "PLANNER_RESPONSE",
+              source: "MODEL",
+              status: "DONE",
+            },
+            absent: ["tool_calls.0"],
+          },
+          text: "content",
+        },
+      ],
+    },
+  },
+};
+
+function isAntigravityAgent(agent: AcpAgentDefinition): boolean {
+  return (
+    agent.id === "acp-antigravity-acp" ||
+    agent.id === "acp-agy" ||
+    /(?:^|[\\/])agy$/u.test(agent.launch.command)
+  );
+}
+
 function acpStrings(agent: AcpAgentDefinition): PluginProviderStrings {
   const signIn = agent.signInCommand;
   return {
@@ -65,6 +144,9 @@ export function acpProviderDeclaration(
       : { experimental_resolvesNativeRoots: true }),
     ...(agent.guidedSignIn === true
       ? { internal_DO_NOT_USE_guidedSignIn: true }
+      : {}),
+    ...(isAntigravityAgent(agent)
+      ? { experimental_nativeTerminal: AGY_NATIVE_TERMINAL }
       : {}),
     experimental_bridgeOptions: {
       ...(agent.id === "acp-antigravity-acp" ? { acpAgentId: agent.id } : {}),

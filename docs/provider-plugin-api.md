@@ -201,7 +201,8 @@ lives in the terminal's own process and is free for chat once the CLI exits,
 and `--no-alt-screen` so its transcript stays in terminal scrollback; both
 Claude Code and Codex pass their permission-bypass flag so a native
 thread runs unattended like a chat thread in full access),
-`modelArgs` placed next when the thread has a model (`{model}`), `imageArgs` added once per image
+optional `workspaceArgs` (`{cwd}` or `{cwdJson}`),
+`modelArgs` placed next when the thread has a model (`{model}`), optional `promptArgs` (`{prompt}` when the CLI takes its initial interactive prompt via a flag instead of a positional argument), `imageArgs` added once per image
 attached at creation, after the first prompt of a new session (`{image}` is the image's path on the
 host; optional, and empty or absent when the CLI attaches an image from a path in its prompt; a bb
 CLI that does not ask for launch images still gets the paths in the prompt), `experimental_`-stage
@@ -220,8 +221,12 @@ JSON line of each `transcripts` file (`{yyyy}`, `{mm}`, `{dd}` cover the
 launch day and the day before), keeps those whose `header.match` fields equal
 the given strings, and binds the single one whose `header.cwd` is the thread
 workspace and whose `header.startedAt` follows the launch; later launches use
-`resumeArgs`. `*` matches within one path segment, and `{sessionId}` is the
-only token in session argv. The optional `activity` block lets a native thread
+`resumeArgs`. With `"sqlite-discovered"`, bb passes a private per-launch log
+file via `sessionLog.args` (`{logFile}`), reads the session id logged after
+`sessionLog.prefixes`, verifies the matching workspace row in `database` and
+`transcript`, and resumes with `resumeArgs`. `*` matches within one path
+segment; `{sessionId}` is the only token in `startArgs`/`resumeArgs` and
+`{logFile}` in `sessionLog.args`. The optional `activity` block lets a native thread
 show Working, Done and a title: `hooks` names the CLI's hook events for a
 started and an ended turn, the field holding the prompt, and the argv that
 loads `{settings}` (bb fills in hooks that append each event to a private
