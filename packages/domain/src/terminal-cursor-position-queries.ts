@@ -448,7 +448,11 @@ export class TerminalCursorPositionQueries {
     this.csiParams[idx] = next > MAX_CSI_PARAM_VALUE ? MAX_CSI_PARAM_VALUE : next;
   }
 
-  push(chunk: string, reply: (data: string) => void): string {
+  push(
+    chunk: string,
+    reply: (data: string) => void,
+    forwarded?: (estimate: string) => void,
+  ): string {
     if (chunk.length === 0) return "";
     const parts: string[] = [];
     let sliceStart = 0;
@@ -539,6 +543,7 @@ export class TerminalCursorPositionQueries {
           if (this.isPositionKnown()) {
             reply(this.formatReport(isPrivate));
           } else {
+            forwarded?.(this.formatReport(isPrivate));
             emitRaw(fullQuery);
           }
           index += 1;

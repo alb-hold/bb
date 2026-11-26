@@ -44,6 +44,7 @@ import {
   terminalShellArgs,
   terminalShellTitle,
 } from "./terminal-shell.js";
+import { TerminalCursorReplyFallback } from "./terminal-cursor-reply-fallback.js";
 import { prepareTerminalShellIntegration } from "./terminal-shell-integration.js";
 
 const DEFAULT_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
@@ -202,6 +203,7 @@ interface TerminalSession {
   outputFlushCancel: (() => void) | null;
   colorQueries: TerminalColorQueries | null;
   cursorPositionQueries: TerminalCursorPositionQueries;
+  cursorReplyFallback: TerminalCursorReplyFallback;
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
   gridMarkerScanner: ReturnType<typeof createTerminalGridMarkerScanner>;
@@ -838,6 +840,11 @@ export class TerminalManager {
           message.cols,
           message.rows,
         ),
+        cursorReplyFallback: new TerminalCursorReplyFallback((reply) => {
+          if (this.sessions.get(message.terminalId)?.pty === pty) {
+            pty.write(reply);
+          }
+        }),
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
         gridMarkerScanner: createTerminalGridMarkerScanner(),
@@ -1067,7 +1074,15 @@ export class TerminalManager {
     if (!session) {
       return;
     }
-    session.pty.write(Buffer.from(dataBase64, "base64"));
+    const input = session.cursorReplyFallback.isIdle()
+      ? Buffer.from(dataBase64, "base64")
+      : Buffer.from(
+          session.cursorReplyFallback.filterInput(
+            Buffer.from(dataBase64, "base64").toString("latin1"),
+          ),
+          "latin1",
+        );
+    if (input.byteLength > 0) session.pty.write(input);
   }
 
   private resizeTerminal(args: ResizeTerminalArgs): void {
@@ -1204,9 +1219,13 @@ export class TerminalManager {
       session.colorQueries?.push(data, (reply) => session.pty.write(reply)) ??
       data;
     const cursorReplies: string[] = [];
-    data = session.cursorPositionQueries.push(data, (reply) => {
-      cursorReplies.push(reply);
-    });
+    data = session.cursorPositionQueries.push(
+      data,
+      (reply) => {
+        cursorReplies.push(reply);
+      },
+      (estimate) => session.cursorReplyFallback.expect(estimate),
+    );
     if (cursorReplies.length > 0) {
       session.pty.write(cursorReplies.join(""));
     }
@@ -1553,6 +1572,7 @@ export class TerminalManager {
       clearTimeout(args.session.closeTimeout);
       args.session.closeTimeout = null;
     }
+    args.session.cursorReplyFallback.dispose();
     this.sessions.delete(args.session.terminalId);
     this.retainExitedSession(args.session);
     if (args.session.environmentId !== null) {
