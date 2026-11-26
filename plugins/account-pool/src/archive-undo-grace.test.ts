@@ -1,13 +1,37 @@
 import { createAccountPoolTestHost } from "./test-host.js";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { statusReportSchema } from "./contracts.js";
 import { createAccountPoolPlugin } from "./server.js";
 import { HubTokenStore } from "./store.js";
-import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
+import { ThreadTokenStore } from "./thread-tokens.js";
+
+const mintedTokens: string[] = [];
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  const wrappedRandomBytes = ((
+    size: number,
+    callback?: (err: Error | null, buf: Buffer) => void,
+  ) => {
+    if (callback !== undefined) {
+      return actual.randomBytes(size, callback);
+    }
+    const bytes = actual.randomBytes(size);
+    if (size === 32) {
+      mintedTokens.push(bytes.toString("base64url"));
+    }
+    return bytes;
+  }) as typeof actual.randomBytes;
+  return {
+    ...actual,
+    randomBytes: wrappedRandomBytes,
+  };
+});
 
 const ARCHIVE_UNDO_GRACE_MS = 30_000;
 
@@ -250,13 +274,18 @@ describe("Account Pooler archive undo grace", () => {
 
   it("fails closed when settling a half-minted credential rejects after forNested sees an archived thread", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-mint-settle-fail-"));
+    let clock = Date.now();
     let threadReads = 0;
     let failSettleLookup = true;
     let thread = makeThreadResponse({
       id: "thr_race_settle_fail",
+      providerId: "claude-code",
       status: "idle",
       archivedAt: null,
     });
+    const upstream = vi.fn<typeof fetch>(async () =>
+      Response.json({ routed: true }),
+    );
     const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
@@ -270,7 +299,7 @@ describe("Account Pooler archive undo grace", () => {
             if (threadReads === 3) {
               thread = makeThreadResponse({
                 ...thread,
-                archivedAt: Date.now(),
+                archivedAt: clock,
               });
             }
             if (failSettleLookup && threadReads >= 4) {
@@ -283,31 +312,35 @@ describe("Account Pooler archive undo grace", () => {
       },
     });
     await createAccountPoolPlugin({
+      now: () => clock,
       env: {},
-      codexUsageUrl: "https://usage.invalid/wham/usage",
-      fetch: async () => Response.json({}),
-      importCodexCredentials: async () => ({
-        accessToken: "codex-access-test",
-        refreshToken: "codex-refresh-test",
-        idToken: null,
-        accountId: "codex-acc-1",
-        planType: "pro",
-        email: null,
-        expiresAt: Date.now() + 3_600_000,
-      }),
+      fetch: upstream,
+      threadSweepIntervalMs: 25,
+      threadSweepRetryMs: 25,
     })(host.bb);
+    const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
       await host.harness.lifecycle.dispose();
       await rm(dataDir, { recursive: true, force: true });
     });
     await host.harness.behavior.callRpc("account.add", {
-      provider: "codex",
-      source: { kind: "import" },
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "test-settle-fail-key" },
       label: null,
       priority: 100,
     });
+    await vi.waitFor(async () => {
+      const result = await host.harness.behavior.runCli(["status", "--json"]);
+      expect(
+        statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
+      ).toBe(true);
+    });
+
+    mintedTokens.length = 0;
     await expect(
-      host.harness.behavior.resolveProviderEnv("codex", {
+      host.harness.behavior.resolveProviderEnv("claude-code", {
         threadId: thread.id,
         projectId: thread.projectId,
         hostId: "host-one",
@@ -323,74 +356,202 @@ describe("Account Pooler archive undo grace", () => {
       "secrets",
       "accounts",
     );
-    expect(
-      (await readdir(secretDir)).filter((name) =>
-        name.startsWith("scoped-route-"),
-      ),
-    ).toHaveLength(1);
+    const scopedFiles = (await readdir(secretDir)).filter((name) =>
+      name.startsWith("scoped-route-"),
+    );
+    expect(scopedFiles).toHaveLength(1);
+    const scopedRecord = JSON.parse(
+      await readFile(path.join(secretDir, scopedFiles[0]!), "utf8"),
+    ) as { threadId: string; tokenDigest: string };
+    expect(scopedRecord.threadId).toBe(thread.id);
+    const leakedToken = mintedTokens.find(
+      (candidate) =>
+        createHash("sha256").update(candidate).digest("hex") ===
+        scopedRecord.tokenDigest,
+    );
+    expect(leakedToken).toBeDefined();
+
+    const requestWithLeakedToken = async () => {
+      const response = await host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${leakedToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            messages: [],
+            max_tokens: 1,
+          }),
+        },
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(await requestWithLeakedToken()).toBe(401);
 
     failSettleLookup = false;
+    await vi.waitFor(async () => {
+      const afterSweep = await readdir(secretDir);
+      expect(
+        afterSweep.filter((name) => name.startsWith("archived-thread-")),
+      ).toHaveLength(1);
+    });
+    expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(
+      await host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).toEqual([]);
+  });
+
+  it("revokes the actual half-minted credential leaked by a failed contribution once the thread settles archived and the plugin store sweeps", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-half-mint-real-"));
+    let clock = Date.now();
+    let threadReads = 0;
+    let failNestedLookup = true;
+    const thread = makeThreadResponse({
+      id: "thr_half_minted_sweep",
+      providerId: "claude-code",
+      status: "active",
+      archivedAt: clock,
+    });
+    const upstream = vi.fn<typeof fetch>(async () =>
+      Response.json({ routed: true }),
+    );
+    const host = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: {
+        hosts: {
+          list: async () => [{ id: "host-one", name: "One" }] as never[],
+        },
+        threads: {
+          get: async () => {
+            threadReads += 1;
+            if (failNestedLookup && threadReads >= 3) {
+              throw new Error("lookup failed while minting nested");
+            }
+            return thread;
+          },
+        },
+        system: { providerStates: async () => ({ providers: [] }) },
+      },
+    });
+    await createAccountPoolPlugin({
+      now: () => clock,
+      env: {},
+      fetch: upstream,
+      threadSweepIntervalMs: 25,
+      threadSweepRetryMs: 25,
+    })(host.bb);
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
       service.controller.abort();
       await service.done;
+      await host.harness.lifecycle.dispose();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    await host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "test-half-minted-sweep-key" },
+      label: null,
+      priority: 100,
     });
     await vi.waitFor(async () => {
       const result = await host.harness.behavior.runCli(["status", "--json"]);
       expect(
         statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
       ).toBe(true);
+    });
+
+    mintedTokens.length = 0;
+    await expect(
+      host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).rejects.toThrow("Cannot mint a credential for a thread bb has not confirmed live.");
+
+    const secretDir = path.join(
+      dataDir,
+      "plugins",
+      "account-pool",
+      "secrets",
+      "accounts",
+    );
+    const beforeRecoveryFiles = await readdir(secretDir);
+    const scopedFiles = beforeRecoveryFiles.filter((name) =>
+      name.startsWith("scoped-route-"),
+    );
+    expect(scopedFiles).toHaveLength(1);
+    expect(
+      beforeRecoveryFiles.filter((name) => name.startsWith("archived-thread-")),
+    ).toHaveLength(0);
+    const scopedRecord = JSON.parse(
+      await readFile(path.join(secretDir, scopedFiles[0]!), "utf8"),
+    ) as { threadId: string; tokenDigest: string };
+    expect(scopedRecord.threadId).toBe(thread.id);
+    const leakedToken = mintedTokens.find(
+      (candidate) =>
+        createHash("sha256").update(candidate).digest("hex") ===
+        scopedRecord.tokenDigest,
+    );
+    expect(leakedToken).toBeDefined();
+
+    const requestWithLeakedToken = async () => {
+      const response = await host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${leakedToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            messages: [],
+            max_tokens: 1,
+          }),
+        },
+      );
+      await response.text();
+      return response.status;
+    };
+
+    failNestedLookup = false;
+    expect(await requestWithLeakedToken()).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(1);
+
+    clock += ARCHIVE_UNDO_GRACE_MS;
+    await vi.waitFor(async () => {
       const afterSweep = await readdir(secretDir);
       expect(
         afterSweep.filter((name) => name.startsWith("archived-thread-")),
       ).toHaveLength(1);
     });
-    expect(
-      await host.harness.behavior.resolveProviderEnv("codex", {
-        threadId: thread.id,
-        projectId: thread.projectId,
-        hostId: "host-one",
-      }),
-    ).toEqual([]);
+    expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).toHaveBeenCalledTimes(1);
 
-    const storeDir = await mkdtemp(path.join(tmpdir(), "bb-pool-half-mint-sweep-"));
-    cleanups.push(async () => {
-      await rm(storeDir, { recursive: true, force: true });
-    });
-    let lookupMode: "live" | "fail" | "archived" = "live";
-    const lookup: ThreadLookup = async () => {
-      if (lookupMode === "fail") {
-        throw new Error("lookup failed while settling");
-      }
-      return lookupMode;
-    };
-    const hubTokens = new HubTokenStore(storeDir);
-    await hubTokens.initialize();
-    const hostToken = await hubTokens.forHost("host-one");
-    const threadTokens = new ThreadTokenStore(
-      storeDir,
-      hubTokens,
-      Date.now,
-      lookup,
+    const verifyHubTokens = new HubTokenStore(secretDir, () => clock);
+    await verifyHubTokens.initialize();
+    const verifyThreadTokens = new ThreadTokenStore(
+      secretDir,
+      verifyHubTokens,
+      () => clock,
     );
-    await threadTokens.initialize(["host-one"]);
-    const halfMintedToken = await threadTokens.forThread(
-      {
-        threadId: "thr_half_minted_token",
-        hostId: "host-one",
-        provider: "codex",
-        accountId: null,
-      },
-      hostToken,
-    );
-    expect(await threadTokens.authenticate(halfMintedToken, "codex")).not.toBeNull();
-    lookupMode = "fail";
-    await expect(
-      threadTokens.settleThread("thr_half_minted_token"),
-    ).rejects.toThrow("lookup failed while settling");
-    lookupMode = "archived";
-    const sweepResult = await threadTokens.sweepThreads(lookup);
-    expect(sweepResult).toMatchObject({ checked: 1, failed: 0, deferred: 0 });
-    expect(await threadTokens.authenticate(halfMintedToken, "codex")).toBeNull();
+    await verifyThreadTokens.initialize(["host-one"]);
+    expect(
+      await verifyThreadTokens.authenticate(leakedToken!, "claude"),
+    ).toBeNull();
   });
 });
