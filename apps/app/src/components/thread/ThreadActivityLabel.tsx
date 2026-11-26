@@ -6,14 +6,17 @@ import { ThreadStatusGlyph } from "./ThreadStatusGlyph";
 
 export function ThreadActivityLabel({
   error = false,
+  exited = false,
   indicator,
   label = "Thread activity",
 }: {
   error?: boolean;
+  exited?: boolean;
   indicator: ThreadListIndicatorKind;
   label?: string;
 }) {
-  const showError = indicator === "none" && error;
+  const showError = indicator === "none" && error && !exited;
+  const showExited = indicator === "none" && exited;
   return (
     <div
       role="status"
@@ -26,6 +29,8 @@ export function ThreadActivityLabel({
           className="pointer-events-none size-3.5 shrink-0 text-destructive"
           aria-hidden
         />
+      ) : showExited ? (
+        <span aria-hidden className="size-1.5 rounded-full bg-current text-muted-foreground" />
       ) : indicator === "none" ? (
         <span aria-hidden className={`size-1.5 rounded-full bg-current ${SIDEBAR_SUCCESS_STATUS_COLOR_CLASS}`} />
       ) : (
@@ -35,7 +40,13 @@ export function ThreadActivityLabel({
           hideAccessibleLabel
         />
       )}
-      <span>{showError ? "Error" : getThreadActivityLabel(indicator)}</span>
+      <span>
+        {showError
+          ? "Error"
+          : showExited
+            ? "Exited"
+            : getThreadActivityLabel(indicator)}
+      </span>
     </div>
   );
 }
