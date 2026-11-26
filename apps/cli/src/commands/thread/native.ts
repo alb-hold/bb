@@ -60,6 +60,7 @@ import { outputJson } from "../helpers.js";
 import { attachTerminal } from "../terminal.js";
 
 const SESSION_DISCOVERY_INTERVAL_MS = 2_000;
+const SQLITE_SESSION_DISCOVERY_SETTLE_MS = 2_000;
 const ACTIVITY_POLL_INTERVAL_MS = 750;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
 const ACTIVITY_FLUSH_TIMEOUT_MS = 3_000;
@@ -289,9 +290,9 @@ export async function holdNativeHarness(
       currentCredential: () => currentCredential(),
       discardUnsentReports: () => reporter.discardRetained(),
       find: () => {
-        if (discovery === null) return null;
+        if (discovery === null) return { kind: "none" };
         try {
-          const match = findNativeSession({
+          return findNativeSession({
             cli: discovery.cli,
             cwd,
             env,
@@ -299,9 +300,8 @@ export async function holdNativeHarness(
             launchedAtMs: discovery.launchedAtMs,
             nowMs: Date.now(),
           });
-          return match.kind === "unique" ? match.sessionId : null;
         } catch {
-          return null;
+          return { kind: "none" };
         }
       },
       log: (event, fields) => {
@@ -310,6 +310,10 @@ export async function holdNativeHarness(
       reader: () => reader,
       recordSession: (args) =>
         sdk.nativeTerminals.recordSession({ ...args, threadId }),
+      settleMs: () =>
+        discovery?.cli.session.kind === "sqlite-discovered"
+          ? SQLITE_SESSION_DISCOVERY_SETTLE_MS
+          : 0,
     });
     const discover = discoverer.discover;
     let reader: NativeActivityReader | null = null;
@@ -530,6 +534,12 @@ export async function holdNativeHarness(
     });
     for (const timer of activityTimers) clearInterval(timer);
     await discover();
+    const remainingSettleMs =
+      exitCode === 0 ? discoverer.remainingSettleMs() : 0;
+    if (remainingSettleMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remainingSettleMs));
+      await discover();
+    }
     readActivity();
     finishActivity();
     await Promise.race([

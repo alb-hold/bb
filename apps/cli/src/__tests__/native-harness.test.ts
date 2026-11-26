@@ -21,6 +21,7 @@ import {
   resolveNativeHarnessLaunch,
   snapshotNativeWorkspaceSessions,
 } from "../native-harness.js";
+import { createSessionDiscoverer } from "../native-session-discovery.js";
 
 const roots: string[] = [];
 
@@ -908,5 +909,160 @@ describe("findNativeSession", () => {
         nowMs: launchedAtMs + 5_000,
       }),
     ).toEqual({ kind: "unique", sessionId });
+  });
+
+  it("keeps a competing agy conversation provisional across the settle window and never persists or resumes it when the launched session appears later", async () => {
+    const home = tempHome();
+    const cwd = path.join(home, "workspace");
+    mkdirSync(cwd, { recursive: true });
+    const agyCli: ProviderNativeTerminal = {
+      executable: "agy",
+      launchArgs: ["--dangerously-skip-permissions"],
+      workspaceArgs: ["--settings", '{"trustedWorkspaces":[{cwdJson}]}'],
+      modelArgs: ["--model", "{model}"],
+      promptArgs: ["-i", "{prompt}"],
+      pastePlaceholders: ["[Pasted text #"],
+      sessionRoot: { env: null, home: ".gemini/antigravity-cli" },
+      session: {
+        kind: "sqlite-discovered",
+        resumeArgs: ["--resume", "{sessionId}"],
+        database: "conversation_summaries.db",
+        transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+        table: "conversation_summaries",
+        idColumn: "conversation_id",
+        workspaceUrisColumn: "workspace_uris",
+        startedAtColumn: "last_user_input_time",
+        transcriptStartedAtField: "created_at",
+      },
+    };
+    const agyRoot = path.join(home, ".gemini", "antigravity-cli");
+    mkdirSync(agyRoot, { recursive: true });
+    const writeAgyTranscript = (id: string, createdAt: string): void => {
+      const dir = path.join(agyRoot, "brain", id, ".system_generated", "logs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, "transcript.jsonl"),
+        `${JSON.stringify({ step_index: 0, type: "USER_INPUT", created_at: createdAt })}\n`,
+      );
+    };
+    const { DatabaseSync } = createRequire(import.meta.url)(
+      "node:sqlite",
+    ) as typeof import("node:sqlite");
+    const dbPath = path.join(agyRoot, "conversation_summaries.db");
+    const dbInit = new DatabaseSync(dbPath);
+    dbInit.exec(
+      "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, last_user_input_time TEXT)",
+    );
+    dbInit.close();
+
+    const launchedAtMs = Date.parse("2026-11-26T11:10:00.100Z");
+    const preSpawnSnapshot = snapshotNativeWorkspaceSessions({
+      cli: agyCli,
+      cwd,
+      env: { HOME: home },
+    });
+
+    const competitorId = "00000000-0000-4000-8000-000000000010";
+    const launchedId = "00000000-0000-4000-8000-000000000020";
+
+    const dbCompetitor = new DatabaseSync(dbPath);
+    dbCompetitor
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        competitorId,
+        JSON.stringify([pathToFileURL(cwd).href]),
+        "2026-11-26 11:10:00.250000+00:00",
+      );
+    dbCompetitor.close();
+    writeAgyTranscript(competitorId, "2026-11-26T11:10:00.250Z");
+
+    let nowMs = launchedAtMs + 400;
+    let persistedSessionId: string | null = null;
+    const recorded: string[] = [];
+    const followed: string[] = [];
+    const logged: Array<{ event: string; fields: unknown }> = [];
+    const discoverer = createSessionDiscoverer({
+      currentCredential: () => "current",
+      discardUnsentReports: () => undefined,
+      find: () =>
+        findNativeSession({
+          cli: agyCli,
+          cwd,
+          env: { HOME: home },
+          excludeSessionIds: preSpawnSnapshot,
+          launchedAtMs,
+          nowMs,
+        }),
+      log: (event, fields) => logged.push({ event, fields }),
+      now: () => nowMs,
+      reader: () => ({
+        sessionDiscovered: (id) => followed.push(id),
+        suspend: () => undefined,
+      }),
+      recordSession: async ({ nativeSessionId }) => {
+        persistedSessionId = nativeSessionId;
+        recorded.push(nativeSessionId);
+      },
+      settleMs: 2_000,
+    });
+    discoverer.arm(true);
+
+    await discoverer.discover();
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
+        launchedAtMs,
+        nowMs,
+      }),
+    ).toEqual({ kind: "unique", sessionId: competitorId });
+    expect(recorded).toEqual([]);
+    expect(followed).toEqual([]);
+    expect(persistedSessionId).toBeNull();
+
+    const dbLaunched = new DatabaseSync(dbPath);
+    dbLaunched
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        launchedId,
+        JSON.stringify([pathToFileURL(cwd).href]),
+        "2026-11-26 11:10:01.100000+00:00",
+      );
+    dbLaunched.close();
+    writeAgyTranscript(launchedId, "2026-11-26T11:10:01.100Z");
+
+    nowMs = launchedAtMs + 1_500;
+    await discoverer.discover();
+    nowMs = launchedAtMs + 3_000;
+    await discoverer.discover();
+
+    expect(recorded).toEqual([]);
+    expect(followed).toEqual([]);
+    expect(persistedSessionId).toBeNull();
+    expect(logged).toEqual([
+      { event: "session-discovery-ambiguous", fields: { count: 2 } },
+    ]);
+
+    const reopenLaunch = resolveNativeHarnessLaunch(
+      spec({
+        cli: agyCli,
+        initialPrompt: null,
+        nativeSessionId: persistedSessionId,
+        providerId: "acp-antigravity-acp",
+      }),
+      { HOME: home },
+      [],
+      [],
+      cwd,
+    );
+    expect(reopenLaunch.session).toEqual({ kind: "discover" });
+    expect(reopenLaunch.args).not.toContain("--resume");
+    expect(reopenLaunch.args).not.toContain(competitorId);
   });
 });
