@@ -395,7 +395,9 @@ export class SocketBridgeWorker
   private readonly registrationReady: Promise<void>;
   private pendingLaunch: BridgeWorkerAppLaunch | null = null;
   private lateHandle: LateWorkerHandle | null = null;
+  private readonly launchAbort = new AbortController();
   private launchCancelled = false;
+  private stopping = false;
   private resumeRequested: boolean;
   private readonly connectTimeoutMs: number;
   private socket: Socket | null = null;
@@ -493,25 +495,41 @@ export class SocketBridgeWorker
     this.connectTimeoutMs = args.connectTimeoutMs;
     const connectDeadline = Date.now() + args.connectTimeoutMs;
     void this.registrationReady.then(() => {
-      if (!this.launchCancelled) this.connect(connectDeadline);
+      if (!this.isRegistrationClosed()) return this.connect(connectDeadline);
     });
   }
 
+  private isRegistrationClosed(): boolean {
+    return (
+      this.stopping ||
+      this.exited ||
+      this.released ||
+      this.launchCancelled ||
+      this.child.exitCode !== null ||
+      this.child.signalCode !== null
+    );
+  }
+
   async stop(options?: { gracePeriodMs: number }) {
+    this.stopping = true;
     const launch = this.pendingLaunch;
     if (launch !== null) {
       if (cancelBridgeWorkerAppLaunch(launch)) {
         this.launchCancelled = true;
         this.pendingLaunch = null;
+        this.launchAbort.abort();
         this.lateHandle?.fail();
+        await this.registrationReady;
         return { treeTermination: "confirmed" as const };
       }
       await this.registrationReady;
     }
-    if (this.managedProcess === null) {
-      return createProcessStop(this.child)(options);
-    }
-    return this.managedProcess.stop(options);
+    const result =
+      this.managedProcess === null
+        ? await createProcessStop(this.child)(options)
+        : await this.managedProcess.stop(options);
+    await this.registrationReady;
+    return result;
   }
 
   private spawnDirect(
@@ -552,17 +570,21 @@ export class SocketBridgeWorker
     let pid = await waitForBridgeWorkerPid(
       launch.pidFile,
       BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
+      this.launchAbort.signal,
     );
-    if (this.launchCancelled) return;
+    if (this.launchCancelled || this.released) return;
     let claimed = false;
     if (pid === null && !cancelBridgeWorkerAppLaunch(launch)) {
       claimed = true;
       pid = await waitForBridgeWorkerPid(
         launch.pidFile,
         BRIDGE_WORKER_APP_CLAIMED_WAIT_MS,
+        this.launchAbort.signal,
       );
     }
+    if (this.launchCancelled || this.released) return;
     if (pid === null && claimed) {
+      this.pendingLaunch = null;
       late.emit(
         "error",
         new Error("Bridge worker app started but never reported its pid"),
@@ -571,6 +593,11 @@ export class SocketBridgeWorker
       return;
     }
     if (pid === null) {
+      if (this.isRegistrationClosed()) {
+        this.pendingLaunch = null;
+        late.fail();
+        return;
+      }
       try {
         const direct = this.spawnDirect(args, env);
         this.pendingLaunch = null;
@@ -578,6 +605,7 @@ export class SocketBridgeWorker
         late.bind(direct.child);
         await this.registerSpawnedWorker(args, direct.child.pid);
       } catch (error) {
+        this.pendingLaunch = null;
         late.emit(
           "error",
           error instanceof Error ? error : new Error(String(error)),
@@ -588,6 +616,7 @@ export class SocketBridgeWorker
     }
     const identity = await readProcessStartIdentity(pid);
     if (identity === null) {
+      this.pendingLaunch = null;
       late.emit(
         "error",
         new Error("Bridge worker exited before it was adopted"),
@@ -597,7 +626,9 @@ export class SocketBridgeWorker
     }
     removeBridgeWorkerAppFiles(launch);
     this.pendingLaunch = null;
+    if (this.released) return;
     late.bind(new AdoptedProcessHandle({ pid, processIdentity: identity }));
+    if (this.isRegistrationClosed()) return;
     const entry: BridgeWorkerRegistryEntry = {
       ...args.registration,
       id: this.id,
@@ -621,9 +652,9 @@ export class SocketBridgeWorker
     args: SpawnSocketBridgeWorkerArgs,
     pid: number | undefined,
   ): Promise<void> {
-    if (pid === undefined) return;
+    if (pid === undefined || this.isRegistrationClosed()) return;
     const processIdentity = await readProcessStartIdentity(pid);
-    if (processIdentity === null || this.child.exitCode !== null) return;
+    if (processIdentity === null || this.isRegistrationClosed()) return;
     const entry: BridgeWorkerRegistryEntry = {
       ...args.registration,
       id: this.id,
@@ -665,7 +696,7 @@ export class SocketBridgeWorker
 
   recordThread(threadId: string, thread: BridgeWorkerThread | null): void {
     const entry = this.registryEntry;
-    if (entry === null || this.exited || this.released) return;
+    if (entry === null || this.exited || this.released || this.stopping) return;
     if (thread === null) {
       if (!(threadId in entry.threads)) return;
       delete entry.threads[threadId];
@@ -677,7 +708,7 @@ export class SocketBridgeWorker
 
   recordCapabilities(capabilities: BridgeCapabilities): void {
     const entry = this.registryEntry;
-    if (entry === null || this.exited || this.released) return;
+    if (entry === null || this.exited || this.released || this.stopping) return;
     entry.capabilities = capabilities;
     entry.capabilitiesSource = "negotiated";
     writeBridgeWorkerEntry(this.workerDir, entry);
@@ -702,6 +733,7 @@ export class SocketBridgeWorker
   release(): void {
     if (this.released) return;
     this.released = true;
+    this.launchAbort.abort();
     if (this.child instanceof AdoptedProcessHandle) this.child.stopWatching();
     this.child.removeAllListeners("exit");
     this.child.removeAllListeners("error");
@@ -720,16 +752,17 @@ export class SocketBridgeWorker
   }
 
   private async connect(deadline: number): Promise<void> {
-    while (!this.exited && !this.released) {
+    while (!this.exited && !this.released && !this.stopping) {
       try {
         const socket = await connectSocket(this.socketPath);
-        if (this.exited || this.released) {
+        if (this.exited || this.released || this.stopping) {
           socket.destroy();
           return;
         }
         this.attach(socket);
         return;
       } catch {
+        if (this.exited || this.released || this.stopping) return;
         if (Date.now() > deadline) {
           this.failToConnect();
           return;
@@ -749,7 +782,7 @@ export class SocketBridgeWorker
       if (this.socket !== socket) return;
       this.socket = null;
       this.stdin.unpipe(socket);
-      if (this.exited || this.released) {
+      if (this.exited || this.released || this.stopping) {
         this.stdout.end();
         return;
       }
@@ -789,7 +822,7 @@ export class SocketBridgeWorker
         const timer = setTimeout(resolve, this.reconnectBackoffMs);
         timer.unref();
       });
-      if (this.exited || this.released) return;
+      if (this.exited || this.released || this.stopping) return;
     }
     await this.connect(Date.now() + this.connectTimeoutMs);
   }
@@ -893,7 +926,7 @@ export class SocketBridgeWorker
   }
 
   private failToConnect(): void {
-    if (this.exited || this.released) return;
+    if (this.exited || this.released || this.stopping) return;
     this.daemonStopped = true;
     const error = new Error(
       `Provider bridge worker did not open its socket at ${this.socketPath}`,
