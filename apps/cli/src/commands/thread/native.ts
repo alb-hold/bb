@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -41,7 +41,10 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
+  clearNativeHolderPidMarker,
   formatNativeHolderBootProgress,
+  nativeHolderProcessIsAlive,
+  writeNativeHolderPidMarker,
   type NativeHolderWaitProgress,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
@@ -158,6 +161,7 @@ export function spawnNativeHolder(
   app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
 ): string | null {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  clearNativeHolderPidMarker(socketPath);
   const argv = nativeHolderArgv(threadId, socketPath);
   const started = startNativeHolderAsApp(
     { argv, cwd: process.cwd(), environment: process.env, socketPath },
@@ -214,8 +218,7 @@ async function runNativeHarness(
       if (appEnvironmentFile === null) return;
       startNativeHolderFallback(threadId, socketPath, appEnvironmentFile);
     },
-    holderHasStarted: () =>
-      appEnvironmentFile !== null && !existsSync(appEnvironmentFile),
+    holderHasStarted: () => nativeHolderProcessIsAlive(socketPath),
     onWaiting: nativeBootProgressWriter(process.stdout),
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
@@ -265,6 +268,7 @@ export async function holdNativeHarness(
   socketPath: string,
   options: HoldNativeHarnessOptions = {},
 ): Promise<number> {
+  writeNativeHolderPidMarker(socketPath);
   if (options.env === undefined) {
     try {
       loadNativeHolderEnvironment(process.env);

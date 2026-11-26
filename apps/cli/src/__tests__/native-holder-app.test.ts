@@ -11,10 +11,18 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import net from "node:net";
 import {
+  holdNativeHarness,
   spawnNativeHolder,
   startNativeHolderFallback,
 } from "../commands/thread/native.js";
+import {
+  nativeHolderPidMarkerPath,
+  nativeHolderProcessIsAlive,
+  openNativeHolderConnection,
+  writeNativeHolderPidMarker,
+} from "../native-holder.js";
 import {
   loadNativeHolderEnvironment,
   startNativeHolderAsApp,
@@ -339,5 +347,98 @@ describe("native holder app fallback", () => {
     expect(stderr.join("")).toContain(
       "native holder started without swap protection (app-not-ready)",
     );
+  });
+
+  it("starts no second holder while a live holder is delayed before it reads its environment file", async () => {
+    const socket = socketIn();
+    const { deps } = recordingDeps("darwin");
+    let environmentFile: string | null = null;
+    let listener: net.Server | null = null;
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      const connection = await openNativeHolderConnection({
+        socketPath: socket,
+        reattachOnly: false,
+        startHolder: () => {
+          environmentFile = spawnNativeHolder("thr_abc", socket, deps);
+          setTimeout(() => writeNativeHolderPidMarker(socket), 100);
+          setTimeout(() => {
+            listener = net.createServer().listen(socket);
+          }, 900);
+        },
+        startFallbackHolder: () => {
+          startNativeHolderFallback("thr_abc", socket, environmentFile ?? "");
+        },
+        holderHasStarted: () => nativeHolderProcessIsAlive(socket),
+        fallbackWindowMs: 300,
+        startTimeoutMs: 6_000,
+      });
+      if (connection.kind !== "attached") throw new Error(connection.kind);
+      connection.socket.destroy();
+      expect(existsSync(environmentFile ?? "")).toBe(true);
+      expect(spawned).toHaveLength(0);
+    } finally {
+      stderr.mockRestore();
+      (listener as net.Server | null)?.close();
+    }
+  });
+
+  it("starts the fallback when no holder process ever came up", async () => {
+    const socket = socketIn();
+    const { deps } = recordingDeps("darwin");
+    let environmentFile: string | null = null;
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      const connection = await openNativeHolderConnection({
+        socketPath: socket,
+        reattachOnly: false,
+        startHolder: () => {
+          environmentFile = spawnNativeHolder("thr_abc", socket, deps);
+        },
+        startFallbackHolder: () => {
+          startNativeHolderFallback("thr_abc", socket, environmentFile ?? "");
+        },
+        holderHasStarted: () => nativeHolderProcessIsAlive(socket),
+        fallbackWindowMs: 200,
+        startTimeoutMs: 500,
+      });
+      expect(connection.kind).toBe("did-not-start");
+      expect(spawned).toHaveLength(1);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("clears a stale marker on spawn and treats a dead pid as not started", () => {
+    const socket = socketIn();
+    writeFileSync(nativeHolderPidMarkerPath(socket), "2147483646");
+    expect(nativeHolderProcessIsAlive(socket)).toBe(false);
+    writeNativeHolderPidMarker(socket);
+    expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+    const { deps } = recordingDeps("darwin");
+    spawnNativeHolder("thr_abc", socket, deps);
+    expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(false);
+  });
+
+  it("writes the pid marker before it reads the environment file", async () => {
+    const socket = socketIn();
+    const previous = process.env.BB_NATIVE_HOLD_ENV_FILE;
+    process.env.BB_NATIVE_HOLD_ENV_FILE = path.join(
+      path.dirname(socket),
+      "missing.env",
+    );
+    try {
+      await expect(
+        holdNativeHarness("http://127.0.0.1:1", "thr_abc", socket),
+      ).resolves.toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env.BB_NATIVE_HOLD_ENV_FILE;
+      else process.env.BB_NATIVE_HOLD_ENV_FILE = previous;
+    }
+    expect(nativeHolderProcessIsAlive(socket)).toBe(true);
   });
 });

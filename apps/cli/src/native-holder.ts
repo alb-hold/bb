@@ -10,8 +10,10 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import net from "node:net";
@@ -758,6 +760,39 @@ export async function runNativeHolder(
     credential = null;
     credentialServer.close();
     rmSync(credentialDir, { recursive: true, force: true });
+  }
+}
+
+export function nativeHolderPidMarkerPath(socketPath: string): string {
+  return socketPath.replace(/\.sock$/u, ".pid");
+}
+
+export function clearNativeHolderPidMarker(socketPath: string): void {
+  rmSync(nativeHolderPidMarkerPath(socketPath), { force: true });
+}
+
+export function writeNativeHolderPidMarker(socketPath: string): void {
+  writeFileSync(nativeHolderPidMarkerPath(socketPath), String(process.pid), {
+    mode: 0o600,
+  });
+}
+
+export function nativeHolderProcessIsAlive(socketPath: string): boolean {
+  let pid: number;
+  try {
+    pid = Number.parseInt(
+      readFileSync(nativeHolderPidMarkerPath(socketPath), "utf8"),
+      10,
+    );
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
