@@ -173,7 +173,7 @@ async function setGlobalConfig(file: string, ...args: string[]) {
   await execFileAsync("git", ["config", "--file", file, ...args]);
 }
 
-async function servedWithBasicAuth(root: string) {
+async function servedWithBasicAuth(root: string, accepted = "bb:token-1") {
   const served = join(root, "served.git");
   await git(root, "init", "--bare", "--initial-branch=main", served);
   const seed = join(root, "seed");
@@ -185,7 +185,7 @@ async function servedWithBasicAuth(root: string) {
   await git(seed, "push", served, "main");
   await git(served, "update-server-info");
   const published = (await git(seed, "rev-parse", "HEAD")).trim();
-  const expected = `Basic ${Buffer.from("bb:token-1").toString("base64")}`;
+  const expected = `Basic ${Buffer.from(accepted).toString("base64")}`;
   const server = http.createServer((request, response) => {
     if (request.headers.authorization !== expected) {
       response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
@@ -622,6 +622,41 @@ describe("the fetch that checks whether commits are published", () => {
       expect(input).toContain("username=orgA-user");
       if (receivesPath) expect(input).toContain("path=served.git");
       else expect(input).not.toContain("path=");
+    },
+  );
+
+  it.each([
+    { accepted: "orgA-user:pw-orgA-user", verifies: true },
+    { accepted: "orgB-user:pw-orgB-user", verifies: false },
+  ])(
+    "verifies a remote only when the account pinned to its URL is the one the server accepts ($accepted)",
+    async ({ accepted, verifies }) => {
+      const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+      roots.push(root);
+      const remote = await servedWithBasicAuth(root, accepted);
+      const fixture = await createFixture(remote.url);
+      const globalFile = await useGlobalConfig(root);
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.origin}.helper`,
+        `!f() { test "$1" = get || exit 0; user=$(sed -n 's/^username=//p'); user=\${user:-active-user}; echo username=$user; echo password=pw-$user; }; f`,
+      );
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.url}.username`,
+        "orgA-user",
+      );
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      const joined = reasons.join("\n");
+      if (verifies)
+        expect(joined).not.toMatch(/could not fetch|could not verify remotes/u);
+      else expect(joined).toMatch(/could not verify remotes/u);
     },
   );
 
