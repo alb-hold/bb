@@ -767,7 +767,11 @@ export class TerminalScreenState {
                   batch.push(
                     queued.kind === "base64"
                       ? Buffer.from(queued.data, "base64")
-                      : queued.data,
+                      : Buffer.from(
+                          queued.data.buffer,
+                          queued.data.byteOffset,
+                          queued.data.byteLength,
+                        ),
                   );
                   bytes += size;
                 }
