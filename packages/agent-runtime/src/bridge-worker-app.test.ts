@@ -182,6 +182,7 @@ describe("bridge worker stop before adoption", () => {
     const envFile = names.find((name) => name.endsWith(".env"));
     const pidName = names.find((name) => name.endsWith(".pid.cancel"))?.replace(/\.cancel$/, "");
     expect(cancel).toBeDefined();
+    expect(envFile).toBeUndefined();
     execFileSync(
       "/bin/bash",
       [join(dir, "bb-bridge-worker.app", "Contents", "MacOS", "run"), "/usr/bin/touch", marker],

@@ -28,6 +28,7 @@ const PID_POLL_MS = 25;
 export interface BridgeWorkerAppLaunch {
   pidFile: string;
   cancelFile: string;
+  environmentFile: string;
 }
 
 export type BridgeWorkerAppResult =
@@ -58,6 +59,9 @@ export function startBridgeWorkerAsApp(
   try {
     closeSync(openSync(request.logPath, "a", 0o600));
   } catch {}
+  const environmentFile = uniqueEnvironmentFilePath(
+    join(request.workerDir, request.id),
+  );
   const result = startAppLaunch(
     {
       bundleName: BUNDLE_NAME,
@@ -66,7 +70,7 @@ export function startBridgeWorkerAsApp(
       argv: [request.command, ...request.args],
       cwd: request.cwd,
       environmentFile: {
-        path: uniqueEnvironmentFilePath(join(request.workerDir, request.id)),
+        path: environmentFile,
         content: shellEnvironmentContent(request.env),
       },
       environmentFileVariable: APP_LAUNCH_SHELL_ENV_FILE_ENV,
@@ -79,7 +83,7 @@ export function startBridgeWorkerAsApp(
     deps,
   );
   return result.ok
-    ? { ok: true, pidFile, cancelFile }
+    ? { ok: true, pidFile, cancelFile, environmentFile }
     : { ok: false, reason: result.reason, errorName: result.errorName };
 }
 
@@ -88,10 +92,13 @@ export function cancelBridgeWorkerAppLaunch(
 ): boolean {
   try {
     mkdirSync(launch.cancelFile, { mode: 0o700 });
-    return true;
   } catch {
     return false;
   }
+  try {
+    unlinkSync(launch.environmentFile);
+  } catch {}
+  return true;
 }
 
 export function removeBridgeWorkerAppFiles(launch: BridgeWorkerAppLaunch): void {
