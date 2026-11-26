@@ -260,7 +260,16 @@ const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
   settings: [
     {
       file: "apps/app/src/components/settings/SettingsSidebar.tsx",
-      mustContain: ["activeSection === section.id"],
+      mustContain: ["<SettingsCategoryList"],
+      because:
+        "SettingsSidebar delegates its settings navigation hierarchy to the shared SettingsCategoryList.",
+    },
+    {
+      file: "apps/app/src/components/settings/SettingsCategoryNav.tsx",
+      mustContain: [
+        "activeSection === section.id",
+        "bg-sidebar-accent text-sidebar-foreground",
+      ],
       because:
         "The Appearance projection uses BB's settings navigation hierarchy and selected-row state.",
     },
