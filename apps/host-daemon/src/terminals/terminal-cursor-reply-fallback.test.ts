@@ -127,6 +127,78 @@ describe("TerminalCursorReplyFallback split replies", () => {
     },
   );
 
+  describe("hold deadline follows every window mutator", () => {
+    const WINDOW_END = CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
+
+    it("expect() extends the deadline", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(1_000);
+      expect(fallback.filterInput("\u001b[4")).toBe("");
+      vi.advanceTimersByTime(1_000);
+      fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(WINDOW_END - 1);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R", "\u001b[4"]);
+    });
+
+    it("a completed reply that consumes the latest window shrinks the deadline", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 750);
+      fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(10);
+      expect(fallback.filterInput("\u001b[4;")).toBe("");
+      const out = fallback.filterInput("1R\u001b[?");
+      expect(out).toBe("");
+      vi.advanceTimersByTime(WINDOW_END - (CURSOR_REPLY_FALLBACK_DELAY_MS + 760) - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[?"]);
+    });
+
+    it("a fallback fire keeps the deadline", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(10);
+      expect(fallback.filterInput("\u001b[4")).toBe("");
+      vi.advanceTimersByTime(WINDOW_END - 10 - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[4"]);
+    });
+
+    it("late-slot expiry releases the prefix and leaves the filter idle", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 1);
+      expect(fallback.filterInput("\u001b[?4")).toBe("");
+      vi.advanceTimersByTime(WINDOW_END - CURSOR_REPLY_FALLBACK_DELAY_MS - 2);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[?4"]);
+      vi.advanceTimersByTime(1);
+      expect(fallback.filterInput("x")).toBe("x");
+      expect(fallback.isIdle()).toBe(true);
+    });
+
+    it("filterInput() re-evaluates the class of a grown prefix", () => {
+      const { fallback, written } = setup();
+      expect(fallback.filterInput("\u001b[")).toBe("");
+      vi.advanceTimersByTime(40);
+      expect(fallback.filterInput("4")).toBe("");
+      vi.advanceTimersByTime(WINDOW_END - 40 - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b[4"]);
+    });
+
+    it("dispose() drops the held prefix and its timer", () => {
+      const { fallback, written } = setup();
+      expect(fallback.filterInput("\u001b[4")).toBe("");
+      fallback.dispose();
+      vi.advanceTimersByTime(WINDOW_END * 2);
+      expect(written).toEqual([]);
+    });
+  });
+
   it("keeps ESC[? held past 50 ms so a private reply arrives whole", () => {
     const { fallback, written } = setup();
     const delivered = [fallback.filterInput("\u001b[?")];

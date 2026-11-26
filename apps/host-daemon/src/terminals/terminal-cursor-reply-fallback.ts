@@ -35,15 +35,23 @@ export class TerminalCursorReplyFallback {
       windowEnd: this.now() + this.delayMs + CURSOR_REPLY_SWALLOW_MS,
       timer: setTimeout(() => {
         this.waiting = this.waiting.filter((candidate) => candidate !== entry);
-        this.lateUntil.push(this.now() + CURSOR_REPLY_SWALLOW_MS);
+        this.lateUntil.push(entry.windowEnd);
         this.write(estimate);
+        this.rescheduleHold();
       }, this.delayMs),
     };
     entry.timer.unref();
     this.waiting.push(entry);
+    this.rescheduleHold();
+  }
+
+  private pruneLate(): void {
+    const now = this.now();
+    this.lateUntil = this.lateUntil.filter((until) => until > now);
   }
 
   isIdle(): boolean {
+    this.pruneLate();
     return (
       this.waiting.length === 0 &&
       this.lateUntil.length === 0 &&
@@ -79,18 +87,24 @@ export class TerminalCursorReplyFallback {
       return out + partial;
     }
     this.held = partial;
-    const remaining = Math.max(0, this.windowEnd() - now);
-    const holdMs = isShortKeypressPrefix(partial)
+    this.rescheduleHold();
+    return out;
+  }
+
+  private rescheduleHold(): void {
+    this.clearHold();
+    if (this.held === "") return;
+    const remaining = Math.max(0, this.windowEnd() - this.now());
+    const holdMs = isShortKeypressPrefix(this.held)
       ? Math.min(CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS, remaining)
       : remaining;
     this.holdTimer = setTimeout(() => {
-      this.holdTimer = null;
+      this.clearHold();
       const flushed = this.held;
       this.held = "";
       if (flushed !== "") this.write(flushed);
     }, holdMs);
     this.holdTimer.unref();
-    return out;
   }
 
   private windowEnd(): number {
