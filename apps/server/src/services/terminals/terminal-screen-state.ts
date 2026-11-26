@@ -736,7 +736,8 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
-                const rendered = next.kind === "base64" && next.rendered;
+                const rendered =
+                  next.kind === "base64" ? next.rendered : undefined;
                 if (rendered) {
                   this.frameBaseline ??= visibleFrameContent(this.terminal);
                   if (this.terminal.modes.synchronizedOutputMode) {
