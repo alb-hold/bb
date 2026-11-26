@@ -9,10 +9,14 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
+  CLAUDE_SERVER_TOOL_RESULT_BLOCK_TYPES,
   claudeAssistantUsageMessageSchema,
   claudeModelUsageSchema,
+  mcpToolUseBlockSchema,
   messageContentSchema,
   sdkUsageSchema,
+  serverToolResultBlockSchema,
+  serverToolUseBlockSchema,
   streamEventSchema,
   thinkingBlockSchema,
   toolResultBlockSchema,
@@ -112,20 +116,111 @@ export function extractAssistantText(
   return joined.length > 0 ? joined : undefined;
 }
 
+export interface ClaudeServerToolResultBlockData {
+  blockType: (typeof CLAUDE_SERVER_TOOL_RESULT_BLOCK_TYPES)[number];
+  isError: boolean;
+  outputText: string | undefined;
+  toolUseId: string;
+}
+
 export function extractToolUses(
   message: ClaudeAssistantMessage,
 ): ClaudeToolUseBlockData[] {
   const uses: ClaudeToolUseBlockData[] = [];
   for (const block of parseMessageContent(message)) {
     const tool = toolUseBlockSchema.safeParse(block);
-    if (tool.success)
+    if (tool.success) {
       uses.push({
         id: tool.data.id,
         name: tool.data.name,
         input: tool.data.input,
       });
+      continue;
+    }
+    const serverTool = serverToolUseBlockSchema.safeParse(block);
+    if (serverTool.success) {
+      uses.push({
+        id: serverTool.data.id,
+        name: serverTool.data.name,
+        input: serverTool.data.input,
+      });
+      continue;
+    }
+    const mcpTool = mcpToolUseBlockSchema.safeParse(block);
+    if (mcpTool.success) {
+      uses.push({
+        id: mcpTool.data.id,
+        name: mcpTool.data.server_name
+          ? `mcp__${mcpTool.data.server_name}__${mcpTool.data.name}`
+          : mcpTool.data.name,
+        input: mcpTool.data.input,
+      });
+    }
   }
   return uses;
+}
+
+function parseServerToolResultContent(
+  content: unknown,
+  explicitError: boolean | undefined,
+): { isError: boolean; outputText: string | undefined } {
+  if (typeof content === "object" && content !== null && !Array.isArray(content)) {
+    const record = content as Record<string, unknown>;
+    const contentType = typeof record.type === "string" ? record.type : undefined;
+    if (contentType !== undefined && contentType.endsWith("_error")) {
+      const errorMessage =
+        typeof record.message === "string" && record.message.trim().length > 0
+          ? record.message.trim()
+          : typeof record.error_code === "string" &&
+              record.error_code.trim().length > 0
+            ? record.error_code.trim()
+            : undefined;
+      return { isError: true, outputText: errorMessage };
+    }
+    if (
+      contentType === "advisor_redacted_result" ||
+      "encrypted_content" in record
+    ) {
+      return { isError: explicitError === true, outputText: undefined };
+    }
+    if (contentType === "advisor_result" && typeof record.text === "string") {
+      const text = record.text.trim();
+      return {
+        isError: explicitError === true,
+        outputText: text.length > 0 ? text : undefined,
+      };
+    }
+  }
+  if (explicitError === true) {
+    const text = extractResultText(content).trim();
+    return { isError: true, outputText: text.length > 0 ? text : undefined };
+  }
+  if (typeof content === "string") {
+    const text = content.trim();
+    return { isError: false, outputText: text.length > 0 ? text : undefined };
+  }
+  return { isError: false, outputText: undefined };
+}
+
+export function extractServerToolResults(
+  message: ClaudeAssistantMessage,
+): ClaudeServerToolResultBlockData[] {
+  const results: ClaudeServerToolResultBlockData[] = [];
+  for (const block of parseMessageContent(message)) {
+    const parsed = serverToolResultBlockSchema.safeParse(block);
+    if (!parsed.success) continue;
+    const outcome = parseServerToolResultContent(
+      parsed.data.content,
+      parsed.data.is_error,
+    );
+    results.push({
+      blockType: parsed.data.type,
+      toolUseId: parsed.data.tool_use_id,
+      isError: outcome.isError,
+      outputText: outcome.outputText,
+    });
+  }
+  return results;
 }
 
 export function extractStreamTextDelta(

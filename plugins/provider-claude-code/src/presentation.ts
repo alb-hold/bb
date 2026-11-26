@@ -210,6 +210,10 @@ const BUILTIN_TOOL_PRESENTATIONS: Readonly<
     glyph: "Terminal",
     suppress: true,
   },
+  advisor: {
+    label: { pending: "Consulting advisor", completed: "Consulted advisor" },
+    glyph: "Brain",
+  },
 };
 
 function titleFromArgs(

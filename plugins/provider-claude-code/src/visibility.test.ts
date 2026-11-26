@@ -203,4 +203,141 @@ describe("claude-code visibility raw events", () => {
       coverage: "noise",
     });
   });
+
+  it("classifies server_tool_use and advisor_tool_result stream starts and assistant blocks without unhandled leakage", () => {
+    expect(
+      claudeCodeVisibilityMetadata.describeRawEvent({
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId: "thr_6s73ie6hee",
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "server_tool_use",
+                id: "srvtoolu_014RZuJFuVAaAda7uVEeHYYP",
+                name: "advisor",
+                input: {},
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a0c34105-3f63-4a89-8de0-55a1d3afd2d3",
+          },
+        },
+      } satisfies JsonRpcMessage),
+    ).toEqual({
+      kind: "sdk/stream_event:content_block_start:server_tool_use",
+      coverage: "noise",
+    });
+
+    expect(
+      claudeCodeVisibilityMetadata.describeRawEvent({
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId: "thr_6s73ie6hee",
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 2,
+              content_block: {
+                type: "advisor_tool_result",
+                tool_use_id: "srvtoolu_014RZuJFuVAaAda7uVEeHYYP",
+                content: {
+                  type: "advisor_redacted_result",
+                  encrypted_content: "REDACTED_CIPHERTEXT",
+                },
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "0456eb9d-5f29-4764-9e1a-2db67dcadea0",
+          },
+        },
+      } satisfies JsonRpcMessage),
+    ).toEqual({
+      kind: "sdk/stream_event:content_block_start:advisor_tool_result",
+      coverage: "noise",
+    });
+
+    expect(
+      claudeCodeVisibilityMetadata.describeRawEvent({
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId: "thr_6s73ie6hee",
+          message: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "server_tool_use",
+                  id: "srvtoolu_014RZuJFuVAaAda7uVEeHYYP",
+                  name: "advisor",
+                  input: {},
+                },
+                {
+                  type: "advisor_tool_result",
+                  tool_use_id: "srvtoolu_014RZuJFuVAaAda7uVEeHYYP",
+                  content: {
+                    type: "advisor_redacted_result",
+                    encrypted_content: "REDACTED_CIPHERTEXT",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      } satisfies JsonRpcMessage),
+    ).toEqual({
+      kind: "sdk/assistant:advisor_tool_result+server_tool_use",
+      coverage: "normalized",
+    });
+  });
+
+  it("classifies system informational events as normalized when warning and noise otherwise", () => {
+    expect(
+      claudeCodeVisibilityMetadata.describeRawEvent({
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId: "thr_6s73ie6hee",
+          message: {
+            type: "system",
+            subtype: "informational",
+            content: "A hook didn't answer in time, so it didn't check this action.",
+            level: "warning",
+          },
+        },
+      } satisfies JsonRpcMessage),
+    ).toEqual({
+      kind: "sdk/system:informational",
+      coverage: "normalized",
+    });
+
+    expect(
+      claudeCodeVisibilityMetadata.describeRawEvent({
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId: "thr_6s73ie6hee",
+          message: {
+            type: "system",
+            subtype: "informational",
+            content: "Routine notice",
+            level: "info",
+          },
+        },
+      } satisfies JsonRpcMessage),
+    ).toEqual({
+      kind: "sdk/system:informational",
+      coverage: "noise",
+    });
+  });
 });

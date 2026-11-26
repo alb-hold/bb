@@ -1462,4 +1462,256 @@ describe("claude tool-result translation (delta path)", () => {
       }),
     );
   });
+
+  it("translates advisor server_tool_use and redacted advisor_tool_result without unhandled events or leaked ciphertext", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_6s73ie6hee";
+    const toolUseId = "srvtoolu_014RZuJFuVAaAda7uVEeHYYP";
+    const secretBlob = "SECRET_ENCRYPTED_ADVISOR_PAYLOAD_DO_NOT_LEAK";
+
+    const streamStartToolUse = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "server_tool_use",
+                id: toolUseId,
+                name: "advisor",
+                input: {},
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a0c34105-3f63-4a89-8de0-55a1d3afd2d3",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(streamStartToolUse).toEqual([]);
+
+    const assistantToolUse = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "server_tool_use",
+                  id: toolUseId,
+                  name: "advisor",
+                  input: {},
+                },
+              ],
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "c3357cf3-a901-42ed-9986-38d011711f42",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(assistantToolUse).toContainEqual(
+      expect.objectContaining({
+        type: "item/started",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "pending",
+          presentation: {
+            label: {
+              pending: "Consulting advisor",
+              completed: "Consulted advisor",
+            },
+            icon: { glyph: "Brain" },
+          },
+        }),
+      }),
+    );
+
+    const streamStartResult = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 2,
+              content_block: {
+                type: "advisor_tool_result",
+                tool_use_id: toolUseId,
+                content: {
+                  type: "advisor_redacted_result",
+                  encrypted_content: secretBlob,
+                },
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "0456eb9d-5f29-4764-9e1a-2db67dcadea0",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(streamStartResult).toEqual([]);
+
+    const assistantResult = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "advisor_tool_result",
+                  tool_use_id: toolUseId,
+                  content: {
+                    type: "advisor_redacted_result",
+                    encrypted_content: secretBlob,
+                  },
+                },
+              ],
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "32a96a13-033d-4015-b2df-667bbadec200",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(assistantResult).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "completed",
+          presentation: {
+            label: {
+              pending: "Consulting advisor",
+              completed: "Consulted advisor",
+            },
+            icon: { glyph: "Brain" },
+          },
+        }),
+      }),
+    );
+
+    const allEvents = [
+      ...streamStartToolUse,
+      ...assistantToolUse,
+      ...streamStartResult,
+      ...assistantResult,
+    ];
+    expect(allEvents.filter((e) => e.type === "provider/unhandled")).toEqual(
+      [],
+    );
+    expect(JSON.stringify(allEvents)).not.toContain(secretBlob);
+  });
+
+  it("marks advisor_tool_result_error blocks as failed and surfaces informational hook warnings", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_advisor_err";
+    const toolUseId = "srvtoolu_err_1";
+
+    harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "server_tool_use",
+              id: toolUseId,
+              name: "advisor",
+              input: {},
+            },
+          ],
+        },
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+
+    const failedResult = harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "advisor_tool_result",
+              tool_use_id: toolUseId,
+              content: {
+                type: "advisor_tool_result_error",
+                error_code: "overloaded",
+              },
+            },
+          ],
+        },
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+    expect(failedResult).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "failed",
+          result: "overloaded",
+        }),
+      }),
+    );
+
+    const warningEvents = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "system",
+            subtype: "informational",
+            content: "A hook didn't answer in time, so it didn't check this action.",
+            level: "warning",
+            session_id: "sess-1",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(warningEvents).toContainEqual(
+      expect.objectContaining({
+        type: "provider/warning",
+        summary: "A hook didn't answer in time, so it didn't check this action.",
+      }),
+    );
+  });
 });

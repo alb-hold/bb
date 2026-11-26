@@ -26,18 +26,40 @@ function getMessageContentTypes(message: Record<string, unknown>): string[] {
   return [...types];
 }
 const CLAUDE_NORMALIZED_ASSISTANT_CONTENT_TYPES = new Set([
+  "advisor_tool_result",
+  "bash_code_execution_tool_result",
+  "code_execution_tool_result",
   "fallback",
+  "mcp_tool_result",
+  "mcp_tool_use",
+  "redacted_thinking",
+  "server_tool_use",
   "text",
+  "text_editor_code_execution_tool_result",
   "thinking",
+  "tool_search_tool_result",
   "tool_use",
+  "web_fetch_tool_result",
+  "web_search_tool_result",
 ]);
 
 type ClaudeMessageContentType =
+  | "advisor_tool_result"
+  | "bash_code_execution_tool_result"
+  | "code_execution_tool_result"
   | "fallback"
+  | "mcp_tool_result"
+  | "mcp_tool_use"
+  | "redacted_thinking"
+  | "server_tool_use"
   | "text"
+  | "text_editor_code_execution_tool_result"
   | "thinking"
   | "tool_result"
+  | "tool_search_tool_result"
   | "tool_use"
+  | "web_fetch_tool_result"
+  | "web_search_tool_result"
   | "unknown";
 
 type ClaudeSystemSubtype =
@@ -49,6 +71,7 @@ type ClaudeSystemSubtype =
   | "hook_progress"
   | "hook_response"
   | "hook_started"
+  | "informational"
   | "init"
   | "local_command_output"
   | "memory_recall"
@@ -75,9 +98,25 @@ type ClaudeSystemSubtype =
   | "ui_toast"
   | "unknown";
 
-type ClaudeStreamContentType = "text" | "thinking" | "tool_use" | "unknown";
+type ClaudeStreamContentType =
+  | "advisor_tool_result"
+  | "bash_code_execution_tool_result"
+  | "code_execution_tool_result"
+  | "mcp_tool_result"
+  | "mcp_tool_use"
+  | "redacted_thinking"
+  | "server_tool_use"
+  | "text"
+  | "text_editor_code_execution_tool_result"
+  | "thinking"
+  | "tool_search_tool_result"
+  | "tool_use"
+  | "web_fetch_tool_result"
+  | "web_search_tool_result"
+  | "unknown";
 
 type ClaudeStreamDeltaType =
+  | "citations_delta"
   | "input_json_delta"
   | "signature_delta"
   | "text_delta"
@@ -135,6 +174,7 @@ interface ClaudeUserRawEvent {
 }
 
 interface ClaudeSystemRawEvent {
+  hasWarningContent?: boolean;
   kind: "sdk/system";
   subtype: ClaudeSystemSubtype;
 }
@@ -206,11 +246,22 @@ function toClaudeMessageContentType(
   contentType: string,
 ): ClaudeMessageContentType {
   switch (contentType) {
+    case "advisor_tool_result":
+    case "bash_code_execution_tool_result":
+    case "code_execution_tool_result":
     case "fallback":
+    case "mcp_tool_result":
+    case "mcp_tool_use":
+    case "redacted_thinking":
+    case "server_tool_use":
     case "text":
+    case "text_editor_code_execution_tool_result":
     case "thinking":
     case "tool_result":
+    case "tool_search_tool_result":
     case "tool_use":
+    case "web_fetch_tool_result":
+    case "web_search_tool_result":
       return contentType;
     default:
       return "unknown";
@@ -229,6 +280,7 @@ function toClaudeSystemSubtype(
     case "hook_progress":
     case "hook_response":
     case "hook_started":
+    case "informational":
     case "init":
     case "local_command_output":
     case "memory_recall":
@@ -280,9 +332,20 @@ function toClaudeStreamContentType(
   contentType: string | undefined,
 ): ClaudeStreamContentType {
   switch (contentType) {
+    case "advisor_tool_result":
+    case "bash_code_execution_tool_result":
+    case "code_execution_tool_result":
+    case "mcp_tool_result":
+    case "mcp_tool_use":
+    case "redacted_thinking":
+    case "server_tool_use":
     case "text":
+    case "text_editor_code_execution_tool_result":
     case "thinking":
+    case "tool_search_tool_result":
     case "tool_use":
+    case "web_fetch_tool_result":
+    case "web_search_tool_result":
       return contentType;
     default:
       return "unknown";
@@ -293,6 +356,7 @@ function toClaudeStreamDeltaType(
   deltaType: string | undefined,
 ): ClaudeStreamDeltaType {
   switch (deltaType) {
+    case "citations_delta":
     case "input_json_delta":
     case "signature_delta":
     case "text_delta":
@@ -393,11 +457,23 @@ function parseClaudeRawEvent(event: JsonRpcMessage): ClaudeRawEvent {
       };
     }
 
-    case "system":
+    case "system": {
+      const subtype = toClaudeSystemSubtype(
+        getStringProperty(message, "subtype"),
+      );
+      const level = getStringProperty(message, "level");
+      const content = getStringProperty(message, "content");
       return {
         kind: "sdk/system",
-        subtype: toClaudeSystemSubtype(getStringProperty(message, "subtype")),
+        subtype,
+        ...(subtype === "informational"
+          ? {
+              hasWarningContent:
+                Boolean(content) && (level === "warning" || level === "error"),
+            }
+          : {}),
       };
+    }
 
     case "user":
       return {
@@ -534,6 +610,11 @@ function describeParsedClaudeRawEvent(
         case "ui_status":
         case "ui_toast":
           return { kind: `sdk/system:${event.subtype}`, coverage: "noise" };
+        case "informational":
+          return {
+            kind: "sdk/system:informational",
+            coverage: event.hasWarningContent ? "normalized" : "noise",
+          };
         case "permission_denied":
           return {
             kind: "sdk/system:permission_denied",
@@ -584,9 +665,20 @@ function describeParsedClaudeRawEvent(
                 kind: "sdk/stream_event:content_block_start:text",
                 coverage: "noise",
               };
+            case "advisor_tool_result":
+            case "bash_code_execution_tool_result":
+            case "code_execution_tool_result":
+            case "mcp_tool_result":
+            case "mcp_tool_use":
+            case "redacted_thinking":
+            case "server_tool_use":
+            case "text_editor_code_execution_tool_result":
+            case "tool_search_tool_result":
             case "tool_use":
+            case "web_fetch_tool_result":
+            case "web_search_tool_result":
               return {
-                kind: "sdk/stream_event:content_block_start:tool_use",
+                kind: `sdk/stream_event:content_block_start:${event.contentType}`,
                 coverage: "noise",
               };
             case "unknown":
@@ -613,6 +705,7 @@ function describeParsedClaudeRawEvent(
                     ? "normalized"
                     : "noise",
               };
+            case "citations_delta":
             case "input_json_delta":
             case "signature_delta":
               return {
