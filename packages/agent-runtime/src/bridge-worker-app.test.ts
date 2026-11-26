@@ -6,10 +6,11 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AppLaunchDeps } from "@bb/process-utils";
+import { type AppLaunchDeps, shellEnvironmentContent } from "@bb/process-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   cancelBridgeWorkerAppLaunch,
@@ -146,6 +147,31 @@ describe("bridge worker app launch", () => {
     expect(existsSync(marker)).toBe(true);
     expect(worker.pid).toBeGreaterThan(0);
     await worker.stop({ gracePeriodMs: 0 });
+  });
+});
+
+describe("shell environment loader", () => {
+  it("delivers values containing apostrophes and shell metacharacters exactly", () => {
+    const dir = workerDir();
+    const file = join(dir, "loader.env");
+    const values = {
+      WEIRD: "it's",
+      TOKEN: `a'b"c$HOME\`x\` ;'`,
+      PLAIN: "plain",
+    };
+    writeFileSync(file, shellEnvironmentContent(values), { mode: 0o600 });
+    execFileSync("/bin/bash", ["-n", file]);
+    const out = execFileSync(
+      "/bin/bash",
+      [
+        "-c",
+        `. "$1"; printf '%s\\0%s\\0%s' "$WEIRD" "$TOKEN" "$PLAIN"`,
+        "loader",
+        file,
+      ],
+      { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } },
+    );
+    expect(out.split("\0")).toEqual([values.WEIRD, values.TOKEN, values.PLAIN]);
   });
 });
 
