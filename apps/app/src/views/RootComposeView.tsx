@@ -1599,6 +1599,9 @@ function RootComposeSurface({
                     isLoadMoreThreadsError={
                       navigationPaging.isFetchNextPageError
                     }
+                    isPending={
+                      recentNavigation === undefined && !sidebarNavigationError
+                    }
                     onLoadMoreThreads={() => {
                       void navigationPaging.fetchNextPage();
                     }}

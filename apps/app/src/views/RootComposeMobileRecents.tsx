@@ -41,6 +41,7 @@ import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-cl
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
 import { Button } from "@bb/shared-ui/button";
+import { Skeleton } from "@bb/shared-ui/skeleton";
 import { getThreadRoutePath, isProjectlessProjectId } from "@/lib/route-paths";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
@@ -91,6 +92,7 @@ interface RootComposeMobileRecentsProps {
   hasMoreThreads?: boolean;
   isLoadingMoreThreads?: boolean;
   isLoadMoreThreadsError?: boolean;
+  isPending?: boolean;
   onLoadMoreThreads?: () => void;
 }
 
@@ -205,6 +207,7 @@ export function RootComposeMobileRecents({
   hasMoreThreads = false,
   isLoadingMoreThreads = false,
   isLoadMoreThreadsError = false,
+  isPending = false,
   onLoadMoreThreads,
 }: RootComposeMobileRecentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -298,7 +301,25 @@ export function RootComposeMobileRecents({
     : recentThreads.slice(0, maxRows ?? getFirstPaintMobileRecentRowCount());
 
   if (!showCreatingRow && recentThreads.length === 0) {
-    return null;
+    if (!isPending) return null;
+    return (
+      <RecentThreadsSection>
+        <ul className="space-y-px" aria-hidden="true">
+          {Array.from(
+            { length: maxRows ?? getFirstPaintMobileRecentRowCount() },
+            (_, index) => (
+              <li
+                key={index}
+                style={{ paddingLeft: getSidebarThreadRowPaddingLeft(0) }}
+                className={RECENT_THREAD_ROW_CLASS}
+              >
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ),
+          )}
+        </ul>
+      </RecentThreadsSection>
+    );
   }
 
   return (
