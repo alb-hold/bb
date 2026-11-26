@@ -321,7 +321,7 @@ describe("createBridgeSocketServer", () => {
   });
 
   it("reports currently open background tasks and background delegations on bridge/resume when reportOpenWork is requested", async () => {
-    const { server, socketPath } = await startServer();
+    const { server, socketPath, received } = await startServer();
     const first = await connectBridgeSocket(socketPath);
     server.write(
       `${JSON.stringify({
@@ -459,7 +459,12 @@ describe("createBridgeSocketServer", () => {
       params: { threadId: "t1", providerThreadId: "pt1", intent: "release" },
     });
     await wait(20);
-    server.write(`${JSON.stringify({ jsonrpc: "2.0", id: 99, result: {} })}\n`);
+    const stopDelivered = JSON.parse(received.at(-1) ?? "{}") as {
+      id: string | number;
+    };
+    server.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: stopDelivered.id, result: {} })}\n`,
+    );
     await second.waitForLine((line) => line.includes('"id":99'));
     second.ack(second.lastWseq());
     await wait(20);
@@ -475,5 +480,121 @@ describe("createBridgeSocketServer", () => {
     );
     expect(parseBridgeOpenWorkMessage(clearedLine)).toEqual({ threads: {} });
     third.socket.destroy();
+  });
+
+  it("keeps open work reported across reattach when an unanswered thread/stop or thread/discard ID is reused by another request", async () => {
+    const { server, socketPath, received } = await startServer();
+    const first = await connectBridgeSocket(socketPath);
+    for (const [threadId, providerItemId] of [
+      ["t1", "bg-1"],
+      ["t2", "bg-2"],
+    ] as const) {
+      server.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "thread/delta",
+          params: {
+            threadId,
+            deltas: [
+              {
+                kind: "item.open",
+                key: { providerItemId },
+                item: {
+                  type: "backgroundTask",
+                  familyId: `fam-${threadId}`,
+                  taskType: "bash",
+                  description: "long server",
+                  status: "pending",
+                  taskStatus: "running",
+                  skipTranscript: false,
+                },
+              },
+            ],
+          },
+        })}\n`,
+      );
+    }
+    await first.waitForLine((line) => line.includes('"bg-2"'));
+    first.ack(first.lastWseq());
+
+    first.send({
+      id: 1,
+      method: "thread/stop",
+      params: { threadId: "t1", providerThreadId: "pt1", intent: "release" },
+    });
+    first.send({
+      id: 2,
+      method: "thread/discard",
+      params: { threadId: "t2", providerThreadId: "pt2" },
+    });
+    await wait(20);
+    expect(received).toHaveLength(2);
+    const pendingStop = JSON.parse(received[0] ?? "{}") as {
+      id: string | number;
+    };
+    const pendingDiscard = JSON.parse(received[1] ?? "{}") as {
+      id: string | number;
+    };
+    first.socket.destroy();
+    await first.closed;
+
+    const second = await connectBridgeSocket(socketPath, {
+      resumeAfter: 2,
+      reportOpenWork: true,
+    });
+    await second.waitForLine((line) => line.includes(BRIDGE_OPEN_WORK_METHOD));
+    second.send({ id: 1, method: "model/list", params: {} });
+    second.send({ id: 2, method: "skills/configure", params: { roots: [] } });
+    await wait(20);
+    expect(received).toHaveLength(4);
+    const modelListDelivered = JSON.parse(received[2] ?? "{}") as {
+      id: string | number;
+    };
+    const skillsDelivered = JSON.parse(received[3] ?? "{}") as {
+      id: string | number;
+    };
+    server.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: modelListDelivered.id, result: { models: [] } })}\n`,
+    );
+    server.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: skillsDelivered.id, result: {} })}\n`,
+    );
+    await second.waitForLine((line) => line.includes('"id":2'));
+    second.ack(second.lastWseq());
+    await wait(20);
+    second.socket.destroy();
+    await second.closed;
+
+    const third = await connectBridgeSocket(socketPath, {
+      resumeAfter: 4,
+      reportOpenWork: true,
+    });
+    const stillOpenLine = await third.waitForLine((line) =>
+      line.includes(BRIDGE_OPEN_WORK_METHOD),
+    );
+    const stillOpen = parseBridgeOpenWorkMessage(stillOpenLine);
+    expect(Object.keys(stillOpen?.threads ?? {}).sort()).toEqual(["t1", "t2"]);
+
+    server.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: pendingStop.id, result: {} })}\n`,
+    );
+    server.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: pendingDiscard.id, result: {} })}\n`,
+    );
+    await third.waitForLine((line) => line.includes('"id":2'));
+    third.ack(third.lastWseq());
+    await wait(20);
+    third.socket.destroy();
+    await third.closed;
+
+    const fourth = await connectBridgeSocket(socketPath, {
+      resumeAfter: 6,
+      reportOpenWork: true,
+    });
+    const clearedLine = await fourth.waitForLine((line) =>
+      line.includes(BRIDGE_OPEN_WORK_METHOD),
+    );
+    expect(parseBridgeOpenWorkMessage(clearedLine)).toEqual({ threads: {} });
+    fourth.socket.destroy();
   });
 });

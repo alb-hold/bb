@@ -80,8 +80,12 @@ export class RuntimeBackgroundWorkState {
     }));
   }
 
+  openThreadWorkCount(threadId: string): number {
+    return this.openWorkByThreadId.get(threadId)?.size ?? 0;
+  }
+
   hasOpenThreadWork(threadId: string): boolean {
-    return (this.openWorkByThreadId.get(threadId)?.size ?? 0) > 0;
+    return this.openThreadWorkCount(threadId) > 0;
   }
 
   settleThread(threadId: string): ThreadEvent[] {

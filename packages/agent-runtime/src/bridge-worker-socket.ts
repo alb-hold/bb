@@ -749,6 +749,10 @@ export class SocketBridgeWorker
     writeBridgeWorkerEntry(this.workerDir, entry);
   }
 
+  get hasOpenWorkReport(): boolean {
+    return this.openWorkReport !== null;
+  }
+
   onOpenWorkReport(listener: (snapshot: BridgeOpenWorkSnapshot) => void): void {
     this.openWorkListener = listener;
     if (this.openWorkReport !== null) {
@@ -1018,6 +1022,10 @@ export class SocketBridgeWorker
 
   get registeredPid(): number | null {
     return this.registryEntry?.pid ?? null;
+  }
+
+  get registeredProcessIdentity(): string | null {
+    return this.registryEntry?.processIdentity ?? null;
   }
 
   private failToConnect(): void {

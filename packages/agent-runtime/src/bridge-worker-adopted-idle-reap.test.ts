@@ -46,15 +46,58 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+const LEGACY_PROVIDER_CHILD_SOURCE = `
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [childMode, controlDir] = process.argv.slice(2);
+process.stdin.resume();
+process.stdin.on("end", () => process.exit(0));
+
+let descendant = null;
+if (childMode === "with-descendant") {
+  descendant = spawn(
+    process.execPath,
+    [
+      "-e",
+      "process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); setInterval(() => {}, 60_000);",
+    ],
+    { stdio: ["pipe", "ignore", "ignore"] },
+  );
+  descendant.once("exit", () => {
+    writeFileSync(join(controlDir, "descendant-exited"), "1", "utf8");
+  });
+  const poll = setInterval(() => {
+    if (existsSync(join(controlDir, "stop-descendant"))) {
+      clearInterval(poll);
+      descendant.kill("SIGKILL");
+    }
+  }, 25);
+  poll.unref();
+}
+
+writeFileSync(join(controlDir, "ready"), "1", "utf8");
+setInterval(() => {}, 60_000);
+`;
+
 const LEGACY_V2_WORKER_SOURCE = `
+import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 
-const [modulePath, pluginId, dataDir, socketPath] = process.argv.slice(2);
+const [modulePath, pluginId, dataDir, socketPath, childScriptPath, childMode, controlDir] = process.argv.slice(2);
 let current = null;
 let resumed = false;
 let nextWseq = 1;
 const frames = [];
+
+const providerChild =
+  childMode === "idle" || childMode === "with-descendant"
+    ? spawn(process.execPath, [childScriptPath, childMode, controlDir], {
+        stdio: ["pipe", "ignore", "ignore"],
+      })
+    : null;
 
 function writeFrame(line) {
   const wseq = nextWseq++;
@@ -96,6 +139,7 @@ const server = createServer((socket) => {
       if (parsed && parsed.method === "bridge/shutdown") {
         server.close();
         bridge.onClose?.();
+        providerChild?.kill("SIGTERM");
         process.exit(0);
       }
       if (parsed && parsed.method === "bridge/resume") {
@@ -229,15 +273,33 @@ describe("idle reaping of adopted provider sessions", () => {
     providerId?: string;
     transportVersion?: number;
     openBackgroundWorkCount?: number;
-  }): Promise<{ pid: number; providerThreadId: string }> {
+    providerChildMode?: "none" | "idle" | "with-descendant";
+  }): Promise<{
+    pid: number;
+    providerThreadId: string;
+    stopProviderDescendant: () => Promise<void>;
+  }> {
     const providerId = args.providerId ?? PROVIDER_ID;
-    const scriptPath = join(root, `legacy-worker-${args.pluginId}.mjs`);
+    const childMode = args.providerChildMode ?? "none";
+    const controlDir = mkdtempSync(join(root, "legacy-ctrl-"));
+    const scriptPath = join(controlDir, `legacy-worker-${args.pluginId}.mjs`);
+    const childScriptPath = join(controlDir, "legacy-provider-child.mjs");
     writeFileSync(scriptPath, LEGACY_V2_WORKER_SOURCE, "utf8");
+    writeFileSync(childScriptPath, LEGACY_PROVIDER_CHILD_SOURCE, "utf8");
     const launch = createScriptedEchoLaunch({ pluginId: args.pluginId });
     const paths = allocateBridgeWorkerPaths(bridgeWorkers.dir);
     const child = spawn(
       process.execPath,
-      [scriptPath, scriptedEchoBridgeModulePath, args.pluginId, launch.dataDir, paths.socketPath],
+      [
+        scriptPath,
+        scriptedEchoBridgeModulePath,
+        args.pluginId,
+        launch.dataDir,
+        paths.socketPath,
+        childScriptPath,
+        childMode,
+        controlDir,
+      ],
       {
         cwd: workspacePath,
         detached: true,
@@ -252,7 +314,9 @@ describe("idle reaping of adopted provider sessions", () => {
 
     await waitForRuntimeState({
       label: "legacy worker socket listening",
-      predicate: () => existsSync(paths.socketPath),
+      predicate: () =>
+        existsSync(paths.socketPath) &&
+        (childMode === "none" || existsSync(join(controlDir, "ready"))),
       timeoutMs: WORKER_EXIT_TIMEOUT_MS,
     });
 
@@ -383,7 +447,18 @@ describe("idle reaping of adopted provider sessions", () => {
       },
     };
     writeBridgeWorkerEntry(bridgeWorkers.dir, entry);
-    return { pid, providerThreadId };
+    return {
+      pid,
+      providerThreadId,
+      stopProviderDescendant: async () => {
+        writeFileSync(join(controlDir, "stop-descendant"), "1", "utf8");
+        await waitForRuntimeState({
+          label: "legacy provider child descendant exited",
+          predicate: () => existsSync(join(controlDir, "descendant-exited")),
+          timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+        });
+      },
+    };
   }
 
   it("reaps an adopted idle session, exits its worker, and resumes on a new worker", async () => {
@@ -428,17 +503,33 @@ describe("idle reaping of adopted provider sessions", () => {
     expect(fresh?.pid).not.toBe(worker.pid);
   }, WORKER_EXIT_TIMEOUT_MS);
 
-  it("reaps an adopted worker with no open work even when openBackgroundWorkCount is missing from the registry", async () => {
+  it("reaps an adopted worker with no reported count whose thread stays idle, and writes verified 0 back to the registry", async () => {
     const events: ThreadEvent[] = [];
     const { worker } = await startPreSwapThread(events);
     mutateStoredThreadEntry((thread) => {
       delete thread.openBackgroundWorkCount;
     });
 
-    const after = createRuntime(events);
-    adoptAll(after);
+    const second = createRuntime(events);
+    adoptAll(second);
+    const beforeThreshold = await second.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + 1_000,
+    });
+    expect(beforeThreshold.reapedSessions).toEqual([]);
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBe(0);
+    await second.detach();
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBe(0);
 
-    const result = await after.reapIdleProviderSessions({
+    const third = createRuntime(events);
+    adoptAll(third);
+    const result = await third.reapIdleProviderSessions({
       idleForMs: IDLE_FOR_MS,
       nowMs: Date.now() + IDLE_FOR_MS + 60_000,
     });
@@ -457,7 +548,7 @@ describe("idle reaping of adopted provider sessions", () => {
     { label: "backgroundTask", prompt: "bg_task", clientRequestId: "creq_adptt4444c" },
     { label: "background delegation", prompt: "bg_delegation", clientRequestId: "creq_adptt4444d" },
   ])(
-    "never reaps an adopted worker that reports open $label at adoption even if the registry says 0",
+    "never reaps an adopted worker that reports open $label at adoption even if the registry says 0, and writes the verified count back",
     async ({ prompt, clientRequestId }) => {
       const events: ThreadEvent[] = [];
       const before = createRuntime(events);
@@ -494,9 +585,88 @@ describe("idle reaping of adopted provider sessions", () => {
       expect(result.reapedSessions).toEqual([]);
       expect(after.hasThread("t1")).toBe(true);
       expect(isPidAlive(worker.pid)).toBe(true);
+      expect(
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount,
+      ).toBe(1);
     },
     WORKER_EXIT_TIMEOUT_MS,
   );
+
+  it("never reaps an adopted worker whose unanswered thread/stop request ID was reused after daemon swap", async () => {
+    const events: ThreadEvent[] = [];
+    const processLog = createScriptedEchoProcessLog();
+    const extraEnv = {
+      ...processLog.env,
+      ...scriptedEchoProcessEnv({
+        sessionRestorable: true,
+        hangStopOnceForThreadIds: ["t1"],
+      }),
+    };
+    const before = createRuntime(events, extraEnv);
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptt4444e",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    expect(before.hasOpenBackgroundWork()).toBe(true);
+
+    const unansweredStop = before.stopThread({ threadId: "t1" });
+    void unansweredStop.catch(() => undefined);
+    await waitForRuntimeState({
+      label: "unanswered thread/stop reached worker",
+      predicate: () =>
+        processLog.read().includes(`thread/stop:${worker.pid}:t1`),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+    await before.detach();
+
+    const middle = createRuntime(events, extraEnv);
+    adoptAll(middle);
+    for (const seq of ["1", "2", "3", "4"]) {
+      await middle.renameThread({
+        threadId: "t1",
+        title: `reuse-id-${seq}`,
+      });
+    }
+    expect(trackWorkers().map((entry) => entry.pid)).toEqual([worker.pid]);
+    await middle.detach();
+
+    mutateStoredThreadEntry((thread) => {
+      thread.openBackgroundWorkCount = 0;
+    });
+
+    const after = createRuntime(events, extraEnv);
+    adoptAll(after);
+    const whileOpen = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(whileOpen.reapedSessions).toEqual([]);
+    expect(after.hasOpenBackgroundWork()).toBe(true);
+    expect(after.hasThread("t1")).toBe(true);
+    expect(isPidAlive(worker.pid)).toBe(true);
+
+    await after.stopThread({ threadId: "t1" });
+    expect(after.hasThread("t1")).toBe(false);
+    await waitForRuntimeState({
+      label: "adopted worker exited once actual release succeeded",
+      predicate: () => !isPidAlive(worker.pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
 
   it("reaps an adopted session once background work that was still open at adoption settles, after a fresh idle window", async () => {
     const events: ThreadEvent[] = [];
@@ -610,13 +780,12 @@ describe("idle reaping of adopted provider sessions", () => {
     { label: "legacy transport", transportVersion: 2 },
     { label: "unanswered current transport", transportVersion: BRIDGE_SOCKET_TRANSPORT_VERSION },
   ])(
-    "never reaps an old worker ($label) that cannot answer the open-work query",
+    "never reaps an old worker ($label) that cannot answer the open-work query and does not write a guessed count",
     async ({ transportVersion }) => {
       const events: ThreadEvent[] = [];
       const { pid } = await spawnLegacyUnansweredWorker({
         pluginId: "provider-scripted-echo",
         transportVersion,
-        openBackgroundWorkCount: 0,
       });
 
       const after = createRuntime(events);
@@ -629,6 +798,10 @@ describe("idle reaping of adopted provider sessions", () => {
       expect(result.reapedSessions).toEqual([]);
       expect(after.hasThread("t1")).toBe(true);
       expect(isPidAlive(pid)).toBe(true);
+      expect(
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount,
+      ).toBeUndefined();
     },
     WORKER_EXIT_TIMEOUT_MS,
   );
@@ -643,6 +816,13 @@ describe("idle reaping of adopted provider sessions", () => {
 
       const after = createRuntime(events);
       adoptAll(after);
+      await waitForRuntimeState({
+        label: `legacy ${pluginId} verified 0 count written back`,
+        predicate: () =>
+          readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+            ?.openBackgroundWorkCount === 0,
+        timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+      });
       const result = await after.reapIdleProviderSessions({
         idleForMs: IDLE_FOR_MS,
         nowMs: Date.now() + IDLE_FOR_MS + 60_000,
@@ -660,23 +840,75 @@ describe("idle reaping of adopted provider sessions", () => {
     WORKER_EXIT_TIMEOUT_MS,
   );
 
-  it("never reaps a legacy claude-code worker", async () => {
+  it("reaps a legacy claude-code worker with no reported count when its provider child has no live descendants, and writes verified 0 back", async () => {
     const events: ThreadEvent[] = [];
     const { pid } = await spawnLegacyUnansweredWorker({
       pluginId: "provider-claude-code",
-      openBackgroundWorkCount: 0,
+      providerChildMode: "idle",
     });
 
     const after = createRuntime(events);
     adoptAll(after);
+    await waitForRuntimeState({
+      label: "legacy claude-code verified 0 count written back",
+      predicate: () =>
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount === 0,
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
     const result = await after.reapIdleProviderSessions({
       idleForMs: IDLE_FOR_MS,
       nowMs: Date.now() + IDLE_FOR_MS + 60_000,
     });
 
-    expect(result.reapedSessions).toEqual([]);
+    expect(result.reapedSessions.map((session) => session.threadId)).toEqual([
+      "t1",
+    ]);
+    await waitForRuntimeState({
+      label: "legacy claude-code worker exited after reap",
+      predicate: () => !isPidAlive(pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("never reaps a legacy claude-code worker while its provider child has a live descendant, then reaps it at reap time once the descendant exits", async () => {
+    const events: ThreadEvent[] = [];
+    const { pid, stopProviderDescendant } = await spawnLegacyUnansweredWorker({
+      pluginId: "provider-claude-code",
+      openBackgroundWorkCount: 0,
+      providerChildMode: "with-descendant",
+    });
+
+    const after = createRuntime(events);
+    adoptAll(after);
+    const whileDescendantAlive = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(whileDescendantAlive.reapedSessions).toEqual([]);
     expect(after.hasThread("t1")).toBe(true);
     expect(isPidAlive(pid)).toBe(true);
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBeUndefined();
+
+    await stopProviderDescendant();
+
+    const afterDescendantExited = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(
+      afterDescendantExited.reapedSessions.map((session) => session.threadId),
+    ).toEqual(["t1"]);
+    await waitForRuntimeState({
+      label: "legacy claude-code worker exited after descendant settled",
+      predicate: () => !isPidAlive(pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
   }, WORKER_EXIT_TIMEOUT_MS);
 
   const neverReaped = [

@@ -86,7 +86,12 @@ import {
 import { bridgeLaunchProcessKey } from "./bridge-launch-process-key.js";
 import type { BridgeLineAckTracker } from "./bridge-line-ack-tracker.js";
 import { SocketBridgeWorker } from "./bridge-worker-socket.js";
-import { legacyWorkerAssumesZeroOpenBackgroundWork } from "./legacy-worker-open-work.js";
+import {
+  inspectLegacyWorkerProviderChildDescendants,
+  LEGACY_CLAUDE_CODE_BRIDGE_PLUGIN_ID,
+  legacyWorkerAssumesZeroOpenBackgroundWork,
+  type LegacyProviderChildDescendantState,
+} from "./legacy-worker-open-work.js";
 
 interface RecordThreadExecutionOptionsArgs {
   options: AgentRuntimeExecutionOptions;
@@ -334,8 +339,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     AgentRuntimeProviderRecoveryHint
   >();
   const threadsRetryingBridgeRestartOnIdle = new Set<string>();
+  let runtimeClosed = false;
   const idleProviderSessionSinceMsByThreadId = new Map<string, number>();
   const adoptedUnverifiedBackgroundWorkThreadIds = new Set<string>();
+  const legacyUnansweredClaudeThreadIds = new Set<string>();
   const adoptedOpenWorkReconciliations = new Map<string, Promise<void>>();
   const pendingTurnStarts = new Map<
     string,
@@ -826,11 +833,28 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     return { proc, worker: proc.child };
   }
 
+  function inspectLegacyProviderChildDescendantsForProcess(
+    proc: ProviderProcess,
+  ): Promise<LegacyProviderChildDescendantState> {
+    if (!(proc.child instanceof SocketBridgeWorker)) {
+      return Promise.resolve("unknown");
+    }
+    return inspectLegacyWorkerProviderChildDescendants({
+      workerPid: proc.child.registeredPid ?? proc.child.pid,
+      expectedWorkerIdentity: proc.child.registeredProcessIdentity,
+    });
+  }
+
   function persistAdoptableThread(threadId: string): void {
     const target = socketWorkerForThread(threadId);
     const config = threadRuntimeConfigs.get(threadId);
     if (target === null || config === undefined) return;
     const activeTurnId = turnState.getActiveTurnId(threadId);
+    const verifiedOpenBackgroundWorkCount =
+      backgroundWorkState.openThreadWorkCount(threadId);
+    const hasVerifiedOpenBackgroundWorkCount =
+      !adoptedUnverifiedBackgroundWorkThreadIds.has(threadId) ||
+      verifiedOpenBackgroundWorkCount > 0;
     target.worker.recordThread(threadId, {
       providerThreadId:
         threadIdentityRegistry.getProviderThreadId(threadId) ?? null,
@@ -839,11 +863,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         activeTurnId === null
           ? null
           : target.proc.adapter.getProviderTurnId(threadId, activeTurnId),
-      openBackgroundWorkCount:
-        (backgroundWorkState
-          .listOpenWork()
-          .find((work) => work.threadId === threadId)?.itemIds.length ?? 0) +
-        (adoptedUnverifiedBackgroundWorkThreadIds.has(threadId) ? 1 : 0),
+      ...(hasVerifiedOpenBackgroundWorkCount
+        ? { openBackgroundWorkCount: verifiedOpenBackgroundWorkCount }
+        : {}),
       config: Object.fromEntries(
         Object.entries({ ...config, envVars: {}, contributedEnv: [] }),
       ),
@@ -948,6 +970,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           continue;
         }
         adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
+        legacyUnansweredClaudeThreadIds.delete(adoption.threadId);
         const openItems = snapshot.threads[adoption.threadId] ?? [];
         const seeded = adoption.proc.adapter.seedOpenBackgroundItems({
           threadId: adoption.threadId,
@@ -963,9 +986,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         persistAdoptableThread(adoption.threadId);
       }
     };
-    const applyLegacyOpenWorkFallback = (
+    const applyLegacyOpenWorkFallback = async (
+      proc: ProviderProcess,
       procAdoptions: readonly PendingAdoption[],
-    ): void => {
+    ): Promise<void> => {
+      const hasClaudeAdoption = procAdoptions.some(
+        (adoption) => adoption.pluginId === LEGACY_CLAUDE_CODE_BRIDGE_PLUGIN_ID,
+      );
+      const claudeDescendantState: LegacyProviderChildDescendantState =
+        hasClaudeAdoption
+          ? await inspectLegacyProviderChildDescendantsForProcess(proc)
+          : "unknown";
+      if (
+        runtimeClosed ||
+        providerProcesses.getProviderProcess(proc.processKey) !== proc ||
+        (proc.child instanceof SocketBridgeWorker &&
+          proc.child.hasOpenWorkReport)
+      ) {
+        return;
+      }
       for (const adoption of procAdoptions) {
         if (
           threadRuntimeConfigs.get(adoption.threadId)?.processKey !==
@@ -977,15 +1016,47 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
           markHostedProviderSessionIdle(adoption.threadId);
           persistAdoptableThread(adoption.threadId);
-        } else {
-          adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
-          persistAdoptableThread(adoption.threadId);
+          continue;
         }
+        if (adoption.pluginId === LEGACY_CLAUDE_CODE_BRIDGE_PLUGIN_ID) {
+          legacyUnansweredClaudeThreadIds.add(adoption.threadId);
+          if (claudeDescendantState === "none") {
+            adoptedUnverifiedBackgroundWorkThreadIds.delete(adoption.threadId);
+            markHostedProviderSessionIdle(adoption.threadId);
+          } else {
+            adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
+          }
+          persistAdoptableThread(adoption.threadId);
+          continue;
+        }
+        adoptedUnverifiedBackgroundWorkThreadIds.add(adoption.threadId);
+        persistAdoptableThread(adoption.threadId);
+      }
+    };
+    const registerOpenWorkReconciliation = (
+      procAdoptions: readonly PendingAdoption[],
+      promise: Promise<void>,
+    ): void => {
+      const reconciliation = promise.finally(() => {
+        for (const adoption of procAdoptions) {
+          if (
+            adoptedOpenWorkReconciliations.get(adoption.threadId) ===
+            reconciliation
+          ) {
+            adoptedOpenWorkReconciliations.delete(adoption.threadId);
+          }
+        }
+      });
+      for (const adoption of procAdoptions) {
+        adoptedOpenWorkReconciliations.set(adoption.threadId, reconciliation);
       }
     };
     for (const [proc, procAdoptions] of adoptionsByProc) {
       if (!(proc.child instanceof SocketBridgeWorker)) {
-        applyLegacyOpenWorkFallback(procAdoptions);
+        registerOpenWorkReconciliation(
+          procAdoptions,
+          applyLegacyOpenWorkFallback(proc, procAdoptions),
+        );
         continue;
       }
       const worker = proc.child;
@@ -993,26 +1064,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         applyOpenWorkSnapshot(procAdoptions, snapshot);
       });
       worker.resume();
-      const reconciliation = worker
-        .waitForOpenWorkReport()
-        .then((result) => {
+      registerOpenWorkReconciliation(
+        procAdoptions,
+        worker.waitForOpenWorkReport().then(async (result) => {
           if (result.kind !== "reported") {
-            applyLegacyOpenWorkFallback(procAdoptions);
+            await applyLegacyOpenWorkFallback(proc, procAdoptions);
           }
-        })
-        .finally(() => {
-          for (const adoption of procAdoptions) {
-            if (
-              adoptedOpenWorkReconciliations.get(adoption.threadId) ===
-              reconciliation
-            ) {
-              adoptedOpenWorkReconciliations.delete(adoption.threadId);
-            }
-          }
-        });
-      for (const adoption of procAdoptions) {
-        adoptedOpenWorkReconciliations.set(adoption.threadId, reconciliation);
-      }
+        }),
+      );
     }
   }
 
@@ -1032,6 +1091,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   function clearThreadRuntimeConfig(threadId: string): void {
     socketWorkerForThread(threadId)?.worker.recordThread(threadId, null);
     adoptedOpenWorkReconciliations.delete(threadId);
+    adoptedUnverifiedBackgroundWorkThreadIds.delete(threadId);
+    legacyUnansweredClaudeThreadIds.delete(threadId);
     threadsAwaitingBridgeRestart.delete(threadId);
     threadsRetryingBridgeRestartOnIdle.delete(threadId);
     idleProviderSessionSinceMsByThreadId.delete(threadId);
@@ -1143,6 +1204,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     turnState.clearThread(threadId);
     backgroundWorkState.clearThread(threadId);
     adoptedUnverifiedBackgroundWorkThreadIds.delete(threadId);
+    legacyUnansweredClaudeThreadIds.delete(threadId);
     threadEventGrammar.clearThread(threadId);
   }
 
@@ -1593,15 +1655,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         );
       }
       turnState.observe(normalizedEvent);
-      const hadBackgroundWork =
-        backgroundWorkState.hasOpenThreadWork(targetThreadId);
+      const openBackgroundCountBefore =
+        backgroundWorkState.openThreadWorkCount(targetThreadId);
       backgroundWorkState.observe(normalizedEvent);
-      const hasBackgroundWorkNow =
-        backgroundWorkState.hasOpenThreadWork(targetThreadId);
-      if (hadBackgroundWork !== hasBackgroundWorkNow) {
+      const openBackgroundCountAfter =
+        backgroundWorkState.openThreadWorkCount(targetThreadId);
+      if (openBackgroundCountBefore !== openBackgroundCountAfter) {
         if (
-          hadBackgroundWork &&
-          !hasBackgroundWorkNow &&
+          openBackgroundCountBefore > 0 &&
+          openBackgroundCountAfter === 0 &&
           threadIdentityRegistry.getProviderSession(targetThreadId) !== null &&
           turnState.getActiveTurnId(targetThreadId) === null &&
           !pendingTurnStarts.has(targetThreadId)
@@ -3058,7 +3120,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       for (const threadId of [...threadRuntimeConfigs.keys()]) {
         const release = async (): Promise<ReapedIdleProviderSession | null> => {
           await adoptedOpenWorkReconciliations.get(threadId);
-          const candidate = findReapableIdleProviderSession({
+          let candidate = findReapableIdleProviderSession({
             idleForMs,
             nowMs,
             threadId,
@@ -3067,13 +3129,48 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             return null;
           }
 
+          let proc: ProviderProcess;
           try {
-            providerProcesses.requireProviderProcess({
+            proc = providerProcesses.requireProviderProcess({
               processKey: candidate.runtimeConfig.processKey,
               providerId: candidate.runtimeConfig.providerId,
             });
           } catch {
             return null;
+          }
+          if (legacyUnansweredClaudeThreadIds.has(candidate.threadId)) {
+            const descendantState =
+              await inspectLegacyProviderChildDescendantsForProcess(proc);
+            if (
+              runtimeClosed ||
+              providerProcesses.getProviderProcess(proc.processKey) !== proc ||
+              threadRuntimeConfigs.get(candidate.threadId)?.processKey !==
+                proc.processKey
+            ) {
+              return null;
+            }
+            if (legacyUnansweredClaudeThreadIds.has(candidate.threadId)) {
+              if (descendantState === "none") {
+                adoptedUnverifiedBackgroundWorkThreadIds.delete(
+                  candidate.threadId,
+                );
+                persistAdoptableThread(candidate.threadId);
+              } else {
+                adoptedUnverifiedBackgroundWorkThreadIds.add(
+                  candidate.threadId,
+                );
+                persistAdoptableThread(candidate.threadId);
+                return null;
+              }
+            }
+            candidate = findReapableIdleProviderSession({
+              idleForMs,
+              nowMs,
+              threadId,
+            });
+            if (!candidate) {
+              return null;
+            }
           }
           if (
             backgroundWorkState.hasOpenThreadWork(candidate.threadId) ||
@@ -3148,6 +3245,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   };
 
   async function closeRuntime(mode: "stop" | "detach"): Promise<void> {
+    runtimeClosed = true;
     if (mode === "detach") flushPendingProviderOutput();
     clearInterval(turnStartWatchdogTimer);
     await Promise.all(
@@ -3157,6 +3255,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     );
     adoptedOpenWorkReconciliations.clear();
     adoptedUnverifiedBackgroundWorkThreadIds.clear();
+    legacyUnansweredClaudeThreadIds.clear();
     idleProviderSessionSinceMsByThreadId.clear();
     pendingTurnStarts.clear();
     pendingTurnStartAttempts.clear();

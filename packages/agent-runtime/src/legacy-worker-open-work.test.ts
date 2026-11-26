@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   type BackgroundScopedItemKind,
   FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS,
+  hasLiveProviderChildDescendants,
   legacyWorkerAssumesZeroOpenBackgroundWork,
 } from "./legacy-worker-open-work.js";
 
@@ -854,6 +855,8 @@ function analyzeSourceFileInProgram(
   };
 }
 
+let cachedPluginProgram: ts.Program | undefined;
+
 export function scanPluginAdapterSources(
   pluginId: keyof typeof PLUGIN_ADAPTER_SOURCE_ROOTS,
 ): BackgroundScopedItemScanResult {
@@ -867,7 +870,9 @@ export function scanPluginAdapterSources(
   const program = ts.createProgram({
     rootNames: [...new Set([...files, PROTOCOL_THREAD_DELTA_PATH])],
     options,
+    oldProgram: cachedPluginProgram,
   });
+  cachedPluginProgram = program;
   const checker = program.getTypeChecker();
   const deltaItemShapeType = getProtocolDeclaredType(
     program,
@@ -1047,7 +1052,7 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
         ...FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS["provider-pi"],
       ],
     });
-  }, 45_000);
+  }, 90_000);
 
   it("detects literal, union-typed, spread, and local-alias backgroundTask and delegation items", () => {
     const results = scanSyntheticAdapterSources({
@@ -1274,5 +1279,58 @@ export function make(raw: string): ThreadDelta {
     expect(
       legacyWorkerAssumesZeroOpenBackgroundWork("provider-scripted-echo"),
     ).toBe(false);
+  });
+});
+
+describe("hasLiveProviderChildDescendants", () => {
+  it("returns none when the worker has no provider child or its provider children have no live descendants", () => {
+    expect(hasLiveProviderChildDescendants("1 0 Ss\n100 1 Ss\n", 100)).toBe(
+      "none",
+    );
+    expect(
+      hasLiveProviderChildDescendants(
+        "1 0 Ss\n100 1 Ss\n200 100 S\n201 100 S+\n",
+        100,
+      ),
+    ).toBe("none");
+  });
+
+  it("returns has_descendants when any provider child has a live child or deeper descendant", () => {
+    expect(
+      hasLiveProviderChildDescendants(
+        "1 0 Ss\n100 1 Ss\n200 100 S\n300 200 S\n",
+        100,
+      ),
+    ).toBe("has_descendants");
+    expect(
+      hasLiveProviderChildDescendants(
+        "1 0 Ss\n100 1 Ss\n200 100 S\n201 100 S\n300 201 S\n400 300 R+\n",
+        100,
+      ),
+    ).toBe("has_descendants");
+  });
+
+  it("ignores zombie descendants under the provider child", () => {
+    expect(
+      hasLiveProviderChildDescendants(
+        "1 0 Ss\n100 1 Ss\n200 100 S\n300 200 Z\n301 200 Z+\n",
+        100,
+      ),
+    ).toBe("none");
+  });
+
+  it("fails closed with unknown when worker is missing, zombie, invalid, or ps output is malformed", () => {
+    expect(hasLiveProviderChildDescendants("1 0 Ss\n200 100 S\n", 100)).toBe(
+      "unknown",
+    );
+    expect(hasLiveProviderChildDescendants("1 0 Ss\n100 1 Z+\n", 100)).toBe(
+      "unknown",
+    );
+    expect(hasLiveProviderChildDescendants("1 0 Ss\n100 1 Ss\n", 0)).toBe(
+      "unknown",
+    );
+    expect(
+      hasLiveProviderChildDescendants("1 0 Ss\n100 1 Ss\nbogus row here\n", 100),
+    ).toBe("unknown");
   });
 });

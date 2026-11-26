@@ -108,6 +108,7 @@ export const scriptedEchoOptionsSchema = z
     identifyProcess: z.boolean().optional(),
     uniqueProviderThreadIds: z.boolean().optional(),
     failStopForThreadIds: z.array(z.string().min(1)).optional(),
+    hangStopOnceForThreadIds: z.array(z.string().min(1)).optional(),
     emitIdentityOnSigterm: z.boolean().optional(),
   })
   .strict();
@@ -214,6 +215,7 @@ const openBackgroundDelegations = new Map<
   { providerItemId: string; childRef: string }[]
 >();
 let discardFailed = false;
+const hungStopThreadIds = new Set<string>();
 let providerThreadCounter = 0;
 const providerThreadNonce = randomUUID().slice(0, 8);
 let outboundRequestCounter = 0;
@@ -1388,6 +1390,13 @@ const handlers: Record<string, RequestHandler> = {
     const session = sessions.get(parsed.data.threadId);
     logProcessStep(`thread/stop:${process.pid}:${parsed.data.threadId}`);
     const stopOptions = session?.options ?? processOptions;
+    if (
+      stopOptions.hangStopOnceForThreadIds?.includes(parsed.data.threadId) &&
+      !hungStopThreadIds.has(parsed.data.threadId)
+    ) {
+      hungStopThreadIds.add(parsed.data.threadId);
+      return;
+    }
     if (stopOptions.failStopForThreadIds?.includes(parsed.data.threadId)) {
       io.sendError(id, -32000, `stop refused for ${parsed.data.threadId}`);
       return;
