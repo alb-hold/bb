@@ -160,46 +160,204 @@ export function extractToolUses(
   return uses;
 }
 
+function trimNonEmpty(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function extractDocumentBlockText(document: unknown): string | undefined {
+  if (typeof document !== "object" || document === null) return undefined;
+  const doc = document as Record<string, unknown>;
+  const source =
+    typeof doc.source === "object" && doc.source !== null
+      ? (doc.source as Record<string, unknown>)
+      : undefined;
+  if (source !== undefined) {
+    if (source.type === "text") {
+      const data = trimNonEmpty(source.data);
+      if (data !== undefined) return data;
+    } else if (source.type === "content") {
+      const contentText = trimNonEmpty(extractResultText(source.content));
+      if (contentText !== undefined) return contentText;
+    }
+  }
+  return trimNonEmpty(doc.title);
+}
+
+function extractCodeExecutionFileIds(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const fileIds: string[] = [];
+  for (const item of content) {
+    if (typeof item !== "object" || item === null) continue;
+    const fileId = trimNonEmpty((item as Record<string, unknown>).file_id);
+    if (fileId !== undefined) fileIds.push(fileId);
+  }
+  return fileIds.length > 0 ? `Files: ${fileIds.join(", ")}` : undefined;
+}
+
 function parseServerToolResultContent(
   content: unknown,
   explicitError: boolean | undefined,
 ): { isError: boolean; outputText: string | undefined } {
-  if (typeof content === "object" && content !== null && !Array.isArray(content)) {
-    const record = content as Record<string, unknown>;
-    const contentType = typeof record.type === "string" ? record.type : undefined;
-    if (contentType !== undefined && contentType.endsWith("_error")) {
-      const errorMessage =
-        typeof record.message === "string" && record.message.trim().length > 0
-          ? record.message.trim()
-          : typeof record.error_code === "string" &&
-              record.error_code.trim().length > 0
-            ? record.error_code.trim()
-            : undefined;
-      return { isError: true, outputText: errorMessage };
+  if (Array.isArray(content)) {
+    const webSearchLines: string[] = [];
+    let sawWebSearchResult = false;
+    for (const entry of content) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const item = entry as Record<string, unknown>;
+      if (item.type !== "web_search_result") continue;
+      sawWebSearchResult = true;
+      const title = trimNonEmpty(item.title);
+      const url = trimNonEmpty(item.url);
+      if (title !== undefined && url !== undefined) {
+        webSearchLines.push(`${title} (${url})`);
+      } else if (title !== undefined) {
+        webSearchLines.push(title);
+      } else if (url !== undefined) {
+        webSearchLines.push(url);
+      }
     }
-    if (
-      contentType === "advisor_redacted_result" ||
-      "encrypted_content" in record
-    ) {
-      return { isError: explicitError === true, outputText: undefined };
-    }
-    if (contentType === "advisor_result" && typeof record.text === "string") {
-      const text = record.text.trim();
+    if (sawWebSearchResult) {
       return {
         isError: explicitError === true,
-        outputText: text.length > 0 ? text : undefined,
+        outputText:
+          webSearchLines.length > 0 ? webSearchLines.join("\n") : undefined,
       };
     }
+    return {
+      isError: explicitError === true,
+      outputText: trimNonEmpty(extractResultText(content)),
+    };
   }
-  if (explicitError === true) {
-    const text = extractResultText(content).trim();
-    return { isError: true, outputText: text.length > 0 ? text : undefined };
-  }
+
   if (typeof content === "string") {
-    const text = content.trim();
-    return { isError: false, outputText: text.length > 0 ? text : undefined };
+    return {
+      isError: explicitError === true,
+      outputText: trimNonEmpty(content),
+    };
   }
-  return { isError: false, outputText: undefined };
+
+  if (typeof content === "object" && content !== null) {
+    const record = content as Record<string, unknown>;
+    const contentType =
+      typeof record.type === "string" ? record.type : undefined;
+
+    if (contentType !== undefined && contentType.endsWith("_error")) {
+      const errorMessage =
+        trimNonEmpty(record.error_message) ??
+        trimNonEmpty(record.message) ??
+        trimNonEmpty(record.error_code);
+      return { isError: true, outputText: errorMessage };
+    }
+
+    if (contentType === "advisor_redacted_result") {
+      return { isError: explicitError === true, outputText: undefined };
+    }
+
+    if (contentType === "advisor_result") {
+      return {
+        isError: explicitError === true,
+        outputText: trimNonEmpty(record.text),
+      };
+    }
+
+    if (
+      contentType === "bash_code_execution_result" ||
+      contentType === "code_execution_result"
+    ) {
+      const returnCode =
+        typeof record.return_code === "number" ? record.return_code : 0;
+      const isError = explicitError === true || returnCode !== 0;
+      const combined = combineClaudeProcessOutput({
+        stdout: typeof record.stdout === "string" ? record.stdout : "",
+        stderr: typeof record.stderr === "string" ? record.stderr : "",
+      });
+      const outputText =
+        trimNonEmpty(combined) ??
+        extractCodeExecutionFileIds(record.content) ??
+        (returnCode !== 0 ? `Exit code ${returnCode}` : undefined);
+      return { isError, outputText };
+    }
+
+    if (contentType === "encrypted_code_execution_result") {
+      const returnCode =
+        typeof record.return_code === "number" ? record.return_code : 0;
+      const isError = explicitError === true || returnCode !== 0;
+      const outputText =
+        trimNonEmpty(record.stderr) ??
+        extractCodeExecutionFileIds(record.content) ??
+        (returnCode !== 0 ? `Exit code ${returnCode}` : undefined);
+      return { isError, outputText };
+    }
+
+    if (contentType === "text_editor_code_execution_view_result") {
+      const fileType = trimNonEmpty(record.file_type);
+      const outputText =
+        fileType === undefined || fileType === "text"
+          ? trimNonEmpty(record.content)
+          : `Viewed ${fileType} file`;
+      return { isError: explicitError === true, outputText };
+    }
+
+    if (contentType === "text_editor_code_execution_str_replace_result") {
+      const lines = Array.isArray(record.lines)
+        ? record.lines
+            .filter((line): line is string => typeof line === "string")
+            .join("\n")
+        : undefined;
+      return {
+        isError: explicitError === true,
+        outputText: trimNonEmpty(lines) ?? "Applied edit",
+      };
+    }
+
+    if (contentType === "text_editor_code_execution_create_result") {
+      return {
+        isError: explicitError === true,
+        outputText:
+          record.is_file_update === true ? "Updated file" : "Created file",
+      };
+    }
+
+    if (contentType === "web_fetch_result") {
+      const docText = extractDocumentBlockText(record.content);
+      const url = trimNonEmpty(record.url);
+      return {
+        isError: explicitError === true,
+        outputText: docText ?? url,
+      };
+    }
+
+    if (contentType === "tool_search_tool_search_result") {
+      const toolNames: string[] = [];
+      if (Array.isArray(record.tool_references)) {
+        for (const ref of record.tool_references) {
+          if (typeof ref !== "object" || ref === null) continue;
+          const toolName = trimNonEmpty(
+            (ref as Record<string, unknown>).tool_name,
+          );
+          if (toolName !== undefined) toolNames.push(toolName);
+        }
+      }
+      return {
+        isError: explicitError === true,
+        outputText: toolNames.length > 0 ? toolNames.join(", ") : undefined,
+      };
+    }
+
+    if ("encrypted_content" in record || "encrypted_stdout" in record) {
+      return { isError: explicitError === true, outputText: undefined };
+    }
+
+    return {
+      isError: explicitError === true,
+      outputText:
+        trimNonEmpty(record.text) ?? trimNonEmpty(extractResultText(content)),
+    };
+  }
+
+  return { isError: explicitError === true, outputText: undefined };
 }
 
 export function extractServerToolResults(
