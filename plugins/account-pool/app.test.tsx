@@ -296,6 +296,68 @@ describe("Subscription picker", () => {
     await waitFor(() => expect(composer?.experimental_createData).toBeNull());
   });
 
+  it("offers pooled Antigravity accounts in the composer picker and retains the draft selection", async () => {
+    const geminiAccounts = [
+      account({
+        id: "44444444-4444-4444-8444-444444444444",
+        provider: "gemini",
+        label: "Antigravity Ultra",
+        subscriptionType: "Google AI Ultra",
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.19,
+            resetAt: null,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
+      }),
+    ];
+    let composer: PluginComposerApi | undefined;
+    function Capture() {
+      const current = useComposer();
+      useEffect(() => {
+        composer = current;
+      }, [current]);
+      return <Component providerId="acp-antigravity-acp" />;
+    }
+    const slot = renderSlot(
+      { component: Capture },
+      {},
+      {
+        pluginId: "account-pool",
+        composer: { selection: { providerId: "acp-antigravity-acp" } },
+        rpc: { "status.get": () => status(geminiAccounts) },
+      },
+    );
+    const select = await slot.findByRole("combobox", { name: "Subscription" });
+    await waitFor(() => expect(select.hasAttribute("disabled")).toBe(false));
+    expect(
+      slot.getByRole("option", { name: /Antigravity Ultra.*5h 19%/ }),
+    ).toBeTruthy();
+    fireEvent.change(select, { target: { value: geminiAccounts[0]!.id } });
+    await waitFor(() =>
+      expect(composer?.experimental_createData).toEqual({
+        provider: "gemini",
+        accountId: geminiAccounts[0]!.id,
+      }),
+    );
+    slot.rerender(<div />);
+    slot.rerender(<Capture />);
+    await waitFor(() =>
+      expect(
+        (
+          slot.getByRole("combobox", {
+            name: "Subscription",
+          }) as HTMLSelectElement
+        ).value,
+      ).toBe(geminiAccounts[0]!.id),
+    );
+  });
+
   it.each(["routing-off", "parent-proxy"] as const)(
     "explains that a new pinned conversation cannot be sent while %s is active",
     async (inactiveMode) => {

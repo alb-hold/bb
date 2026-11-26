@@ -4920,6 +4920,104 @@ describe("Account Pool plugin", () => {
       ])
         expect(entries[0]?.message).not.toContain(secret);
     });
+
+    it("does not log stream-cut warnings when a client cancels a unary JSON response", async () => {
+      const fixture = await createFixture({
+        upstreamUrl: "https://upstream.example",
+        provider: "codex",
+        source: "import",
+        options: {
+          codexUsageUrl: EMPTY_USAGE_URL,
+          fetch: async (input, init) => {
+            if (String(input) === EMPTY_USAGE_URL) return Response.json({});
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(
+                    new TextEncoder().encode('{"data":[{"id":"gpt-5"}]}'),
+                  );
+                  init?.signal?.addEventListener("abort", () => {
+                    try {
+                      controller.error(init.signal?.reason ?? new Error("aborted"));
+                    } catch {}
+                  });
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          },
+          importCodexCredentials: async () => ({
+            accessToken: "codex-unary-test",
+            refreshToken: "refresh",
+            idToken: null,
+            accountId: "codex-unary-acc",
+            planType: null,
+            email: null,
+            expiresAt: Date.now() + 3_600_000,
+          }),
+        },
+      });
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "GET",
+        "/v1/models",
+        { headers: authHeaders(fixture.key) },
+      );
+      const reader = response.body?.getReader();
+      if (reader === undefined) throw new Error("Missing response body.");
+      await reader.read();
+      await reader.cancel();
+      expect(
+        fixture.host.harness.inspection.logEntries.filter(({ message }) =>
+          message.includes("stream "),
+        ),
+      ).toEqual([]);
+    });
+
+    it("logs only client-closed and not a duplicate stream error when cancelling an active SSE stream", async () => {
+      const fixture = await createFixture({
+        upstreamUrl: "https://upstream.example",
+        options: {
+          fetch: async (_input, init) =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(
+                    new TextEncoder().encode("event: message_start\ndata: {}\n\n"),
+                  );
+                  init?.signal?.addEventListener("abort", () => {
+                    try {
+                      controller.error(init.signal?.reason ?? new Error("aborted"));
+                    } catch {}
+                  });
+                },
+              }),
+              {
+                headers: {
+                  "content-type": "text/event-stream",
+                  "request-id": "req_single_cancel",
+                },
+              },
+            ),
+        },
+      });
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          headers: authHeaders(fixture.key),
+          body: JSON.stringify({ model: "claude-fable-5" }),
+        },
+      );
+      const reader = response.body?.getReader();
+      if (reader === undefined) throw new Error("Missing SSE stream.");
+      await reader.read();
+      await reader.cancel();
+      const cuts = fixture.host.harness.inspection.logEntries.filter(
+        ({ message }) => message.includes("stream "),
+      );
+      expect(cuts).toHaveLength(1);
+      expect(cuts[0]?.message).toContain("stream client-closed");
+    });
   });
 
   describe("session affinity", () => {
@@ -13783,6 +13881,71 @@ describe("Account Pool subscription sign-in repair", () => {
     expect(cli.stdout).toContain(
       "local usage (5h: ~37367 ctx tokens / 2 turns, 7d: ~196691 ctx tokens / 11 turns)",
     );
+  });
+
+  it("maps acp-agy to the gemini pool and hides it when its email is already pooled", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-agy-local-"));
+    const host = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: sdkStubs(),
+    });
+    await host.bb.storage.kv.set("accounts:gemini:v1", [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        provider: "gemini",
+        kind: "oauth",
+        label: "Pooled Antigravity",
+        email: "ultra@example.com",
+        accountUuid: null,
+        subscriptionType: "ultra",
+        rateLimitTier: null,
+        enabled: true,
+        priority: 0,
+        createdAt: 1_700_000_000_000,
+        lastUsedAt: null,
+        lastUsedHostId: null,
+      },
+    ]);
+    await createAccountPoolPlugin({
+      codexUsageUrl: EMPTY_USAGE_URL,
+      usageUrl: "data:application/json,{}",
+    })(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    host.harness.sdk.stub("system.providerStates", async () => ({
+      providers: [
+        {
+          providerId: "acp-agy",
+          displayName: "Antigravity CLI",
+          status: "ready",
+          accountEmail: "Ultra@Example.com",
+          planLabel: "Ultra",
+        },
+        {
+          providerId: "acp-agy",
+          displayName: "Antigravity CLI",
+          status: "ready",
+          accountEmail: "unpooled.agy@example.com",
+          planLabel: "Pro",
+        },
+      ],
+    }));
+    const logins = z
+      .array(localLoginSchema)
+      .parse(await host.harness.behavior.callRpc("local.logins", null));
+    expect(logins).toEqual([
+      {
+        providerId: "acp-agy",
+        displayName: "Antigravity CLI",
+        email: "unpooled.agy@example.com",
+        planLabel: "Pro",
+        status: "ready",
+        poolProvider: "gemini",
+      },
+    ]);
   });
 });
 

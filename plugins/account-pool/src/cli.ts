@@ -991,7 +991,7 @@ export function registerPoolCli(
           positionals: [
             {
               name: "provider",
-              description: "claude or codex",
+              description: "claude, codex, or gemini",
               required: true,
             },
             {
@@ -1057,7 +1057,7 @@ export function registerPoolCli(
             },
             {
               name: "provider",
-              description: "claude or codex",
+              description: "claude, codex, or gemini",
               required: true,
             },
             {
@@ -1125,7 +1125,7 @@ export function registerPoolCli(
           positionals: [
             {
               name: "provider",
-              description: "claude or codex",
+              description: "claude, codex, or gemini",
               required: true,
             },
           ],
