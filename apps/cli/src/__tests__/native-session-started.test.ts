@@ -10,6 +10,7 @@ import { holdNativeHarness } from "../commands/thread/native.js";
 import { NativeActivityReader } from "../native-activity-reader.js";
 import { createNativeActivityPump } from "../native-activity-wiring.js";
 import {
+  claimNativeHolderLaunch,
   encodeNativeHolderFrame,
   NativeHolderFrame,
   NativeHolderFrameDecoder,
@@ -544,6 +545,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
       threadId,
     });
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(
       sdkServer.baseUrl,
       threadId,
@@ -553,6 +556,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
         cwd: root,
         env: cleanHolderEnv(home),
         home,
+        markerGeneration: claim.generation ?? 1,
+        markerToken: claim.token ?? "",
         tmpDir,
       },
     );
@@ -588,6 +593,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
 
     client.type("exit\n");
     expect(await holderDone).toBe(0);
+    claim.release();
     expect(sdkServer.recordSessionCalls).toHaveLength(1);
   });
 
@@ -606,6 +612,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
       threadId,
     });
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(
       sdkServer.baseUrl,
       threadId,
@@ -618,6 +626,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
           CLAUDE_CONFIG_DIR: claudeConfigDir,
         },
         home: blockedPath,
+        markerGeneration: claim.generation ?? 1,
+        markerToken: claim.token ?? "",
         tmpDir: path.join(blockedPath, "tmp"),
       },
     );
@@ -659,6 +669,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
 
     client.type("exit\n");
     expect(await holderDone).toBe(0);
+    claim.release();
     expect(sdkServer.recordSessionCalls).toEqual([]);
     expect(sdkServer.settleCount).toBe(1);
   });
