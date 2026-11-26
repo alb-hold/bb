@@ -1,7 +1,9 @@
 const CURSOR_POSITION_REPLY = /\u001b\[\??\d+;\d+R/g;
+const PARTIAL_CURSOR_POSITION_REPLY = /\u001b(?:\[\??(?:\d+(?:;\d*)?)?)?$/;
 
 export const CURSOR_REPLY_FALLBACK_DELAY_MS = 250;
 export const CURSOR_REPLY_SWALLOW_MS = 5_000;
+export const CURSOR_REPLY_HOLD_FLUSH_MS = 500;
 
 export class TerminalCursorReplyFallback {
   private waiting: Array<{
@@ -9,6 +11,8 @@ export class TerminalCursorReplyFallback {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
   private lateUntil: number[] = [];
+  private held = "";
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly write: (data: string) => void,
@@ -30,12 +34,25 @@ export class TerminalCursorReplyFallback {
   }
 
   isIdle(): boolean {
-    return this.waiting.length === 0 && this.lateUntil.length === 0;
+    return (
+      this.waiting.length === 0 &&
+      this.lateUntil.length === 0 &&
+      this.held === ""
+    );
   }
 
   filterInput(data: string): string {
     if (this.isIdle()) return data;
-    return data.replace(CURSOR_POSITION_REPLY, (reply) => {
+    this.clearHold();
+    let text = this.held + data;
+    this.held = "";
+    let partial = "";
+    const tail = PARTIAL_CURSOR_POSITION_REPLY.exec(text);
+    if (tail !== null) {
+      partial = tail[0];
+      text = text.slice(0, tail.index);
+    }
+    const out = text.replace(CURSOR_POSITION_REPLY, (reply) => {
       const answered = this.waiting.shift();
       if (answered !== undefined) {
         clearTimeout(answered.timer);
@@ -45,11 +62,33 @@ export class TerminalCursorReplyFallback {
       this.lateUntil = this.lateUntil.filter((until) => until > now);
       return this.lateUntil.shift() === undefined ? reply : "";
     });
+    if (partial === "") return out;
+    const now = this.now();
+    this.lateUntil = this.lateUntil.filter((until) => until > now);
+    if (this.waiting.length === 0 && this.lateUntil.length === 0) {
+      return out + partial;
+    }
+    this.held = partial;
+    this.holdTimer = setTimeout(() => {
+      this.holdTimer = null;
+      const flushed = this.held;
+      this.held = "";
+      if (flushed !== "") this.write(flushed);
+    }, CURSOR_REPLY_HOLD_FLUSH_MS);
+    this.holdTimer.unref();
+    return out;
+  }
+
+  private clearHold(): void {
+    if (this.holdTimer !== null) clearTimeout(this.holdTimer);
+    this.holdTimer = null;
   }
 
   dispose(): void {
     for (const entry of this.waiting) clearTimeout(entry.timer);
     this.waiting = [];
     this.lateUntil = [];
+    this.held = "";
+    this.clearHold();
   }
 }
