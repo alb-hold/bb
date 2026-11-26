@@ -144,7 +144,7 @@ process id, server URL, version, start time, and launch mode) and removes it on
 exit. Do not edit it. `npx bb-app stop` uses it to stop the bb that owns the
 data directory; pass the same `--data-dir` you started with when it is not the
 default `~/.bb/`. The macOS desktop app uses it to offer stopping a bb it did
-not start. Both verify the recorded process is a bb launcher before signalling
+not start. Both verify the recorded process is a bb launcher before signaling
 it, so a stale file cannot stop an unrelated process.
 
 ## The bb Command On PATH

@@ -26,7 +26,7 @@ function resolveHelpWidth(): number {
 }
 
 function applyHelpWidth(command: Command, helpWidth: number): void {
-  command.configureHelp({ helpWidth });
+  command.configureHelp({ ...command.configureHelp(), helpWidth });
   for (const subcommand of command.commands) {
     applyHelpWidth(subcommand, helpWidth);
   }
@@ -36,7 +36,7 @@ const program = new Command();
 
 program
   .name("bb")
-  .description("BB CLI - manage your AI coding agents")
+  .description("bb CLI - manage your AI coding agents")
   .enablePositionalOptions()
   .exitOverride()
   .showSuggestionAfterError(false)

@@ -935,7 +935,7 @@ export function registerPluginCommands(
 ): void {
   const plugin = program
     .command("plugin")
-    .description("Manage BB plugins")
+    .description("Manage bb plugins")
     .enablePositionalOptions();
 
   const rpc = plugin
@@ -1052,7 +1052,7 @@ export function registerPluginCommands(
   plugin
     .command("search <query>")
     .description(
-      "Search every plugin the store lists: the plugins bundled with the app, the reserved bb-community marketplace catalog BB reviews, and any third-party marketplace added on this host. The Marketplace column names the source; only bb-community is reviewed by BB",
+      "Search every plugin the store lists: the plugins bundled with the app, the reserved bb-community marketplace catalog bb reviews, and any third-party marketplace added on this host. The Marketplace column names the source; only bb-community is reviewed by bb",
     )
     .option("--json", "Output JSON")
     .action(
@@ -1183,7 +1183,7 @@ export function registerPluginCommands(
   plugin
     .command("install <source>")
     .description(
-      "Install a catalog entry by name or <entry>@<marketplace>, a Git repository URL, a local path, builtin:<name>, git:<url>[@<ref|semver-range>], or npm:<name>@<version>. A catalog entry from a third-party marketplace is not reviewed by BB, so its confirmation names the marketplace, the author, and the exact resolved source (managed sources validate engines ranges and build artifacts; bundled plugin ids are reserved)",
+      "Install a catalog entry by name or <entry>@<marketplace>, a Git repository URL, a local path, builtin:<name>, git:<url>[@<ref|semver-range>], or npm:<name>@<version>. A catalog entry from a third-party marketplace is not reviewed by bb, so its confirmation names the marketplace, the author, and the exact resolved source (managed sources validate engines ranges and build artifacts; bundled plugin ids are reserved)",
     )
     .option(
       "--subdirectory <path>",

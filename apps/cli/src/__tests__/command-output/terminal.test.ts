@@ -61,7 +61,7 @@ describe("bb terminal command output", () => {
   const register: CommandRegistrar = (program) =>
     registerTerminalCommands(program, () => "http://server");
 
-  it("sets OSC colours through the controlling viewer route", async () => {
+  it("sets OSC colors through the controlling viewer route", async () => {
     const setColors = vi.fn(async () => makeTerminalSession());
     stubServerApi({
       "v1.terminals.:terminalId.default-colors.$post": setColors,

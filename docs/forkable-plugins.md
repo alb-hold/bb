@@ -112,7 +112,7 @@ that fits:
    data, and the component would make sense in another app. Dialog shells,
    `use-dialog-state`, drag-click suppression, the reorder DnD hooks, the
    compact long-press menu, action-menu items, and sortable motion qualify.
-   Where the app and a plugin need different behaviour, the one component
+   Where the app and a plugin need different behavior, the one component
    takes the difference as a prop, as `useSidebarReorderDnd` takes the touch
    sensor.
 2. **Host-rendered through the SDK.** Anything that needs host state or host

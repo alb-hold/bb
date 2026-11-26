@@ -36,6 +36,10 @@ import {
   SKIP_REASON_MESSAGES,
   type OpenDeliveryOptions,
 } from "../open-delivery.js";
+import {
+  configureGroupedCommandHelp,
+  type HelpCommandGroup,
+} from "../help-groups.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
 import { outputJson } from "./helpers.js";
 import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
@@ -57,6 +61,40 @@ const RUN_USAGE_EXAMPLE =
   "For example: bb terminal run --machine <id-or-name> --cwd /path/to/repo -- pnpm test";
 const NO_APP_CLIENT_MESSAGE =
   "No bb app is open to apply this; open bb and retry";
+
+const TERMINAL_HELP_GROUPS: readonly HelpCommandGroup[] = [
+  {
+    heading: "Create & run",
+    commands: ["create", "run"],
+  },
+  {
+    heading: "Inspect",
+    commands: ["list", "show", "output", "screen", "pipe", "wait", "surfaces"],
+  },
+  {
+    heading: "Control",
+    commands: ["attach", "send", "resize", "rename", "restart", "close"],
+  },
+  {
+    heading: "Layout & attention",
+    commands: [
+      "focus",
+      "split",
+      "move",
+      "open-link",
+      "colors",
+      "attention",
+      "notify",
+    ],
+  },
+];
+
+const TERMINAL_HELP_EXAMPLES: readonly string[] = [
+  "bb terminal list --thread <id>",
+  'bb terminal create --thread <id> --command "pnpm dev"',
+  "bb terminal run --machine <id-or-name> --cwd /path/to/repo -- pnpm test",
+  "bb terminal output <terminalId> --lines 50 --plain",
+];
 
 function reportTerminalActionDelivery(
   deliveredClients: number,
@@ -214,6 +252,11 @@ export function registerTerminalCommands(
     .description(
       "Manage terminal sessions across threads, environments, and machines",
     );
+  configureGroupedCommandHelp(
+    terminal,
+    TERMINAL_HELP_GROUPS,
+    TERMINAL_HELP_EXAMPLES,
+  );
 
   terminal
     .command("holder-shell-client <terminalId> <shell> <shellArgsBase64>", {
@@ -486,7 +529,7 @@ export function registerTerminalCommands(
 
   terminal
     .command("colors <terminalId>")
-    .description("Set OSC 10/11 colours for the controlling terminal viewer")
+    .description("Set OSC 10/11 colors for the controlling terminal viewer")
     .requiredOption("--foreground <r,g,b>", "Foreground sRGB channels (0–255)")
     .requiredOption("--background <r,g,b>", "Background sRGB channels (0–255)")
     .requiredOption("--viewer-token <token>", "Controlling app viewer token")
@@ -516,7 +559,7 @@ export function registerTerminalCommands(
                 code: "invalid_terminal_color",
                 hint: "Use r,g,b channels",
                 message:
-                  "Colours must contain three comma-separated integers from 0 to 255",
+                  "Colors must contain three comma-separated integers from 0 to 255",
               });
             return [channels[0], channels[1], channels[2]];
           };
@@ -529,7 +572,7 @@ export function registerTerminalCommands(
             viewerToken: opts.viewerToken,
           });
           if (!outputJson(opts, session))
-            console.log(`Updated terminal colours for ${session.id}`);
+            console.log(`Updated terminal colors for ${session.id}`);
         },
       ),
     );
@@ -781,7 +824,7 @@ export function registerTerminalCommands(
     .option("--json", "Print session metadata without attaching")
     .option(
       "--report-timing",
-      "Print the first live frame as JSON on stderr. Colour-palette-only changes are not counted.",
+      "Print the first live frame as JSON on stderr. Color-palette-only changes are not counted.",
     )
     .action(
       action(

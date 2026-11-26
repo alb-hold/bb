@@ -94,7 +94,7 @@ export function registerGuideCommand(program: Command): void {
   program
     .command("guide [chapter] [group]")
     .description(
-      "Show the BB system overview and CLI guide; `bb guide commands [group]` lists every core command on one page",
+      "Show the bb system overview and CLI guide; `bb guide commands [group]` lists every core command on one page",
     )
     .option("--json", "Print machine-readable JSON output")
     .action(

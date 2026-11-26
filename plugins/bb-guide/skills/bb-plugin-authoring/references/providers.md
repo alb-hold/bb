@@ -44,7 +44,7 @@ bb.providers.register({
     permissionModes: ["full"], // non-empty, no duplicates
     reasoningLevels: ["medium"], // coarse fallback ladder
   },
-  reasoningLevels: [{ id: "medium", label: "Medium" }], // labelled picker options
+  reasoningLevels: [{ id: "medium", label: "Medium" }], // labeled picker options
   serviceTiers: undefined, // e.g. [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }]; experimental_icon (a host glyph or a declared "<pluginId>/<name>" icon) overrides the selected tier's default Zap glyph
   composerActions: [], // skills typeahead is implicit; ["plan"] opts into plan mode
   models: { fallback: [], scope: "workspace" },
@@ -85,7 +85,7 @@ not in the manifest, so `bb plugin build` cannot check it — keep it free of
 the script vectors the build refuses in a logo. A path or a declared icon is
 served to clients as a `logoUrl` and drawn as a `currentColor` mask, so a
 monochrome mark follows the bb theme (and the declared `strings.iconTint`)
-with no frontend bundle; a full-colour logo renders as a silhouette. A glyph
+with no frontend bundle; a full-color logo renders as a silhouette. A glyph
 name carries no bytes, so there is no `logoUrl` and clients draw the glyph
 from the shared icon set. For custom inline React, register
 `app.slots.experimental_providerIcon({ providerKind, providerId, icon })`

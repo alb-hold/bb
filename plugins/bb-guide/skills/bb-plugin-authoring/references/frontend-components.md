@@ -207,7 +207,7 @@ onClick?, action? }`. `icon` is any name `experimental_Icon` accepts and
   malformed runtime targets are inert in both the app and SDK test harness.
   A workspace target's optional `experimental_ref` (`"HEAD"` or a 4–40
   character commit SHA; anything else makes the target invalid) previews the
-  file read-only at that Git revision, labelled with the ref; external opens
+  file read-only at that Git revision, labeled with the ref; external opens
   ignore it and open the working copy.
   Optional `location` is a one-based line/column or line range. For buttons and
   effects use
@@ -374,7 +374,7 @@ the next owner or built-in. A rejected setup preserves the previous generation.
 A registered name is a BB icon name everywhere one is accepted, not only in
 `experimental_Icon`: every host icon field resolves a registration first, then
 a built-in, then a manifest-declared `"<pluginId>/<name>"` glyph. Register for
-a component, colour, or to override a built-in; declare in the manifest for
+a component, color, or to override a built-in; declare in the manifest for
 icons a server declaration must validate or that must work with no frontend
 bundle.
 

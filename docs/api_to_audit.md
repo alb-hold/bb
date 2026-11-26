@@ -1137,7 +1137,7 @@ declared-icon rules. Today logos are checked only at build for script
 vectors, and `nosniff` plus a `default-src 'none'` CSP keep served files
 inert. Either tightening fails installed plugins whose artwork is an ordinary
 tool export. It therefore needs an audit of installed marketplace and
-third-party logos and a migration window first. Decide whether a full-colour
+third-party logos and a migration window first. Decide whether a full-color
 mode (`{ path, mode }` values) is wanted; today every icon is a monochrome
 mask. Decide whether `toolUse` approval presentations are checked at ingest
 too (today only timeline rows are). Settle whether a row persisted with a
@@ -2111,7 +2111,7 @@ A workspace target's optional `experimental_ref` names a Git revision:
 `"HEAD"` or a 4–40 character commit SHA, the forms the revision file route
 accepts; anything else makes the target invalid.
 `experimental_openFilePreview` and `experimental_FileLink` then open a
-read-only preview of the file at that revision, labelled with the ref and read
+read-only preview of the file at that revision, labeled with the ref and read
 through `GET /environments/:id/revisions/:ref/files/*`. The link menu hides
 plugin file openers, which only read the working copy, and Open externally
 ignores the ref and opens the working copy. A ref preview shares the
@@ -2186,7 +2186,7 @@ reaps processes working under any of the given directories before they are
 deleted (the SDK still accepts the pre-0.6.27 `{ directory }` shape at
 runtime), and `experimental_readProcessIdentity(pid)` returns
 `{ command, startedAt }` so a caller can confirm a recorded PID before
-signalling it.
+signaling it.
 
 Docs: `backend-foundation.md`, `testing.md`.
 
@@ -3437,7 +3437,7 @@ Docs: `frontend-components.md`.
 
 1. Decide whether the body override should also cover files without a
    Preview mode (plain text, images), and what the toggle shows for them.
-2. Confirm surface-specific header behaviour: core's thread view passes its
+2. Confirm surface-specific header behavior: core's thread view passes its
    own Open in editor handlers and a line number for host files; the
    component passes none, and Add to chat comes only from the surrounding
    `SelectionAddToChatContext`.
@@ -4600,7 +4600,7 @@ removal failures.
 
 The provider context's `projectCheckout.experimental_ownsPath` is a required
 boolean whenever a checkout is present. It is true only for a checkout core
-materialised at that exact path, derived from persisted source ownership and
+materialized at that exact path, derived from persisted source ownership and
 never from caller inputs. Core's environment hook policy uses it to apply to
 fresh machine clones and leave user-maintained attachments alone.
 
@@ -5452,7 +5452,7 @@ own value, so plugins built against the old constant keep working.
   | `experimental_useAppPanel().openFixedTab({ surface, tab: { panelId?, id }, target? })`                                                                                                                           | `experimental_useAppPanel().openTab({ tab: { id, context, availability: "fixed" }, target })`                                       |
   | testing `renderSlot` options `openThreadPanel`, `experimental_openTab`, `experimental_openFixedTab`; logs `experimental_tabOpenCalls`, `experimental_fixedTabOpenCalls` and the `openThreadPanel` `NavigateCall` | option `experimental_panel: Partial<ExperimentalPanelController>`; log `experimental_panelCalls`                                    |
 
-  One behaviour narrows: an action tab's or New-thread action's own `ctx.openPanel()` now resolves through the launching surface's registered tabs instead of opening its action directly, so it declines if the action was hidden or unregistered while `run` awaited. The other retired members already resolved against registered tabs. Survey of the 342 bb-community source repositories (shallow clones, 2026-10-26, production sources): `openPanel(` 102 call sites in 47 repos, `openThreadPanel(` 111 in 55, `experimental_openTab(` 3 in 2, `openFixedTab(` 11 in 8. Three repos self-open after an `await` in `run` (bb-plugin-crew, bb-wterm-terminal-plugin, bb-plugin-feed), all through the legacy `threadPanelAction`, which has no `useVisible`; the one tab with `useVisible` (shuttle) self-opens synchronously from its visible launcher. No caller relies on opening an unregistered or hidden action. In-repo callers (side-chat, tasks, workflows, docs, the ThreadChat demo) moved to the controller.
+  One behavior narrows: an action tab's or New-thread action's own `ctx.openPanel()` now resolves through the launching surface's registered tabs instead of opening its action directly, so it declines if the action was hidden or unregistered while `run` awaited. The other retired members already resolved against registered tabs. Survey of the 342 bb-community source repositories (shallow clones, 2026-10-26, production sources): `openPanel(` 102 call sites in 47 repos, `openThreadPanel(` 111 in 55, `experimental_openTab(` 3 in 2, `openFixedTab(` 11 in 8. Three repos self-open after an `await` in `run` (bb-plugin-crew, bb-wterm-terminal-plugin, bb-plugin-feed), all through the legacy `threadPanelAction`, which has no `useVisible`; the one tab with `useVisible` (shuttle) self-opens synchronously from its visible launcher. No caller relies on opening an unregistered or hidden action. In-repo callers (side-chat, tasks, workflows, docs, the ThreadChat demo) moved to the controller.
 
 - **Stabilization:** audit focus resolution for commands and thread actions across split panes and plugin pages, `toggleTab` against compact drawers and plugin-detail overlays, `close()` acceptance when the panel is already closed, and whether a nav-panel action reference should resolve on thread surfaces. Remove the retired shims after published callers migrate, then rename project-wide and remove this entry.
 
@@ -5477,7 +5477,7 @@ own value, so plugins built against the old constant keep working.
 - **Surface:** `experimental_useTabVisible(): boolean` on `@get-bb/plugin-sdk/app`, for any panel tab (fixed or action, thread or navigation page).
 - **Behavior:** true when the tab is the selected tab of its pane and the side panel is open; false while the panel is closed or suppressed, while another tab is selected, and outside a panel tab. bb keeps a closed panel's selected tab mounted, so a tab uses this to pause reads that only feed what it draws. The test harness's `renderSlot` answers `tabVisible` (default true).
 - **Core callers:** `ThreadSecondaryPanel` provides the value (`TabVisibleContext` in `apps/app/src/components/secondary-panel/tab-visibility.ts`) around every pane's tab content, the one host for thread views, plugin pages and the New thread screen; `experimental_useTabVisible` reads that context. The Git plugin's Diff tab pauses its file list, patch and Viewed reads with it, as core's Diff did on `isDiffPanelLive`. Tests: `ThreadSecondaryPanel.tabVisible.test.tsx` and the panel-controller contract table case "reports the shown tab visible only while the side panel is open".
-- **Stabilization:** a second caller, behaviour in split panes and the compact drawer, and whether a not-yet-realized drawer should report false. Then rename project-wide and remove this entry.
+- **Stabilization:** a second caller, behavior in split panes and the compact drawer, and whether a not-yet-realized drawer should report false. Then rename project-wide and remove this entry.
 
 ## Thread context segments (`app.slots.experimental_threadContextSegment` / `experimental_THREAD_CONTEXT_SEGMENT_GROUPS`)
 
@@ -5630,9 +5630,9 @@ Core caller: `components/sidebar/PluginThreadList.tsx`.
 ## `sdk.terminals.experimental_setDefaultColors`
 
 Sets validated foreground/background sRGB tuples for OSC 10/11 replies through
-the authorised terminal route. Requires the live controlling viewer token; rejects
-observers. Core terminal theme updates use this same SDK path. Stabilise after
-control handoff, custom themes, and daemon reconnect behaviour have shipped.
+the authorized terminal route. Requires the live controlling viewer token; rejects
+observers. Core terminal theme updates use this same SDK path. Stabilize after
+control handoff, custom themes, and daemon reconnect behavior have shipped.
 The bb-app BBSdk delegates its terminals area directly to the SDK.
 
 ## PluginSidebarThread.experimental_nativeTerminal

@@ -4,7 +4,7 @@ This fork (albrand/bb) keeps provider bridge workers alive across a daemon or
 IDE restart: the daemon detaches instead of killing them, and the next daemon
 adopts them. The full design, the per-phase history and the review findings
 live outside this repo; what follows is the part that has to travel with the
-code, which is the behaviour a reader of these files needs to know is
+code, which is the behavior a reader of these files needs to know is
 deliberate.
 
 ## Implementation decisions (2026-09-11)
@@ -50,7 +50,7 @@ between the last ack and the death. The server drops the events of replayed
 lines by replay key (`fork_worker_event_keys`), but the lost throttle window
 is gone.
 
-**Measured behaviour, real-provider e2e on f3193e1f4 (2026-09-11, scenario E):**
+**Measured behavior, real-provider e2e on f3193e1f4 (2026-09-11, scenario E):**
 a background command started before a swap keeps running - 48/48 ticks with no
 gap across the quit, and the adopted runtime survived three provider polls with
 no eviction line, the hold logging `protectedForMs=900000` at each relaunch.
@@ -330,7 +330,7 @@ without it.
 | F8 follow-up: unbounded steps ran before the detach notice | 1db90df70 | shutdownRuntimes now runs the bounded steps first - monitors, detach notice (<=1 s), shutdownAll("detach") (<=1.5 s), event flush, connection close - and the plugin host, auth proxy, local API, tunnel, watchers and terminals after. Checked before reordering: a local API request arriving in that window cannot resurrect anything, because RuntimeManager.shutdownAll sets runtimesClosed first for both modes (ensureEnvironment throws) and ProviderProcessManager.closeAll sets shuttingDown before the settle wait. |
 | F4 follow-up: a kept spilled frame pinned the buffer in spilling mode | f3193e1f4 | append spilled whenever spilled.length > 0, so one open approval sent every later frame to disk while attached and the file never shrank. Spilling is decided by memory pressure alone now, and framesAfter merges the memory and spill lists by wseq. Test: a kept spilled frame plus 10k acked frames leaves the spill file size unchanged (340 KB before, 12 KB after). |
 | F10: an ack write was treated as proof of delivery | d8ddeb86f | sendAck cleared the unconfirmed responses when the ack was written, so a socket dying between the write and the flush lost the answer and the ack together, dropped the kept request and left the provider waiting. They clear on the first frame received after that ack instead, and a reattached socket sends one, so a keep restored by the drop reaches the worker. The rule is an approximation - a frame proves the worker is alive and reading, not that it processed our ack - and it trades a hang for a possible duplicate ask when the provider goes quiet right after answering. |
-| F10(c): a replacement storm between two daemons | 0534cf5f3 | Every drop was followed by an immediate redial at the 25 ms connect retry, so two un-released daemons on one data dir would trade a worker between them. Measured without the fix: 18,465 connection attempts in 1.5 s. A connection that dies within a second of attaching now backs off, doubling from 100 ms to a 2 s cap (against BRIDGE_REATTACH_TTL_MS of 30 minutes); a connection that survives resets it. Defence in depth - the data-dir lock is what is supposed to prevent two daemons. |
+| F10(c): a replacement storm between two daemons | 0534cf5f3 | Every drop was followed by an immediate redial at the 25 ms connect retry, so two un-released daemons on one data dir would trade a worker between them. Measured without the fix: 18,465 connection attempts in 1.5 s. A connection that dies within a second of attaching now backs off, doubling from 100 ms to a 2 s cap (against BRIDGE_REATTACH_TTL_MS of 30 minutes); a connection that survives resets it. Defense in depth - the data-dir lock is what is supposed to prevent two daemons. |
 | F6 polish | 2e453114f | The adoption gate waits only for commands whose thread is being adopted, and its 15 s timer is unref'd. |
 | F9: replay-key race | 596f0de75 | The keys are re-checked inside the append transaction; a batch that lost the race gets a retryable 503. |
 

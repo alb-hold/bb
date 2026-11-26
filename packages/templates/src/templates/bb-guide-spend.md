@@ -38,7 +38,7 @@ What the columns mean:
 
   Fresh input, cached input, output and reasoning output are disjoint counts.
   Providers disagree about whether cached input sits inside the input count;
-  bb normalises to disjoint when it records the row, so the numbers are
+  bb normalizes to disjoint when it records the row, so the numbers are
   comparable across providers.
 
   Weighted units apply the published price ratios - fresh input 1, cached input
