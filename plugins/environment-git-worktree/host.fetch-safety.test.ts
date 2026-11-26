@@ -582,6 +582,49 @@ describe("the fetch that checks whether commits are published", () => {
     expect(existsSync(resetMarker)).toBe(false);
   });
 
+  it.each([
+    { useHttpPath: false, receivesPath: false },
+    { useHttpPath: true, receivesPath: true },
+  ])(
+    "gives the helper the username pinned to the remote's URL (useHttpPath $useHttpPath)",
+    async ({ useHttpPath, receivesPath }) => {
+      const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+      roots.push(root);
+      const remote = await servedWithBasicAuth(root);
+      const fixture = await createFixture(remote.url);
+      const globalFile = await useGlobalConfig(root);
+      const received = join(root, "helper-input");
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.origin}.helper`,
+        `!f() { test "$1" = get || exit 0; cat >> ${JSON.stringify(received)}; exit 0; }; f`,
+      );
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.url}.username`,
+        "orgA-user",
+      );
+      if (useHttpPath)
+        await setGlobalConfig(
+          globalFile,
+          `credential.${remote.origin}.usehttppath`,
+          "true",
+        );
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      expect(reasons.join("\n")).toMatch(/could not verify remotes/u);
+      const input = await readFile(received, "utf8");
+      expect(input).toContain("username=orgA-user");
+      if (receivesPath) expect(input).toContain("path=served.git");
+      else expect(input).not.toContain("path=");
+    },
+  );
+
   it("does not run a helper from the repository's own config, which a thread can write, and says authentication failed", async () => {
     const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
     roots.push(root);
