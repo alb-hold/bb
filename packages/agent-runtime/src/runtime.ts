@@ -912,6 +912,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         });
         if (!continuesServerTurn) options.onEvent(seed);
       }
+      markHostedProviderSessionIdle(adoption.threadId);
       persistAdoptableThread(adoption.threadId);
     }
     for (const proc of new Set(adoptions.map((adoption) => adoption.proc))) {

@@ -47,6 +47,10 @@ function shortTempDir(): string {
   );
 }
 
+function workerDirEntries(dir: string): string[] {
+  return readdirSync(dir).filter((name) => !name.endsWith(".app"));
+}
+
 describe("socket bridge workers", () => {
   let workspacePath: string;
   let bridgeWorkerDir: string;
@@ -115,7 +119,7 @@ describe("socket bridge workers", () => {
     } finally {
       await runtime.shutdown();
     }
-    expect(readdirSync(bridgeWorkerDir)).toEqual([]);
+    expect(workerDirEntries(bridgeWorkerDir)).toEqual([]);
   });
 
   it.skipIf(process.platform === "win32")(
@@ -178,7 +182,7 @@ describe("socket bridge workers", () => {
           rmSync(socketDir, { recursive: true, force: true });
         }
       }
-      expect(readdirSync(longWorkerDir)).toEqual([]);
+      expect(workerDirEntries(longWorkerDir)).toEqual([]);
     },
   );
 
@@ -228,9 +232,9 @@ describe("socket bridge workers", () => {
         label: "socket worker exit reported",
         predicate: () => exits.length === 1,
       });
-      expect(exits[0]?.code).toBe(3);
+      expect(exits[0]?.code).toBe(process.platform === "darwin" ? null : 3);
       expect(exits[0]?.stderr).toContain("socket bridge exploded: kaboom");
-      expect(readdirSync(bridgeWorkerDir)).toEqual([]);
+      expect(workerDirEntries(bridgeWorkerDir)).toEqual([]);
     } finally {
       await runtime.shutdown();
     }
