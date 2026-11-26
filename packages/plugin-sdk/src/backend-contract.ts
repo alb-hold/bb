@@ -1764,13 +1764,15 @@ export interface PluginProviderDeclaration {
    *   session another client of the CLI created can be resumed. Declare it to
    *   keep a session some other process started in the same workspace from
    *   Being bound. Later launches use `resumeArgs`.
-   * - `session`, `"sqlite-discovered"`: the CLI picks its own id and indexes
-   *   sessions in a SQLite `database` under `sessionRoot`. bb snapshots any
-   *   existing workspace session ids before launch, queries `table`
-   *   (`idColumn`, `workspaceUrisColumn`, `startedAtColumn`) and the first line
-   *   `transcriptStartedAtField` of `transcript` (`{sessionId}`) to bind the
-   *   single new session created in the thread workspace after launch, and
-   *   relaunches with `resumeArgs`.
+   * - `session`, `"sqlite-discovered"`: the CLI picks its own id, logs the
+   *   active conversation id after one of `sessionLog.prefixes` when launched
+   *   with `sessionLog.args` (`{logFile}`), and indexes sessions in a SQLite
+   *   `database` under `sessionRoot`. bb passes a private per-launch log file,
+   *   snapshots any existing workspace session ids before launch, queries
+   *   `table` (`idColumn`, `workspaceUrisColumn`, `startedAtColumn`) and the
+   *   first line `transcriptStartedAtField` of `transcript` (`{sessionId}`) to
+   *   bind only the session owned by this launch's log file, and relaunches
+   *   with `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
@@ -1789,7 +1791,8 @@ export interface PluginProviderDeclaration {
    *   are dotted and may index arrays (`message.content.0.text`). A CLI that
    *   exits always reports idle.
    *
-   * `{sessionId}` is the only token in session argv, and `{settings}` the only
+   * `{sessionId}` is the only token in `startArgs`/`resumeArgs`, `{logFile}`
+   * the only token in `session.sessionLog.args`, and `{settings}` the only
    * token in `activity.hooks.args`. Argument lists hold at most 16 entries.
    */
   experimental_nativeTerminal?: ProviderNativeTerminal;

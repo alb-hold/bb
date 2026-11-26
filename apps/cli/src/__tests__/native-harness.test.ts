@@ -18,6 +18,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findNativeSession,
   findNativeSessionFile,
+  openNativeSessionLog,
+  removeNativeSessionLog,
   resolveNativeHarnessLaunch,
   snapshotNativeWorkspaceSessions,
 } from "../native-harness.js";
@@ -671,7 +673,7 @@ describe("findNativeSession", () => {
     ).toEqual({ kind: "none" });
   });
 
-  it("launches, discovers, and locates Antigravity SQLite-indexed sessions", () => {
+  it("launches, discovers, and locates Antigravity SQLite-indexed sessions tied to this launch's log file", () => {
     const agyCli: ProviderNativeTerminal = {
       executable: "agy",
       launchArgs: ["--dangerously-skip-permissions"],
@@ -683,6 +685,10 @@ describe("findNativeSession", () => {
       session: {
         kind: "sqlite-discovered",
         resumeArgs: ["--resume", "{sessionId}"],
+        sessionLog: {
+          args: ["--log-file", "{logFile}"],
+          prefixes: ["Created conversation ", "Streaming conversation "],
+        },
         database: "conversation_summaries.db",
         transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
         table: "conversation_summaries",
@@ -693,6 +699,10 @@ describe("findNativeSession", () => {
       },
     };
     const home = tempHome();
+    const sessionLog = openNativeSessionLog(agyCli, home);
+    expect(sessionLog).not.toBeNull();
+    roots.push(sessionLog!.directory);
+    const sessionLogFile = sessionLog!.file;
     const cwd = path.join(home, 'work "space"');
     expect(
       resolveNativeHarnessLaunch(
@@ -707,6 +717,7 @@ describe("findNativeSession", () => {
         [],
         [],
         cwd,
+        sessionLogFile,
       ),
     ).toEqual({
       command: "agy",
@@ -716,6 +727,8 @@ describe("findNativeSession", () => {
         `{"trustedWorkspaces":[${JSON.stringify(cwd)}]}`,
         "--model",
         "gemini-3.1-pro-high",
+        "--log-file",
+        sessionLogFile,
         "-i",
         "reply PONG",
       ],
@@ -733,11 +746,14 @@ describe("findNativeSession", () => {
         [],
         [],
         cwd,
+        sessionLogFile,
       ).args,
     ).toEqual([
       "--dangerously-skip-permissions",
       "--settings",
       `{"trustedWorkspaces":[${JSON.stringify(cwd)}]}`,
+      "--log-file",
+      sessionLogFile,
     ]);
     const sessionId = "1cde0fe5-5a9f-468c-a3a4-ecf9d7583a52";
     expect(
@@ -751,6 +767,7 @@ describe("findNativeSession", () => {
         [],
         [],
         cwd,
+        sessionLogFile,
       ),
     ).toEqual({
       command: "agy",
@@ -772,6 +789,7 @@ describe("findNativeSession", () => {
         env: { HOME: home },
         launchedAtMs,
         nowMs: launchedAtMs + 1_000,
+        sessionLogFile,
       }),
     ).toEqual({ kind: "none" });
 
@@ -865,6 +883,7 @@ describe("findNativeSession", () => {
         excludeSessionIds: preSpawnSnapshot,
         launchedAtMs,
         nowMs: launchedAtMs + 4_000,
+        sessionLogFile,
       }),
     ).toEqual({ kind: "none" });
 
@@ -881,17 +900,6 @@ describe("findNativeSession", () => {
     dbNew.close();
 
     expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBeNull();
-    expect(
-      findNativeSession({
-        cli: agyCli,
-        cwd,
-        env: { HOME: home },
-        excludeSessionIds: preSpawnSnapshot,
-        launchedAtMs,
-        nowMs: launchedAtMs + 5_000,
-      }),
-    ).toEqual({ kind: "none" });
-
     const transcriptFile = writeAgyTranscript(
       sessionId,
       "2026-11-26T10:57:05Z",
@@ -899,6 +907,7 @@ describe("findNativeSession", () => {
     expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBe(
       transcriptFile,
     );
+
     expect(
       findNativeSession({
         cli: agyCli,
@@ -907,11 +916,40 @@ describe("findNativeSession", () => {
         excludeSessionIds: preSpawnSnapshot,
         launchedAtMs,
         nowMs: launchedAtMs + 5_000,
+        sessionLogFile,
+      }),
+    ).toEqual({ kind: "none" });
+
+    writeFileSync(
+      sessionLogFile,
+      `I1126 10:57:05.790000 1 server.go:1269] Created conversation ${sessionId} (backend=BACKEND_TYPE_UNSPECIFIED)\nI1126 10:57:05.791000 1 conversation_manager.go:1282] Streaming conversation ${sessionId}\n`,
+    );
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
+        launchedAtMs,
+        nowMs: launchedAtMs + 5_000,
+        sessionLogFile: null,
+      }),
+    ).toEqual({ kind: "none" });
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
+        launchedAtMs,
+        nowMs: launchedAtMs + 5_000,
+        sessionLogFile,
       }),
     ).toEqual({ kind: "unique", sessionId });
+    removeNativeSessionLog(sessionLog!.directory);
   });
 
-  it("keeps a competing agy conversation provisional across the settle window and never persists or resumes it when the launched session appears later", async () => {
+  it("never records, follows, or resumes a competing agy conversation that is the sole SQLite match past settleMs, and binds the launched conversation once its session log and row appear later", async () => {
     const home = tempHome();
     const cwd = path.join(home, "workspace");
     mkdirSync(cwd, { recursive: true });
@@ -926,6 +964,10 @@ describe("findNativeSession", () => {
       session: {
         kind: "sqlite-discovered",
         resumeArgs: ["--resume", "{sessionId}"],
+        sessionLog: {
+          args: ["--log-file", "{logFile}"],
+          prefixes: ["Created conversation ", "Streaming conversation "],
+        },
         database: "conversation_summaries.db",
         transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
         table: "conversation_summaries",
@@ -935,6 +977,11 @@ describe("findNativeSession", () => {
         transcriptStartedAtField: "created_at",
       },
     };
+    const sessionLog = openNativeSessionLog(agyCli, home);
+    expect(sessionLog).not.toBeNull();
+    roots.push(sessionLog!.directory);
+    const sessionLogFile = sessionLog!.file;
+
     const agyRoot = path.join(home, ".gemini", "antigravity-cli");
     mkdirSync(agyRoot, { recursive: true });
     const writeAgyTranscript = (id: string, createdAt: string): void => {
@@ -977,7 +1024,12 @@ describe("findNativeSession", () => {
       );
     dbCompetitor.close();
     writeAgyTranscript(competitorId, "2026-11-26T11:10:00.250Z");
+    writeFileSync(
+      sessionLogFile,
+      `I1126 11:10:00.300000 1 server.go:3575] GetConversationDetail: found conversation ${competitorId} (active=true)\n`,
+    );
 
+    const settleMs = 2_000;
     let nowMs = launchedAtMs + 400;
     let persistedSessionId: string | null = null;
     const recorded: string[] = [];
@@ -994,6 +1046,7 @@ describe("findNativeSession", () => {
           excludeSessionIds: preSpawnSnapshot,
           launchedAtMs,
           nowMs,
+          sessionLogFile,
         }),
       log: (event, fields) => logged.push({ event, fields }),
       now: () => nowMs,
@@ -1005,24 +1058,18 @@ describe("findNativeSession", () => {
         persistedSessionId = nativeSessionId;
         recorded.push(nativeSessionId);
       },
-      settleMs: 2_000,
+      settleMs,
     });
     discoverer.arm(true);
 
-    await discoverer.discover();
-    expect(
-      findNativeSession({
-        cli: agyCli,
-        cwd,
-        env: { HOME: home },
-        excludeSessionIds: preSpawnSnapshot,
-        launchedAtMs,
-        nowMs,
-      }),
-    ).toEqual({ kind: "unique", sessionId: competitorId });
+    for (const elapsedMs of [400, 1_500, 2_500, 5_000]) {
+      nowMs = launchedAtMs + elapsedMs;
+      await discoverer.discover();
+    }
     expect(recorded).toEqual([]);
     expect(followed).toEqual([]);
     expect(persistedSessionId).toBeNull();
+    expect(logged).toEqual([]);
 
     const dbLaunched = new DatabaseSync(dbPath);
     dbLaunched
@@ -1032,21 +1079,26 @@ describe("findNativeSession", () => {
       .run(
         launchedId,
         JSON.stringify([pathToFileURL(cwd).href]),
-        "2026-11-26 11:10:01.100000+00:00",
+        "2026-11-26 11:10:06.100000+00:00",
       );
     dbLaunched.close();
-    writeAgyTranscript(launchedId, "2026-11-26T11:10:01.100Z");
+    writeAgyTranscript(launchedId, "2026-11-26T11:10:06.100Z");
+    writeFileSync(
+      sessionLogFile,
+      `I1126 11:10:00.300000 1 server.go:3575] GetConversationDetail: found conversation ${competitorId} (active=true)\nI1126 11:10:06.090000 1 server.go:1269] Created conversation ${launchedId} (backend=BACKEND_TYPE_UNSPECIFIED)\nI1126 11:10:06.091000 1 conversation_manager.go:1282] Streaming conversation ${launchedId}\n`,
+    );
 
-    nowMs = launchedAtMs + 1_500;
+    nowMs = launchedAtMs + 6_200;
     await discoverer.discover();
-    nowMs = launchedAtMs + 3_000;
-    await discoverer.discover();
-
     expect(recorded).toEqual([]);
-    expect(followed).toEqual([]);
-    expect(persistedSessionId).toBeNull();
+
+    nowMs = launchedAtMs + 6_200 + settleMs;
+    await discoverer.discover();
+    expect(recorded).toEqual([launchedId]);
+    expect(followed).toEqual([launchedId]);
+    expect(persistedSessionId).toBe(launchedId);
     expect(logged).toEqual([
-      { event: "session-discovery-ambiguous", fields: { count: 2 } },
+      { event: "session-discovery-recorded", fields: { sessionId: launchedId } },
     ]);
 
     const reopenLaunch = resolveNativeHarnessLaunch(
@@ -1060,9 +1112,10 @@ describe("findNativeSession", () => {
       [],
       [],
       cwd,
+      sessionLogFile,
     );
-    expect(reopenLaunch.session).toEqual({ kind: "discover" });
-    expect(reopenLaunch.args).not.toContain("--resume");
+    expect(reopenLaunch.session).toEqual({ kind: "resume", id: launchedId });
+    expect(reopenLaunch.args.slice(-2)).toEqual(["--resume", launchedId]);
     expect(reopenLaunch.args).not.toContain(competitorId);
   });
 });

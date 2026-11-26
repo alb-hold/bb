@@ -302,6 +302,12 @@ export const providerNativeTerminalSqliteDiscoveredSessionSchema = z
   .object({
     kind: z.literal("sqlite-discovered"),
     resumeArgs: templateArgsSchema(["sessionId"]),
+    sessionLog: z
+      .object({
+        args: templateArgsSchema(["logFile"]),
+        prefixes: z.array(z.string().min(1).max(128)).min(1).max(8),
+      })
+      .strict(),
     database: relativePatternSchema([]),
     transcript: relativePatternSchema(["sessionId"]),
     table: sqliteIdentifierSchema,
@@ -317,6 +323,13 @@ export const providerNativeTerminalSqliteDiscoveredSessionSchema = z
         code: "custom",
         path: ["resumeArgs"],
         message: "must pass {sessionId}",
+      });
+    }
+    if (!requiresToken(session.sessionLog.args, "logFile")) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionLog", "args"],
+        message: "must pass {logFile}",
       });
     }
     if (!templateTokens(session.transcript).includes("sessionId")) {

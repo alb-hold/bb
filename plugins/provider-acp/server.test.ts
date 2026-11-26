@@ -575,6 +575,10 @@ describe("the ACP registry", () => {
         session: {
           kind: "sqlite-discovered",
           resumeArgs: ["--resume", "{sessionId}"],
+          sessionLog: {
+            args: ["--log-file", "{logFile}"],
+            prefixes: ["Created conversation ", "Streaming conversation "],
+          },
           database: "conversation_summaries.db",
           transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
           transcriptStartedAtField: "created_at",

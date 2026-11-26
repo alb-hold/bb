@@ -1246,7 +1246,7 @@ override plus a home-relative default), and either an `assigned` session (bb pic
 start and resume argv plus a transcript pattern that proves the session
 exists), a `discovered` session (the CLI picks its id; bb reads the first
 JSON line of the matching transcript files and binds the one started in the
-thread workspace after launch), or a `sqlite-discovered` session (the CLI picks its id and indexes sessions in a SQLite database under `sessionRoot`; bb binds the single row matching the workspace after launch and reads `transcript`), plus optional `workspaceArgs` (`{cwd}`/`{cwdJson}`) and `promptArgs` (`{prompt}`). An optional `activity` block tells the bb CLI
+thread workspace after launch), or a `sqlite-discovered` session (the CLI picks its id, writes its active conversation id to a private per-launch `sessionLog` file passed via `{logFile}`, and indexes sessions in a SQLite database under `sessionRoot`; bb binds only the row owned by that launch's log file and reads `transcript`), plus optional `workspaceArgs` (`{cwd}`/`{cwdJson}`) and `promptArgs` (`{prompt}`). An optional `activity` block tells the bb CLI
 how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
 names that mean working or idle, and the prompt field; the harness installs
 command hooks that append each event's JSON to a private file) and

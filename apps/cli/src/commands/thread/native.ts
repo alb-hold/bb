@@ -37,6 +37,8 @@ import {
 import {
   findNativeSession,
   nativeMcpArgs,
+  openNativeSessionLog,
+  removeNativeSessionLog,
   resolveNativeHarnessLaunch,
   snapshotNativeWorkspaceSessions,
 } from "../../native-harness.js";
@@ -278,6 +280,7 @@ export async function holdNativeHarness(
   const tmpDir = options.tmpDir ?? os.tmpdir();
   const activityPollIntervalMs =
     options.activityPollIntervalMs ?? ACTIVITY_POLL_INTERVAL_MS;
+  let sessionLogDirectory: string | null = null;
   try {
     const sdk = createCliBbSdk(baseUrl);
     const nodePty = await import("node-pty");
@@ -285,6 +288,7 @@ export async function holdNativeHarness(
       cli: Parameters<typeof findNativeSession>[0]["cli"];
       existingSessionIds: ReadonlySet<string> | null;
       launchedAtMs: number;
+      sessionLogFile: string | null;
     } | null = null;
     const discoverer = createSessionDiscoverer({
       currentCredential: () => currentCredential(),
@@ -299,6 +303,7 @@ export async function holdNativeHarness(
             excludeSessionIds: discovery.existingSessionIds,
             launchedAtMs: discovery.launchedAtMs,
             nowMs: Date.now(),
+            sessionLogFile: discovery.sessionLogFile,
           });
         } catch {
           return { kind: "none" };
@@ -449,12 +454,31 @@ export async function holdNativeHarness(
                   credentialSocket,
                 ],
               });
+        const sessionLog =
+          spec.cli.session.kind === "sqlite-discovered" &&
+          spec.nativeSessionId === null
+            ? openNativeSessionLog(spec.cli, tmpDir)
+            : null;
+        if (
+          spec.cli.session.kind === "sqlite-discovered" &&
+          spec.nativeSessionId === null &&
+          sessionLog === null &&
+          ownsSocket
+        ) {
+          logNativeHolderEvent(
+            socketPath,
+            "session-discovery-log-unavailable",
+            {},
+          );
+        }
+        sessionLogDirectory = sessionLog?.directory ?? null;
         const launch = resolveNativeHarnessLaunch(
           spec,
           env,
           activityArgs,
           mcpArgs,
           cwd,
+          sessionLog?.file ?? null,
         );
         const launchedAtMs = Date.now();
         discovery = {
@@ -464,6 +488,7 @@ export async function holdNativeHarness(
               ? snapshotNativeWorkspaceSessions({ cli: spec.cli, cwd, env })
               : new Set<string>(),
           launchedAtMs,
+          sessionLogFile: sessionLog?.file ?? null,
         };
         discoverer.arm(launch.session.kind === "discover");
         reader = new NativeActivityReader(
@@ -556,6 +581,9 @@ export async function holdNativeHarness(
     }
     return exitCode;
   } finally {
+    if (sessionLogDirectory !== null) {
+      removeNativeSessionLog(sessionLogDirectory);
+    }
     restoreSignals();
     process.off("uncaughtExceptionMonitor", onUncaughtException);
   }

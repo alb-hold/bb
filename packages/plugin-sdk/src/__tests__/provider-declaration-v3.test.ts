@@ -668,6 +668,28 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
         { ...assigned, workspaceArgs: ["--settings", "{}"] },
         /experimental_nativeTerminal\.workspaceArgs must pass \{cwd\} or \{cwdJson\} when not empty/u,
       ],
+      [
+        "sqlite-discovered session log argv without {logFile}",
+        {
+          ...assigned,
+          session: {
+            kind: "sqlite-discovered" as const,
+            resumeArgs: ["--resume", "{sessionId}"],
+            sessionLog: {
+              args: ["--log-file"],
+              prefixes: ["Created conversation "],
+            },
+            database: "conversation_summaries.db",
+            transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+            table: "conversation_summaries",
+            idColumn: "conversation_id",
+            workspaceUrisColumn: "workspace_uris",
+            startedAtColumn: "last_user_input_time",
+            transcriptStartedAtField: "created_at",
+          },
+        },
+        /experimental_nativeTerminal\.session\.sessionLog\.args must pass \{logFile\}/u,
+      ],
     ])("rejects %s", (_label, value, message) => {
       expect(() =>
         validatePluginProviderDeclaration(

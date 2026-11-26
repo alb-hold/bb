@@ -36,6 +36,10 @@ const AGY_NATIVE_TERMINAL: NonNullable<
   session: {
     kind: "sqlite-discovered",
     resumeArgs: ["--resume", "{sessionId}"],
+    sessionLog: {
+      args: ["--log-file", "{logFile}"],
+      prefixes: ["Created conversation ", "Streaming conversation "],
+    },
     database: "conversation_summaries.db",
     transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
     table: "conversation_summaries",
