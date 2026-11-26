@@ -425,7 +425,8 @@ export function classifyClaudeToolUse(args: {
       return classifyMultiEdit(toolName, input);
     case "NotebookEdit":
       return classifyNotebookEdit(toolName, input);
-    case "WebSearch": {
+    case "WebSearch":
+    case "web_search": {
       const parsed = claudeWebSearchArgsSchema.safeParse(input);
       const query = parsed.success
         ? toOptionalString(parsed.data.query)
@@ -435,9 +436,10 @@ export function classifyClaudeToolUse(args: {
             shape: { type: "webSearch", queries: [query] },
             presentation: webSearchPresentation(query),
           }
-        : genericTool(toolName, input);
+        : genericTool("WebSearch", input);
     }
-    case "WebFetch": {
+    case "WebFetch":
+    case "web_fetch": {
       const parsed = claudeWebFetchArgsSchema.safeParse(input);
       const url = parsed.success
         ? toOptionalString(parsed.data.url)
@@ -454,8 +456,11 @@ export function classifyClaudeToolUse(args: {
             },
             presentation: webFetchPresentation(url),
           }
-        : genericTool(toolName, input);
+        : genericTool("WebFetch", input);
     }
+    case "tool_search_tool_regex":
+    case "tool_search_tool_bm25":
+      return genericTool("ToolSearch", input);
     case "Agent":
     case "Task":
       return classifyDelegation(toolName, toolUseId, input);

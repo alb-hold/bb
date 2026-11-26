@@ -31,6 +31,45 @@ export const toolUseBlockSchema = z.object({
   input: z.unknown(),
 });
 
+export const serverToolUseBlockSchema = z
+  .object({
+    type: z.literal("server_tool_use"),
+    id: z.string(),
+    name: z.string(),
+    input: z.unknown(),
+  })
+  .passthrough();
+
+export const mcpToolUseBlockSchema = z
+  .object({
+    type: z.literal("mcp_tool_use"),
+    id: z.string(),
+    name: z.string(),
+    server_name: z.string().optional(),
+    input: z.unknown(),
+  })
+  .passthrough();
+
+export const CLAUDE_SERVER_TOOL_RESULT_BLOCK_TYPES = [
+  "advisor_tool_result",
+  "bash_code_execution_tool_result",
+  "code_execution_tool_result",
+  "mcp_tool_result",
+  "text_editor_code_execution_tool_result",
+  "tool_search_tool_result",
+  "web_fetch_tool_result",
+  "web_search_tool_result",
+] as const;
+
+export const serverToolResultBlockSchema = z
+  .object({
+    type: z.enum(CLAUDE_SERVER_TOOL_RESULT_BLOCK_TYPES),
+    tool_use_id: z.string(),
+    content: z.unknown(),
+    is_error: z.boolean().optional(),
+  })
+  .passthrough();
+
 const claudeToolUseProcessResultSchema = z
   .object({
     stdout: z.string().optional(),
@@ -186,6 +225,14 @@ export const claudeStatusSystemMessageSchema = claudeSystemMessageSchema
   .extend({
     subtype: z.literal("status"),
     status: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const claudeInformationalSystemMessageSchema = claudeSystemMessageSchema
+  .extend({
+    subtype: z.literal("informational"),
+    content: z.string().min(1).optional(),
+    level: z.string().optional(),
   })
   .passthrough();
 
