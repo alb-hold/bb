@@ -3969,8 +3969,8 @@ describe("final scan fd replacement", () => {
               ? "uncertain"
               : "clear",
       });
-      expect(lists).toBe(kind === "churning" ? 4 : 2);
-      expect(links).toBe(kind === "churning" ? 4 : 2);
+      expect(lists).toBe(kind === "churning" ? 12 : 2);
+      expect(links).toBe(kind === "churning" ? 12 : 2);
     },
   );
   it("does not recheck a gone task fd on an earlier scan", async () => {
@@ -4000,6 +4000,10 @@ describe("final scan fd replacement", () => {
 });
 
 describe("the identity a refusal gives each process it could not inspect", () => {
+  afterEach(() => {
+    useDoubtRecheckWaitForTests(null);
+  });
+
   function deniedProcess(options: { statFails?: boolean } = {}) {
     const base = fakeProc({
       processes: {
@@ -4007,6 +4011,9 @@ describe("the identity a refusal gives each process it could not inspect", () =>
       },
     });
     let classifying = false;
+    useDoubtRecheckWaitForTests(async () => {
+      classifying = false;
+    });
     const own = (target: string) => target.startsWith("/proc/300/");
     const identityLeaf = (target: string) =>
       target === "/proc/300/stat" || target === "/proc/300/status";

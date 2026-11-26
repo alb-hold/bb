@@ -3,16 +3,27 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  createHolderScanScheduler,
   describeHolderScan,
   hostProc,
   procReadIsSynchronous,
   scanLinux,
   type ProcReader,
+  type WorktreeHolderScan,
   mapLsofError,
   scanWorktreeHolders,
+  useDoubtRecheckWaitForTests,
 } from "../src/worktree-holders.js";
+
+beforeEach(() => {
+  useDoubtRecheckWaitForTests(async () => {});
+});
+
+afterEach(() => {
+  useDoubtRecheckWaitForTests(null);
+});
 
 const roots: string[] = [];
 const children: ReturnType<typeof spawn>[] = [];
@@ -453,6 +464,177 @@ describe("synchronous proc reads", () => {
     ["/home/user", false],
   ] as const)("reads %s synchronously: %s", (target, expected) => {
     expect(procReadIsSynchronous(target)).toBe(expected);
+  });
+});
+
+function busyProcReader(shape: {
+  processes: number;
+  threads: number;
+  descriptors: number;
+}): ProcReader {
+  const pids = Array.from(
+    { length: shape.processes },
+    (_, index) => 1000 + index * (shape.threads + 1),
+  );
+  const spin = () => {
+    const end = performance.now() + 0.04;
+    while (performance.now() < end);
+  };
+  const gone = (): never => {
+    throw Object.assign(new Error("gone"), { code: "ENOENT" });
+  };
+  const mappings = Array.from(
+    { length: 50 },
+    (_, index) =>
+      `${index.toString(16)}000-${(index + 1).toString(16)}000 r-xp 00000000 08:30 ${index} /usr/lib/lib${index}.so`,
+  ).join("\n");
+  return {
+    ...hostProc,
+    realpath: async (target) => target,
+    subdirectories: async () => [],
+    lstatId: async (target) => `1:${target.length}${target.slice(-6)}`,
+    statId: async (target) => `2:${target}`,
+    readdir: async (target) => {
+      if (procReadIsSynchronous(target)) spin();
+      if (target === "/proc") return [...pids.map(String), "self"];
+      const match = /^\/proc\/(\d+)(?:\/task\/\d+)?\/(task|fd|map_files)$/u.exec(
+        target,
+      );
+      if (match === null || !pids.includes(Number(match[1]))) return gone();
+      const pid = Number(match[1]);
+      if (match[2] === "task")
+        return Array.from({ length: shape.threads }, (_, i) => String(pid + i));
+      if (match[2] === "map_files") return [];
+      return Array.from({ length: shape.descriptors }, (_, i) => String(i));
+    },
+    readlink: async (target) => {
+      if (procReadIsSynchronous(target)) spin();
+      if (target.endsWith("/ns/mnt")) return "mnt:[1]";
+      if (target.endsWith("/root")) return "/";
+      if (target.endsWith("/cwd") || target.endsWith("/exe"))
+        return "/usr/bin";
+      const descriptor = /\/fd\/(\d+)$/u.exec(target);
+      if (descriptor === null) return gone();
+      return Number(descriptor[1]) % 2 === 0
+        ? `socket:[${descriptor[1]}]`
+        : `/var/lib/data/${descriptor[1]}`;
+    },
+    readFile: async (target) => {
+      if (target === "/proc/self/status")
+        return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (target.endsWith("/mountinfo"))
+        return "25 1 8:48 / / rw - ext4 /dev/sda rw\n";
+      if (target.endsWith("/status"))
+        return "State:\tS\nPPid:\t1\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (target.endsWith("/stat"))
+        return "1 (x) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0";
+      if (target.endsWith("/maps")) return mappings;
+      if (target.endsWith("/comm")) return "node\n";
+      if (target.endsWith("/cmdline")) return "node\0";
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    },
+  };
+}
+
+describe("event loop responsiveness during scans", () => {
+  it("keeps timers firing while several scans read many /proc entries", async () => {
+    const proc = busyProcReader({ processes: 40, threads: 4, descriptors: 30 });
+    let last = performance.now();
+    let longestGap = 0;
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      longestGap = Math.max(longestGap, now - last);
+      last = now;
+    }, 2);
+    try {
+      const scans = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          scanLinux("/work/tree", proc, 4242),
+        ),
+      );
+      longestGap = Math.max(longestGap, performance.now() - last);
+      expect(scans.map((scan) => scan.status)).toEqual([
+        "clear",
+        "clear",
+        "clear",
+        "clear",
+      ]);
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(longestGap).toBeLessThan(150);
+  }, 60_000);
+});
+
+describe("scan scheduler", () => {
+  const clear: WorktreeHolderScan = { status: "clear" };
+
+  function controlled(waiting: number) {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const scheduler = createHolderScanScheduler(
+      (directory) => {
+        started.push(directory);
+        return new Promise<WorktreeHolderScan>((resolve) => {
+          releases.push(() => resolve(clear));
+        });
+      },
+      { running: 2, waiting },
+    );
+    const drain = async () => {
+      for (let round = 0; round < 10; round += 1) {
+        releases.splice(0).forEach((release) => release());
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    };
+    return { started, scheduler, drain };
+  }
+
+  it("runs a bounded number of scans and refuses the rest as unknown without scanning", async () => {
+    const { started, scheduler, drain } = controlled(2);
+    const scans = ["a", "b", "c", "d", "e"].map((directory) =>
+      scheduler(directory, false),
+    );
+    expect(started).toEqual(["a", "b"]);
+    expect((await scans[4]).status).toBe("unknown");
+    expect(started).toEqual(["a", "b"]);
+    await drain();
+    expect((await Promise.all(scans.slice(0, 4))).map((s) => s.status)).toEqual(
+      ["clear", "clear", "clear", "clear"],
+    );
+    expect(started).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("shares a scan that has not started, but never one that is running", async () => {
+    const { started, scheduler, drain } = controlled(4);
+    const first = scheduler("a", false);
+    const second = scheduler("b", false);
+    const again = scheduler("a", false);
+    expect(started).toEqual(["a", "b"]);
+    expect(again).not.toBe(first);
+    const queued = scheduler("c", false);
+    expect(scheduler("c", false)).toBe(queued);
+    expect(scheduler("c", true)).not.toBe(queued);
+    await drain();
+    await Promise.all([first, second, again, queued]);
+    expect(started).toEqual(["a", "b", "a", "c", "c"]);
+  });
+
+  it("frees its slot and keeps draining when a scan throws", async () => {
+    const started: string[] = [];
+    const scheduler = createHolderScanScheduler(
+      async (directory) => {
+        started.push(directory);
+        if (directory === "bad") throw new Error("boom");
+        return clear;
+      },
+      { running: 1, waiting: 4 },
+    );
+    const bad = scheduler("bad", false);
+    const good = scheduler("good", false);
+    await expect(bad).rejects.toThrow("boom");
+    expect((await good).status).toBe("clear");
+    expect(started).toEqual(["bad", "good"]);
   });
 });
 
@@ -1638,6 +1820,66 @@ describe("vanished proc entries", () => {
       });
     },
   );
+  it("clears a process whose thread exits while its fd list fails to read", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let taskListings = 0;
+    let taskFdReads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task")
+          return ++taskListings === 1 ? ["101", "102"] : ["101"];
+        if (target === "/proc/101/task/102/fd") {
+          taskFdReads += 1;
+          throw Object.assign(new Error("EIO"), { code: "EIO" });
+        }
+        return proc.readdir(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "clear",
+    });
+    expect(taskFdReads).toBe(1);
+  });
+  it("keeps the doubt when the unreadable thread is still there", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let taskFdReads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task") return ["101", "102"];
+        if (target === "/proc/101/task/102/fd") {
+          taskFdReads += 1;
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        }
+        return proc.readdir(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "uncertain",
+    });
+    expect(taskFdReads).toBe(3);
+  });
+  it("reports a holder that a recheck of a doubted process finds", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let reads = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) =>
+        target === "/proc/101/fd" ? ["3"] : proc.readdir(target),
+      readlink: async (target) => {
+        if (target === "/proc/101/fd/3") {
+          if (++reads === 1)
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          return "/work/tree/file";
+        }
+        return proc.readlink(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "held",
+    });
+  });
   it("skips a process that exits after an earlier denied read", async () => {
     const proc = mountAliasProc("/work/tree", "outside", 107473);
     let statuses = 0;
@@ -1768,8 +2010,8 @@ describe("final scan fd replacement", () => {
               ? "uncertain"
               : "clear",
       });
-      expect(lists).toBe(kind === "churning" ? 4 : 2);
-      expect(links).toBe(kind === "churning" ? 4 : 2);
+      expect(lists).toBe(kind === "churning" ? 12 : 2);
+      expect(links).toBe(kind === "churning" ? 12 : 2);
     },
   );
   it("does not recheck a gone task fd on an earlier scan", async () => {
