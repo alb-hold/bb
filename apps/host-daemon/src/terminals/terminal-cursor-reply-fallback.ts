@@ -3,6 +3,8 @@ const PARTIAL_CURSOR_POSITION_REPLY = /\u001b(?:\[\??(?:\d+(?:;\d*)?)?)?$/;
 
 export const CURSOR_REPLY_FALLBACK_DELAY_MS = 250;
 export const CURSOR_REPLY_SWALLOW_MS = 5_000;
+const SHORT_KEYPRESS_PREFIX = /^\u001b(?:\[\??)?$/;
+export const CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS = 50;
 export const CURSOR_REPLY_HOLD_FLUSH_MS =
   CURSOR_REPLY_FALLBACK_DELAY_MS + CURSOR_REPLY_SWALLOW_MS;
 
@@ -70,12 +72,15 @@ export class TerminalCursorReplyFallback {
       return out + partial;
     }
     this.held = partial;
+    const holdMs = SHORT_KEYPRESS_PREFIX.test(partial)
+      ? CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS
+      : CURSOR_REPLY_HOLD_FLUSH_MS;
     this.holdTimer = setTimeout(() => {
       this.holdTimer = null;
       const flushed = this.held;
       this.held = "";
       if (flushed !== "") this.write(flushed);
-    }, CURSOR_REPLY_HOLD_FLUSH_MS);
+    }, holdMs);
     this.holdTimer.unref();
     return out;
   }

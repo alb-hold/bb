@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CURSOR_REPLY_FALLBACK_DELAY_MS,
   CURSOR_REPLY_HOLD_FLUSH_MS,
+  CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS,
   TerminalCursorReplyFallback,
 } from "./terminal-cursor-reply-fallback.js";
 
@@ -41,12 +42,12 @@ describe("TerminalCursorReplyFallback split replies", () => {
     },
   );
 
-  const delays = [CURSOR_REPLY_FALLBACK_DELAY_MS + 50, 499, 501, 4_900, 5_100];
-  const cases = offsets.flatMap((offset) =>
-    delays.map((delay) => ({ offset, delay })),
-  );
+  const longDelays = [CURSOR_REPLY_FALLBACK_DELAY_MS + 50, 499, 501, 4_900, 5_100];
+  const longCases = offsets
+    .filter((offset) => offset >= 3)
+    .flatMap((offset) => longDelays.map((delay) => ({ offset, delay })));
 
-  it.each(cases)(
+  it.each(longCases)(
     "delivers exactly one reply when split at byte $offset with a $delay ms gap",
     ({ offset, delay }) => {
       const { fallback, written } = setup();
@@ -55,6 +56,34 @@ describe("TerminalCursorReplyFallback split replies", () => {
       delivered.push(fallback.filterInput(REPLY.slice(offset)));
       vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS * 2);
       expect(delivered.join("") + written.join("")).toBe(ESTIMATE);
+    },
+  );
+
+  const shortCases = [1, 2].flatMap((offset) =>
+    [10, 49].map((delay) => ({ offset, delay })),
+  );
+
+  it.each(shortCases)(
+    "delivers exactly one reply when split at byte $offset with a $delay ms gap",
+    ({ offset, delay }) => {
+      const { fallback, written } = setup();
+      const delivered = [fallback.filterInput(REPLY.slice(0, offset))];
+      vi.advanceTimersByTime(delay);
+      delivered.push(fallback.filterInput(REPLY.slice(offset)));
+      vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS * 2);
+      expect(delivered.join("") + written.join("")).toBe(REPLY);
+    },
+  );
+
+  it.each([1, 2])(
+    "leaks the fragment unchanged when a reply split at byte %i has a 60 ms gap",
+    (offset) => {
+      const { fallback, written } = setup();
+      const delivered = [fallback.filterInput(REPLY.slice(0, offset))];
+      vi.advanceTimersByTime(60);
+      delivered.push(fallback.filterInput(REPLY.slice(offset)));
+      expect(written).toEqual([REPLY.slice(0, offset)]);
+      expect(delivered).toEqual(["", REPLY.slice(offset)]);
     },
   );
 
@@ -68,10 +97,19 @@ describe("TerminalCursorReplyFallback split replies", () => {
     expect(written).toEqual([]);
   });
 
-  it("flushes a lone held escape when nothing follows", () => {
+  it("delivers a lone Esc pressed inside the window within 50 ms", () => {
     const { fallback, written } = setup();
     expect(fallback.filterInput("\u001b")).toBe("");
-    vi.advanceTimersByTime(CURSOR_REPLY_HOLD_FLUSH_MS);
-    expect(written).toContain("\u001b");
+    vi.advanceTimersByTime(CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS - 1);
+    expect(written).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(written).toEqual(["\u001b"]);
+  });
+
+  it("releases a held digit prefix at once when a non-reply byte follows", () => {
+    const { fallback, written } = setup();
+    expect(fallback.filterInput("\u001b[4")).toBe("");
+    expect(fallback.filterInput("x")).toBe("\u001b[4x");
+    expect(written).toEqual([]);
   });
 });
