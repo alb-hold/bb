@@ -21,6 +21,7 @@ export class TerminalCursorReplyFallback {
   }> = [];
   private lateUntil: number[] = [];
   private held = "";
+  private heldAt = 0;
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -64,7 +65,9 @@ export class TerminalCursorReplyFallback {
   filterInput(data: string): string {
     if (this.isIdle()) return data;
     this.clearHold();
-    let text = this.held + data;
+    const previousHeld = this.held;
+    const previousHeldAt = this.heldAt;
+    let text = previousHeld + data;
     this.held = "";
     let partial = "";
     const tail = PARTIAL_CURSOR_POSITION_REPLY.exec(text);
@@ -89,6 +92,10 @@ export class TerminalCursorReplyFallback {
       return out + partial;
     }
     this.held = partial;
+    this.heldAt =
+      previousHeld !== "" && tail !== null && tail.index === 0
+        ? previousHeldAt
+        : now;
     this.rescheduleHold();
     return out;
   }
@@ -96,9 +103,13 @@ export class TerminalCursorReplyFallback {
   private rescheduleHold(): void {
     this.clearHold();
     if (this.held === "") return;
-    const remaining = Math.max(0, this.windowEnd() - this.now());
+    const now = this.now();
+    const remaining = Math.max(0, this.windowEnd() - now);
     const holdMs = isShortKeypressPrefix(this.held)
-      ? Math.min(CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS, remaining)
+      ? Math.min(
+          Math.max(0, this.heldAt + CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS - now),
+          remaining,
+        )
       : remaining;
     this.holdTimer = setTimeout(() => {
       this.clearHold();
@@ -127,6 +138,7 @@ export class TerminalCursorReplyFallback {
     this.waiting = [];
     this.lateUntil = [];
     this.held = "";
+    this.heldAt = 0;
     this.clearHold();
   }
 }

@@ -149,11 +149,23 @@ describe("TerminalCursorReplyFallback split replies", () => {
       vi.advanceTimersByTime(10);
       expect(fallback.filterInput("\u001b[4;")).toBe("");
       const out = fallback.filterInput("1R\u001b[?");
-      expect(out).toBe("");
+      expect(out).toBe("\u001b[4;1R");
       vi.advanceTimersByTime(WINDOW_END - (CURSOR_REPLY_FALLBACK_DELAY_MS + 760) - 1);
       expect(written).toEqual([ESTIMATE]);
       vi.advanceTimersByTime(1);
       expect(written).toEqual([ESTIMATE, "\u001b[?"]);
+    });
+
+    it("swallows a completed late split reply when a new prefix follows in the same chunk", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 750);
+      fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS + 10);
+      expect(written).toEqual([ESTIMATE, "\u001b[9;9R"]);
+      expect(fallback.filterInput("\u001b[4;")).toBe("");
+      expect(fallback.filterInput("1R\u001b[?")).toBe("");
+      expect(fallback.filterInput("9;9R\u001b[?")).toBe("\u001b[?");
+      expect(fallback.isIdle()).toBe(true);
     });
 
     it("a fallback fire keeps the deadline", () => {
@@ -164,6 +176,19 @@ describe("TerminalCursorReplyFallback split replies", () => {
       expect(written).toEqual([ESTIMATE]);
       vi.advanceTimersByTime(1);
       expect(written).toEqual([ESTIMATE, "\u001b[4"]);
+    });
+
+    it("does not extend a held short prefix past 50 ms when a fallback fires or expect() runs", () => {
+      const { fallback, written } = setup();
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS - 30);
+      expect(fallback.filterInput("\u001b")).toBe("");
+      vi.advanceTimersByTime(30);
+      expect(written).toEqual([ESTIMATE]);
+      fallback.expect("\u001b[9;9R");
+      vi.advanceTimersByTime(CURSOR_REPLY_SHORT_PREFIX_FLUSH_MS - 30 - 1);
+      expect(written).toEqual([ESTIMATE]);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual([ESTIMATE, "\u001b"]);
     });
 
     it("late-slot expiry releases the prefix and leaves the filter idle", () => {
