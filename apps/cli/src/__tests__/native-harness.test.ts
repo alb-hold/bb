@@ -7,8 +7,10 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
 import { CODEX_POOL_LAUNCH_ENV_ARGS } from "bb-plugin-provider-codex/pool-launch";
@@ -665,5 +667,163 @@ describe("findNativeSession", () => {
         nowMs: Date.now(),
       }),
     ).toEqual({ kind: "none" });
+  });
+
+  it("launches, discovers, and locates Antigravity SQLite-indexed sessions", () => {
+    const agyCli: ProviderNativeTerminal = {
+      executable: "agy",
+      launchArgs: ["--dangerously-skip-permissions"],
+      workspaceArgs: ["--settings", '{"trustedWorkspaces":[{cwdJson}]}'],
+      modelArgs: ["--model", "{model}"],
+      promptArgs: ["-i", "{prompt}"],
+      pastePlaceholders: ["[Pasted text #"],
+      sessionRoot: { env: null, home: ".gemini/antigravity-cli" },
+      session: {
+        kind: "sqlite-discovered",
+        resumeArgs: ["--resume", "{sessionId}"],
+        database: "conversation_summaries.db",
+        transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+        table: "conversation_summaries",
+        idColumn: "conversation_id",
+        workspaceUrisColumn: "workspace_uris",
+        startedAtColumn: "last_user_input_time",
+      },
+    };
+    const home = tempHome();
+    const cwd = path.join(home, 'work "space"');
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: agyCli,
+          providerId: "acp-antigravity-acp",
+          nativeSessionId: null,
+          model: "gemini-3.1-pro-high",
+          initialPrompt: "reply PONG",
+        }),
+        { HOME: home },
+        [],
+        [],
+        cwd,
+      ),
+    ).toEqual({
+      command: "agy",
+      args: [
+        "--dangerously-skip-permissions",
+        "--settings",
+        `{"trustedWorkspaces":[${JSON.stringify(cwd)}]}`,
+        "--model",
+        "gemini-3.1-pro-high",
+        "-i",
+        "reply PONG",
+      ],
+      session: { kind: "discover" },
+    });
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: agyCli,
+          providerId: "acp-antigravity-acp",
+          nativeSessionId: null,
+          initialPrompt: null,
+        }),
+        { HOME: home },
+        [],
+        [],
+        cwd,
+      ).args,
+    ).toEqual([
+      "--dangerously-skip-permissions",
+      "--settings",
+      `{"trustedWorkspaces":[${JSON.stringify(cwd)}]}`,
+    ]);
+    const sessionId = "1cde0fe5-5a9f-468c-a3a4-ecf9d7583a52";
+    expect(
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: agyCli,
+          providerId: "acp-antigravity-acp",
+          nativeSessionId: sessionId,
+        }),
+        { HOME: home },
+        [],
+        [],
+        cwd,
+      ),
+    ).toEqual({
+      command: "agy",
+      args: [
+        "--dangerously-skip-permissions",
+        "--settings",
+        `{"trustedWorkspaces":[${JSON.stringify(cwd)}]}`,
+        "--resume",
+        sessionId,
+      ],
+      session: { kind: "resume", id: sessionId },
+    });
+
+    const launchedAtMs = Date.parse("2026-11-26T10:57:05.000Z");
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        launchedAtMs,
+        nowMs: launchedAtMs + 1_000,
+      }),
+    ).toEqual({ kind: "none" });
+
+    const agyRoot = path.join(home, ".gemini", "antigravity-cli");
+    mkdirSync(agyRoot, { recursive: true });
+    const { DatabaseSync } = createRequire(import.meta.url)(
+      "node:sqlite",
+    ) as typeof import("node:sqlite");
+    const db = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"));
+    db.exec(
+      "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, last_user_input_time TEXT)",
+    );
+    const insert = db.prepare(
+      "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+    );
+    insert.run(
+      "00000000-0000-4000-8000-000000000001",
+      JSON.stringify([pathToFileURL(cwd).href]),
+      "2026-11-26 10:50:00.000000+00:00",
+    );
+    insert.run(
+      "00000000-0000-4000-8000-000000000002",
+      JSON.stringify(["file:///other/workspace"]),
+      "2026-11-26 10:57:07.221455+00:00",
+    );
+    insert.run(
+      sessionId,
+      JSON.stringify([pathToFileURL(cwd).href]),
+      "2026-11-26 10:57:07.221455+00:00",
+    );
+    db.close();
+
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        launchedAtMs,
+        nowMs: launchedAtMs + 5_000,
+      }),
+    ).toEqual({ kind: "unique", sessionId });
+
+    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBeNull();
+    const transcriptDir = path.join(
+      agyRoot,
+      "brain",
+      sessionId,
+      ".system_generated",
+      "logs",
+    );
+    mkdirSync(transcriptDir, { recursive: true });
+    const transcriptFile = path.join(transcriptDir, "transcript.jsonl");
+    writeFileSync(transcriptFile, '{"step_index":0}\n');
+    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBe(
+      transcriptFile,
+    );
   });
 });

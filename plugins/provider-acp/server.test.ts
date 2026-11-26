@@ -529,4 +529,57 @@ describe("the ACP registry", () => {
       "Could not load the ACP registry: The ACP registry answered 503.",
     );
   });
+
+  it("declares Antigravity native terminal support for acp-antigravity-acp and acp-agy only", async () => {
+    stubRegistry(() =>
+      Response.json({
+        version: "1.0.0",
+        agents: [
+          {
+            id: "antigravity-acp",
+            name: "Google Antigravity",
+            version: "1.5.0",
+            distribution: {
+              npx: { package: "antigravity-acp@1.5.0" },
+            },
+          },
+        ],
+      }),
+    );
+    const host = await loadPlugin({
+      customAgents: customAgents({
+        id: "agy",
+        displayName: "Antigravity CLI",
+        command: "agy",
+        args: ["acp"],
+      }),
+    });
+    await host.harness.callRpc("addRegistryAgent", { id: "antigravity-acp" });
+    await vi.waitFor(() =>
+      expect(registeredIds(host)).toContain("acp-antigravity-acp"),
+    );
+
+    const byId = (id: string) =>
+      host.harness.registrations.providerRegistrations.find(
+        (declaration) => declaration.id === id,
+      );
+    for (const providerId of ["acp-antigravity-acp", "acp-agy"]) {
+      expect(byId(providerId)?.experimental_nativeTerminal).toMatchObject({
+        executable: "agy",
+        launchArgs: ["--dangerously-skip-permissions"],
+        workspaceArgs: ["--settings", '{"trustedWorkspaces":[{cwdJson}]}'],
+        modelArgs: ["--model", "{model}"],
+        promptArgs: ["-i", "{prompt}"],
+        pastePlaceholders: ["[Pasted text #"],
+        sessionRoot: { env: null, home: ".gemini/antigravity-cli" },
+        session: {
+          kind: "sqlite-discovered",
+          resumeArgs: ["--resume", "{sessionId}"],
+          database: "conversation_summaries.db",
+          transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+        },
+      });
+    }
+    expect(byId("acp-cursor")?.experimental_nativeTerminal).toBeUndefined();
+  });
 });

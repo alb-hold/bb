@@ -95,6 +95,13 @@ const recordFieldPathSchema = z
     "must be a dotted field path",
   );
 
+const sqliteIdentifierSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u,
+    "must be an SQLite identifier",
+  );
+
 const providerNativeTerminalRecordMatchSchema = z
   .object({
     equals: z.record(
@@ -104,6 +111,8 @@ const providerNativeTerminalRecordMatchSchema = z
     startsWith: z
       .record(recordFieldPathSchema, z.string().min(1).max(256))
       .optional(),
+    present: z.array(recordFieldPathSchema).max(8).optional(),
+    absent: z.array(recordFieldPathSchema).max(8).optional(),
   })
   .strict();
 
@@ -289,6 +298,35 @@ export const providerNativeTerminalDiscoveredSessionSchema = z
     }
   });
 
+export const providerNativeTerminalSqliteDiscoveredSessionSchema = z
+  .object({
+    kind: z.literal("sqlite-discovered"),
+    resumeArgs: templateArgsSchema(["sessionId"]),
+    database: relativePatternSchema([]),
+    transcript: relativePatternSchema(["sessionId"]),
+    table: sqliteIdentifierSchema,
+    idColumn: sqliteIdentifierSchema,
+    workspaceUrisColumn: sqliteIdentifierSchema,
+    startedAtColumn: sqliteIdentifierSchema,
+  })
+  .strict()
+  .superRefine((session, context) => {
+    if (!requiresToken(session.resumeArgs, "sessionId")) {
+      context.addIssue({
+        code: "custom",
+        path: ["resumeArgs"],
+        message: "must pass {sessionId}",
+      });
+    }
+    if (!templateTokens(session.transcript).includes("sessionId")) {
+      context.addIssue({
+        code: "custom",
+        path: ["transcript"],
+        message: "must name the {sessionId} file",
+      });
+    }
+  });
+
 export const providerNativeTerminalSchema = z
   .object({
     executable: z
@@ -298,7 +336,9 @@ export const providerNativeTerminalSchema = z
         "must be a bare executable name",
       ),
     launchArgs: templateArgsSchema([]),
+    workspaceArgs: templateArgsSchema(["cwd", "cwdJson"]).optional(),
     modelArgs: templateArgsSchema(["model"]),
+    promptArgs: templateArgsSchema(["prompt"]).optional(),
     experimental_launchEnvArgs: z
       .object({
         required: z
@@ -349,6 +389,7 @@ export const providerNativeTerminalSchema = z
     session: z.discriminatedUnion("kind", [
       providerNativeTerminalAssignedSessionSchema,
       providerNativeTerminalDiscoveredSessionSchema,
+      providerNativeTerminalSqliteDiscoveredSessionSchema,
     ]),
     activity: providerNativeTerminalActivitySchema.optional(),
     mcp: templateArgsSchema(["commandJson", "argsJson"]).optional(),
@@ -366,11 +407,34 @@ export const providerNativeTerminalSchema = z
         message: "must pass {commandJson} and {argsJson}",
       });
     }
+    if (
+      spec.workspaceArgs !== undefined &&
+      spec.workspaceArgs.length > 0 &&
+      !requiresToken(spec.workspaceArgs, "cwd") &&
+      !requiresToken(spec.workspaceArgs, "cwdJson")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["workspaceArgs"],
+        message: "must pass {cwd} or {cwdJson} when not empty",
+      });
+    }
     if (spec.modelArgs.length > 0 && !requiresToken(spec.modelArgs, "model")) {
       context.addIssue({
         code: "custom",
         path: ["modelArgs"],
         message: "must pass {model} when not empty",
+      });
+    }
+    if (
+      spec.promptArgs !== undefined &&
+      spec.promptArgs.length > 0 &&
+      !requiresToken(spec.promptArgs, "prompt")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["promptArgs"],
+        message: "must pass {prompt} when not empty",
       });
     }
     if (

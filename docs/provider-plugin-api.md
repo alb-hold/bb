@@ -201,7 +201,8 @@ lives in the terminal's own process and is free for chat once the CLI exits,
 and `--no-alt-screen` so its transcript stays in terminal scrollback; both
 Claude Code and Codex pass their permission-bypass flag so a native
 thread runs unattended like a chat thread in full access),
-`modelArgs` placed next when the thread has a model (`{model}`), `imageArgs` added once per image
+optional `workspaceArgs` (`{cwd}` or `{cwdJson}`),
+`modelArgs` placed next when the thread has a model (`{model}`), optional `promptArgs` (`{prompt}` when the CLI takes its initial interactive prompt via a flag instead of a positional argument), `imageArgs` added once per image
 attached at creation, after the first prompt of a new session (`{image}` is the image's path on the
 host; optional, and empty or absent when the CLI attaches an image from a path in its prompt; a bb
 CLI that does not ask for launch images still gets the paths in the prompt), `experimental_`-stage

@@ -1727,8 +1727,13 @@ export interface PluginProviderDeclaration {
    * - `launchArgs`: argv placed first on every launch, before the model and
    *   session argv; no tokens. Codex passes `--no-daemon`, so its session
    *   lives in the terminal's own process and is free once the CLI exits.
+   * - `workspaceArgs`: optional argv placed after `launchArgs` on every launch;
+   *   `{cwd}` or `{cwdJson}` is replaced by the thread workspace path.
    * - `modelArgs`: argv placed first when the thread has a model; `{model}` is
    *   replaced. Empty when the CLI takes no model flag.
+   * - `promptArgs`: optional argv placed in place of a bare positional prompt
+   *   when starting a new session with an initial prompt; `{prompt}` is
+   *   replaced.
    * - `imageArgs`: argv added once per image attached when the thread is
    *   created, after the first prompt of a new session; `{image}` is replaced
    *   by the image's path on the host. Optional: empty or absent when the CLI
@@ -1758,7 +1763,12 @@ export interface PluginProviderDeclaration {
    *   launch's session; a session is still found by its id without them, so a
    *   session another client of the CLI created can be resumed. Declare it to
    *   keep a session some other process started in the same workspace from
-   *   being bound. Later launches use `resumeArgs`.
+   *   Being bound. Later launches use `resumeArgs`.
+   * - `session`, `"sqlite-discovered"`: the CLI picks its own id and indexes
+   *   sessions in a SQLite `database` under `sessionRoot`. bb queries `table`
+   *   (`idColumn`, `workspaceUrisColumn`, `startedAtColumn`) to bind the single
+   *   session started in the thread workspace after launch, reads its
+   *   `transcript` (`{sessionId}`), and relaunches with `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON

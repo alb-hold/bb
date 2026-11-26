@@ -1,5 +1,7 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   fillNativeTerminalTemplate,
   type ProviderNativeTerminal,
@@ -35,6 +37,32 @@ type DiscoveredSession = Extract<
   ProviderNativeTerminal["session"],
   { kind: "discovered" }
 >;
+type SqliteDiscoveredSession = Extract<
+  ProviderNativeTerminal["session"],
+  { kind: "sqlite-discovered" }
+>;
+
+let cachedDatabaseSync: typeof import("node:sqlite").DatabaseSync | null = null;
+
+function loadSqliteDatabaseSync(): typeof import("node:sqlite").DatabaseSync {
+  if (cachedDatabaseSync !== null) return cachedDatabaseSync;
+  const originalEmitWarning = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+    const type = typeof rest[0] === "string" ? rest[0] : undefined;
+    const message = typeof warning === "string" ? warning : warning.message;
+    if (type === "ExperimentalWarning" && message.includes("SQLite")) return;
+    return Reflect.apply(originalEmitWarning, process, [warning, ...rest]);
+  }) as typeof process.emitWarning;
+  try {
+    const sqlite = createRequire(import.meta.url)(
+      "node:sqlite",
+    ) as typeof import("node:sqlite");
+    cachedDatabaseSync = sqlite.DatabaseSync;
+    return cachedDatabaseSync;
+  } finally {
+    process.emitWarning = originalEmitWarning;
+  }
+}
 
 export function nativeSessionRoot(
   cli: ProviderNativeTerminal,
@@ -74,8 +102,13 @@ export function resolveNativeHarnessLaunch(
   cwd: string = process.cwd(),
 ): NativeHarnessLaunch {
   const { cli } = spec;
+  const workspace =
+    cli.workspaceArgs === undefined
+      ? []
+      : fill(cli.workspaceArgs, { cwd, cwdJson: JSON.stringify(cwd) });
   const model = [
     ...cli.launchArgs,
+    ...workspace,
     ...experimental_nativeTerminalEnvArgs(
       cli.experimental_launchEnvArgs,
       env,
@@ -85,8 +118,14 @@ export function resolveNativeHarnessLaunch(
     ...activityArgs,
     ...mcpArgs,
   ];
+  const initialPromptArgs =
+    spec.initialPrompt === null
+      ? []
+      : cli.promptArgs !== undefined && cli.promptArgs.length > 0
+        ? fill(cli.promptArgs, { prompt: spec.initialPrompt })
+        : [spec.initialPrompt];
   const prompt = [
-    ...(spec.initialPrompt === null ? [] : [spec.initialPrompt]),
+    ...initialPromptArgs,
     ...(spec.initialImages ?? []).flatMap((image) =>
       fill(cli.imageArgs ?? [], { image }),
     ),
@@ -234,7 +273,7 @@ export function findNativeSessionFile(
 ): string | null {
   const root = nativeSessionRoot(cli, env);
   const session = cli.session;
-  if (session.kind === "assigned") {
+  if (session.kind === "assigned" || session.kind === "sqlite-discovered") {
     const resolved = resolveNativeTerminalTranscriptPattern({
       sessionRoot: cli.sessionRoot,
       transcriptPattern: session.transcript,
@@ -270,6 +309,89 @@ export type NativeSessionMatch =
   | { kind: "unique"; sessionId: string }
   | { kind: "ambiguous"; sessionIds: string[] };
 
+function workspacePathsFromUris(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const paths: string[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "string" || entry.length === 0) continue;
+    if (entry.startsWith("file://")) {
+      try {
+        paths.push(fileURLToPath(entry));
+      } catch {
+        continue;
+      }
+    } else {
+      paths.push(entry);
+    }
+  }
+  return paths;
+}
+
+function findSqliteNativeSession(
+  args: {
+    cli: ProviderNativeTerminal;
+    cwd: string;
+    env: NativeHarnessEnv;
+    launchedAtMs: number;
+  },
+  session: SqliteDiscoveredSession,
+): NativeSessionMatch {
+  const dbPath = path.join(
+    nativeSessionRoot(args.cli, args.env),
+    session.database,
+  );
+  try {
+    if (!statSync(dbPath).isFile()) return { kind: "none" };
+  } catch {
+    return { kind: "none" };
+  }
+  const sinceMs = args.launchedAtMs - SESSION_CLOCK_SKEW_MS;
+  const ids = new Set<string>();
+  let db: InstanceType<ReturnType<typeof loadSqliteDatabaseSync>> | null = null;
+  try {
+    const DatabaseSync = loadSqliteDatabaseSync();
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db
+      .prepare(
+        `SELECT "${session.idColumn}" AS id, "${session.workspaceUrisColumn}" AS workspace_uris, "${session.startedAtColumn}" AS started_at FROM "${session.table}"`,
+      )
+      .all() as Array<{
+      id?: unknown;
+      workspace_uris?: unknown;
+      started_at?: unknown;
+    }>;
+    for (const row of rows) {
+      if (typeof row.id !== "string" || row.id.length === 0) continue;
+      if (typeof row.started_at !== "string") continue;
+      const startedAtMs = Date.parse(row.started_at);
+      if (Number.isNaN(startedAtMs) || startedAtMs < sinceMs) continue;
+      if (typeof row.workspace_uris !== "string") continue;
+      if (
+        workspacePathsFromUris(row.workspace_uris).some((wsPath) =>
+          samePath(wsPath, args.cwd),
+        )
+      ) {
+        ids.add(row.id);
+      }
+    }
+  } catch {
+    return { kind: "none" };
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+  if (ids.size === 0) return { kind: "none" };
+  if (ids.size === 1) return { kind: "unique", sessionId: [...ids][0]! };
+  return { kind: "ambiguous", sessionIds: [...ids].sort() };
+}
+
 export function findNativeSession(args: {
   cli: ProviderNativeTerminal;
   cwd: string;
@@ -278,6 +400,9 @@ export function findNativeSession(args: {
   nowMs: number;
 }): NativeSessionMatch {
   const session = args.cli.session;
+  if (session.kind === "sqlite-discovered") {
+    return findSqliteNativeSession(args, session);
+  }
   if (session.kind !== "discovered") return { kind: "none" };
   const root = nativeSessionRoot(args.cli, args.env);
   const sinceMs = args.launchedAtMs - SESSION_CLOCK_SKEW_MS;

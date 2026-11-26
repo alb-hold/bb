@@ -353,4 +353,90 @@ describe("native terminal activity", () => {
     expect(tracker.heartbeat()).toEqual({ state: "working", prompt: null });
     expect(tracker.finish()).toEqual({ state: "idle", prompt: null });
   });
+
+  it("classifies Antigravity transcript turns, tool calls, and unwrapped user prompts", () => {
+    const agy = providerNativeTerminalActivitySchema.parse({
+      transcript: {
+        working: [
+          {
+            equals: { type: "PLANNER_RESPONSE", source: "MODEL" },
+            present: ["tool_calls.0"],
+          },
+          {
+            equals: { type: "GENERIC", source: "MODEL", status: "RUNNING" },
+          },
+        ],
+        idle: [
+          {
+            equals: {
+              type: "PLANNER_RESPONSE",
+              source: "MODEL",
+              status: "DONE",
+            },
+            absent: ["tool_calls.0"],
+          },
+        ],
+        prompt: [
+          {
+            match: {
+              equals: { type: "USER_INPUT", source: "USER_EXPLICIT" },
+            },
+            text: "content",
+          },
+        ],
+        reply: [
+          {
+            match: {
+              equals: {
+                type: "PLANNER_RESPONSE",
+                source: "MODEL",
+                status: "DONE",
+              },
+              absent: ["tool_calls.0"],
+            },
+            text: "content",
+          },
+        ],
+      },
+    }).transcript!;
+
+    expect(
+      [
+        {
+          step_index: 0,
+          type: "USER_INPUT",
+          source: "USER_EXPLICIT",
+          status: "DONE",
+          content:
+            "<USER_REQUEST>\nReply with PONG only.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26\n</ADDITIONAL_METADATA>",
+        },
+        {
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          source: "MODEL",
+          status: "DONE",
+          content: "Let me check a file first.",
+          tool_calls: [{ id: "call-1", name: "read_file" }],
+        },
+        {
+          step_index: 2,
+          type: "GENERIC",
+          source: "MODEL",
+          status: "RUNNING",
+        },
+        {
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          source: "MODEL",
+          status: "DONE",
+          content: "PONG",
+        },
+      ].map((record) => classifyTranscriptRecord(agy, record)),
+    ).toEqual([
+      { state: "working", prompt: "Reply with PONG only." },
+      { state: "working", prompt: null },
+      { state: "working", prompt: null },
+      { state: "idle", prompt: null, lastAssistantText: "PONG" },
+    ]);
+  });
 });

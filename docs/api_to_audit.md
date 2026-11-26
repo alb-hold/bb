@@ -1244,14 +1244,14 @@ draws the text or a placeholder, and sends nothing when the text is already on
 screen, so a message never confirms an open menu), a session-file root (env
 override plus a home-relative default), and either an `assigned` session (bb picks a UUID;
 start and resume argv plus a transcript pattern that proves the session
-exists) or a `discovered` session (the CLI picks its id; bb reads the first
+exists), a `discovered` session (the CLI picks its id; bb reads the first
 JSON line of the matching transcript files and binds the one started in the
-thread workspace after launch). An optional `activity` block tells the bb CLI
+thread workspace after launch), or a `sqlite-discovered` session (the CLI picks its id and indexes sessions in a SQLite database under `sessionRoot`; bb binds the single row matching the workspace after launch and reads `transcript`), plus optional `workspaceArgs` (`{cwd}`/`{cwdJson}`) and `promptArgs` (`{prompt}`). An optional `activity` block tells the bb CLI
 how to see turns: `hooks` (extra argv carrying `{settings}`, the hook event
 names that mean working or idle, and the prompt field; the harness installs
 command hooks that append each event's JSON to a private file) and
 `transcript` (record matches on the session file: equal fields, string
-prefixes, and a prompt text field). Equality supports strings and booleans.
+prefixes, `present`/`absent` field paths, and a prompt text field). Equality supports strings and booleans.
 Optional `hooks.pending` records provisional events without ending a turn;
 `hooks.turnId` correlates hook input with transcript turns. Optional transcript
 `identity` names `recordId`, `parentId` and `turnId` fields so duplicate or late

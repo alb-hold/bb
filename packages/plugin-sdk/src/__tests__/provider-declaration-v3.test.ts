@@ -658,6 +658,16 @@ describe("provider declaration fields renamed in SDK 0.4.16", () => {
         { ...assigned, executable: "/usr/bin/my-agent" },
         /experimental_nativeTerminal\.executable must be a bare executable name/u,
       ],
+      [
+        "prompt argv without the prompt token",
+        { ...assigned, promptArgs: ["-i"] },
+        /experimental_nativeTerminal\.promptArgs must pass \{prompt\} when not empty/u,
+      ],
+      [
+        "workspace argv without a workspace token",
+        { ...assigned, workspaceArgs: ["--settings", "{}"] },
+        /experimental_nativeTerminal\.workspaceArgs must pass \{cwd\} or \{cwdJson\} when not empty/u,
+      ],
     ])("rejects %s", (_label, value, message) => {
       expect(() =>
         validatePluginProviderDeclaration(
