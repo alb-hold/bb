@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { terminalClientMessageSchema } from "@bb/server-contract";
+import {
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  terminalClientMessageSchema,
+} from "@bb/server-contract";
 
 const { socket } = vi.hoisted(() => {
   const socket = {
@@ -10,6 +13,7 @@ const { socket } = vi.hoisted(() => {
     onerror: undefined as (() => void) | undefined,
     onmessage: undefined as ((event: { data: string }) => void) | undefined,
     onopen: undefined as (() => void) | undefined,
+    protocol: "",
     readyState: 1,
     send: vi.fn(),
   };
@@ -173,6 +177,62 @@ describe("terminal attach", () => {
       } finally {
         socket.onclose?.();
         await attached;
+      }
+    },
+  );
+
+  it.each([
+    { threadId: "thr_native", nudges: true },
+    { threadId: null, nudges: false },
+  ])(
+    "requests a repaint on attach only for thread-owned terminals ($threadId)",
+    async ({ threadId, nudges }) => {
+      vi.useFakeTimers();
+      prepareInteractiveTerminal(80, 24);
+      socket.protocol = TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL;
+      const terminalId = "term_repaint";
+      const session = {
+        id: terminalId,
+        threadId,
+        environmentId: null,
+        hostId: "host",
+        title: "Terminal",
+        initialCwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        status: "running",
+        exitCode: null,
+        closeReason: null,
+        createdAt: 1,
+        updatedAt: 2,
+        lastUserInputAt: null,
+      };
+      const attached = attachTerminal({
+        baseUrl: "http://localhost:3001",
+        terminalId,
+      });
+      try {
+        openSocket();
+        await vi.advanceTimersByTimeAsync(1_000);
+        socket.send.mockClear();
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "attached",
+            session,
+            replayStartSeq: 0,
+            nextSeq: 2,
+          }),
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        const resizes = socket.send.mock.calls
+          .map(([raw]) => JSON.parse(String(raw)))
+          .filter((message) => message.type === "resize");
+        expect(resizes.length > 0).toBe(nudges);
+      } finally {
+        socket.protocol = "";
+        socket.onclose?.();
+        await attached;
+        vi.useRealTimers();
       }
     },
   );
