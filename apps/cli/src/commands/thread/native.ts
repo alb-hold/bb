@@ -452,13 +452,14 @@ export async function holdNativeHarness(
           mcpArgs,
           cwd,
         );
+        const launchedAtMs = Date.now();
         discovery = {
           cli: spec.cli,
           existingSessionIds:
             launch.session.kind === "discover"
               ? snapshotNativeWorkspaceSessions({ cli: spec.cli, cwd, env })
               : new Set<string>(),
-          launchedAtMs: Date.now(),
+          launchedAtMs,
         };
         discoverer.arm(launch.session.kind === "discover");
         reader = new NativeActivityReader(

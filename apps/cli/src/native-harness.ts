@@ -333,10 +333,16 @@ function workspacePathsFromUris(raw: string): string[] {
   return paths;
 }
 
-function readTranscriptStartedAtMs(
+function minimumTimestampForPrecision(raw: string, boundaryMs: number): number {
+  return /\.\d+/u.test(raw)
+    ? boundaryMs
+    : Math.floor(boundaryMs / 1_000) * 1_000;
+}
+
+function readTranscriptStartedAt(
   filePath: string,
   fieldPath: string,
-): number | null {
+): { raw: string; startedAtMs: number } | null {
   const line = readFirstLine(filePath);
   if (line === null) return null;
   let parsed: unknown;
@@ -348,7 +354,7 @@ function readTranscriptStartedAtMs(
   const startedAt = readRecordField(parsed, fieldPath);
   if (typeof startedAt !== "string") return null;
   const startedAtMs = Date.parse(startedAt);
-  return Number.isNaN(startedAtMs) ? null : startedAtMs;
+  return Number.isNaN(startedAtMs) ? null : { raw: startedAt, startedAtMs };
 }
 
 export function snapshotNativeWorkspaceSessions(args: {
@@ -421,7 +427,6 @@ function findSqliteNativeSession(
   } catch {
     return { kind: "none" };
   }
-  const sinceMs = args.launchedAtMs - SESSION_CLOCK_SKEW_MS;
   const ids = new Set<string>();
   let db: InstanceType<ReturnType<typeof loadSqliteDatabaseSync>> | null = null;
   try {
@@ -441,7 +446,13 @@ function findSqliteNativeSession(
       if (args.excludeSessionIds?.has(row.id) === true) continue;
       if (typeof row.started_at !== "string") continue;
       const startedAtMs = Date.parse(row.started_at);
-      if (Number.isNaN(startedAtMs) || startedAtMs < sinceMs) continue;
+      if (
+        Number.isNaN(startedAtMs) ||
+        startedAtMs <
+          minimumTimestampForPrecision(row.started_at, args.launchedAtMs)
+      ) {
+        continue;
+      }
       if (typeof row.workspace_uris !== "string") continue;
       if (
         !workspacePathsFromUris(row.workspace_uris).some((wsPath) =>
@@ -452,11 +463,17 @@ function findSqliteNativeSession(
       }
       const transcriptFile = findNativeSessionFile(args.cli, args.env, row.id);
       if (transcriptFile === null) continue;
-      const createdAtMs = readTranscriptStartedAtMs(
+      const createdAt = readTranscriptStartedAt(
         transcriptFile,
         session.transcriptStartedAtField,
       );
-      if (createdAtMs === null || createdAtMs < sinceMs) continue;
+      if (
+        createdAt === null ||
+        createdAt.startedAtMs <
+          minimumTimestampForPrecision(createdAt.raw, args.launchedAtMs)
+      ) {
+        continue;
+      }
       ids.add(row.id);
     }
   } catch {

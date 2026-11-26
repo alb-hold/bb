@@ -763,7 +763,7 @@ describe("findNativeSession", () => {
       session: { kind: "resume", id: sessionId },
     });
 
-    const launchedAtMs = Date.parse("2026-11-26T10:57:05.000Z");
+    const launchedAtMs = Date.parse("2026-11-26T10:57:05.750Z");
     expect(
       findNativeSession({
         cli: agyCli,
@@ -798,19 +798,15 @@ describe("findNativeSession", () => {
       "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
     );
     const preExistingId = "00000000-0000-4000-8000-000000000001";
-    const skewPreExistingId = "00000000-0000-4000-8000-000000000003";
+    const postSnapshotPreLaunchId = "00000000-0000-4000-8000-000000000003";
+    const postSnapshotFractionalPreLaunchId =
+      "00000000-0000-4000-8000-000000000004";
     insert.run(
       preExistingId,
       JSON.stringify([pathToFileURL(cwd).href]),
       "2026-11-26 10:50:00.000000+00:00",
     );
     writeAgyTranscript(preExistingId, "2026-11-26T10:50:00Z");
-    insert.run(
-      skewPreExistingId,
-      JSON.stringify([pathToFileURL(cwd).href]),
-      "2026-11-26 10:57:04.000000+00:00",
-    );
-    writeAgyTranscript(skewPreExistingId, "2026-11-26T10:57:04Z");
     db.close();
 
     const preSpawnSnapshot = snapshotNativeWorkspaceSessions({
@@ -818,10 +814,7 @@ describe("findNativeSession", () => {
       cwd,
       env: { HOME: home },
     });
-    expect([...(preSpawnSnapshot ?? [])].sort()).toEqual([
-      preExistingId,
-      skewPreExistingId,
-    ]);
+    expect([...(preSpawnSnapshot ?? [])]).toEqual([preExistingId]);
 
     const dbAfter = new DatabaseSync(dbPath);
     dbAfter
@@ -838,6 +831,29 @@ describe("findNativeSession", () => {
         JSON.stringify(["file:///other/workspace"]),
         "2026-11-26 10:57:07.221455+00:00",
       );
+    dbAfter
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        postSnapshotPreLaunchId,
+        JSON.stringify([pathToFileURL(cwd).href]),
+        "2026-11-26 10:57:08.000000+00:00",
+      );
+    writeAgyTranscript(postSnapshotPreLaunchId, "2026-11-26T10:57:04Z");
+    dbAfter
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        postSnapshotFractionalPreLaunchId,
+        JSON.stringify([pathToFileURL(cwd).href]),
+        "2026-11-26 10:57:08.000000+00:00",
+      );
+    writeAgyTranscript(
+      postSnapshotFractionalPreLaunchId,
+      "2026-11-26T10:57:05.200Z",
+    );
     dbAfter.close();
 
     expect(
@@ -850,18 +866,6 @@ describe("findNativeSession", () => {
         nowMs: launchedAtMs + 4_000,
       }),
     ).toEqual({ kind: "none" });
-    expect(
-      findNativeSession({
-        cli: agyCli,
-        cwd,
-        env: { HOME: home },
-        launchedAtMs,
-        nowMs: launchedAtMs + 4_000,
-      }),
-    ).toEqual({
-      kind: "unique",
-      sessionId: skewPreExistingId,
-    });
 
     const dbNew = new DatabaseSync(dbPath);
     dbNew
@@ -871,7 +875,7 @@ describe("findNativeSession", () => {
       .run(
         sessionId,
         JSON.stringify([pathToFileURL(cwd).href]),
-        "2026-11-26 10:57:07.221455+00:00",
+        "2026-11-26 10:57:05.800000+00:00",
       );
     dbNew.close();
 
@@ -889,7 +893,7 @@ describe("findNativeSession", () => {
 
     const transcriptFile = writeAgyTranscript(
       sessionId,
-      "2026-11-26T10:57:07Z",
+      "2026-11-26T10:57:05Z",
     );
     expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBe(
       transcriptFile,
