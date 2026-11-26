@@ -234,4 +234,103 @@ describe("the holder's session discovery", () => {
       expect(h.reports).toEqual(["working"]);
     });
   });
+
+  describe("provisional settle window for sqlite-discovered sessions", () => {
+    it("holds a lone candidate provisional until the settle window closes, then records and follows it", async () => {
+      let nowMs = 1_000;
+      const sent: Array<{ authorization: string; nativeSessionId: string }> =
+        [];
+      const followed: string[] = [];
+      const logged: Array<{ event: string; fields: unknown }> = [];
+      const discoverer = createSessionDiscoverer({
+        currentCredential: () => "current",
+        discardUnsentReports: () => undefined,
+        find: () => ({ kind: "unique", sessionId: ID }),
+        log: (event, fields) => logged.push({ event, fields }),
+        now: () => nowMs,
+        reader: () => ({
+          sessionDiscovered: (sessionId) => followed.push(sessionId),
+          suspend: () => undefined,
+        }),
+        recordSession: async (args) => {
+          sent.push(args);
+        },
+        settleMs: 2_000,
+      });
+      discoverer.arm(true);
+
+      await discoverer.discover();
+      expect(sent).toEqual([]);
+      expect(followed).toEqual([]);
+      expect(discoverer.remainingSettleMs()).toBe(2_000);
+
+      nowMs = 2_500;
+      await discoverer.discover();
+      expect(sent).toEqual([]);
+      expect(followed).toEqual([]);
+      expect(discoverer.remainingSettleMs()).toBe(500);
+
+      nowMs = 3_000;
+      await discoverer.discover();
+      expect(sent).toEqual([
+        { authorization: "Bearer current", nativeSessionId: ID },
+      ]);
+      expect(followed).toEqual([ID]);
+      expect(discoverer.remainingSettleMs()).toBe(0);
+      expect(logged).toEqual([
+        { event: "session-discovery-recorded", fields: { sessionId: ID } },
+      ]);
+    });
+
+    it("demotes a provisional candidate to ambiguous and never persists or follows it when a second session appears inside the window", async () => {
+      let nowMs = 1_000;
+      const competitorId = "01a1246a-b896-7b71-9895-000000000001";
+      let match:
+        | { kind: "unique"; sessionId: string }
+        | { kind: "ambiguous"; sessionIds: string[] } = {
+        kind: "unique",
+        sessionId: competitorId,
+      };
+      const sent: Array<{ authorization: string; nativeSessionId: string }> =
+        [];
+      const followed: string[] = [];
+      const logged: Array<{ event: string; fields: unknown }> = [];
+      const discoverer = createSessionDiscoverer({
+        currentCredential: () => "current",
+        discardUnsentReports: () => undefined,
+        find: () => match,
+        log: (event, fields) => logged.push({ event, fields }),
+        now: () => nowMs,
+        reader: () => ({
+          sessionDiscovered: (sessionId) => followed.push(sessionId),
+          suspend: () => undefined,
+        }),
+        recordSession: async (args) => {
+          sent.push(args);
+        },
+        settleMs: 2_000,
+      });
+      discoverer.arm(true);
+
+      await discoverer.discover();
+      expect(sent).toEqual([]);
+      expect(followed).toEqual([]);
+
+      nowMs = 1_800;
+      match = { kind: "ambiguous", sessionIds: [competitorId, ID] };
+      await discoverer.discover();
+      expect(sent).toEqual([]);
+      expect(followed).toEqual([]);
+      expect(discoverer.remainingSettleMs()).toBe(0);
+      expect(logged).toEqual([
+        { event: "session-discovery-ambiguous", fields: { count: 2 } },
+      ]);
+
+      nowMs = 5_000;
+      match = { kind: "unique", sessionId: ID };
+      await discoverer.discover();
+      expect(sent).toEqual([]);
+      expect(followed).toEqual([]);
+    });
+  });
 });

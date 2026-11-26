@@ -1547,6 +1547,9 @@ export async function attachTerminal(args: {
       },
       onMessage: (message) => {
         switch (message.type) {
+          case "attached":
+            if (message.session.threadId !== null) transport.requestRepaint();
+            return;
           case "session-updated":
             if (args.reportTiming && message.session.attachLiveFrame) {
               process.stderr.write(

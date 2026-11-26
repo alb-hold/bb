@@ -1462,4 +1462,628 @@ describe("claude tool-result translation (delta path)", () => {
       }),
     );
   });
+
+  it("translates advisor server_tool_use and redacted advisor_tool_result without unhandled events or leaked ciphertext", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_6s73ie6hee";
+    const toolUseId = "srvtoolu_014RZuJFuVAaAda7uVEeHYYP";
+    const secretBlob = "SECRET_ENCRYPTED_ADVISOR_PAYLOAD_DO_NOT_LEAK";
+
+    const streamStartToolUse = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "server_tool_use",
+                id: toolUseId,
+                name: "advisor",
+                input: {},
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a0c34105-3f63-4a89-8de0-55a1d3afd2d3",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(streamStartToolUse).toEqual([]);
+
+    const assistantToolUse = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "server_tool_use",
+                  id: toolUseId,
+                  name: "advisor",
+                  input: {},
+                },
+              ],
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "c3357cf3-a901-42ed-9986-38d011711f42",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(assistantToolUse).toContainEqual(
+      expect.objectContaining({
+        type: "item/started",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "pending",
+          presentation: {
+            label: {
+              pending: "Consulting advisor",
+              completed: "Consulted advisor",
+            },
+            icon: { glyph: "Brain" },
+          },
+        }),
+      }),
+    );
+
+    const streamStartResult = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 2,
+              content_block: {
+                type: "advisor_tool_result",
+                tool_use_id: toolUseId,
+                content: {
+                  type: "advisor_redacted_result",
+                  encrypted_content: secretBlob,
+                },
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "0456eb9d-5f29-4764-9e1a-2db67dcadea0",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(streamStartResult).toEqual([]);
+
+    const assistantResult = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "advisor_tool_result",
+                  tool_use_id: toolUseId,
+                  content: {
+                    type: "advisor_redacted_result",
+                    encrypted_content: secretBlob,
+                  },
+                },
+              ],
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "32a96a13-033d-4015-b2df-667bbadec200",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(assistantResult).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "completed",
+          presentation: {
+            label: {
+              pending: "Consulting advisor",
+              completed: "Consulted advisor",
+            },
+            icon: { glyph: "Brain" },
+          },
+        }),
+      }),
+    );
+
+    const allEvents = [
+      ...streamStartToolUse,
+      ...assistantToolUse,
+      ...streamStartResult,
+      ...assistantResult,
+    ];
+    expect(allEvents.filter((e) => e.type === "provider/unhandled")).toEqual(
+      [],
+    );
+    expect(JSON.stringify(allEvents)).not.toContain(secretBlob);
+  });
+
+  it("marks advisor_tool_result_error blocks as failed and surfaces informational hook warnings", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_advisor_err";
+    const toolUseId = "srvtoolu_err_1";
+
+    harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "server_tool_use",
+              id: toolUseId,
+              name: "advisor",
+              input: {},
+            },
+          ],
+        },
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+
+    const failedResult = harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "advisor_tool_result",
+              tool_use_id: toolUseId,
+              content: {
+                type: "advisor_tool_result_error",
+                error_code: "overloaded",
+              },
+            },
+          ],
+        },
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+    expect(failedResult).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "failed",
+          result: "overloaded",
+        }),
+      }),
+    );
+
+    const warningEvents = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "system",
+            subtype: "informational",
+            content: "A hook didn't answer in time, so it didn't check this action.",
+            level: "warning",
+            session_id: "sess-1",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(warningEvents).toContainEqual(
+      expect.objectContaining({
+        type: "provider/warning",
+        summary: "A hook didn't answer in time, so it didn't check this action.",
+      }),
+    );
+  });
+
+  it("preserves ordinary advisor_result text from Claude SDK output", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_advisor_text";
+    const toolUseId = "srvtoolu_019KAdvisorPlainText";
+    const advisorAdvice =
+      "Split the migration into an additive column deploy first, backfill in batches, and add the NOT NULL constraint in a follow-up deploy.";
+
+    harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              id: "msg_01AdvisorPlain1",
+              type: "message",
+              role: "assistant",
+              model: "claude-opus-4-6",
+              content: [
+                {
+                  type: "server_tool_use",
+                  id: toolUseId,
+                  name: "advisor",
+                  input: {},
+                },
+              ],
+              stop_reason: null,
+              stop_sequence: null,
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a156eb9d-5f29-4764-9e1a-2db67dcadea1",
+          },
+        },
+      },
+      { threadId },
+    );
+
+    const streamStartResult = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 1,
+              content_block: {
+                type: "advisor_tool_result",
+                tool_use_id: toolUseId,
+                content: {
+                  type: "advisor_result",
+                  text: advisorAdvice,
+                },
+              },
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a256eb9d-5f29-4764-9e1a-2db67dcadea2",
+          },
+        },
+      },
+      { threadId },
+    );
+    expect(streamStartResult).toEqual([]);
+
+    const completedEvents = harness.translate(
+      {
+        jsonrpc: "2.0",
+        method: "sdk/message",
+        params: {
+          threadId,
+          message: {
+            type: "assistant",
+            message: {
+              id: "msg_01AdvisorPlain1",
+              type: "message",
+              role: "assistant",
+              model: "claude-opus-4-6",
+              content: [
+                {
+                  type: "advisor_tool_result",
+                  tool_use_id: toolUseId,
+                  content: {
+                    type: "advisor_result",
+                    text: advisorAdvice,
+                  },
+                },
+              ],
+              stop_reason: null,
+              stop_sequence: null,
+            },
+            session_id: "2d550f77-b591-488e-be9c-5a5b69fe1261",
+            parent_tool_use_id: null,
+            uuid: "a356eb9d-5f29-4764-9e1a-2db67dcadea3",
+          },
+        },
+      },
+      { threadId },
+    );
+
+    expect(completedEvents).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId(toolUseId, threadId),
+          tool: "advisor",
+          status: "completed",
+          result: advisorAdvice,
+        }),
+      }),
+    );
+    expect(
+      completedEvents.filter((event) => event.type === "provider/unhandled"),
+    ).toEqual([]);
+  });
+
+  it("preserves structured result text across sibling server tool results while keeping encrypted payloads hidden", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "thr_server_siblings";
+    const encryptedWebBlob = "ENC_WEB_RESULT_DO_NOT_EXPOSE_991";
+    const encryptedStdoutBlob = "ENC_STDOUT_DO_NOT_EXPOSE_992";
+
+    harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_ws_1",
+              name: "web_search",
+              input: { query: "sqlite wal checkpoint" },
+            },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_wf_1",
+              name: "web_fetch",
+              input: { url: "https://sqlite.org/wal.html" },
+            },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_bash_1",
+              name: "bash_code_execution",
+              input: { command: "python3 -c 'print(42)'" },
+            },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_code_enc_1",
+              name: "code_execution",
+              input: { code: "21 * 2" },
+            },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_edit_1",
+              name: "text_editor_code_execution",
+              input: { command: "view", path: "/tmp/app.py" },
+            },
+            {
+              type: "mcp_tool_use",
+              id: "mcptoolu_1",
+              server_name: "github",
+              name: "get_issue",
+              input: { number: 42 },
+            },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_ts_1",
+              name: "tool_search_tool_regex",
+              input: { pattern: "github.*issue" },
+            },
+          ],
+        },
+        session_id: "sess-siblings",
+      },
+      { threadId },
+    );
+
+    const events = harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "srvtoolu_ws_1",
+              content: [
+                {
+                  type: "web_search_result",
+                  title: "Write-Ahead Logging",
+                  url: "https://sqlite.org/wal.html",
+                  encrypted_content: encryptedWebBlob,
+                  page_age: "2d",
+                },
+              ],
+            },
+            {
+              type: "web_fetch_tool_result",
+              tool_use_id: "srvtoolu_wf_1",
+              content: {
+                type: "web_fetch_result",
+                url: "https://sqlite.org/wal.html",
+                retrieved_at: "2026-11-26T16:00:00Z",
+                content: {
+                  type: "document",
+                  title: "WAL Mode",
+                  source: {
+                    type: "text",
+                    media_type: "text/plain",
+                    data: "WAL provides more concurrency as readers do not block writers.",
+                  },
+                },
+              },
+            },
+            {
+              type: "bash_code_execution_tool_result",
+              tool_use_id: "srvtoolu_bash_1",
+              content: {
+                type: "bash_code_execution_result",
+                stdout: "42\n",
+                stderr: "",
+                return_code: 0,
+                content: [],
+              },
+            },
+            {
+              type: "code_execution_tool_result",
+              tool_use_id: "srvtoolu_code_enc_1",
+              content: {
+                type: "encrypted_code_execution_result",
+                encrypted_stdout: encryptedStdoutBlob,
+                stderr: "deprecation warning on line 1",
+                return_code: 0,
+                content: [],
+              },
+            },
+            {
+              type: "text_editor_code_execution_tool_result",
+              tool_use_id: "srvtoolu_edit_1",
+              content: {
+                type: "text_editor_code_execution_view_result",
+                file_type: "text",
+                content: "def main():\n    return 42\n",
+                num_lines: 2,
+                start_line: 1,
+                total_lines: 2,
+              },
+            },
+            {
+              type: "mcp_tool_result",
+              tool_use_id: "mcptoolu_1",
+              is_error: false,
+              content: [
+                {
+                  type: "text",
+                  text: "Issue #42: Support server tool results",
+                },
+              ],
+            },
+            {
+              type: "tool_search_tool_result",
+              tool_use_id: "srvtoolu_ts_1",
+              content: {
+                type: "tool_search_tool_search_result",
+                tool_references: [
+                  { type: "tool_reference", tool_name: "mcp__github__get_issue" },
+                  { type: "tool_reference", tool_name: "mcp__github__list_issues" },
+                ],
+              },
+            },
+          ],
+        },
+        session_id: "sess-siblings",
+      },
+      { threadId },
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "webSearch",
+          id: harness.itemId("srvtoolu_ws_1", threadId),
+          resultText: "Write-Ahead Logging (https://sqlite.org/wal.html)",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "webFetch",
+          id: harness.itemId("srvtoolu_wf_1", threadId),
+          resultText:
+            "WAL provides more concurrency as readers do not block writers.",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId("srvtoolu_bash_1", threadId),
+          status: "completed",
+          result: "42",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId("srvtoolu_code_enc_1", threadId),
+          status: "completed",
+          result: "deprecation warning on line 1",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId("srvtoolu_edit_1", threadId),
+          status: "completed",
+          result: "def main():\n    return 42",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId("mcptoolu_1", threadId),
+          server: "github",
+          tool: "get_issue",
+          status: "completed",
+          result: "Issue #42: Support server tool results",
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "toolCall",
+          id: harness.itemId("srvtoolu_ts_1", threadId),
+          tool: "ToolSearch",
+          status: "completed",
+          result: "mcp__github__get_issue, mcp__github__list_issues",
+        }),
+      }),
+    );
+
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(encryptedWebBlob);
+    expect(serialized).not.toContain(encryptedStdoutBlob);
+    expect(
+      events.filter((event) => event.type === "provider/unhandled"),
+    ).toEqual([]);
+  });
 });

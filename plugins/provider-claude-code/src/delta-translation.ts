@@ -28,6 +28,7 @@ import {
   claudeAssistantMessageSchema,
   claudeCompactBoundarySystemMessageSchema,
   claudeConversationResetMessageSchema,
+  claudeInformationalSystemMessageSchema,
   claudeInitSystemMessageSchema,
   claudeModelFallbackSystemMessageSchema,
   claudeModelRefusalNoFallbackSystemMessageSchema,
@@ -72,6 +73,7 @@ import {
   extractClaudeContextWindowUsage,
   extractClaudeRequestContextTokens,
   extractClaudeResultTokenUsage,
+  extractServerToolResults,
   extractStreamTextDelta,
   extractStreamThinkingDelta,
   extractThinkingBlocks,
@@ -79,6 +81,7 @@ import {
   extractToolUses,
   getNestedParentToolUseId,
   resolveClaudeModelContextWindowHint,
+  type ClaudeServerToolResultBlockData,
 } from "./sdk-extraction.js";
 import { claudeCodeVisibilityMetadata } from "./visibility.js";
 
@@ -101,6 +104,27 @@ function terminalToolShape(
     return summary.length > 0 ? { ...shape, summary } : shape;
   }
   return shape;
+}
+
+function defaultServerToolName(
+  blockType: ClaudeServerToolResultBlockData["blockType"],
+): string {
+  switch (blockType) {
+    case "advisor_tool_result":
+      return "advisor";
+    case "web_search_tool_result":
+      return "WebSearch";
+    case "web_fetch_tool_result":
+      return "WebFetch";
+    case "tool_search_tool_result":
+      return "ToolSearch";
+    case "bash_code_execution_tool_result":
+    case "code_execution_tool_result":
+    case "text_editor_code_execution_tool_result":
+      return "code_execution";
+    case "mcp_tool_result":
+      return "mcp";
+  }
 }
 
 function terminalCloseFields(
@@ -793,6 +817,25 @@ export function createClaudeDeltaTranslator(
       ];
     }
 
+    const informationalMessage =
+      claudeInformationalSystemMessageSchema.safeParse(event);
+    if (informationalMessage.success) {
+      const { content, level } = informationalMessage.data;
+      if (
+        content !== undefined &&
+        (level === "warning" || level === "error")
+      ) {
+        return [
+          {
+            kind: "provider.warning",
+            summary: content,
+            vouchedTurn: true,
+          },
+        ];
+      }
+      return [];
+    }
+
     const taskDeltas = translateClaudeTaskMessage({
       event,
       tasks: state.tasksById,
@@ -960,6 +1003,30 @@ export function createClaudeDeltaTranslator(
           planStepsSnapshotDelta(classified.planSteps, parentRefField),
         );
       }
+    }
+
+    for (const result of extractServerToolResults(message)) {
+      const started = state.startedTools.get(result.toolUseId);
+      state.startedTools.delete(result.toolUseId);
+      const base =
+        started ??
+        classifyClaudeToolResultFallback(
+          defaultServerToolName(result.blockType),
+          sessionCwd,
+        );
+      const status = result.isError ? "failed" : "completed";
+      deltas.push({
+        kind: "item.close",
+        key: { providerItemId: result.toolUseId, ...parentRefField },
+        status,
+        ...terminalCloseFields(
+          base.shape,
+          result.outputText,
+          result.isError ? 1 : 0,
+        ),
+        item: terminalToolShape(base.shape, result.outputText),
+        presentation: base.presentation,
+      });
     }
     return deltas;
   }

@@ -124,9 +124,17 @@ function announcedToolCall(
   return { id, base: `permission:${tool}`, key };
 }
 
+function unwrapUserRequestPrompt(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("<USER_REQUEST>")) return trimmed;
+  const end = trimmed.indexOf("</USER_REQUEST>");
+  if (end === -1) return trimmed;
+  return trimmed.slice("<USER_REQUEST>".length, end).trim();
+}
+
 function promptText(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const text = value.trim();
+  const text = unwrapUserRequestPrompt(value);
   return text.length === 0 ? null : text.slice(0, MAX_PROMPT_LENGTH);
 }
 
@@ -195,6 +203,12 @@ export function recordMatches(
   for (const [field, prefix] of Object.entries(match.startsWith ?? {})) {
     const value = readRecordField(record, field);
     if (typeof value !== "string" || !value.startsWith(prefix)) return false;
+  }
+  for (const field of match.present ?? []) {
+    if (readRecordField(record, field) === undefined) return false;
+  }
+  for (const field of match.absent ?? []) {
+    if (readRecordField(record, field) !== undefined) return false;
   }
   return true;
 }

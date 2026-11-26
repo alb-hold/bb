@@ -1,11 +1,37 @@
 import { createAccountPoolTestHost } from "./test-host.js";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { statusReportSchema } from "./contracts.js";
 import { createAccountPoolPlugin } from "./server.js";
+import { HubTokenStore } from "./store.js";
+import { ThreadTokenStore } from "./thread-tokens.js";
+
+const mintedTokens: string[] = [];
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  const wrappedRandomBytes = ((
+    size: number,
+    callback?: (err: Error | null, buf: Buffer) => void,
+  ) => {
+    if (callback !== undefined) {
+      return actual.randomBytes(size, callback);
+    }
+    const bytes = actual.randomBytes(size);
+    if (size === 32) {
+      mintedTokens.push(bytes.toString("base64url"));
+    }
+    return bytes;
+  }) as typeof actual.randomBytes;
+  return {
+    ...actual,
+    randomBytes: wrappedRandomBytes,
+  };
+});
 
 const ARCHIVE_UNDO_GRACE_MS = 30_000;
 
@@ -172,5 +198,311 @@ describe("Account Pooler archive undo grace", () => {
     f.setThread({ deletedAt: Date.now() });
     expect(await f.request()).toBe(401);
     expect(f.upstream).not.toHaveBeenCalled();
+  });
+
+  it("returns unrouted entries without throwing when a thread is archived or deleted while minting environment credentials", async () => {
+    for (const mode of ["archived-on-thread", "archived-on-nested", "deleted-on-thread"] as const) {
+      let threadReads = 0;
+      const dataDir = await mkdtemp(path.join(tmpdir(), "pool-archive-mint-race-"));
+      let thread = makeThreadResponse({
+        id: `thread-${mode}`,
+        providerId: "codex",
+        status: "idle",
+      });
+      const host = createAccountPoolTestHost({
+        pluginId: "account-pool",
+        dataDir,
+        sdk: {
+          hosts: { list: async () => [{ id: "host-one", name: "One" }] },
+          threads: {
+            get: async () => {
+              threadReads += 1;
+              if (
+                (mode === "archived-on-thread" && threadReads === 2) ||
+                (mode === "archived-on-nested" && threadReads === 3)
+              ) {
+                thread = makeThreadResponse({
+                  ...thread,
+                  archivedAt: Date.now(),
+                });
+              }
+              if (mode === "deleted-on-thread" && threadReads === 2) {
+                thread = makeThreadResponse({
+                  ...thread,
+                  deletedAt: Date.now(),
+                });
+              }
+              return thread;
+            },
+          },
+          system: { providerStates: async () => ({ providers: [] }) },
+        },
+      });
+      await createAccountPoolPlugin({
+        env: {},
+        codexUsageUrl: "https://usage.invalid/wham/usage",
+        fetch: async () => Response.json({}),
+        importCodexCredentials: async () => ({
+          accessToken: "codex-access-test",
+          refreshToken: "codex-refresh-test",
+          idToken: null,
+          accountId: "codex-acc-1",
+          planType: "pro",
+          email: null,
+          expiresAt: Date.now() + 3_600_000,
+        }),
+      })(host.bb);
+      cleanups.push(async () => {
+        await host.harness.lifecycle.dispose();
+        await rm(dataDir, { recursive: true, force: true });
+      });
+      await host.harness.behavior.callRpc("account.add", {
+        provider: "codex",
+        source: { kind: "import" },
+        label: null,
+        priority: 100,
+      });
+      const entries = await host.harness.behavior.resolveProviderEnv("codex", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      });
+      expect(entries).toEqual([]);
+      expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
+    }
+  });
+
+  it("fails closed when settling a half-minted credential rejects after forNested sees an archived thread", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-mint-settle-fail-"));
+    let clock = Date.now();
+    let threadReads = 0;
+    let failSettleLookup = true;
+    const sweepSpy = vi.spyOn(ThreadTokenStore.prototype, "sweepThreads");
+    let thread = makeThreadResponse({
+      id: "thr_race_settle_fail",
+      providerId: "claude-code",
+      status: "idle",
+      archivedAt: null,
+    });
+    const upstream = vi.fn<typeof fetch>(async () =>
+      Response.json({ routed: true }),
+    );
+    const host = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: {
+        hosts: {
+          list: async () => [{ id: "host-one", name: "One" }] as never[],
+        },
+        threads: {
+          get: async () => {
+            threadReads += 1;
+            if (threadReads === 3) {
+              thread = makeThreadResponse({
+                ...thread,
+                archivedAt: clock,
+              });
+            }
+            if (failSettleLookup && threadReads >= 4) {
+              throw new Error("lookup failed while settling");
+            }
+            return thread;
+          },
+        },
+        system: { providerStates: async () => ({ providers: [] }) },
+      },
+    });
+    await createAccountPoolPlugin({
+      now: () => clock,
+      env: {},
+      fetch: upstream,
+      threadSweepIntervalMs: 86_400_000,
+      threadSweepRetryMs: 86_400_000,
+    })(host.bb);
+    const service = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    await host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "test-settle-fail-key" },
+      label: null,
+      priority: 100,
+    });
+    await vi.waitFor(async () => {
+      const result = await host.harness.behavior.runCli(["status", "--json"]);
+      expect(
+        statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
+      ).toBe(true);
+    });
+
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
+    mintedTokens.length = 0;
+    await expect(
+      host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).rejects.toThrow("lookup failed while settling");
+    expect(threadReads).toBe(5);
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
+    expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
+
+    const secretDir = path.join(
+      dataDir,
+      "plugins",
+      "account-pool",
+      "secrets",
+      "accounts",
+    );
+    const postMintFiles = await readdir(secretDir);
+    const scopedFiles = postMintFiles.filter((name) =>
+      name.startsWith("scoped-route-"),
+    );
+    expect(scopedFiles).toHaveLength(1);
+    const initialMarkers = postMintFiles.filter((name) =>
+      name.startsWith("archived-thread-"),
+    );
+    expect(initialMarkers).toHaveLength(1);
+    const scopedRecord = JSON.parse(
+      await readFile(path.join(secretDir, scopedFiles[0]!), "utf8"),
+    ) as { threadId: string; tokenDigest: string };
+    expect(scopedRecord.threadId).toBe(thread.id);
+    const leakedToken = mintedTokens.find(
+      (candidate) =>
+        createHash("sha256").update(candidate).digest("hex") ===
+        scopedRecord.tokenDigest,
+    );
+    expect(leakedToken).toBeDefined();
+
+    const requestWithLeakedToken = async () => {
+      const response = await host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${leakedToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            messages: [],
+            max_tokens: 1,
+          }),
+        },
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
+
+    failSettleLookup = false;
+    expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
+
+    service.controller.abort();
+    await service.done;
+
+    const sweepService = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      sweepService.controller.abort();
+      await sweepService.done;
+    });
+    await vi.waitFor(async () => {
+      expect(sweepSpy).toHaveBeenCalledTimes(2);
+      const afterSweep = await readdir(secretDir);
+      expect(
+        afterSweep.filter((name) => name.startsWith("archived-thread-")),
+      ).toHaveLength(1);
+    });
+    expect(await requestWithLeakedToken()).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+
+    sweepService.controller.abort();
+    await sweepService.done;
+    await host.harness.lifecycle.dispose();
+
+    const reloadedHost = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: {
+        hosts: {
+          list: async () => [{ id: "host-one", name: "One" }] as never[],
+        },
+        threads: {
+          get: async () => thread,
+        },
+        system: { providerStates: async () => ({ providers: [] }) },
+      },
+    });
+    await createAccountPoolPlugin({
+      now: () => clock,
+      env: {},
+      fetch: upstream,
+      threadSweepIntervalMs: 86_400_000,
+      threadSweepRetryMs: 86_400_000,
+    })(reloadedHost.bb);
+    const reloadedService = reloadedHost.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      reloadedService.controller.abort();
+      await reloadedService.done;
+      await reloadedHost.harness.lifecycle.dispose();
+    });
+    await vi.waitFor(async () => {
+      const result = await reloadedHost.harness.behavior.runCli([
+        "status",
+        "--json",
+      ]);
+      expect(
+        statusReportSchema.parse(JSON.parse(result.stdout)).accepting,
+      ).toBe(true);
+    });
+    const reloadedResponse = await reloadedHost.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${leakedToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-opus-4-1",
+          messages: [],
+          max_tokens: 1,
+        }),
+      },
+    );
+    await reloadedResponse.text();
+    expect(reloadedResponse.status).toBe(401);
+    expect(upstream).not.toHaveBeenCalled();
+
+    const verifyHubTokens = new HubTokenStore(secretDir, () => clock);
+    await verifyHubTokens.initialize();
+    const verifyThreadTokens = new ThreadTokenStore(
+      secretDir,
+      verifyHubTokens,
+      () => clock,
+    );
+    await verifyThreadTokens.initialize(["host-one"]);
+    expect(
+      await verifyThreadTokens.authenticate(leakedToken!, "claude"),
+    ).toBeNull();
+    expect(
+      await reloadedHost.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).toEqual([]);
   });
 });

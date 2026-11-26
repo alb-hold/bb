@@ -26,6 +26,7 @@ import {
   type TerminalPtyExit,
   type TerminalPtyProcess,
 } from "./terminal-manager.js";
+import { CURSOR_REPLY_FALLBACK_DELAY_MS } from "./terminal-cursor-reply-fallback.js";
 
 const DEFAULT_TERMINAL_START = { mode: "shell" } as const;
 const tempDirs: string[] = [];
@@ -2060,6 +2061,67 @@ describe("TerminalManager", () => {
       expect(collectTerminalOutput(harness.messages)).toContain("live-2");
       expect(collectTerminalOutput(harness.messages)).not.toContain("\x1b[6n");
       expect(collectTerminalOutput(harness.messages)).not.toContain("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers a cursor position query it cannot place after a reflowing resize once no client has replied", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      pty.emitData(`${"A".repeat(90)}\r\n`);
+      await harness.manager.handleMessage({
+        type: "terminal.resize",
+        terminalId: "term-1",
+        cols: 60,
+        rows: 30,
+      });
+      pty.emitData("\x1b[6n");
+      vi.advanceTimersByTime(10);
+
+      expect(pty.writeCalls).toEqual([]);
+      expect(collectTerminalOutput(harness.messages)).toContain("\x1b[6n");
+
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS);
+
+      expect(pty.writeCalls).toHaveLength(1);
+      expect(String(pty.writeCalls[0])).toMatch(/^\x1b\[\d+;\d+R$/u);
+
+      await harness.manager.handleMessage({
+        type: "terminal.input",
+        terminalId: "term-1",
+        dataBase64: Buffer.from("\x1b[4;1R", "utf8").toString("base64"),
+      });
+
+      expect(pty.writeCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes a client's reply to a forwarded cursor position query through and sends no fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const pty = await openTerminal(harness);
+      pty.emitData(`${"A".repeat(90)}\r\n`);
+      await harness.manager.handleMessage({
+        type: "terminal.resize",
+        terminalId: "term-1",
+        cols: 60,
+        rows: 30,
+      });
+      pty.emitData("\x1b[6n");
+      await harness.manager.handleMessage({
+        type: "terminal.input",
+        terminalId: "term-1",
+        dataBase64: Buffer.from("\x1b[4;1R", "utf8").toString("base64"),
+      });
+      vi.advanceTimersByTime(CURSOR_REPLY_FALLBACK_DELAY_MS * 4);
+
+      expect(pty.writeCalls.map(String)).toEqual(["\x1b[4;1R"]);
     } finally {
       vi.useRealTimers();
     }
