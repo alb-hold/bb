@@ -435,6 +435,29 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("retains the closing callback when frame reporting waits for a parser boundary", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const opening = vi.fn();
+    const closing = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+      opening,
+    );
+    await state.snapshot();
+    state.pushBase64(
+      1,
+      Buffer.from("\u001b[?2026l\u001b[31").toString("base64"),
+      closing,
+    );
+    await state.snapshot();
+    state.pushBase64(2, Buffer.from("mred").toString("base64"));
+    await state.snapshot();
+    expect(closing).toHaveBeenCalledOnce();
+    expect(opening).not.toHaveBeenCalled();
+    state.dispose();
+  });
+
   it("does not report a synchronized frame while the update remains open", async () => {
     const state = new TerminalScreenState(40, 5);
     const rendered = vi.fn();

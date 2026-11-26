@@ -242,9 +242,9 @@ function concatenateBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
 }
 
 function synchronizedOutputEnableProgress(
-  previousTail: Buffer,
-  data: Buffer,
-): { opened: boolean; tail: Buffer } {
+  previousTail: Buffer<ArrayBufferLike>,
+  data: Buffer<ArrayBufferLike>,
+): { opened: boolean; tail: Buffer<ArrayBufferLike> } {
   const marker = SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE;
   const markerLength = marker.length;
   const opensInChunk = data.indexOf(marker) !== -1;
@@ -498,7 +498,8 @@ export class TerminalScreenState {
   private replayBatchBytes = 8 * 1024;
   private frameBaseline?: string;
   private synchronizedRenderCallback?: () => void;
-  private synchronizedOutputEnableTail = Buffer.alloc(0);
+  private synchronizedOutputEnableTail: Buffer<ArrayBufferLike> =
+    Buffer.alloc(0);
 
   constructor(
     cols: number,
@@ -731,10 +732,14 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
-                let data =
+                let data: Buffer<ArrayBufferLike> =
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
-                    : next.data;
+                    : Buffer.from(
+                        next.data.buffer,
+                        next.data.byteOffset,
+                        next.data.byteLength,
+                      );
                 const batch = [data];
                 let bytes = data.byteLength;
                 while (
@@ -815,7 +820,8 @@ export class TerminalScreenState {
                       this.frameBaseline = undefined;
                       this.synchronizedRenderCallback = undefined;
                     } else {
-                      this.synchronizedRenderCallback ??= frameCallback;
+                      this.synchronizedRenderCallback =
+                        rendered ?? frameCallback;
                     }
                   }
                   const elapsed = performance.now() - started;
