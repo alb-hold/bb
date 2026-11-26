@@ -38,6 +38,7 @@ import {
   findNativeSession,
   nativeMcpArgs,
   resolveNativeHarnessLaunch,
+  snapshotNativeWorkspaceSessions,
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
@@ -281,6 +282,7 @@ export async function holdNativeHarness(
     const nodePty = await import("node-pty");
     let discovery: {
       cli: Parameters<typeof findNativeSession>[0]["cli"];
+      existingSessionIds: ReadonlySet<string> | null;
       launchedAtMs: number;
     } | null = null;
     const discoverer = createSessionDiscoverer({
@@ -293,6 +295,7 @@ export async function holdNativeHarness(
             cli: discovery.cli,
             cwd,
             env,
+            excludeSessionIds: discovery.existingSessionIds,
             launchedAtMs: discovery.launchedAtMs,
             nowMs: Date.now(),
           });
@@ -449,7 +452,14 @@ export async function holdNativeHarness(
           mcpArgs,
           cwd,
         );
-        discovery = { cli: spec.cli, launchedAtMs: Date.now() };
+        discovery = {
+          cli: spec.cli,
+          existingSessionIds:
+            launch.session.kind === "discover"
+              ? snapshotNativeWorkspaceSessions({ cli: spec.cli, cwd, env })
+              : new Set<string>(),
+          launchedAtMs: Date.now(),
+        };
         discoverer.arm(launch.session.kind === "discover");
         reader = new NativeActivityReader(
           spec.cli,

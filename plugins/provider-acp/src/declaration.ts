@@ -42,6 +42,7 @@ const AGY_NATIVE_TERMINAL: NonNullable<
     idColumn: "conversation_id",
     workspaceUrisColumn: "workspace_uris",
     startedAtColumn: "last_user_input_time",
+    transcriptStartedAtField: "created_at",
   },
   activity: {
     transcript: {

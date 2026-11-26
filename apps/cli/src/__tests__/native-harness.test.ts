@@ -19,6 +19,7 @@ import {
   findNativeSession,
   findNativeSessionFile,
   resolveNativeHarnessLaunch,
+  snapshotNativeWorkspaceSessions,
 } from "../native-harness.js";
 
 const roots: string[] = [];
@@ -687,6 +688,7 @@ describe("findNativeSession", () => {
         idColumn: "conversation_id",
         workspaceUrisColumn: "workspace_uris",
         startedAtColumn: "last_user_input_time",
+        transcriptStartedAtField: "created_at",
       },
     };
     const home = tempHome();
@@ -774,56 +776,133 @@ describe("findNativeSession", () => {
 
     const agyRoot = path.join(home, ".gemini", "antigravity-cli");
     mkdirSync(agyRoot, { recursive: true });
+    const writeAgyTranscript = (id: string, createdAt: string): string => {
+      const dir = path.join(agyRoot, "brain", id, ".system_generated", "logs");
+      mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, "transcript.jsonl");
+      writeFileSync(
+        file,
+        `${JSON.stringify({ step_index: 0, type: "USER_INPUT", created_at: createdAt })}\n`,
+      );
+      return file;
+    };
     const { DatabaseSync } = createRequire(import.meta.url)(
       "node:sqlite",
     ) as typeof import("node:sqlite");
-    const db = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"));
+    const dbPath = path.join(agyRoot, "conversation_summaries.db");
+    const db = new DatabaseSync(dbPath);
     db.exec(
       "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, last_user_input_time TEXT)",
     );
     const insert = db.prepare(
       "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
     );
+    const preExistingId = "00000000-0000-4000-8000-000000000001";
+    const skewPreExistingId = "00000000-0000-4000-8000-000000000003";
     insert.run(
-      "00000000-0000-4000-8000-000000000001",
+      preExistingId,
       JSON.stringify([pathToFileURL(cwd).href]),
       "2026-11-26 10:50:00.000000+00:00",
     );
+    writeAgyTranscript(preExistingId, "2026-11-26T10:50:00Z");
     insert.run(
-      "00000000-0000-4000-8000-000000000002",
-      JSON.stringify(["file:///other/workspace"]),
-      "2026-11-26 10:57:07.221455+00:00",
-    );
-    insert.run(
-      sessionId,
+      skewPreExistingId,
       JSON.stringify([pathToFileURL(cwd).href]),
-      "2026-11-26 10:57:07.221455+00:00",
+      "2026-11-26 10:57:04.000000+00:00",
     );
+    writeAgyTranscript(skewPreExistingId, "2026-11-26T10:57:04Z");
     db.close();
+
+    const preSpawnSnapshot = snapshotNativeWorkspaceSessions({
+      cli: agyCli,
+      cwd,
+      env: { HOME: home },
+    });
+    expect([...(preSpawnSnapshot ?? [])].sort()).toEqual([
+      preExistingId,
+      skewPreExistingId,
+    ]);
+
+    const dbAfter = new DatabaseSync(dbPath);
+    dbAfter
+      .prepare(
+        "UPDATE conversation_summaries SET last_user_input_time = ? WHERE conversation_id = ?",
+      )
+      .run("2026-11-26 10:57:08.000000+00:00", preExistingId);
+    dbAfter
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        "00000000-0000-4000-8000-000000000002",
+        JSON.stringify(["file:///other/workspace"]),
+        "2026-11-26 10:57:07.221455+00:00",
+      );
+    dbAfter.close();
 
     expect(
       findNativeSession({
         cli: agyCli,
         cwd,
         env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
+        launchedAtMs,
+        nowMs: launchedAtMs + 4_000,
+      }),
+    ).toEqual({ kind: "none" });
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        launchedAtMs,
+        nowMs: launchedAtMs + 4_000,
+      }),
+    ).toEqual({
+      kind: "unique",
+      sessionId: skewPreExistingId,
+    });
+
+    const dbNew = new DatabaseSync(dbPath);
+    dbNew
+      .prepare(
+        "INSERT INTO conversation_summaries (conversation_id, workspace_uris, last_user_input_time) VALUES (?, ?, ?)",
+      )
+      .run(
+        sessionId,
+        JSON.stringify([pathToFileURL(cwd).href]),
+        "2026-11-26 10:57:07.221455+00:00",
+      );
+    dbNew.close();
+
+    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBeNull();
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
+        launchedAtMs,
+        nowMs: launchedAtMs + 5_000,
+      }),
+    ).toEqual({ kind: "none" });
+
+    const transcriptFile = writeAgyTranscript(
+      sessionId,
+      "2026-11-26T10:57:07Z",
+    );
+    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBe(
+      transcriptFile,
+    );
+    expect(
+      findNativeSession({
+        cli: agyCli,
+        cwd,
+        env: { HOME: home },
+        excludeSessionIds: preSpawnSnapshot,
         launchedAtMs,
         nowMs: launchedAtMs + 5_000,
       }),
     ).toEqual({ kind: "unique", sessionId });
-
-    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBeNull();
-    const transcriptDir = path.join(
-      agyRoot,
-      "brain",
-      sessionId,
-      ".system_generated",
-      "logs",
-    );
-    mkdirSync(transcriptDir, { recursive: true });
-    const transcriptFile = path.join(transcriptDir, "transcript.jsonl");
-    writeFileSync(transcriptFile, '{"step_index":0}\n');
-    expect(findNativeSessionFile(agyCli, { HOME: home }, sessionId)).toBe(
-      transcriptFile,
-    );
   });
 });

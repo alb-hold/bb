@@ -577,6 +577,7 @@ describe("the ACP registry", () => {
           resumeArgs: ["--resume", "{sessionId}"],
           database: "conversation_summaries.db",
           transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+          transcriptStartedAtField: "created_at",
         },
       });
     }

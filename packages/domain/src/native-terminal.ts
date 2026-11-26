@@ -308,6 +308,7 @@ export const providerNativeTerminalSqliteDiscoveredSessionSchema = z
     idColumn: sqliteIdentifierSchema,
     workspaceUrisColumn: sqliteIdentifierSchema,
     startedAtColumn: sqliteIdentifierSchema,
+    transcriptStartedAtField: headerFieldPathSchema,
   })
   .strict()
   .superRefine((session, context) => {

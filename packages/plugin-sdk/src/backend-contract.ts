@@ -1765,10 +1765,12 @@ export interface PluginProviderDeclaration {
    *   keep a session some other process started in the same workspace from
    *   Being bound. Later launches use `resumeArgs`.
    * - `session`, `"sqlite-discovered"`: the CLI picks its own id and indexes
-   *   sessions in a SQLite `database` under `sessionRoot`. bb queries `table`
-   *   (`idColumn`, `workspaceUrisColumn`, `startedAtColumn`) to bind the single
-   *   session started in the thread workspace after launch, reads its
-   *   `transcript` (`{sessionId}`), and relaunches with `resumeArgs`.
+   *   sessions in a SQLite `database` under `sessionRoot`. bb snapshots any
+   *   existing workspace session ids before launch, queries `table`
+   *   (`idColumn`, `workspaceUrisColumn`, `startedAtColumn`) and the first line
+   *   `transcriptStartedAtField` of `transcript` (`{sessionId}`) to bind the
+   *   single new session created in the thread workspace after launch, and
+   *   relaunches with `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON

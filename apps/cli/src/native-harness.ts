@@ -333,15 +333,85 @@ function workspacePathsFromUris(raw: string): string[] {
   return paths;
 }
 
+function readTranscriptStartedAtMs(
+  filePath: string,
+  fieldPath: string,
+): number | null {
+  const line = readFirstLine(filePath);
+  if (line === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const startedAt = readRecordField(parsed, fieldPath);
+  if (typeof startedAt !== "string") return null;
+  const startedAtMs = Date.parse(startedAt);
+  return Number.isNaN(startedAtMs) ? null : startedAtMs;
+}
+
+export function snapshotNativeWorkspaceSessions(args: {
+  cli: ProviderNativeTerminal;
+  cwd: string;
+  env: NativeHarnessEnv;
+}): ReadonlySet<string> | null {
+  const session = args.cli.session;
+  if (session.kind !== "sqlite-discovered") return new Set<string>();
+  const dbPath = path.join(
+    nativeSessionRoot(args.cli, args.env),
+    session.database,
+  );
+  try {
+    if (!statSync(dbPath).isFile()) return new Set<string>();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return new Set<string>();
+    }
+    return null;
+  }
+  const ids = new Set<string>();
+  let db: InstanceType<ReturnType<typeof loadSqliteDatabaseSync>> | null = null;
+  try {
+    const DatabaseSync = loadSqliteDatabaseSync();
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db
+      .prepare(
+        `SELECT "${session.idColumn}" AS id, "${session.workspaceUrisColumn}" AS workspace_uris FROM "${session.table}"`,
+      )
+      .all() as Array<{ id?: unknown; workspace_uris?: unknown }>;
+    for (const row of rows) {
+      if (typeof row.id !== "string" || row.id.length === 0) continue;
+      if (typeof row.workspace_uris !== "string") continue;
+      if (
+        workspacePathsFromUris(row.workspace_uris).some((wsPath) =>
+          samePath(wsPath, args.cwd),
+        )
+      ) {
+        ids.add(row.id);
+      }
+    }
+    return ids;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+
 function findSqliteNativeSession(
   args: {
     cli: ProviderNativeTerminal;
     cwd: string;
     env: NativeHarnessEnv;
+    excludeSessionIds?: ReadonlySet<string> | null;
     launchedAtMs: number;
   },
   session: SqliteDiscoveredSession,
 ): NativeSessionMatch {
+  if (args.excludeSessionIds === null) return { kind: "none" };
   const dbPath = path.join(
     nativeSessionRoot(args.cli, args.env),
     session.database,
@@ -368,17 +438,26 @@ function findSqliteNativeSession(
     }>;
     for (const row of rows) {
       if (typeof row.id !== "string" || row.id.length === 0) continue;
+      if (args.excludeSessionIds?.has(row.id) === true) continue;
       if (typeof row.started_at !== "string") continue;
       const startedAtMs = Date.parse(row.started_at);
       if (Number.isNaN(startedAtMs) || startedAtMs < sinceMs) continue;
       if (typeof row.workspace_uris !== "string") continue;
       if (
-        workspacePathsFromUris(row.workspace_uris).some((wsPath) =>
+        !workspacePathsFromUris(row.workspace_uris).some((wsPath) =>
           samePath(wsPath, args.cwd),
         )
       ) {
-        ids.add(row.id);
+        continue;
       }
+      const transcriptFile = findNativeSessionFile(args.cli, args.env, row.id);
+      if (transcriptFile === null) continue;
+      const createdAtMs = readTranscriptStartedAtMs(
+        transcriptFile,
+        session.transcriptStartedAtField,
+      );
+      if (createdAtMs === null || createdAtMs < sinceMs) continue;
+      ids.add(row.id);
     }
   } catch {
     return { kind: "none" };
@@ -396,6 +475,7 @@ export function findNativeSession(args: {
   cli: ProviderNativeTerminal;
   cwd: string;
   env: NativeHarnessEnv;
+  excludeSessionIds?: ReadonlySet<string> | null;
   launchedAtMs: number;
   nowMs: number;
 }): NativeSessionMatch {
