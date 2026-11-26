@@ -1136,7 +1136,7 @@ export function createAccountPoolPlugin(
             if (!isInactiveThreadMintError(error)) throw error;
             await bb.storage.kv.delete(`retry-route:${context.threadId}`);
             if (token !== undefined) {
-              await revokeIfArchived(context.threadId).catch(() => undefined);
+              await revokeIfArchived(context.threadId);
             }
             return unrouted();
           }

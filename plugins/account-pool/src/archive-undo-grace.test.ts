@@ -245,4 +245,72 @@ describe("Account Pooler archive undo grace", () => {
       expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
     }
   });
+
+  it("fails closed when settling a half-minted credential rejects after forNested sees an archived thread", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-mint-settle-fail-"));
+    let threadReads = 0;
+    let thread = makeThreadResponse({
+      id: "thr_race_settle_fail",
+      status: "idle",
+      archivedAt: null,
+    });
+    const host = createAccountPoolTestHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: {
+        hosts: {
+          list: async () => [{ id: "host-one", name: "One" }] as never[],
+        },
+        threads: {
+          get: async () => {
+            threadReads += 1;
+            if (threadReads === 3) {
+              thread = makeThreadResponse({
+                ...thread,
+                archivedAt: Date.now(),
+              });
+            }
+            if (threadReads >= 4) {
+              throw new Error("lookup failed while settling");
+            }
+            return thread;
+          },
+        },
+        system: { providerStates: async () => ({ providers: [] }) },
+      },
+    });
+    await createAccountPoolPlugin({
+      env: {},
+      codexUsageUrl: "https://usage.invalid/wham/usage",
+      fetch: async () => Response.json({}),
+      importCodexCredentials: async () => ({
+        accessToken: "codex-access-test",
+        refreshToken: "codex-refresh-test",
+        idToken: null,
+        accountId: "codex-acc-1",
+        planType: "pro",
+        email: null,
+        expiresAt: Date.now() + 3_600_000,
+      }),
+    })(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    await host.harness.behavior.callRpc("account.add", {
+      provider: "codex",
+      source: { kind: "import" },
+      label: null,
+      priority: 100,
+    });
+    await expect(
+      host.harness.behavior.resolveProviderEnv("codex", {
+        threadId: thread.id,
+        projectId: thread.projectId,
+        hostId: "host-one",
+      }),
+    ).rejects.toThrow("lookup failed while settling");
+    expect(threadReads).toBe(5);
+    expect(await host.bb.storage.kv.get(`retry-route:${thread.id}`)).toBeUndefined();
+  });
 });
