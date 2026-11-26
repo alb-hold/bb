@@ -368,6 +368,24 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("uses the closing callback when the opening synchronized chunk has none", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const closing = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+    );
+    await state.snapshot();
+    state.pushBase64(
+      1,
+      Buffer.from("\u001b[?2026l").toString("base64"),
+      closing,
+    );
+    await state.snapshot();
+    expect(closing).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
   it("uses the opening callback when the synchronized closing chunk has none", async () => {
     const state = new TerminalScreenState(40, 5);
     const opening = vi.fn();

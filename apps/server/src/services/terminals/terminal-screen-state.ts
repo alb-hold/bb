@@ -10,6 +10,7 @@ import type { TerminalScreenResponse } from "@bb/server-contract";
 import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
+const SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE = Buffer.from("\u001b[?2026h");
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
 const ESC = "\u001b";
 const TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT = 64 * 1024;
@@ -738,11 +739,16 @@ export class TerminalScreenState {
                 }
                 const rendered =
                   next.kind === "base64" ? next.rendered : undefined;
+                const opensSynchronizedOutput =
+                  !this.terminal.modes.synchronizedOutputMode &&
+                  data.includes(SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE);
                 if (rendered) {
                   this.frameBaseline ??= visibleFrameContent(this.terminal);
                   if (this.terminal.modes.synchronizedOutputMode) {
                     this.synchronizedRenderCallback ??= rendered;
                   }
+                } else if (opensSynchronizedOutput) {
+                  this.frameBaseline ??= visibleFrameContent(this.terminal);
                 } else if (
                   !this.terminal.modes.synchronizedOutputMode &&
                   this.synchronizedRenderCallback === undefined
