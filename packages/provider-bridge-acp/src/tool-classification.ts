@@ -29,7 +29,11 @@ import {
 import { extractAcpContentText, type AcpToolCallUpdateEvent } from "./wire.js";
 
 export interface AcpClassifiedToolCall {
-  item: DeltaItemShape;
+  item:
+    | Exclude<DeltaItemShape, { type: "backgroundTask" | "delegation" }>
+    | (Omit<Extract<DeltaItemShape, { type: "delegation" }>, "background"> & {
+        background: false;
+      });
   presentation: DeltaPresentation;
 }
 

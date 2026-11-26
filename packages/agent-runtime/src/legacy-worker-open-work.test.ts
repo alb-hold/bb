@@ -45,6 +45,8 @@ const BACKGROUND_SCOPED_SHAPE_FIELDS = new Set([
   "background",
 ]);
 
+const ITEM_DELTA_KINDS = new Set(["item.open", "item.progress", "item.close"]);
+
 export interface BackgroundScopedItemScanResult {
   kinds: BackgroundScopedItemKind[];
   unresolvedItemTypes: string[];
@@ -223,6 +225,26 @@ function isUninhabitedType(checker: ts.TypeChecker, part: ts.Type): boolean {
   return checker.isTypeAssignableTo(part, checker.getNeverType());
 }
 
+function isStrictlyLiteralFalseType(
+  checker: ts.TypeChecker,
+  targetType: ts.Type,
+): boolean {
+  if ((targetType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return false;
+  }
+  const parts = (
+    targetType.isUnion() ? targetType.types : [targetType]
+  ).filter((part) => !isUninhabitedType(checker, part));
+  return (
+    parts.length > 0 &&
+    parts.every(
+      (part) =>
+        (part.flags & ts.TypeFlags.BooleanLiteral) !== 0 &&
+        checker.typeToString(part) === "false",
+    )
+  );
+}
+
 function spreadCanSupplyProperty(
   checker: ts.TypeChecker,
   spreadExpr: ts.Expression,
@@ -277,6 +299,65 @@ function hasUnsafeItemTypeConstituent(
   });
 }
 
+function recordScopedKindsFromTypedValue(
+  checker: ts.TypeChecker,
+  locationExpr: ts.Node,
+  valueType: ts.Type,
+  discovered: Set<BackgroundScopedItemKind>,
+  options?: {
+    overrideBackgroundFalse?: boolean;
+    overrideBackgroundDynamic?: boolean;
+  },
+): void {
+  const inhabitedParts = (
+    valueType.isUnion() ? valueType.types : [valueType]
+  ).filter(
+    (part) =>
+      !isUninhabitedType(checker, part) &&
+      (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0,
+  );
+  for (const part of inhabitedParts) {
+    const typeSymbol = part.getProperty("type");
+    if (typeSymbol === undefined) {
+      continue;
+    }
+    const typePropType = checker.getTypeOfSymbolAtLocation(
+      typeSymbol,
+      locationExpr,
+    );
+    const typeParts = (
+      typePropType.isUnion() ? typePropType.types : [typePropType]
+    ).filter((constituent) => !isUninhabitedType(checker, constituent));
+    for (const constituent of typeParts) {
+      if ((constituent.flags & ts.TypeFlags.StringLiteral) === 0) {
+        continue;
+      }
+      const kind = (constituent as ts.StringLiteralType).value;
+      if (kind === "backgroundTask") {
+        discovered.add("backgroundTask");
+      } else if (kind === "delegation") {
+        if (options?.overrideBackgroundDynamic === true) {
+          discovered.add("delegation");
+          continue;
+        }
+        if (options?.overrideBackgroundFalse === true) {
+          continue;
+        }
+        const bgSymbol = part.getProperty("background");
+        const foreground =
+          bgSymbol !== undefined &&
+          isStrictlyLiteralFalseType(
+            checker,
+            checker.getTypeOfSymbolAtLocation(bgSymbol, locationExpr),
+          );
+        if (!foreground) {
+          discovered.add("delegation");
+        }
+      }
+    }
+  }
+}
+
 function analyzeSourceFileInProgram(
   sourceFile: ts.SourceFile,
   checker: ts.TypeChecker,
@@ -315,18 +396,13 @@ function analyzeSourceFileInProgram(
               spread.index > bgPropIndex &&
               spreadCanSupplyProperty(checker, spread.expr, "background"),
           );
-        let explicitlyForeground = false;
-        if (bgProp !== undefined && !overriddenByLaterSpread) {
-          const bgType = typeOfObjectPropertyNode(checker, bgProp);
-          const bgParts = bgType.isUnion() ? bgType.types : [bgType];
-          explicitlyForeground =
-            bgParts.length > 0 &&
-            bgParts.every(
-              (part) =>
-                (part.flags & ts.TypeFlags.BooleanLiteral) !== 0 &&
-                checker.typeToString(part) === "false",
-            );
-        }
+        const explicitlyForeground =
+          bgProp !== undefined &&
+          !overriddenByLaterSpread &&
+          isStrictlyLiteralFalseType(
+            checker,
+            typeOfObjectPropertyNode(checker, bgProp),
+          );
         if (!explicitlyForeground) {
           discovered.add("delegation");
         }
@@ -396,6 +472,14 @@ function analyzeSourceFileInProgram(
         | ts.ShorthandPropertyAssignment
         | undefined;
       let bgPropIndex = -1;
+      let kindProp:
+        | ts.PropertyAssignment
+        | ts.ShorthandPropertyAssignment
+        | undefined;
+      let deltaItemProp:
+        | ts.PropertyAssignment
+        | ts.ShorthandPropertyAssignment
+        | undefined;
       let hasBackgroundShapeField = false;
       let hasUnresolvedComputedProperty = false;
       const spreads: { expr: ts.Expression; index: number }[] = [];
@@ -421,6 +505,12 @@ function analyzeSourceFileInProgram(
             if (propName === "background") {
               bgProp = prop;
               bgPropIndex = index;
+            }
+            if (propName === "kind") {
+              kindProp = prop;
+            }
+            if (propName === "item") {
+              deltaItemProp = prop;
             }
             if (BACKGROUND_SCOPED_SHAPE_FIELDS.has(propName)) {
               hasBackgroundShapeField = true;
@@ -459,6 +549,56 @@ function analyzeSourceFileInProgram(
             checker.isTypeAssignableTo(part, deltaItemShapeType),
         );
 
+      if (kindProp !== undefined && deltaItemProp !== undefined) {
+        const kindType = typeOfObjectPropertyNode(checker, kindProp);
+        const kindParts = (
+          kindType.isUnion() ? kindType.types : [kindType]
+        ).filter((part) => !isUninhabitedType(checker, part));
+        const isItemDelta = kindParts.some(
+          (part) =>
+            (part.flags & ts.TypeFlags.StringLiteral) !== 0 &&
+            ITEM_DELTA_KINDS.has((part as ts.StringLiteralType).value),
+        );
+        if (isItemDelta) {
+          const itemExpr = ts.isPropertyAssignment(deltaItemProp)
+            ? deltaItemProp.initializer
+            : deltaItemProp.name;
+          const itemExprType = typeOfObjectPropertyNode(checker, deltaItemProp);
+          if (
+            (itemExprType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+            0
+          ) {
+            unresolvedItemTypes.push(
+              `${formatLocation(deltaItemProp)} (unresolved ThreadDelta item expression)`,
+            );
+          } else {
+            const itemSym = ts.isShorthandPropertyAssignment(deltaItemProp)
+              ? checker.getShorthandAssignmentValueSymbol(deltaItemProp)
+              : ts.isIdentifier(itemExpr)
+                ? checker.getSymbolAtLocation(itemExpr)
+                : undefined;
+            if (
+              itemSym?.valueDeclaration !== undefined &&
+              ts.isParameter(itemSym.valueDeclaration)
+            ) {
+              if (
+                hasUnsafeItemTypeConstituent(checker, itemExpr, itemExprType)
+              ) {
+                unresolvedItemTypes.push(
+                  `${formatLocation(deltaItemProp)} (parameter ThreadDelta item with unresolved type)`,
+                );
+              }
+              recordScopedKindsFromTypedValue(
+                checker,
+                itemExpr,
+                itemExprType,
+                discovered,
+              );
+            }
+          }
+        }
+      }
+
       if (
         hasUnresolvedComputedProperty &&
         (hasBackgroundShapeField ||
@@ -470,14 +610,99 @@ function analyzeSourceFileInProgram(
         );
       }
 
-      if (
-        typeProp === undefined &&
-        spreads.length > 0 &&
-        contextAssignsToDeltaItem
-      ) {
+      const inspectSpread = (
+        spread: { expr: ts.Expression; index: number },
+        afterExplicitType: boolean,
+      ): void => {
+        const spreadType = checker.getTypeAtLocation(spread.expr);
+        const inhabitedSpreadParts = (
+          spreadType.isUnion() ? spreadType.types : [spreadType]
+        ).filter((part) => !isUninhabitedType(checker, part));
+        const spreadHasDeltaItemConstituent = inhabitedSpreadParts.some(
+          (part) =>
+            (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+            checker.isTypeAssignableTo(part, deltaItemShapeType),
+        );
+
+        if (hasUnsafeItemTypeConstituent(checker, spread.expr, spreadType)) {
+          if (afterExplicitType) {
+            if (
+              hasBackgroundShapeField ||
+              insideTypeAssertion ||
+              contextCouldBeDeltaItem ||
+              spreadHasDeltaItemConstituent
+            ) {
+              unresolvedItemTypes.push(
+                `${formatLocation(spread.expr)} (spread after type with unresolved item type)`,
+              );
+            }
+          } else if (
+            hasBackgroundShapeField ||
+            insideTypeAssertion ||
+            contextAssignsToDeltaItem ||
+            spreadHasDeltaItemConstituent
+          ) {
+            unresolvedItemTypes.push(
+              `${formatLocation(spread.expr)} (spread with unresolved item type)`,
+            );
+          }
+        }
+
+        const overriddenAfterBg =
+          bgProp !== undefined &&
+          spreads.some(
+            (other) =>
+              other.index > bgPropIndex &&
+              spreadCanSupplyProperty(checker, other.expr, "background"),
+          );
+        const overriddenAfterSpread = spreads.some(
+          (other) =>
+            other.index > spread.index &&
+            spreadCanSupplyProperty(checker, other.expr, "background"),
+        );
+
+        let overrideBackgroundFalse = false;
+        let overrideBackgroundDynamic = false;
+        if (bgProp !== undefined && bgPropIndex > spread.index) {
+          if (
+            !overriddenAfterBg &&
+            isStrictlyLiteralFalseType(
+              checker,
+              typeOfObjectPropertyNode(checker, bgProp),
+            )
+          ) {
+            overrideBackgroundFalse = true;
+          } else {
+            overrideBackgroundDynamic = true;
+          }
+        } else if (overriddenAfterSpread) {
+          overrideBackgroundDynamic = true;
+        }
+
+        recordScopedKindsFromTypedValue(
+          checker,
+          spread.expr,
+          spreadType,
+          discovered,
+          {
+            overrideBackgroundFalse,
+            overrideBackgroundDynamic,
+          },
+        );
+      };
+
+      if (typeProp === undefined && spreads.length > 0) {
         for (const spread of spreads) {
-          const spreadType = checker.getTypeAtLocation(spread.expr);
-          if (hasUnsafeItemTypeConstituent(checker, spread.expr, spreadType)) {
+          if (spreadCanSupplyProperty(checker, spread.expr, "type")) {
+            inspectSpread(spread, false);
+          } else if (
+            contextAssignsToDeltaItem &&
+            hasUnsafeItemTypeConstituent(
+              checker,
+              spread.expr,
+              checker.getTypeAtLocation(spread.expr),
+            )
+          ) {
             unresolvedItemTypes.push(
               `${formatLocation(spread.expr)} (spread with unresolved item type)`,
             );
@@ -511,47 +736,7 @@ function analyzeSourceFileInProgram(
                 spread.index > typePropIndex &&
                 spreadCanSupplyProperty(checker, spread.expr, "type")
               ) {
-                const spreadType = checker.getTypeAtLocation(spread.expr);
-                if (
-                  hasUnsafeItemTypeConstituent(checker, spread.expr, spreadType)
-                ) {
-                  if (
-                    hasBackgroundShapeField ||
-                    insideTypeAssertion ||
-                    contextCouldBeDeltaItem
-                  ) {
-                    unresolvedItemTypes.push(
-                      `${formatLocation(spread.expr)} (spread after type with unresolved item type)`,
-                    );
-                  }
-                } else {
-                  const spreadParts = (
-                    spreadType.isUnion() ? spreadType.types : [spreadType]
-                  ).filter((part) => !isUninhabitedType(checker, part));
-                  const spreadKinds: string[] = [];
-                  for (const part of spreadParts) {
-                    const sym = part.getProperty("type");
-                    if (sym === undefined) continue;
-                    const symType = checker.getTypeOfSymbolAtLocation(
-                      sym,
-                      spread.expr,
-                    );
-                    const symParts = symType.isUnion()
-                      ? symType.types
-                      : [symType];
-                    for (const sp of symParts) {
-                      if ((sp.flags & ts.TypeFlags.StringLiteral) !== 0) {
-                        spreadKinds.push((sp as ts.StringLiteralType).value);
-                      }
-                    }
-                  }
-                  recordKindsFromStringLiterals(
-                    spreadKinds,
-                    bgProp,
-                    bgPropIndex,
-                    spreads,
-                  );
-                }
+                inspectSpread(spread, true);
               }
             }
           } else if (
@@ -752,7 +937,7 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
     });
   }, 45_000);
 
-  it("detects literal and union-typed dynamic backgroundTask and delegation items", () => {
+  it("detects literal, union-typed, and typed-union-spread backgroundTask and delegation items", () => {
     const results = scanSyntheticAdapterSources({
       "fg.ts": `export const item = { type: "delegation", childRef: "c1", label: "fg", background: false };`,
       "bg-del.ts": `export const item = { type: "delegation", childRef: "c1", label: "bg", background: true };`,
@@ -761,6 +946,35 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
       "union-bg-task.ts": `export function make(itemKind: "backgroundTask" | "command") { return { type: itemKind, familyId: "f1" }; }`,
       "union-bg-del.ts": `export function make(itemKind: "delegation" | "command") { return { type: itemKind, childRef: "c1", label: "bg", background: true }; }`,
       "spread-override-del.ts": `export function make(extra: { background?: boolean }) { return { type: "delegation", childRef: "c1", label: "bg", background: false, ...extra }; }`,
+      "spread-full-delta-item.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape): DeltaItemShape {
+  return { ...incoming };
+}`,
+      "spread-uncontextual-delta-item.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape) {
+  return { ...incoming };
+}`,
+      "spread-union-bg-task.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: Extract<DeltaItemShape, { type: "backgroundTask" | "command" }>): DeltaItemShape {
+  return { ...incoming };
+}`,
+      "spread-union-delegation.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: Extract<DeltaItemShape, { type: "delegation" | "command" }>): DeltaItemShape {
+  return { ...incoming };
+}`,
+      "spread-fg-delegation.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+type FgDelegation = Omit<Extract<DeltaItemShape, { type: "delegation" }>, "background"> & { background: false };
+export function make(incoming: FgDelegation): DeltaItemShape {
+  return { ...incoming };
+}`,
+      "spread-forced-fg-delegation.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: Extract<DeltaItemShape, { type: "delegation" }>): DeltaItemShape {
+  return { ...incoming, background: false };
+}`,
+      "param-passthrough-delta.ts": `import type { DeltaItemShape, ThreadDelta } from "@bb/provider-bridge-protocol";
+export function make(item: DeltaItemShape): ThreadDelta {
+  return { kind: "item.open", key: { providerItemId: "1" }, item };
+}`,
     });
 
     expect(assertCertifiedBackgroundScopedItems(results["fg.ts"]!)).toEqual([]);
@@ -782,6 +996,37 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
     expect(
       assertCertifiedBackgroundScopedItems(results["spread-override-del.ts"]!),
     ).toEqual(["delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["spread-full-delta-item.ts"]!,
+      ),
+    ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["spread-uncontextual-delta-item.ts"]!,
+      ),
+    ).toEqual(["backgroundTask", "delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(results["spread-union-bg-task.ts"]!),
+    ).toEqual(["backgroundTask"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["spread-union-delegation.ts"]!,
+      ),
+    ).toEqual(["delegation"]);
+    expect(
+      assertCertifiedBackgroundScopedItems(results["spread-fg-delegation.ts"]!),
+    ).toEqual([]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["spread-forced-fg-delegation.ts"]!,
+      ),
+    ).toEqual([]);
+    expect(
+      assertCertifiedBackgroundScopedItems(
+        results["param-passthrough-delta.ts"]!,
+      ),
+    ).toEqual(["backgroundTask", "delegation"]);
   });
 
   it("fails closed when an adapter emits a dynamic-kind item with an unresolved discriminator", () => {
@@ -790,9 +1035,17 @@ describe("FIRST_PARTY_BRIDGE_PLUGIN_BACKGROUND_SCOPED_ITEMS", () => {
       "dyn-delegation.ts": `export function make(itemKind: string) { return { type: itemKind, childRef: "c1", label: "bg", background: true }; }`,
       "dyn-bare.ts": `export function make(itemKind: string) { return { type: itemKind }; }`,
       "spread-after-type.ts": `export function make(extra: Record<string, unknown>) { return { type: "command", ...extra }; }`,
+      "spread-mixed-unsafe-union.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
+export function make(incoming: DeltaItemShape | { type: string }) {
+  return { ...incoming };
+}`,
       "unsafe-cast.ts": `import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
 export function make(raw: Record<string, unknown>): DeltaItemShape {
   return raw as unknown as DeltaItemShape;
+}`,
+      "json-parse-delta-item.ts": `import type { ThreadDelta } from "@bb/provider-bridge-protocol";
+export function make(raw: string): ThreadDelta {
+  return { kind: "item.open", key: { providerItemId: "1" }, item: JSON.parse(raw) };
 }`,
       "unrelated-blob.ts": `export function make(mimeType: string): BlobPropertyBag { return { type: mimeType }; }`,
     });
@@ -819,10 +1072,28 @@ export function make(raw: Record<string, unknown>): DeltaItemShape {
       assertCertifiedBackgroundScopedItems(results["spread-after-type.ts"]!),
     ).toThrow(/spread after type with unresolved item type/);
 
+    expect(
+      results["spread-mixed-unsafe-union.ts"]!.unresolvedItemTypes,
+    ).toHaveLength(1);
+    expect(() =>
+      assertCertifiedBackgroundScopedItems(
+        results["spread-mixed-unsafe-union.ts"]!,
+      ),
+    ).toThrow(/spread with unresolved item type/);
+
     expect(results["unsafe-cast.ts"]!.unresolvedItemTypes).toHaveLength(1);
     expect(() =>
       assertCertifiedBackgroundScopedItems(results["unsafe-cast.ts"]!),
     ).toThrow(/unsafe type assertion to DeltaItemShape/);
+
+    expect(
+      results["json-parse-delta-item.ts"]!.unresolvedItemTypes,
+    ).toHaveLength(1);
+    expect(() =>
+      assertCertifiedBackgroundScopedItems(
+        results["json-parse-delta-item.ts"]!,
+      ),
+    ).toThrow(/unresolved ThreadDelta item expression/);
 
     expect(
       assertCertifiedBackgroundScopedItems(results["unrelated-blob.ts"]!),
