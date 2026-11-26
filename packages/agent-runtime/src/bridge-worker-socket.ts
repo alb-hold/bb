@@ -14,7 +14,9 @@ import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { PassThrough, type Readable, type Writable } from "node:stream";
 import {
+  type AppLaunchDeps,
   createProcessStop,
+  defaultAppLaunchDeps,
   readProcessStartIdentity,
   spawnManagedProcess,
   type ManagedProcess,
@@ -33,6 +35,15 @@ import {
   decodeBridgeFrame,
   readBoundedLines,
 } from "@bb/provider-bridge-protocol/bridge-kit";
+import {
+  BRIDGE_WORKER_APP_CLAIMED_WAIT_MS,
+  BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
+  type BridgeWorkerAppLaunch,
+  cancelBridgeWorkerAppLaunch,
+  removeBridgeWorkerAppFiles,
+  startBridgeWorkerAsApp,
+  waitForBridgeWorkerPid,
+} from "./bridge-worker-app.js";
 import { BridgeLineAckTracker } from "./bridge-line-ack-tracker.js";
 import {
   type BridgeWorkerRegistryEntry,
@@ -85,6 +96,7 @@ export interface SpawnSocketBridgeWorkerArgs {
   connectTimeoutMs: number;
   registration: BridgeWorkerRegistration;
   workspace: BridgeWorkerWorkspace;
+  appLaunch?: AppLaunchDeps | undefined;
 }
 
 export interface AdoptSocketBridgeWorkerArgs {
@@ -117,6 +129,7 @@ interface WorkerProcessHandle {
 }
 
 const ADOPTED_WORKER_EXIT_POLL_MS = 5_000;
+const ADOPTED_WORKER_KILL_POLL_MS = 50;
 const ADOPTED_WORKER_IDENTITY_CACHE_MS = ADOPTED_WORKER_EXIT_POLL_MS * 2;
 
 class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
@@ -130,6 +143,7 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
   private identityCheckedAt = Date.now();
   private readonly poll: NodeJS.Timeout;
   private polling = false;
+  private killWatch: NodeJS.Timeout | null = null;
 
   constructor(entry: { pid: number; processIdentity: string }) {
     super();
@@ -151,6 +165,7 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
     try {
       process.kill(this.recordedPid, signal);
       this.killed = true;
+      this.watchForExitAfterKill();
       return true;
     } catch {
       return false;
@@ -159,6 +174,18 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
 
   stop(options?: { gracePeriodMs: number }) {
     return createProcessStop(this)(options);
+  }
+
+  private watchForExitAfterKill(): void {
+    if (this.killWatch !== null) return;
+    this.killWatch = setInterval(() => {
+      if (this.exitCode !== null) {
+        if (this.killWatch !== null) clearInterval(this.killWatch);
+        return;
+      }
+      void this.checkStillRunning();
+    }, ADOPTED_WORKER_KILL_POLL_MS);
+    this.killWatch.unref();
   }
 
   markGone(): void {
@@ -171,6 +198,7 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
 
   stopWatching(): void {
     clearInterval(this.poll);
+    if (this.killWatch !== null) clearInterval(this.killWatch);
   }
 
   private isRecordedProcess(): boolean {
@@ -193,6 +221,47 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
     } finally {
       this.polling = false;
     }
+  }
+}
+
+class LateWorkerHandle extends EventEmitter implements WorkerProcessHandle {
+  private inner: WorkerProcessHandle | null = null;
+  private failed = false;
+
+  get pid(): number | undefined {
+    return this.inner?.pid;
+  }
+
+  get exitCode(): number | null {
+    return this.inner?.exitCode ?? (this.failed ? -1 : null);
+  }
+
+  get signalCode(): NodeJS.Signals | null {
+    return this.inner?.signalCode ?? null;
+  }
+
+  get killed(): boolean {
+    return this.inner?.killed ?? false;
+  }
+
+  kill(signal: NodeJS.Signals): boolean {
+    return this.inner?.kill(signal) ?? false;
+  }
+
+  bind(inner: WorkerProcessHandle): void {
+    this.inner = inner;
+    inner.on("exit", (code, signal) => {
+      this.emit("exit", code, signal);
+    });
+    inner.on("error", (error) => {
+      this.emit("error", error);
+    });
+  }
+
+  fail(): void {
+    if (this.failed || this.inner !== null) return;
+    this.failed = true;
+    this.emit("exit", null, null);
   }
 }
 
@@ -322,8 +391,11 @@ export class SocketBridgeWorker
   readonly stderr = new PassThrough();
   private readonly child: WorkerProcessHandle;
   private registryEntry: BridgeWorkerRegistryEntry | null;
-  private readonly managedProcess: ManagedProcess | null;
+  private managedProcess: ManagedProcess | null;
   private readonly registrationReady: Promise<void>;
+  private pendingLaunch: BridgeWorkerAppLaunch | null = null;
+  private lateHandle: LateWorkerHandle | null = null;
+  private launchCancelled = false;
   private resumeRequested: boolean;
   private readonly connectTimeoutMs: number;
   private socket: Socket | null = null;
@@ -363,33 +435,41 @@ export class SocketBridgeWorker
       this.socketPath = paths.socketPath;
       this.logPath = paths.logPath;
       this.resumeRequested = true;
-      const managedProcess = spawnManagedProcess({
-        command: args.command,
-        args: args.args,
-        cwd: args.cwd,
-        env: {
-          ...args.env,
-          [BRIDGE_SOCKET_ENV]: this.socketPath,
-          [BRIDGE_SPILL_ENV]: paths.spillPath,
+      const env = {
+        ...args.env,
+        [BRIDGE_SOCKET_ENV]: this.socketPath,
+        [BRIDGE_SPILL_ENV]: paths.spillPath,
+      };
+      const launched = startBridgeWorkerAsApp(
+        {
+          workerDir: args.workerDir,
+          id: this.id,
+          logPath: this.logPath,
+          command: args.command,
+          args: args.args,
+          cwd: args.cwd,
+          env,
         },
-      });
-      const child = managedProcess.child;
-      const log = createWriteStream(this.logPath, { flags: "a", mode: 0o600 });
-      try {
-        child.stdout.pipe(log, { end: false });
-        child.stderr.pipe(log, { end: false });
-        child.once("close", () => log.end());
-        child.stdin.end();
-      } catch (error) {
-        log.destroy();
-        void managedProcess.stop({ gracePeriodMs: 0 });
-        throw error;
+        args.appLaunch ?? defaultAppLaunchDeps(),
+      );
+      if (launched.ok) {
+        const late = new LateWorkerHandle();
+        this.child = late;
+        this.lateHandle = late;
+        this.pendingLaunch = launched;
+        this.managedProcess = null;
+        this.registryEntry = null;
+        this.registrationReady = this.adoptAppWorker(args, late, launched, env);
+      } else {
+        const direct = this.spawnDirect(args, env);
+        this.child = direct.child;
+        this.managedProcess = direct.managedProcess;
+        this.registryEntry = null;
+        this.registrationReady = this.registerSpawnedWorker(
+          args,
+          direct.child.pid,
+        );
       }
-      child.unref();
-      this.child = child;
-      this.managedProcess = managedProcess;
-      this.registryEntry = null;
-      this.registrationReady = this.registerSpawnedWorker(args, child.pid);
     }
     this.ackTracker = new BridgeLineAckTracker({
       workerId: this.id,
@@ -412,13 +492,129 @@ export class SocketBridgeWorker
     });
     this.connectTimeoutMs = args.connectTimeoutMs;
     const connectDeadline = Date.now() + args.connectTimeoutMs;
-    void this.registrationReady.then(() => this.connect(connectDeadline));
+    void this.registrationReady.then(() => {
+      if (!this.launchCancelled) this.connect(connectDeadline);
+    });
   }
 
-  stop(options?: { gracePeriodMs: number }) {
-    return this.managedProcess === null
-      ? createProcessStop(this.child)(options)
-      : this.managedProcess.stop(options);
+  async stop(options?: { gracePeriodMs: number }) {
+    const launch = this.pendingLaunch;
+    if (launch !== null) {
+      if (cancelBridgeWorkerAppLaunch(launch)) {
+        this.launchCancelled = true;
+        this.pendingLaunch = null;
+        this.lateHandle?.fail();
+        return { treeTermination: "confirmed" as const };
+      }
+      await this.registrationReady;
+    }
+    if (this.managedProcess === null) {
+      return createProcessStop(this.child)(options);
+    }
+    return this.managedProcess.stop(options);
+  }
+
+  private spawnDirect(
+    args: SpawnSocketBridgeWorkerArgs,
+    env: NodeJS.ProcessEnv,
+  ): {
+    child: ReturnType<typeof spawnManagedProcess>["child"];
+    managedProcess: ManagedProcess;
+  } {
+    const managedProcess = spawnManagedProcess({
+      command: args.command,
+      args: args.args,
+      cwd: args.cwd,
+      env,
+    });
+    const child = managedProcess.child;
+    const log = createWriteStream(this.logPath, { flags: "a", mode: 0o600 });
+    try {
+      child.stdout.pipe(log, { end: false });
+      child.stderr.pipe(log, { end: false });
+      child.once("close", () => log.end());
+      child.stdin.end();
+    } catch (error) {
+      log.destroy();
+      void managedProcess.stop({ gracePeriodMs: 0 });
+      throw error;
+    }
+    child.unref();
+    return { child, managedProcess };
+  }
+
+  private async adoptAppWorker(
+    args: SpawnSocketBridgeWorkerArgs,
+    late: LateWorkerHandle,
+    launch: BridgeWorkerAppLaunch,
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    let pid = await waitForBridgeWorkerPid(
+      launch.pidFile,
+      BRIDGE_WORKER_APP_FALLBACK_WINDOW_MS,
+    );
+    if (this.launchCancelled) return;
+    let claimed = false;
+    if (pid === null && !cancelBridgeWorkerAppLaunch(launch)) {
+      claimed = true;
+      pid = await waitForBridgeWorkerPid(
+        launch.pidFile,
+        BRIDGE_WORKER_APP_CLAIMED_WAIT_MS,
+      );
+    }
+    if (pid === null && claimed) {
+      late.emit(
+        "error",
+        new Error("Bridge worker app started but never reported its pid"),
+      );
+      late.fail();
+      return;
+    }
+    if (pid === null) {
+      try {
+        const direct = this.spawnDirect(args, env);
+        this.pendingLaunch = null;
+        this.managedProcess = direct.managedProcess;
+        late.bind(direct.child);
+        await this.registerSpawnedWorker(args, direct.child.pid);
+      } catch (error) {
+        late.emit(
+          "error",
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        late.fail();
+      }
+      return;
+    }
+    const identity = await readProcessStartIdentity(pid);
+    if (identity === null) {
+      late.emit(
+        "error",
+        new Error("Bridge worker exited before it was adopted"),
+      );
+      late.fail();
+      return;
+    }
+    removeBridgeWorkerAppFiles(launch);
+    this.pendingLaunch = null;
+    late.bind(new AdoptedProcessHandle({ pid, processIdentity: identity }));
+    const entry: BridgeWorkerRegistryEntry = {
+      ...args.registration,
+      id: this.id,
+      formatVersion: BRIDGE_WORKER_REGISTRY_FORMAT_VERSION,
+      pid,
+      processIdentity: identity,
+      socketPath: this.socketPath,
+      bridgeProtocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
+      transportVersion: BRIDGE_SOCKET_TRANSPORT_VERSION,
+      capabilities: null,
+      capabilitiesSource: undefined,
+      startedAt: new Date().toISOString(),
+      workspace: args.workspace,
+      threads: {},
+    };
+    this.registryEntry = entry;
+    writeBridgeWorkerEntry(this.workerDir, entry);
   }
 
   private async registerSpawnedWorker(

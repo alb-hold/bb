@@ -22,3 +22,4 @@ export * from "./host-toolchain.js";
 export * from "./host-process.js";
 export { inheritedNodeNetworkArgs, nodeNetworkArgs } from "./node-network.js";
 export * from "./workload-priority.js";
+export * from "./app-launcher.js";

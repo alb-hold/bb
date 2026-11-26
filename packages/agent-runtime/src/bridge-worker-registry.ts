@@ -144,6 +144,7 @@ export function removeBridgeWorkerFiles(args: {
   removeIfPresent(entryPath(args.dir, args.id));
   removeIfPresent(join(args.dir, `${args.id}.log`));
   removeIfPresent(join(args.dir, `${args.id}.buf`));
+  removeIfPresent(join(args.dir, `${args.id}.pid`));
   if (!args.socketPath.startsWith("\\\\")) removeIfPresent(args.socketPath);
 }
 

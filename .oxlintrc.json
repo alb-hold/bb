@@ -137,7 +137,10 @@
       }
     },
     {
-      "files": ["packages/process-utils/src/host-toolchain.ts"],
+      "files": [
+        "packages/process-utils/src/host-toolchain.ts",
+        "packages/process-utils/src/app-launcher.ts"
+      ],
       "rules": {
         "no-restricted-imports": "off",
         "bb/no-blocking-child-process-call": "off"

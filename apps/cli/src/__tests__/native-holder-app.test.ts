@@ -79,7 +79,7 @@ describe("native holder app launch", () => {
       expect.arrayContaining(["native-hold", "thr_abc", "--socket", socket]),
     );
     expect(open?.args).toContain(`--env`);
-    expect(open?.args.some((a) => a.startsWith("BB_NATIVE_HOLD_CWD="))).toBe(
+    expect(open?.args.some((a) => a.startsWith("BB_APP_LAUNCH_CWD="))).toBe(
       true,
     );
     expect(
