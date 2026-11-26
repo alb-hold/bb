@@ -23,6 +23,8 @@ export const PROCESS_CREDENTIAL_CLOCK_SKEW_MS = 60 * 1000;
 const LEGACY_NESTED_ROUTE_PREFIX = "nested-route-";
 const ARCHIVED_THREAD_PREFIX = "archived-thread-";
 const ARCHIVE_FALLBACK_PREFIX = "archive-revocation-";
+const ARCHIVE_MARKER_NAME =
+  /^(?:archived-thread|archive-revocation)-([a-f0-9]{64})\.json$/u;
 const REVOKED_ROUTE_PREFIX = "revoked-route-";
 const SUSPENDED_FILE_PREFIX = "suspended-";
 const DELETED_THREAD_PREFIX = "deleted-thread-";
@@ -30,6 +32,7 @@ const DELETED_THREAD_NAME = /^deleted-thread-([a-f0-9]{64})\.(?:json|d)$/u;
 const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 const DELETED_THREAD_KEY = "deleted-thread:";
+const INITIALIZE_IO_CONCURRENCY = 64;
 
 const THREAD_SWEEP_STATE = "thread-sweep.json";
 const MAX_SWEEP_RETRIES = 256;
@@ -332,34 +335,156 @@ export class ThreadTokenStore {
     const enrolled = new Set(hostIds);
     await this.loadDeletionRecords();
     const names = await fs.readdir(this.directory);
-    const pending = new Set<string>();
+    let directorySynced = false;
+    const ensureDirectorySynced = async (): Promise<boolean> => {
+      if (directorySynced) return true;
+      directorySynced = await this.syncDirectory().then(
+        () => true,
+        () => false,
+      );
+      return directorySynced;
+    };
+    const unrecordedByDigest = new Map<string, string[]>();
+    const heldDigests = new Set<string>();
     for (const name of names) {
       const deleted = DELETED_THREAD_NAME.exec(name);
       if (deleted?.[1] !== undefined) {
-        this.deletedThreadDigests.add(deleted[1]);
-        if (await this.confirmsDeletedRecord(name, deleted[1]))
-          this.recordedDeletions.add(deleted[1]);
-        else pending.add(deleted[1]);
+        const threadDigest = deleted[1];
+        this.deletedThreadDigests.add(threadDigest);
+        if (!this.recordedDeletions.has(threadDigest)) {
+          const list = unrecordedByDigest.get(threadDigest);
+          if (list === undefined)
+            unrecordedByDigest.set(threadDigest, [name]);
+          else list.push(name);
+        }
       }
       const held = DELETED_PENDING_NAME.exec(name);
       if (held?.[1] !== undefined) {
         this.deletedThreadDigests.add(held[1]);
-        pending.add(held[1]);
+        heldDigests.add(held[1]);
       }
     }
+    const unrecordedEntries = [...unrecordedByDigest.entries()];
+    const fileConfirmations = await mapBounded(
+      unrecordedEntries,
+      INITIALIZE_IO_CONCURRENCY,
+      async ([threadDigest, candidateNames]) => {
+        for (const candidateName of candidateNames) {
+          if (
+            await this.confirmsDeletedRecordFile(candidateName, threadDigest)
+          )
+            return true;
+        }
+        return false;
+      },
+    );
+    const anyFileConfirmed = fileConfirmations.some(Boolean);
+    const dirConfirmed = anyFileConfirmed
+      ? await ensureDirectorySynced()
+      : false;
+    const pending = new Set<string>();
+    for (let index = 0; index < unrecordedEntries.length; index += 1) {
+      const [threadDigest] = unrecordedEntries[index]!;
+      if (fileConfirmations[index] && dirConfirmed)
+        this.recordedDeletions.add(threadDigest);
+      else pending.add(threadDigest);
+    }
+    for (const threadDigest of heldDigests) pending.add(threadDigest);
     for (const threadDigest of pending)
       await this.recordPendingDeletion(threadDigest, names);
+    if (pending.size > 0) directorySynced = false;
+    const archiveMarkersToRead: string[] = [];
     for (const name of names) {
       if (
-        (name.startsWith(ARCHIVED_THREAD_PREFIX) ||
-          name.startsWith(ARCHIVE_FALLBACK_PREFIX)) &&
-        name.endsWith(".json")
+        !(
+          name.startsWith(ARCHIVED_THREAD_PREFIX) ||
+          name.startsWith(ARCHIVE_FALLBACK_PREFIX)
+        ) ||
+        !name.endsWith(".json")
       )
-        await this.loadArchiveMarker(name);
+        continue;
+      this.seenArchiveMarkers.add(name);
+      const markerMatch = ARCHIVE_MARKER_NAME.exec(name);
+      if (
+        markerMatch?.[1] !== undefined &&
+        this.recordedDeletions.has(markerMatch[1])
+      ) {
+        this.deletedThreadDigests.add(markerMatch[1]);
+        continue;
+      }
+      archiveMarkersToRead.push(name);
+    }
+    const archiveMarkerReads = await mapBounded(
+      archiveMarkersToRead,
+      INITIALIZE_IO_CONCURRENCY,
+      async (name) =>
+        fs.readFile(path.join(this.directory, name), "utf8").then(
+          (text) => ({ ok: true as const, text }),
+          () => ({ ok: false as const }),
+        ),
+    );
+    const unrecordedDeletedMarkers: Array<{
+      name: string;
+      threadDigest: string;
+    }> = [];
+    for (let index = 0; index < archiveMarkersToRead.length; index += 1) {
+      const name = archiveMarkersToRead[index]!;
+      const read = archiveMarkerReads[index]!;
+      const deletedDigest = this.applyLoadedArchiveMarker(name, read);
+      if (
+        deletedDigest !== null &&
+        !this.recordedDeletions.has(deletedDigest)
+      ) {
+        unrecordedDeletedMarkers.push({ name, threadDigest: deletedDigest });
+      }
+    }
+    if (unrecordedDeletedMarkers.length > 0) {
+      const syncedMarkers = await mapBounded(
+        unrecordedDeletedMarkers,
+        INITIALIZE_IO_CONCURRENCY,
+        async ({ name }) => this.syncRecordFile(name),
+      );
+      const markerDirSynced = syncedMarkers.some(Boolean)
+        ? await ensureDirectorySynced()
+        : false;
+      if (markerDirSynced) {
+        for (
+          let index = 0;
+          index < unrecordedDeletedMarkers.length;
+          index += 1
+        ) {
+          if (syncedMarkers[index])
+            this.recordedDeletions.add(
+              unrecordedDeletedMarkers[index]!.threadDigest,
+            );
+        }
+      }
     }
     this.archiveMarkersLoaded = true;
+    const routeNamesToRead = names.filter((name) => isReadableRouteFile(name));
+    const prefetchedRoutes = new Map<
+      string,
+      { ok: true; text: string } | { ok: false; error: unknown }
+    >();
+    const routeReads = await mapBounded(
+      routeNamesToRead,
+      INITIALIZE_IO_CONCURRENCY,
+      async (name) =>
+        fs.readFile(path.join(this.directory, name), "utf8").then(
+          (text) => ({ ok: true as const, text }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
+    );
+    for (let index = 0; index < routeNamesToRead.length; index += 1) {
+      prefetchedRoutes.set(routeNamesToRead[index]!, routeReads[index]!);
+    }
     for (const name of names) {
-      await this.loadFile(name, enrolled).catch((error) => {
+      await this.loadFile(
+        name,
+        enrolled,
+        false,
+        prefetchedRoutes.get(name),
+      ).catch((error) => {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
@@ -468,15 +593,11 @@ export class ThreadTokenStore {
     return recorded || filed;
   }
 
-  private async confirmsDeletedRecord(
+  private async confirmsDeletedRecordFile(
     name: string,
     threadDigest: string,
   ): Promise<boolean> {
-    if (name.endsWith(".d"))
-      return this.syncDirectory().then(
-        () => true,
-        () => false,
-      );
+    if (name.endsWith(".d")) return true;
     try {
       const value: unknown = JSON.parse(
         await fs.readFile(path.join(this.directory, name), "utf8"),
@@ -485,14 +606,14 @@ export class ThreadTokenStore {
       return (
         parsed.success &&
         parsed.data.threadDigest === threadDigest &&
-        (await this.confirmsRecord(name))
+        (await this.syncRecordFile(name))
       );
     } catch {
       return false;
     }
   }
 
-  private async confirmsRecord(name: string): Promise<boolean> {
+  private async syncRecordFile(name: string): Promise<boolean> {
     try {
       const handle = await fs.open(path.join(this.directory, name), "r");
       try {
@@ -500,37 +621,34 @@ export class ThreadTokenStore {
       } finally {
         await handle.close();
       }
-      await this.syncDirectory();
       return true;
     } catch {
       return false;
     }
   }
 
-  private async loadArchiveMarker(name: string): Promise<void> {
+  private applyLoadedArchiveMarker(
+    name: string,
+    read: { ok: true; text: string } | { ok: false },
+  ): string | null {
     this.seenArchiveMarkers.add(name);
-    let text: string;
-    try {
-      text = await fs.readFile(path.join(this.directory, name), "utf8");
-    } catch {
+    if (!read.ok) {
       this.transientArchiveReadFailures.add(name);
-      return;
+      return null;
     }
-    this.applyArchiveState(name, text);
-    if (this.corruptArchiveMarkers.has(name)) return;
-    const parsed = archiveStateSchema.safeParse(JSON.parse(text));
-    if (
-      parsed.success &&
-      parsed.data.deleted === true &&
-      (await this.confirmsRecord(name))
-    )
-      this.recordedDeletions.add(digest(parsed.data.threadId));
+    this.applyArchiveState(name, read.text);
+    if (this.corruptArchiveMarkers.has(name)) return null;
+    const parsed = archiveStateSchema.safeParse(JSON.parse(read.text));
+    if (parsed.success && parsed.data.deleted === true)
+      return digest(parsed.data.threadId);
+    return null;
   }
 
   private async loadFile(
     fileName: string,
     enrolled: ReadonlySet<string>,
     restoring = false,
+    prefetched?: { ok: true; text: string } | { ok: false; error: unknown },
   ): Promise<void> {
     let name = fileName;
     if (!name.endsWith(".json")) return;
@@ -549,7 +667,11 @@ export class ThreadTokenStore {
       name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_THREAD_ROUTE_PREFIX)
     ) {
-      const loaded = await this.readCredential(file, readableRouteSchema);
+      const loaded = await this.readCredential(
+        file,
+        readableRouteSchema,
+        prefetched,
+      );
       const record =
         loaded === null
           ? null
@@ -586,7 +708,11 @@ export class ThreadTokenStore {
         indexCredential(this.tokenIndex, record);
       } else await fs.rm(file, { force: true });
     } else if (name.startsWith(ACTOR_ROUTE_PREFIX)) {
-      const loaded = await readRecord(file, readableActorRouteSchema);
+      const loaded = await readRecord(
+        file,
+        readableActorRouteSchema,
+        prefetched,
+      );
       const record = loaded === null ? null : loaded.record;
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
@@ -623,7 +749,11 @@ export class ThreadTokenStore {
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
       name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
     ) {
-      const loaded = await this.readCredential(file, readableNestedRouteSchema);
+      const loaded = await this.readCredential(
+        file,
+        readableNestedRouteSchema,
+        prefetched,
+      );
       const record =
         loaded === null
           ? null
@@ -994,14 +1124,6 @@ export class ThreadTokenStore {
       true,
     );
     await this.serialize(async () => {
-      const epoch = Math.max(
-        this.archiveEpoch(threadId),
-        await this.maxFileEpoch(threadId).catch(() => 0),
-      );
-      const nextEpoch = epoch + 1;
-      this.commitArchiveState(threadId, () => {
-        this.archiveEpochs.set(threadId, nextEpoch);
-      });
       let names: string[] = [];
       let directoryReadFailed = false;
       try {
@@ -1009,6 +1131,14 @@ export class ThreadTokenStore {
       } catch {
         directoryReadFailed = true;
       }
+      const epoch = Math.max(
+        this.archiveEpoch(threadId),
+        directoryReadFailed ? 0 : this.maxEpochIn(threadId, names),
+      );
+      const nextEpoch = epoch + 1;
+      this.commitArchiveState(threadId, () => {
+        this.archiveEpochs.set(threadId, nextEpoch);
+      });
       const holding =
         directoryReadFailed || this.holdsCredentials(threadId, names);
       let heldAside = false;
@@ -1848,8 +1978,12 @@ export class ThreadTokenStore {
 
   private async readCredential<
     T extends { token?: string; tokenDigest: string },
-  >(file: string, schema: z.ZodType<T>): Promise<T | null> {
-    const record = await readRecord(file, schema);
+  >(
+    file: string,
+    schema: z.ZodType<T>,
+    prefetched?: { ok: true; text: string } | { ok: false; error: unknown },
+  ): Promise<T | null> {
+    const record = await readRecord(file, schema, prefetched);
     if (record?.token !== undefined) {
       try {
         await this.persistCredential(file, record);
@@ -1957,13 +2091,6 @@ export class ThreadTokenStore {
       if (name.includes(threadId)) return true;
     }
     return false;
-  }
-
-  private async maxFileEpoch(threadId: string): Promise<number> {
-    return Math.max(
-      this.archiveEpoch(threadId),
-      this.maxEpochIn(threadId, await fs.readdir(this.directory)),
-    );
   }
 
   private maxEpochIn(threadId: string, names: readonly string[]): number {
@@ -2508,11 +2635,55 @@ function lookup<T extends CredentialRecord>(
   return null;
 }
 
+function isReadableRouteFile(fileName: string): boolean {
+  let name = fileName;
+  if (!name.endsWith(".json")) return false;
+  if (name.startsWith(SUSPENDED_FILE_PREFIX))
+    name = name.slice(SUSPENDED_FILE_PREFIX.length);
+  return (
+    name.startsWith(THREAD_ROUTE_PREFIX) ||
+    name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) ||
+    name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) ||
+    name.startsWith(ACTOR_ROUTE_PREFIX) ||
+    name.startsWith(NESTED_ROUTE_PREFIX) ||
+    name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
+    name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
+  );
+}
+
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => runWorker()),
+  );
+  return results;
+}
+
 async function readRecord<T>(
   file: string,
   schema: z.ZodType<T>,
+  prefetched?: { ok: true; text: string } | { ok: false; error: unknown },
 ): Promise<T | null> {
-  const text = await fs.readFile(file, "utf8");
+  let text: string;
+  if (prefetched !== undefined) {
+    if (!prefetched.ok) throw prefetched.error;
+    text = prefetched.text;
+  } else {
+    text = await fs.readFile(file, "utf8");
+  }
   try {
     const parsed = schema.safeParse(JSON.parse(text));
     return parsed.success ? parsed.data : null;

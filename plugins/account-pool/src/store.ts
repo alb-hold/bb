@@ -1177,6 +1177,7 @@ export class RoutingStore {
       this.kv.delete(`selection:claude:${threadId}`),
       this.kv.delete(`selection:codex:${threadId}`),
       this.kv.delete(`selection:gemini:${threadId}`),
+      this.kv.delete(`retry-route:${threadId}`),
       this.kv.delete(this.bypassKey(threadId)),
       this.kv.delete(this.routedKey(threadId)),
     ]);

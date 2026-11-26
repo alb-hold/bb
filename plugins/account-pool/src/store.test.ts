@@ -12,6 +12,7 @@ import {
   PoolAffinityStore,
   QUOTA_MIGRATIONS,
   QuotaStore,
+  RoutingStore,
   legacyGeneration,
 } from "./store.js";
 
@@ -753,5 +754,37 @@ describe("QuotaStore", () => {
     expect(database.prepare("SELECT * FROM pool_active_account").all()).toEqual([]);
     expect(database.prepare("SELECT * FROM pool_automatic_choice").all()).toEqual([]);
     database.close();
+  });
+});
+
+describe("RoutingStore", () => {
+  it("removes retry-route state along with selection, bypass, routed, and actor-routed keys when a thread is deleted", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-routing-store-"));
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    const routing = new RoutingStore(host.bb.storage.kv, () => 1_000);
+    const accountId = "11111111-1111-4111-8111-111111111111";
+    await routing.selectAccount("thr_removed", "claude", accountId);
+    await routing.setBypassed("thr_removed", true);
+    await routing.recordRouted("thr_removed", "host-one");
+    await routing.recordActorRouted({
+      threadId: "thr_removed",
+      actorId: "worker-1",
+      hostId: "host-one",
+      provider: "claude",
+    });
+    await host.bb.storage.kv.set("retry-route:thr_removed", "claude");
+    await host.bb.storage.kv.set("retry-route:thr_kept", "codex");
+
+    await routing.removeThread("thr_removed");
+
+    expect(await host.bb.storage.kv.get("retry-route:thr_removed")).toBeUndefined();
+    expect(await host.bb.storage.kv.get("retry-route:thr_kept")).toBe("codex");
+    expect(await routing.selectedAccount("thr_removed", "claude")).toBeNull();
+    expect(await routing.isBypassed("thr_removed")).toBe(false);
+    expect(await routing.listRoutedSince(0)).toEqual([]);
   });
 });
