@@ -1033,19 +1033,25 @@ export function nonInteractiveFetchEnvironment(
     GIT_SSH_COMMAND: `${sshCommand} ${BATCH_MODE_OPTION}`,
   };
 }
-const CREDENTIAL_HELPER_KEYS = "^credential\\..*helper$";
+const CREDENTIAL_HELPER_KEYS =
+  "^credential\\..*(helper|username|usehttppath)$";
+const GIT_BOOLEAN = /^(?:true|false|yes|no|on|off|1|0)$/iu;
 const TRUSTED_SCOPES = new Set(["system", "global"]);
 const FILE_ORIGIN = "file:";
 const NON_INTERACTIVE_HELPER = /^(?:!|(?:store|cache)(?:\s|$))/u;
 const DIALOG_HELPER =
   /osxkeychain|credential-manager|manager-core|wincred|libsecret|(?:^|[\s!/])manager(?:\s|$)/u;
 
-function isCredentialHelperKey(key: string): boolean {
-  return (
-    !key.includes("=") &&
-    (key === "credential.helper" ||
-      (key.startsWith("credential.") && key.endsWith(".helper")))
-  );
+function credentialKeyKind(
+  key: string,
+): "helper" | "username" | "http-path" | null {
+  if (key.includes("=") || !key.startsWith("credential.")) return null;
+  if (key === "credential.helper" || key.endsWith(".helper")) return "helper";
+  if (key === "credential.username" || key.endsWith(".username"))
+    return "username";
+  if (key === "credential.usehttppath" || key.endsWith(".usehttppath"))
+    return "http-path";
+  return null;
 }
 
 function trustedConfigEntries(
@@ -1078,7 +1084,16 @@ export function replayedCredentialHelpers(configured: string): {
   const args: string[] = [];
   const env: Record<string, string> = {};
   for (const { key, value } of trustedConfigEntries(configured)) {
-    if (!isCredentialHelperKey(key)) continue;
+    const kind = credentialKeyKind(key);
+    if (kind === null) continue;
+    if (kind !== "helper") {
+      if (kind === "username" ? value === "" : !GIT_BOOLEAN.test(value))
+        continue;
+      const name = `BB_FETCH_CREDENTIAL_HELPER_${Object.keys(env).length}`;
+      env[name] = value;
+      args.push(`--config-env=${key}=${name}`);
+      continue;
+    }
     if (value === "") {
       args.push("-c", `${key}=`);
       continue;

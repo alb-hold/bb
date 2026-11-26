@@ -312,6 +312,66 @@ describe("the credential helpers the fetch replays", () => {
     },
   );
 
+  it("replays a global per-URL username through --config-env and keeps its value out of argv", () => {
+    const replayed = replayedCredentialHelpers(
+      configured([
+        ["credential.https://github.com/orgA.username", "orgA-user"],
+        ["credential.username", "fallback-user"],
+        ["credential.https://github.com/orgB.username", ""],
+      ]),
+    );
+
+    expect(replayed.args).toEqual([
+      "--config-env=credential.https://github.com/orgA.username=BB_FETCH_CREDENTIAL_HELPER_0",
+      "--config-env=credential.username=BB_FETCH_CREDENTIAL_HELPER_1",
+    ]);
+    expect(replayed.env).toEqual({
+      BB_FETCH_CREDENTIAL_HELPER_0: "orgA-user",
+      BB_FETCH_CREDENTIAL_HELPER_1: "fallback-user",
+    });
+    expect(replayed.args.join(" ")).not.toContain("orgA-user");
+    expect(replayed.args.join(" ")).not.toContain("fallback-user");
+  });
+
+  it("replays useHttpPath only when it is a git boolean", () => {
+    const replayed = replayedCredentialHelpers(
+      configured([
+        ["credential.usehttppath", "TRUE"],
+        ["credential.https://github.com.usehttppath", "off"],
+        ["credential.https://example.com.usehttppath", "maybe"],
+        ["credential.https://example.org.usehttppath", "!echo no"],
+        ["credential.https://example.net.usehttppath", ""],
+      ]),
+    );
+
+    expect(replayed.args).toEqual([
+      "--config-env=credential.usehttppath=BB_FETCH_CREDENTIAL_HELPER_0",
+      "--config-env=credential.https://github.com.usehttppath=BB_FETCH_CREDENTIAL_HELPER_1",
+    ]);
+    expect(replayed.env).toEqual({
+      BB_FETCH_CREDENTIAL_HELPER_0: "TRUE",
+      BB_FETCH_CREDENTIAL_HELPER_1: "off",
+    });
+  });
+
+  it("ignores a username and useHttpPath set in the repository, its worktree, the command line or an included file", () => {
+    const entries: [string, string][] = [
+      ["credential.https://github.com/orgA.username", "orgA-user"],
+      ["credential.usehttppath", "true"],
+    ];
+    for (const scope of ["local", "worktree", "command"])
+      expect(
+        replayedCredentialHelpers(
+          configured(entries, "file:/repo/.git/config", scope),
+        ),
+      ).toEqual({ args: [], env: {} });
+    for (const origin of ["command line:", "blob:0123abcd", "standard input:"])
+      expect(replayedCredentialHelpers(configured(entries, origin))).toEqual({
+        args: [],
+        env: {},
+      });
+  });
+
   it("drops keys that are not a credential helper, keys git cannot carry on its command line, and entries without a value", () => {
     expect(
       replayedCredentialHelpers(
@@ -521,6 +581,49 @@ describe("the fetch that checks whether commits are published", () => {
     expect(existsSync(helperMarker)).toBe(true);
     expect(existsSync(resetMarker)).toBe(false);
   });
+
+  it.each([
+    { useHttpPath: false, receivesPath: false },
+    { useHttpPath: true, receivesPath: true },
+  ])(
+    "gives the helper the username pinned to the remote's URL (useHttpPath $useHttpPath)",
+    async ({ useHttpPath, receivesPath }) => {
+      const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+      roots.push(root);
+      const remote = await servedWithBasicAuth(root);
+      const fixture = await createFixture(remote.url);
+      const globalFile = await useGlobalConfig(root);
+      const received = join(root, "helper-input");
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.origin}.helper`,
+        `!f() { test "$1" = get || exit 0; cat >> ${JSON.stringify(received)}; exit 0; }; f`,
+      );
+      await setGlobalConfig(
+        globalFile,
+        `credential.${remote.url}.username`,
+        "orgA-user",
+      );
+      if (useHttpPath)
+        await setGlobalConfig(
+          globalFile,
+          `credential.${remote.origin}.usehttppath`,
+          "true",
+        );
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      expect(reasons.join("\n")).toMatch(/could not verify remotes/u);
+      const input = await readFile(received, "utf8");
+      expect(input).toContain("username=orgA-user");
+      if (receivesPath) expect(input).toContain("path=served.git");
+      else expect(input).not.toContain("path=");
+    },
+  );
 
   it("does not run a helper from the repository's own config, which a thread can write, and says authentication failed", async () => {
     const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
