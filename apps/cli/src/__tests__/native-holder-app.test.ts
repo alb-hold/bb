@@ -592,39 +592,74 @@ describe("native holder app fallback", () => {
     }
   });
 
-  it("clears a stale marker on spawn, preserves a live marker, and launches once after a dead pid", async () => {
+  it("preserves a live marker with identical content on spawn, waits on a pending marker, and advances past a dead pid", async () => {
     const socket = socketIn();
-    writeFileSync(nativeHolderPidMarkerPath(socket), "2147483646");
-    expect(nativeHolderProcessIsAlive(socket)).toBe(false);
-    const { deps } = recordingDeps("darwin");
-    spawnNativeHolder("thr_abc", socket, deps);
-    expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(false);
-
+    const { deps, ran } = recordingDeps("darwin");
     writeNativeHolderPidMarker(socket);
+    const liveMarkerPath = nativeHolderPidMarkerPath(socket);
+    const liveMarkerContent = readFileSync(liveMarkerPath, "utf8");
+    expect(liveMarkerContent.trim()).toBe(String(process.pid));
     expect(nativeHolderProcessIsAlive(socket)).toBe(true);
-    spawnNativeHolder("thr_abc", socket, deps);
-    expect(existsSync(nativeHolderPidMarkerPath(socket))).toBe(true);
+    spawnNativeHolder("thr_abc", socket, deps, 1);
+    expect(existsSync(liveMarkerPath)).toBe(true);
+    expect(readFileSync(liveMarkerPath, "utf8")).toBe(liveMarkerContent);
     expect(nativeHolderProcessIsAlive(socket)).toBe(true);
+    const openCall = ran.find((call) => call.command === "/usr/bin/open");
+    expect(openCall?.args).toEqual(
+      expect.arrayContaining(["--marker-generation", "1"]),
+    );
+
+    const pendingSocket = socketIn();
+    writeFileSync(`${pendingSocket.replace(/\.sock$/u, ".pid")}.1`, "", {
+      mode: 0o600,
+    });
+    let pendingLaunches = 0;
+    let pendingServer: net.Server | null = null;
+    setTimeout(() => {
+      pendingServer = net.createServer().listen(pendingSocket);
+    }, 120);
+    try {
+      const pendingConn = await openNativeHolderConnection({
+        socketPath: pendingSocket,
+        reattachOnly: false,
+        startHolder: () => {
+          pendingLaunches += 1;
+        },
+        startTimeoutMs: 3_000,
+      });
+      if (pendingConn.kind !== "attached") throw new Error(pendingConn.kind);
+      pendingConn.socket.destroy();
+      expect(pendingLaunches).toBe(0);
+    } finally {
+      (pendingServer as net.Server | null)?.close();
+    }
 
     const staleSocket = socketIn();
-    writeFileSync(nativeHolderPidMarkerPath(staleSocket), "2147483646");
+    const staleGen1 = `${staleSocket.replace(/\.sock$/u, ".pid")}.1`;
+    writeFileSync(staleGen1, "2147483646\n", { mode: 0o600 });
+    expect(nativeHolderProcessIsAlive(staleSocket)).toBe(false);
     let launches = 0;
     const counters = { socketOwners: 0, ptyStarts: 0 };
     let holder: { exited: Promise<number>; stop: () => void } | null = null;
     const staleDeps: NativeHolderAppDeps = {
       platform: "darwin",
-      run: (command) => {
+      run: (command, args) => {
         if (command !== "/usr/bin/open") return;
         launches += 1;
-        writeNativeHolderPidMarker(staleSocket);
+        const genIndex = args.indexOf("--marker-generation");
+        const gen =
+          genIndex >= 0
+            ? Number.parseInt(args[genIndex + 1] ?? "", 10)
+            : undefined;
+        writeNativeHolderPidMarker(staleSocket, process.pid, gen);
         holder = startOwnedHolder(staleSocket, counters);
       },
     };
     const connection = await openNativeHolderConnection({
       socketPath: staleSocket,
       reattachOnly: false,
-      startHolder: () => {
-        spawnNativeHolder("thr_abc", staleSocket, staleDeps);
+      startHolder: (markerGeneration) => {
+        spawnNativeHolder("thr_abc", staleSocket, staleDeps, markerGeneration);
       },
       holderHasStarted: () => nativeHolderProcessIsAlive(staleSocket),
       startTimeoutMs: 6_000,
@@ -632,6 +667,10 @@ describe("native holder app fallback", () => {
     if (connection.kind !== "attached") throw new Error(connection.kind);
     expect(launches).toBe(1);
     expect(counters.socketOwners).toBe(1);
+    expect(existsSync(staleGen1)).toBe(false);
+    expect(
+      existsSync(`${staleSocket.replace(/\.sock$/u, ".pid")}.2`),
+    ).toBe(true);
     const resize = encodeNativeHolderFrame(
       NativeHolderFrame.resize,
       Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
@@ -646,6 +685,7 @@ describe("native holder app fallback", () => {
     } | null;
     activeHolder?.stop();
     await expect(activeHolder?.exited).resolves.toBe(0);
+    expect(nativeHolderProcessIsAlive(staleSocket)).toBe(false);
   });
 
   it("writes the pid marker before it reads the environment file", async () => {

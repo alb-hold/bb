@@ -4,12 +4,15 @@ import { EventEmitter } from "node:events";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import readline from "node:readline";
 import http from "node:http";
 import type net from "node:net";
 import os from "node:os";
@@ -1322,6 +1325,400 @@ describe("native holder app fallback window", () => {
     await expect.poll(() => existsSync(socketPath)).toBe(false);
     client.socket.destroy();
   });
+
+  it(
+    "claims and launches once across 25 multiprocess iterations when both racers pass a dead marker check before creating",
+    async () => {
+      const suiteDir = path.dirname(socketIn());
+      const holderModule = pathToFileURL(
+        path.join(import.meta.dirname, "..", "native-holder.ts"),
+      ).href;
+      const deadPid = await new Promise<number>((resolve, reject) => {
+        const exitedChild = spawnProcess(
+          process.execPath,
+          ["-e", "process.exit(0)"],
+          { stdio: "ignore" },
+        );
+        exitedChild.once("error", reject);
+        exitedChild.once("exit", () => {
+          if (exitedChild.pid === undefined) {
+            reject(new Error("missing dead child pid"));
+          } else {
+            resolve(exitedChild.pid);
+          }
+        });
+      });
+
+      const holderWorkerScript = [
+        `import readline from "node:readline";`,
+        `const { runNativeHolder, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});`,
+        `const rl = readline.createInterface({ input: process.stdin });`,
+        `rl.on("line", (line) => {`,
+        `  const msg = JSON.parse(line);`,
+        `  if (msg.type !== "start") return;`,
+        `  const owned = writeNativeHolderPidMarker(msg.socketPath, process.pid, msg.generation ?? undefined);`,
+        `  let onData = () => undefined;`,
+        `  let onExit = () => undefined;`,
+        `  void runNativeHolder({`,
+        `    socketPath: msg.socketPath,`,
+        `    holderMarkerGeneration: typeof owned === "number" ? owned : undefined,`,
+        `    cwd: ${JSON.stringify(os.tmpdir())},`,
+        `    env: {},`,
+        `    firstClientTimeoutMs: 8_000,`,
+        `    reapAfterMs: 5_000,`,
+        `    onSocketReady: () => {`,
+        `      process.stdout.write(JSON.stringify({ type: "ready", iter: msg.iter, pid: process.pid }) + "\\n");`,
+        `    },`,
+        `    prepare: async () => ({ command: "fake", args: [] }),`,
+        `    spawnPty: () => {`,
+        `      setTimeout(() => onData("owner:" + String(process.pid) + "\\r\\n"), 5);`,
+        `      return {`,
+        `        pid: process.pid,`,
+        `        onData: (cb) => { onData = cb; },`,
+        `        onExit: (cb) => { onExit = cb; },`,
+        `        write: (input) => { if (input.includes("\\u0004")) onExit({ exitCode: 0 }); },`,
+        `        resize: () => undefined,`,
+        `        kill: () => onExit({ exitCode: 0 }),`,
+        `      };`,
+        `    },`,
+        `  }).then(`,
+        `    () => process.stdout.write(JSON.stringify({ type: "exited", iter: msg.iter, ok: true }) + "\\n"),`,
+        `    () => process.stdout.write(JSON.stringify({ type: "exited", iter: msg.iter, ok: false }) + "\\n"),`,
+        `  );`,
+        `});`,
+        `process.stdout.write(JSON.stringify({ type: "booted" }) + "\\n");`,
+      ].join("\n");
+
+      const racerWorkerScript = (role: number): string =>
+        [
+          `import fs from "node:fs";`,
+          `import path from "node:path";`,
+          `import readline from "node:readline";`,
+          `import { syncBuiltinESMExports } from "node:module";`,
+          `const ROLE = ${String(role)};`,
+          `const sleepBuf = new Int32Array(new SharedArrayBuffer(4));`,
+          `const waitUntil = (predicate, timeoutMs = 5_000) => {`,
+          `  const deadline = Date.now() + timeoutMs;`,
+          `  while (!predicate()) {`,
+          `    if (Date.now() >= deadline) throw new Error("barrier timeout");`,
+          `    Atomics.wait(sleepBuf, 0, 0, 1);`,
+          `  }`,
+          `};`,
+          `let state = null;`,
+          `const origWriteFileSync = fs.writeFileSync;`,
+          `const origRmSync = fs.rmSync;`,
+          `const origUnlinkSync = fs.unlinkSync;`,
+          `fs.rmSync = (targetPath, options) => {`,
+          `  const active = state;`,
+          `  const text = String(targetPath);`,
+          `  if (active !== null && !active.settled && text.endsWith(".pid.lock") && !active.lockSynced) {`,
+          `    active.lockSynced = true;`,
+          `    origWriteFileSync(path.join(active.barrierDir, "ready-" + String(ROLE)), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "ready-0")) && fs.existsSync(path.join(active.barrierDir, "ready-1")));`,
+          `    if (ROLE === 1) {`,
+          `      waitUntil(() => fs.existsSync(path.join(active.barrierDir, "r0-cs")));`,
+          `    }`,
+          `  } else if (active !== null && !active.settled && active.lockSynced && ROLE === 0 && text.endsWith(".pid") && !fs.existsSync(path.join(active.barrierDir, "r0-cs"))) {`,
+          `    origWriteFileSync(path.join(active.barrierDir, "r0-cs"), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "r1-claimed")));`,
+          `  }`,
+          `  return origRmSync(targetPath, options);`,
+          `};`,
+          `fs.unlinkSync = (targetPath) => {`,
+          `  const active = state;`,
+          `  if (active !== null && !active.settled) {`,
+          `    active.claimedPaths.delete(String(targetPath));`,
+          `  }`,
+          `  return origUnlinkSync(targetPath);`,
+          `};`,
+          `fs.writeFileSync = (filePath, data, options) => {`,
+          `  const active = state;`,
+          `  const text = String(filePath);`,
+          `  const isExclusive = typeof options === "object" && options !== null && "flag" in options && options.flag === "wx";`,
+          `  const isLaunchClaim = isExclusive && typeof data === "string" && data.startsWith("launch:");`,
+          `  const isGenClaim = isLaunchClaim && text.includes(".pid.") && !text.endsWith(".pid.lock");`,
+          `  if (active !== null && !active.settled && isGenClaim && !active.launchSynced) {`,
+          `    active.launchSynced = true;`,
+          `    origWriteFileSync(path.join(active.barrierDir, "ready-" + String(ROLE)), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "ready-0")) && fs.existsSync(path.join(active.barrierDir, "ready-1")));`,
+          `  }`,
+          `  const result = origWriteFileSync(filePath, data, options);`,
+          `  if (active !== null && !active.settled && isLaunchClaim) {`,
+          `    active.claimedPaths.add(text);`,
+          `    if (active.lockSynced && ROLE === 1) {`,
+          `      origWriteFileSync(path.join(active.barrierDir, "r1-claimed"), "1");`,
+          `    }`,
+          `  }`,
+          `  return result;`,
+          `};`,
+          `syncBuiltinESMExports();`,
+          `const { openNativeHolderConnection } = await import(${JSON.stringify(holderModule)});`,
+          `const rl = readline.createInterface({ input: process.stdin });`,
+          `rl.on("line", async (line) => {`,
+          `  const msg = JSON.parse(line);`,
+          `  if (msg.type !== "race") return;`,
+          `  const current = {`,
+          `    barrierDir: msg.barrierDir,`,
+          `    claimedPaths: new Set(),`,
+          `    launchSynced: false,`,
+          `    lockSynced: false,`,
+          `    settled: false,`,
+          `  };`,
+          `  state = current;`,
+          `  let fallbacks = 0;`,
+          `  try {`,
+          `    const connection = await openNativeHolderConnection({`,
+          `      socketPath: msg.socketPath,`,
+          `      reattachOnly: false,`,
+          `      startHolder: (generation) => {`,
+          `        current.settled = true;`,
+          `        process.stdout.write(JSON.stringify({`,
+          `          type: "start-holder",`,
+          `          iter: msg.iter,`,
+          `          socketPath: msg.socketPath,`,
+          `          generation: typeof generation === "number" ? generation : null,`,
+          `        }) + "\\n");`,
+          `      },`,
+          `      startFallbackHolder: () => {`,
+          `        fallbacks += 1;`,
+          `      },`,
+          `      onWaiting: () => {`,
+          `        current.settled = true;`,
+          `      },`,
+          `      fallbackWindowMs: 1_500,`,
+          `      startTimeoutMs: 8_000,`,
+          `    });`,
+          `    current.settled = true;`,
+          `    if (connection.kind === "attached") connection.socket.destroy();`,
+          `    process.stdout.write(JSON.stringify({`,
+          `      type: "result",`,
+          `      iter: msg.iter,`,
+          `      kind: connection.kind,`,
+          `      claims: current.claimedPaths.size,`,
+          `      fallbacks,`,
+          `    }) + "\\n");`,
+          `  } catch (error) {`,
+          `    process.stdout.write(JSON.stringify({`,
+          `      type: "error",`,
+          `      iter: msg.iter,`,
+          `      message: error instanceof Error ? error.message : String(error),`,
+          `    }) + "\\n");`,
+          `  }`,
+          `});`,
+          `process.stdout.write(JSON.stringify({ type: "booted" }) + "\\n");`,
+        ].join("\n");
+
+      interface IterTracking {
+        exited: number;
+        exitWaiters: (() => void)[];
+        launches: { generation: number | null }[];
+        owners: number[];
+      }
+
+      const iterations = new Map<number, IterTracking>();
+      const getIter = (iter: number): IterTracking => {
+        let entry = iterations.get(iter);
+        if (entry === undefined) {
+          entry = { exited: 0, exitWaiters: [], launches: [], owners: [] };
+          iterations.set(iter, entry);
+        }
+        return entry;
+      };
+
+      const children: ReturnType<typeof spawnProcess>[] = [];
+      const spawnJsonWorker = (
+        script: string,
+        onMessage: (msg: Record<string, unknown>) => void,
+      ): Promise<ReturnType<typeof spawnProcess>> =>
+        new Promise((resolve, reject) => {
+          const child = spawnProcess(
+            process.execPath,
+            [
+              "--experimental-strip-types",
+              "--no-warnings",
+              "--input-type=module",
+              "-e",
+              script,
+            ],
+            { stdio: ["pipe", "pipe", "pipe"] },
+          );
+          children.push(child);
+          let stderr = "";
+          let booted = false;
+          child.stderr?.on("data", (chunk: Buffer) => {
+            stderr += chunk.toString("utf8");
+          });
+          if (child.stdout === null) {
+            reject(new Error("worker missing stdout"));
+            return;
+          }
+          const rl = readline.createInterface({ input: child.stdout });
+          rl.on("line", (line) => {
+            const msg = JSON.parse(line) as Record<string, unknown>;
+            if (msg.type === "booted" && !booted) {
+              booted = true;
+              resolve(child);
+              return;
+            }
+            onMessage(msg);
+          });
+          child.once("error", reject);
+          child.once("exit", (code, signal) => {
+            if (!booted) {
+              reject(
+                new Error(`worker exited before boot ${code} ${signal}: ${stderr}`),
+              );
+            }
+          });
+        });
+
+      interface RacerResult {
+        claims: number;
+        fallbacks: number;
+        kind: string;
+      }
+
+      const racerWaiters = [
+        new Map<
+          number,
+          { resolve: (res: RacerResult) => void; reject: (err: Error) => void }
+        >(),
+        new Map<
+          number,
+          { resolve: (res: RacerResult) => void; reject: (err: Error) => void }
+        >(),
+      ] as const;
+
+      try {
+        const holderWorkers = await Promise.all([
+          spawnJsonWorker(holderWorkerScript, (msg) => {
+            const iter = Number(msg.iter);
+            const entry = getIter(iter);
+            if (msg.type === "ready") {
+              entry.owners.push(Number(msg.pid));
+            } else if (msg.type === "exited") {
+              entry.exited += 1;
+              for (const notify of entry.exitWaiters.splice(0)) notify();
+            }
+          }),
+          spawnJsonWorker(holderWorkerScript, (msg) => {
+            const iter = Number(msg.iter);
+            const entry = getIter(iter);
+            if (msg.type === "ready") {
+              entry.owners.push(Number(msg.pid));
+            } else if (msg.type === "exited") {
+              entry.exited += 1;
+              for (const notify of entry.exitWaiters.splice(0)) notify();
+            }
+          }),
+        ]);
+
+        const handleRacerMessage =
+          (role: 0 | 1) =>
+          (msg: Record<string, unknown>): void => {
+            const iter = Number(msg.iter);
+            if (msg.type === "start-holder") {
+              const entry = getIter(iter);
+              const generation =
+                typeof msg.generation === "number" ? msg.generation : null;
+              entry.launches.push({ generation });
+              const worker =
+                holderWorkers[(entry.launches.length - 1) % holderWorkers.length];
+              worker?.stdin?.write(
+                `${JSON.stringify({
+                  type: "start",
+                  iter,
+                  socketPath: msg.socketPath,
+                  generation,
+                })}\n`,
+              );
+              return;
+            }
+            const waiter = racerWaiters[role].get(iter);
+            if (waiter === undefined) return;
+            racerWaiters[role].delete(iter);
+            if (msg.type === "error") {
+              waiter.reject(new Error(String(msg.message)));
+              return;
+            }
+            waiter.resolve({
+              claims: Number(msg.claims),
+              fallbacks: Number(msg.fallbacks),
+              kind: String(msg.kind),
+            });
+          };
+
+        const racers = await Promise.all([
+          spawnJsonWorker(racerWorkerScript(0), handleRacerMessage(0)),
+          spawnJsonWorker(racerWorkerScript(1), handleRacerMessage(1)),
+        ]);
+
+        for (let iter = 0; iter < 25; iter += 1) {
+          const iterDir = path.join(suiteDir, `i${String(iter)}`);
+          const barrierDir = path.join(iterDir, "b");
+          mkdirSync(barrierDir, { recursive: true, mode: 0o700 });
+          const socketPath = path.join(iterDir, "t.sock");
+          const markerPrefix = socketPath.replace(/\.sock$/u, ".pid");
+          writeFileSync(markerPrefix, `${String(deadPid)}\n`, { mode: 0o600 });
+          writeFileSync(`${markerPrefix}.lock`, `${String(deadPid)}\n`, {
+            mode: 0o600,
+          });
+          writeFileSync(`${markerPrefix}.1`, `${String(deadPid)}\n`, {
+            mode: 0o600,
+          });
+
+          const runRacer = (role: 0 | 1): Promise<RacerResult> =>
+            new Promise((resolve, reject) => {
+              racerWaiters[role].set(iter, { resolve, reject });
+              racers[role]?.stdin?.write(
+                `${JSON.stringify({
+                  type: "race",
+                  iter,
+                  socketPath,
+                  barrierDir,
+                })}\n`,
+              );
+            });
+
+          const [first, second] = await Promise.all([
+            runRacer(0),
+            runRacer(1),
+          ]);
+          expect(readdirSync(barrierDir)).toEqual(
+            expect.arrayContaining(["ready-0", "ready-1"]),
+          );
+          expect(first.kind).toBe("attached");
+          expect(second.kind).toBe("attached");
+          expect(first.claims + second.claims).toBe(1);
+          expect(first.fallbacks + second.fallbacks).toBe(0);
+          const entry = getIter(iter);
+          expect(entry.launches).toEqual([{ generation: 2 }]);
+          expect(entry.owners).toHaveLength(1);
+          expect(existsSync(`${markerPrefix}.1`)).toBe(false);
+          expect(existsSync(`${markerPrefix}.2`)).toBe(true);
+
+          const client = await attach(socketPath);
+          const match = await client.waitFor(/owner:(\d+)/u);
+          expect(Number(match[1])).toBe(entry.owners[0]);
+          client.type("\u0004");
+          await new Promise<void>((resolve) => {
+            if (entry.exited >= entry.launches.length) {
+              resolve();
+              return;
+            }
+            entry.exitWaiters.push(resolve);
+          });
+          client.socket.destroy();
+          expect(existsSync(socketPath)).toBe(false);
+        }
+      } finally {
+        for (const child of children) {
+          child.kill("SIGKILL");
+        }
+      }
+    },
+    30_000,
+  );
 
   it("reports did-not-start after the fallback also never listens", async () => {
     let fallbacks = 0;
