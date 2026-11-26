@@ -761,6 +761,22 @@ export async function runNativeHolder(
   }
 }
 
+export interface NativeHolderWaitProgress {
+  elapsedMs: number;
+  stage: "launching" | "starting";
+}
+
+export function formatNativeHolderBootProgress(
+  progress: NativeHolderWaitProgress,
+): string {
+  const seconds = Math.floor(progress.elapsedMs / 1_000);
+  const what =
+    progress.stage === "launching"
+      ? "Launching the agent host"
+      : "Starting the agent";
+  return `${what}... ${seconds}s`;
+}
+
 export type NativeHolderConnection =
   | { kind: "attached"; socket: net.Socket }
   | { kind: "ended" }
@@ -771,6 +787,8 @@ export async function openNativeHolderConnection(args: {
   reattachOnly: boolean;
   startHolder(): void;
   startFallbackHolder?(): void;
+  holderHasStarted?(): boolean;
+  onWaiting?(progress: NativeHolderWaitProgress): void;
   fallbackWindowMs?: number;
   startTimeoutMs: number;
 }): Promise<NativeHolderConnection> {
@@ -778,20 +796,33 @@ export async function openNativeHolderConnection(args: {
   if (running !== null) return { kind: "attached", socket: running };
   if (args.reattachOnly) return { kind: "ended" };
   args.startHolder();
+  const beganAt = Date.now();
+  const holderHasStarted = args.holderHasStarted ?? (() => false);
+  const report = (): void => {
+    args.onWaiting?.({
+      elapsedMs: Date.now() - beganAt,
+      stage: holderHasStarted() ? "starting" : "launching",
+    });
+  };
+  report();
   let remainingMs = args.startTimeoutMs;
   if (args.startFallbackHolder !== undefined) {
     const windowMs = Math.min(
       args.fallbackWindowMs ?? NATIVE_HOLDER_FALLBACK_WINDOW_MS,
       args.startTimeoutMs,
     );
-    const early = await waitForNativeHolder(args.socketPath, windowMs);
+    const early = await waitForNativeHolder(args.socketPath, windowMs, report);
     if (early !== null) return { kind: "attached", socket: early };
     const late = await connectNativeHolder(args.socketPath);
     if (late !== null) return { kind: "attached", socket: late };
-    args.startFallbackHolder();
-    remainingMs = args.startTimeoutMs - windowMs;
+    if (!holderHasStarted()) args.startFallbackHolder();
+    remainingMs = args.startTimeoutMs - (Date.now() - beganAt);
   }
-  const started = await waitForNativeHolder(args.socketPath, remainingMs);
+  const started = await waitForNativeHolder(
+    args.socketPath,
+    remainingMs,
+    report,
+  );
   return started === null
     ? { kind: "did-not-start" }
     : { kind: "attached", socket: started };
@@ -823,11 +854,13 @@ export async function connectNativeHolder(
 export async function waitForNativeHolder(
   socketPath: string,
   timeoutMs: number,
+  onPoll?: () => void,
 ): Promise<net.Socket | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const socket = await connectNativeHolder(socketPath);
     if (socket !== null) return socket;
+    onPoll?.();
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return null;

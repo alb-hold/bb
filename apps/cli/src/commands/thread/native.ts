@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -41,6 +41,8 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
+  formatNativeHolderBootProgress,
+  type NativeHolderWaitProgress,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
   logNativeHolderEvent,
@@ -181,6 +183,19 @@ export function startNativeHolderFallback(
   spawnDetachedNativeHolder(nativeHolderArgv(threadId, socketPath));
 }
 
+function nativeBootProgressWriter(
+  output: NodeJS.WriteStream,
+): (progress: NativeHolderWaitProgress) => void {
+  let lastSecond = -1;
+  return (progress) => {
+    if (output.isTTY !== true) return;
+    const second = Math.floor(progress.elapsedMs / 1_000);
+    if (second === lastSecond) return;
+    lastSecond = second;
+    output.write(`\r\x1b[2K${formatNativeHolderBootProgress(progress)}`);
+  };
+}
+
 async function runNativeHarness(
   baseUrl: string,
   threadId: string,
@@ -199,6 +214,9 @@ async function runNativeHarness(
       if (appEnvironmentFile === null) return;
       startNativeHolderFallback(threadId, socketPath, appEnvironmentFile);
     },
+    holderHasStarted: () =>
+      appEnvironmentFile !== null && !existsSync(appEnvironmentFile),
+    onWaiting: nativeBootProgressWriter(process.stdout),
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
   if (connection.kind === "ended") {

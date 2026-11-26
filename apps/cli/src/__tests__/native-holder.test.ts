@@ -28,6 +28,8 @@ import {
   nativeHolderIsAlive,
   nativeTerminalCheck,
   nativeTerminalClosedForGood,
+  formatNativeHolderBootProgress,
+  type NativeHolderWaitProgress,
   openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
@@ -1166,6 +1168,51 @@ describe("native holder app fallback window", () => {
     await client.waitFor(/started:/u);
     client.type("\u0004");
     await expect(held).resolves.toBe(7);
+  });
+
+  it("starts no fallback when the holder is alive but slow to listen under load", async () => {
+    const socketPath = socketIn();
+    let held: Promise<number> | null = null;
+    let fallbacks = 0;
+    const progress: NativeHolderWaitProgress[] = [];
+    let holderAlive = false;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: false,
+      startHolder: () => {
+        setTimeout(() => {
+          holderAlive = true;
+        }, 100);
+        setTimeout(() => {
+          held = startHolder(socketPath, ECHO_LOOP);
+        }, 900);
+      },
+      startFallbackHolder: () => {
+        fallbacks += 1;
+      },
+      holderHasStarted: () => holderAlive,
+      onWaiting: (entry) => progress.push(entry),
+      fallbackWindowMs: 300,
+      startTimeoutMs: 6_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    expect(fallbacks).toBe(0);
+    expect(progress[0]?.stage).toBe("launching");
+    expect(progress.at(-1)?.stage).toBe("starting");
+    expect(progress.at(-1)?.elapsedMs).toBeGreaterThan(300);
+    const client = new Client(connection.socket);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("formats boot progress by stage", () => {
+    expect(
+      formatNativeHolderBootProgress({ elapsedMs: 4_200, stage: "launching" }),
+    ).toBe("Launching the agent host... 4s");
+    expect(
+      formatNativeHolderBootProgress({ elapsedMs: 9_900, stage: "starting" }),
+    ).toBe("Starting the agent... 9s");
   });
 
   it("reports did-not-start after the fallback also never listens", async () => {
