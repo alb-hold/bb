@@ -743,7 +743,6 @@ export class TerminalScreenState {
                   if (
                     rendered &&
                     !this.disposed &&
-                    !this.terminal.modes.synchronizedOutputMode &&
                     isTerminalReplaySafeBoundary(this.parserState)
                   ) {
                     const current = visibleFrameContent(this.terminal);

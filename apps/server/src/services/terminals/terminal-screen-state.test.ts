@@ -331,6 +331,19 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("reports changed output while synchronized output remains enabled", async () => {
+    const state = new TerminalScreenState(40, 5);
+    const rendered = vi.fn();
+    state.pushBase64(
+      0,
+      Buffer.from("\u001b[?2026hfirst paint").toString("base64"),
+      rendered,
+    );
+    await state.snapshot();
+    expect(rendered).toHaveBeenCalledOnce();
+    state.dispose();
+  });
+
   it("invalidates and drops queued data after the pending byte limit is crossed", async () => {
     const state = new TerminalScreenState(40, 5);
     state.push(0, Buffer.from("initial"));
