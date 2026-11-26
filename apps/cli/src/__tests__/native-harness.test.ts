@@ -1117,5 +1117,28 @@ describe("findNativeSession", () => {
     expect(reopenLaunch.session).toEqual({ kind: "resume", id: launchedId });
     expect(reopenLaunch.args.slice(-2)).toEqual(["--resume", launchedId]);
     expect(reopenLaunch.args).not.toContain(competitorId);
+
+    const blockedTmpFile = path.join(home, "not-a-directory");
+    writeFileSync(blockedTmpFile, "x");
+    expect(() => openNativeSessionLog(agyCli, blockedTmpFile)).toThrow(
+      /Could not create a private session log for agy session discovery/u,
+    );
+    expect(() =>
+      resolveNativeHarnessLaunch(
+        spec({
+          cli: agyCli,
+          initialPrompt: "reply PONG",
+          nativeSessionId: null,
+          providerId: "acp-antigravity-acp",
+        }),
+        { HOME: home },
+        [],
+        [],
+        cwd,
+        null,
+      ),
+    ).toThrow(
+      /agy native session discovery requires a private session log file/u,
+    );
   });
 });

@@ -459,18 +459,6 @@ export async function holdNativeHarness(
           spec.nativeSessionId === null
             ? openNativeSessionLog(spec.cli, tmpDir)
             : null;
-        if (
-          spec.cli.session.kind === "sqlite-discovered" &&
-          spec.nativeSessionId === null &&
-          sessionLog === null &&
-          ownsSocket
-        ) {
-          logNativeHolderEvent(
-            socketPath,
-            "session-discovery-log-unavailable",
-            {},
-          );
-        }
         sessionLogDirectory = sessionLog?.directory ?? null;
         const launch = resolveNativeHarnessLaunch(
           spec,

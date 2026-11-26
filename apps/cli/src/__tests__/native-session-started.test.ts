@@ -1,4 +1,11 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -661,5 +668,139 @@ describe("holdNativeHarness preassigned start ordering", () => {
     expect(await holderDone).toBe(0);
     expect(sdkServer.recordSessionCalls).toEqual([]);
     expect(sdkServer.settleCount).toBe(1);
+  });
+
+  it("refuses to launch agy and records no session when the private session log cannot be created", async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "bb-hs-agy-logfail-"));
+    roots.push(root);
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const binDir = path.join(root, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const spawnMarkerPath = path.join(root, "agy-spawned");
+    const fakeAgyPath = path.join(binDir, "agy");
+    writeFileSync(
+      fakeAgyPath,
+      `#!/bin/sh\necho spawned > ${JSON.stringify(spawnMarkerPath)}\nexit 0\n`,
+      { mode: 0o700 },
+    );
+    chmodSync(fakeAgyPath, 0o700);
+    const blockedTmpFile = path.join(root, "blocked-tmp");
+    writeFileSync(blockedTmpFile, "not-a-directory", { mode: 0o600 });
+    const socketPath = path.join(root, "t.sock");
+    const threadId = "thr_holder_agy_log_fail";
+    const recordSessionCalls: unknown[] = [];
+    const agyCli: ProviderNativeTerminal = {
+      executable: "agy",
+      launchArgs: ["--dangerously-skip-permissions"],
+      workspaceArgs: ["--settings", '{"trustedWorkspaces":[{cwdJson}]}'],
+      modelArgs: ["--model", "{model}"],
+      promptArgs: ["-i", "{prompt}"],
+      pastePlaceholders: ["[Pasted text #"],
+      sessionRoot: { env: null, home: ".gemini/antigravity-cli" },
+      session: {
+        kind: "sqlite-discovered",
+        resumeArgs: ["--resume", "{sessionId}"],
+        sessionLog: {
+          args: ["--log-file", "{logFile}"],
+          prefixes: ["Created conversation ", "Streaming conversation "],
+        },
+        database: "conversation_summaries.db",
+        transcript: "brain/{sessionId}/.system_generated/logs/transcript.jsonl",
+        table: "conversation_summaries",
+        idColumn: "conversation_id",
+        workspaceUrisColumn: "workspace_uris",
+        startedAtColumn: "last_user_input_time",
+        transcriptStartedAtField: "created_at",
+      },
+    };
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const url = request.url ?? "";
+        response.setHeader("content-type", "application/json");
+        if (
+          request.method === "POST" &&
+          url.startsWith(`/api/v1/threads/${threadId}/native-terminal/launch`)
+        ) {
+          response.end(
+            JSON.stringify({
+              threadId,
+              providerId: "acp-antigravity-acp",
+              cli: agyCli,
+              nativeSessionId: null,
+              initialPrompt: "reply PONG",
+              model: "gemini-3.8-flash",
+            }),
+          );
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          url === `/api/v1/threads/${threadId}/native-terminal/session`
+        ) {
+          recordSessionCalls.push(Buffer.concat(chunks).toString("utf8"));
+          response.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (
+          request.method === "GET" &&
+          url === `/api/v1/threads/${threadId}/native-terminal`
+        ) {
+          response.end(
+            JSON.stringify({
+              threadId,
+              providerId: "acp-antigravity-acp",
+              displayName: "Google Antigravity",
+              model: "gemini-3.8-flash",
+              nativeSessionId: null,
+              canReturnToChat: false,
+              terminal: {
+                id: "term_agy_fail",
+                threadId,
+                status: "running",
+                closeReason: null,
+                exitCode: null,
+                createdAt: Date.now(),
+              },
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: "not found" }));
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("expected a TCP address");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const holderDone = holdNativeHarness(baseUrl, threadId, socketPath, {
+      activityPollIntervalMs: 25,
+      cwd: root,
+      env: {
+        ...cleanHolderEnv(home),
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      home,
+      tmpDir: blockedTmpFile,
+    });
+
+    const attached = await waitForNativeHolder(socketPath, 5_000);
+    expect(attached).not.toBeNull();
+    const client = new HolderTestClient(attached!);
+    client.attach("test-holder-credential");
+    await client.waitFor(
+      /Could not create a private session log for agy session discovery; the launch was not started\./u,
+    );
+
+    expect(await holderDone).toBe(1);
+    expect(existsSync(spawnMarkerPath)).toBe(false);
+    expect(recordSessionCalls).toEqual([]);
   });
 });

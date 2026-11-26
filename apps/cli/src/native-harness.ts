@@ -126,7 +126,9 @@ export function openNativeSessionLog(
     if (directory !== null) {
       rmSync(directory, { force: true, recursive: true });
     }
-    return null;
+    throw new Error(
+      `Could not create a private session log for ${cli.executable} session discovery; the launch was not started.`,
+    );
   }
 }
 
@@ -205,9 +207,17 @@ export function resolveNativeHarnessLaunch(
       session: { kind: "resume", id: spec.nativeSessionId },
     };
   }
+  if (
+    session.kind === "sqlite-discovered" &&
+    (sessionLogFile === null || sessionLogFile.length === 0)
+  ) {
+    throw new Error(
+      `${cli.executable} native session discovery requires a private session log file; the launch was not started.`,
+    );
+  }
   const sessionLogArgs =
-    session.kind === "sqlite-discovered" && sessionLogFile !== null
-      ? fill(session.sessionLog.args, { logFile: sessionLogFile })
+    session.kind === "sqlite-discovered"
+      ? fill(session.sessionLog.args, { logFile: sessionLogFile! })
       : [];
   return {
     command: cli.executable,
