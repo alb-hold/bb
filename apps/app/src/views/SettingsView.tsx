@@ -62,6 +62,7 @@ import { SidebarNavigationProviderSetting } from "@/components/settings/SidebarN
 import { SidebarFooterSettings } from "@/components/settings/SidebarFooterSettings";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
+import { MobileSettingsCategoryBar } from "@/components/settings/SettingsCategoryNav";
 import { useRevealSettingsSearchTarget } from "@/components/settings/useRevealSettingsSearchTarget";
 import { PluginsOverview } from "@/components/plugin/PluginsOverview";
 import { PluginDetailPaneView } from "@/views/ToolsView";
@@ -1337,8 +1338,8 @@ export function SettingsView() {
   const updateAppearanceMutation = useUpdateAppearance();
   const appThemePreview = useAppThemePreview();
   const location = useLocation();
-  const { activePluginId, activeSection, hasUnknownSection } =
-    useSettingsNavState();
+  const navigation = useSettingsNavState();
+  const { activePluginId, activeSection, hasUnknownSection } = navigation;
   useRevealSettingsSearchTarget();
   if (hasUnknownSection) {
     return <Navigate to={SETTINGS_ROUTE_PATH} replace />;
@@ -1353,6 +1354,9 @@ export function SettingsView() {
           <PluginDetailPaneView pluginId={pluginId} />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col pt-4 md:pt-5">
+            <div className="px-4 pb-3 md:hidden">
+              <MobileSettingsCategoryBar navigation={navigation} />
+            </div>
             <PluginsOverview mode="installed" />
           </div>
         )}
@@ -1569,7 +1573,10 @@ export function SettingsView() {
 
   return (
     <PageShell contentClassName="pt-4 md:pt-5">
-      <div className="mx-auto w-full max-w-3xl space-y-10">{content}</div>
+      <div className="mx-auto w-full max-w-3xl">
+        <MobileSettingsCategoryBar navigation={navigation} className="mb-5" />
+        <div className="space-y-10">{content}</div>
+      </div>
     </PageShell>
   );
 }

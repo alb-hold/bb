@@ -1042,3 +1042,10 @@ it("preserves branded footer identity as a monochrome currentColor mask", () => 
   expect(mark?.style.maskImage).toContain("/brand-mark.svg");
   expect(button.querySelector("img")).toBeNull();
 });
+
+it("uses a distinct footer menu icon instead of duplicating the rail More ellipsis", () => {
+  renderWithProviders(<FooterHarness />);
+  const trigger = screen.getByRole("button", { name: "More footer actions" });
+  expect(trigger.querySelector('[data-icon="SlidersHorizontal"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="MoreHorizontal"]')).toBeNull();
+});
