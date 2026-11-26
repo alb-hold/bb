@@ -96,7 +96,7 @@ export const NATIVE_STATUS_CONTRACT_CASES: readonly NativeStatusContractCase[] =
       expectedShowStatus: "idle",
       expectedListStatus: "idle",
       expectedListNeedsYou: "-",
-      expectedHeaderLabel: "Idle",
+      expectedHeaderLabel: "Exited",
     },
     {
       name: "preassigned-started-idle",

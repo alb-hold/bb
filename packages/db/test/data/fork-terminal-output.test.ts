@@ -7,12 +7,20 @@ import {
   appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
   HOST_RETAINED_OUTPUT_BYTES,
+  getRetainedTerminalOutput,
   HOST_RETAINED_TERMINAL_LIMIT,
   markRetainedTerminalOutputExited,
+  NATIVE_TERMINAL_OUTPUT_RETENTION_MS,
   TERMINAL_OUTPUT_RETENTION_MS,
   TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "../../src/fork-terminal-output.js";
 import { createTerminalGridMarker } from "@bb/domain";
+import { createProject } from "../../src/data/projects.js";
+import { createThread } from "../../src/data/threads.js";
+import {
+  createNativeTerminalThread,
+  setNativeTerminalThreadTerminal,
+} from "../../src/fork-native-terminal-threads.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -601,4 +609,73 @@ describe("retained terminal output replay", () => {
     process.stdout.write(`seeded replays: 12 generated for host pressure, ${underPressure} over a host cap\n`);
     expect(underPressure).toBeGreaterThan(6);
   }, 120_000);
+});
+
+describe("retained output of an exited native terminal thread", () => {
+  it("stays readable past the plain-terminal retention window", () => {
+    const { db, host, terminal } = setup();
+    const plain = createTerminalSession(db, {
+      cols: 80,
+      daemonSessionId: null,
+      environmentId: null,
+      hostId: host.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: null,
+      title: "plain",
+      now: 1,
+    });
+    const { project } = createProject(db, noopNotifier, {
+      name: "native-retention",
+      source: { type: "local_path", hostId: host.id, path: "/tmp/native-retention" },
+    });
+    const thread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+    createNativeTerminalThread(db, {
+      threadId: thread.id,
+      providerId: "claude-code",
+      nativeSessionId: "native-session",
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(db, {
+      threadId: thread.id,
+      terminalSessionId: terminal.id,
+    });
+    for (const target of [terminal, plain]) {
+      appendRetainedTerminalOutputChunk(db, {
+        hostId: host.id,
+        terminalSessionId: target.id,
+        chunk: { seq: 0, dataBase64: Buffer.from("scrollback").toString("base64") },
+        now: 5,
+      });
+      markRetainedTerminalOutputExited(db, target.id, host.id, 10);
+    }
+    const afterWindow = 10 + TERMINAL_OUTPUT_RETENTION_MS + 1;
+    expect(
+      getRetainedTerminalOutput(db, {
+        hostId: host.id,
+        terminalSessionId: plain.id,
+        now: afterWindow,
+      }),
+    ).toBeNull();
+    expect(
+      getRetainedTerminalOutput(db, {
+        hostId: host.id,
+        terminalSessionId: terminal.id,
+        now: afterWindow,
+      }),
+    ).toHaveLength(1);
+    expect(
+      getRetainedTerminalOutput(db, {
+        hostId: host.id,
+        terminalSessionId: terminal.id,
+        now: 10 + NATIVE_TERMINAL_OUTPUT_RETENTION_MS + 1,
+      }),
+    ).toBeNull();
+  });
 });

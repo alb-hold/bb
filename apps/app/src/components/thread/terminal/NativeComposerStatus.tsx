@@ -217,14 +217,17 @@ export function AssistStrip({
 
 export function NativeTerminalActivity({
   error = false,
+  exited = false,
   indicator,
 }: {
   error?: boolean;
+  exited?: boolean;
   indicator: ThreadListIndicatorKind;
 }) {
   return (
     <ThreadActivityLabel
       error={error}
+      exited={exited}
       indicator={indicator}
       label="Terminal activity"
     />
