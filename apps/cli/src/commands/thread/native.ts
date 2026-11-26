@@ -44,6 +44,10 @@ import {
 } from "../../native-harness.js";
 import {
   defaultNativeHolderSocketPath,
+  formatNativeHolderBootProgress,
+  nativeHolderProcessIsAlive,
+  writeNativeHolderPidMarker,
+  type NativeHolderWaitProgress,
   openNativeHolderConnection,
   ignoreNativeHolderSignals,
   logNativeHolderEvent,
@@ -86,6 +90,8 @@ interface NativeRunOptions {
 
 interface NativeHoldOptions {
   json?: boolean;
+  markerGeneration: string;
+  markerToken: string;
   socket: string;
 }
 
@@ -111,7 +117,27 @@ function removeEmptyNativeHolderLog(socketPath: string): void {
   }
 }
 
-function nativeHolderArgv(threadId: string, socketPath: string): string[] {
+function parseValidMarkerGeneration(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === "string" && /^[1-9]\d*$/u.test(value)) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function isValidMarkerToken(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]+$/u.test(value);
+}
+
+function nativeHolderArgv(
+  threadId: string,
+  socketPath: string,
+  markerGeneration: number,
+  markerToken: string,
+): string[] {
   const script = process.argv[1];
   if (script === undefined) {
     throw new CliExitError(
@@ -128,6 +154,10 @@ function nativeHolderArgv(threadId: string, socketPath: string): string[] {
     threadId,
     "--socket",
     socketPath,
+    "--marker-generation",
+    String(markerGeneration),
+    "--marker-token",
+    markerToken,
   ];
 }
 
@@ -157,10 +187,17 @@ function warnNativeHolderUnprotected(
 export function spawnNativeHolder(
   threadId: string,
   socketPath: string,
-  app: NativeHolderAppDeps = defaultNativeHolderAppDeps(),
+  app: NativeHolderAppDeps,
+  markerGeneration: number,
+  markerToken: string,
 ): string | null {
   mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  const argv = nativeHolderArgv(threadId, socketPath);
+  const argv = nativeHolderArgv(
+    threadId,
+    socketPath,
+    markerGeneration,
+    markerToken,
+  );
   const started = startNativeHolderAsApp(
     { argv, cwd: process.cwd(), environment: process.env, socketPath },
     app,
@@ -177,12 +214,37 @@ export function startNativeHolderFallback(
   threadId: string,
   socketPath: string,
   appEnvironmentFile: string,
+  markerGeneration: number,
+  markerToken: string,
 ): void {
   try {
     unlinkSync(appEnvironmentFile);
   } catch {}
   warnNativeHolderUnprotected(socketPath, "app-not-ready", null);
-  spawnDetachedNativeHolder(nativeHolderArgv(threadId, socketPath));
+  spawnDetachedNativeHolder(
+    nativeHolderArgv(threadId, socketPath, markerGeneration, markerToken),
+  );
+}
+
+function nativeBootProgressWriter(output: NodeJS.WriteStream): {
+  onWaiting: (progress: NativeHolderWaitProgress) => void;
+  clear: () => void;
+} {
+  let lastSecond = -1;
+  let wrote = false;
+  return {
+    onWaiting: (progress) => {
+      if (output.isTTY !== true) return;
+      const second = Math.floor(progress.elapsedMs / 1_000);
+      if (second === lastSecond) return;
+      lastSecond = second;
+      wrote = true;
+      output.write(`\r\x1b[2K${formatNativeHolderBootProgress(progress)}`);
+    },
+    clear: () => {
+      if (wrote) output.write("\r\x1b[2K");
+    },
+  };
 }
 
 async function runNativeHarness(
@@ -193,18 +255,34 @@ async function runNativeHarness(
   const socketPath = defaultNativeHolderSocketPath(baseUrl, threadId);
   const credential = takeNativeToolCredentialFromEnv(process.env);
   let appEnvironmentFile: string | null = null;
+  const progress = nativeBootProgressWriter(process.stdout);
   const connection = await openNativeHolderConnection({
     socketPath,
     reattachOnly,
-    startHolder: () => {
-      appEnvironmentFile = spawnNativeHolder(threadId, socketPath);
+    startHolder: (markerGeneration, markerToken) => {
+      appEnvironmentFile = spawnNativeHolder(
+        threadId,
+        socketPath,
+        defaultNativeHolderAppDeps(),
+        markerGeneration,
+        markerToken,
+      );
     },
-    startFallbackHolder: () => {
+    startFallbackHolder: (markerGeneration, markerToken) => {
       if (appEnvironmentFile === null) return;
-      startNativeHolderFallback(threadId, socketPath, appEnvironmentFile);
+      startNativeHolderFallback(
+        threadId,
+        socketPath,
+        appEnvironmentFile,
+        markerGeneration,
+        markerToken,
+      );
     },
+    holderHasStarted: () => nativeHolderProcessIsAlive(socketPath),
+    onWaiting: progress.onWaiting,
     startTimeoutMs: HOLDER_START_TIMEOUT_MS,
   });
+  progress.clear();
   if (connection.kind === "ended") {
     process.stdout.write(
       "The CLI for this thread ended while bb was disconnected from this machine. Open the terminal again to resume the session.\r\n",
@@ -242,6 +320,8 @@ export interface HoldNativeHarnessOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   home?: string;
+  markerGeneration: number;
+  markerToken: string;
   tmpDir?: string;
 }
 
@@ -249,8 +329,26 @@ export async function holdNativeHarness(
   baseUrl: string,
   threadId: string,
   socketPath: string,
-  options: HoldNativeHarnessOptions = {},
+  options: HoldNativeHarnessOptions,
 ): Promise<number> {
+  const markerGeneration = parseValidMarkerGeneration(
+    options?.markerGeneration,
+  );
+  if (
+    markerGeneration === null ||
+    !isValidMarkerToken(options?.markerToken)
+  ) {
+    return 1;
+  }
+  const holderMarkerGeneration = writeNativeHolderPidMarker(
+    socketPath,
+    process.pid,
+    markerGeneration,
+    options.markerToken,
+  );
+  if (holderMarkerGeneration === null) {
+    return 1;
+  }
   if (options.env === undefined) {
     try {
       loadNativeHolderEnvironment(process.env);
@@ -262,6 +360,7 @@ export async function holdNativeHarness(
     }
   }
   let ownsSocket = false;
+  let hadOwnedSocket = false;
   const restoreSignals = ignoreNativeHolderSignals(
     process,
     socketPath,
@@ -365,6 +464,8 @@ export async function holdNativeHarness(
     let pty: ReturnType<typeof nodePty.spawn> | null = null;
     const exitCode = await runNativeHolder({
       socketPath,
+      holderMarkerGeneration,
+      holderMarkerToken: options.markerToken,
       holderPid: process.pid,
       holderPgid: process.pid,
       holderSid: process.pid,
@@ -539,6 +640,7 @@ export async function holdNativeHarness(
       tickIntervalMs: SESSION_DISCOVERY_INTERVAL_MS,
       onSocketReady: () => {
         ownsSocket = true;
+        hadOwnedSocket = true;
       },
       onSocketClosed: () => {
         ownsSocket = false;
@@ -566,6 +668,9 @@ export async function holdNativeHarness(
     if (hookSpoolDirectory !== null) removeHookSpool(hookSpoolDirectory);
     if (pinnedSettingsDirectory !== null) {
       removePinnedNativeSettings(pinnedSettingsDirectory);
+    }
+    if (hadOwnedSocket && !nativeHolderProcessIsAlive(socketPath)) {
+      removeEmptyNativeHolderLog(socketPath);
     }
     return exitCode;
   } finally {
@@ -731,15 +836,34 @@ export function registerNativeCommands(
       "--socket <path>",
       "Unix socket the native terminal attaches through",
     )
+    .requiredOption(
+      "--marker-generation <generation>",
+      "Generation of the native holder pid marker claimed for this launch",
+    )
+    .requiredOption(
+      "--marker-token <token>",
+      "Token of the native holder pid marker claimed for this launch",
+    )
     .option("--json", "Print the provider CLI's exit code as JSON when it ends")
     .action(
       action(async (threadId: string, opts: NativeHoldOptions) => {
+        const markerGeneration = parseValidMarkerGeneration(
+          opts.markerGeneration,
+        );
+        if (
+          markerGeneration === null ||
+          !isValidMarkerToken(opts.markerToken)
+        ) {
+          if (opts.json) console.log(JSON.stringify({ exitCode: 1 }));
+          process.exitCode = 1;
+          return;
+        }
         const exitCode = await holdNativeHarness(
           getUrl(),
           threadId,
           opts.socket,
+          { markerGeneration, markerToken: opts.markerToken },
         );
-        removeEmptyNativeHolderLog(opts.socket);
         if (opts.json) console.log(JSON.stringify({ exitCode }));
         process.exitCode = exitCode;
       }),

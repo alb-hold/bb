@@ -11,9 +11,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NativeHolderFrame,
+  claimNativeHolderLaunch,
   encodeNativeHolderFrame,
   runNativeHolder,
   waitForNativeHolder,
+  writeNativeHolderPidMarker,
   type NativeHolderPty,
 } from "../native-holder.js";
 import {
@@ -125,8 +127,14 @@ function startHolder(
     reapAfterMs?: number;
   } = {},
 ): Promise<number> {
+  const claim = claimNativeHolderLaunch(socket);
+  const generation = claim.generation ?? 1;
+  const token = claim.token ?? "";
+  writeNativeHolderPidMarker(socket, process.pid, generation, token);
   return runNativeHolder({
     socketPath: socket,
+    holderMarkerGeneration: generation,
+    holderMarkerToken: token,
     credentialRoot: dir,
     cwd: dir,
     env: {},

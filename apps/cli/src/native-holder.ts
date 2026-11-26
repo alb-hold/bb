@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -10,8 +10,12 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
+  readFileSync,
   rmSync,
+  statSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import net from "node:net";
@@ -253,6 +257,8 @@ export interface NativeHolderProcess {
 
 export interface RunNativeHolderOptions {
   socketPath: string;
+  holderMarkerGeneration: number;
+  holderMarkerToken: string;
   holderPid?: number;
   holderPgid?: number;
   holderSid?: number;
@@ -382,6 +388,26 @@ function writeFrame(
 export async function runNativeHolder(
   options: RunNativeHolderOptions,
 ): Promise<number> {
+  const holderPid = options.holderPid ?? process.pid;
+  const ownedMarkerGeneration = options.holderMarkerGeneration;
+  const markerToken = options.holderMarkerToken;
+  if (
+    !Number.isInteger(holderPid) ||
+    holderPid <= 0 ||
+    typeof ownedMarkerGeneration !== "number" ||
+    !Number.isSafeInteger(ownedMarkerGeneration) ||
+    ownedMarkerGeneration <= 0 ||
+    typeof markerToken !== "string" ||
+    !/^[0-9a-f]+$/u.test(markerToken) ||
+    !holderOwnsClaimedGeneration(
+      options.socketPath,
+      holderPid,
+      ownedMarkerGeneration,
+      markerToken,
+    )
+  ) {
+    return 1;
+  }
   mkdirSync(path.dirname(options.socketPath), { recursive: true, mode: 0o700 });
   const reapAfterMs = options.reapAfterMs ?? NATIVE_HOLDER_REAP_AFTER_MS;
   let client: net.Socket | null = null;
@@ -438,6 +464,11 @@ export async function runNativeHolder(
     server.close();
     if (mainSocketIdentity !== null) {
       removeSocketFile(options.socketPath, mainSocketIdentity);
+      closeGenerationMarkerForHolder(
+        options.socketPath,
+        ownedMarkerGeneration,
+        holderPid,
+      );
     }
     statusServer.close();
     if (statusSocketIdentity !== null) {
@@ -673,6 +704,11 @@ export async function runNativeHolder(
     if (mainSocketIdentity !== null) {
       removeSocketFile(options.socketPath, mainSocketIdentity);
     }
+    closeGenerationMarkerForHolder(
+      options.socketPath,
+      ownedMarkerGeneration,
+      holderPid,
+    );
     statusServer.close();
     if (statusSocketIdentity !== null) {
       removeSocketFile(statusSocketPath, statusSocketIdentity);
@@ -761,6 +797,492 @@ export async function runNativeHolder(
   }
 }
 
+const NATIVE_HOLDER_PENDING_MARKER_MS = 1_000;
+
+type NativeHolderPidMarkerState =
+  | { kind: "missing" }
+  | { kind: "pending" }
+  | { kind: "closed" }
+  | { kind: "corrupt" }
+  | { kind: "holder"; pid: number; alive: boolean }
+  | { kind: "launch"; pid: number; token: string; alive: boolean };
+
+function processIdIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function tryCreateExclusiveFile(filePath: string, content: string): boolean {
+  try {
+    writeFileSync(filePath, content, { flag: "wx", mode: 0o600 });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+function nativeHolderPidMarkerPrefix(socketPath: string): string {
+  return socketPath.endsWith(".sock")
+    ? socketPath.replace(/\.sock$/u, ".pid")
+    : `${socketPath}.pid`;
+}
+
+function nativeHolderPidMarkerGenerationPath(
+  socketPath: string,
+  generation: number,
+): string {
+  return `${nativeHolderPidMarkerPrefix(socketPath)}.${generation}`;
+}
+
+function nativeHolderPidMarkerHolderPath(
+  socketPath: string,
+  generation: number,
+): string {
+  return `${nativeHolderPidMarkerGenerationPath(socketPath, generation)}.holder`;
+}
+
+function nativeHolderPidMarkerClosedPath(
+  socketPath: string,
+  generation: number,
+): string {
+  return `${nativeHolderPidMarkerGenerationPath(socketPath, generation)}.closed`;
+}
+
+function listNativeHolderMarkerGenerations(socketPath: string): number[] {
+  const dir = path.dirname(socketPath);
+  const prefix = `${path.basename(nativeHolderPidMarkerPrefix(socketPath))}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const generations: number[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const suffix = entry.slice(prefix.length);
+    if (!/^[1-9]\d*$/u.test(suffix)) continue;
+    const generation = Number.parseInt(suffix, 10);
+    if (Number.isSafeInteger(generation)) generations.push(generation);
+  }
+  generations.sort((a, b) => a - b);
+  return generations;
+}
+
+export function nativeHolderPidMarkerPath(
+  socketPath: string,
+  generation?: number,
+): string {
+  const target =
+    generation ?? (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 1);
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, target);
+  if (existsSync(closedPath)) return closedPath;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, target);
+  if (existsSync(holderPath)) return holderPath;
+  return nativeHolderPidMarkerGenerationPath(socketPath, target);
+}
+
+function firstMarkerLine(raw: string): string {
+  return (raw.split("\n")[0] ?? "").trim();
+}
+
+function parseNativeHolderMarkerText(
+  raw: string,
+): NativeHolderPidMarkerState | null {
+  const line = firstMarkerLine(raw);
+  if (line === "closed") return { kind: "closed" };
+  if (/^\d+$/u.test(line)) {
+    const pid = Number.parseInt(line, 10);
+    return { kind: "holder", pid, alive: processIdIsAlive(pid) };
+  }
+  const launchMatch = /^launch:(\d+):([0-9a-f]+)$/u.exec(line);
+  if (launchMatch !== null) {
+    const pid = Number.parseInt(launchMatch[1] ?? "", 10);
+    const token = launchMatch[2] ?? "";
+    return { kind: "launch", pid, token, alive: processIdIsAlive(pid) };
+  }
+  return null;
+}
+
+function readNativeHolderSingleFileState(
+  markerPath: string,
+): NativeHolderPidMarkerState | { kind: "enoent" } {
+  let raw: string;
+  try {
+    raw = readFileSync(markerPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { kind: "enoent" };
+    }
+    return { kind: "corrupt" };
+  }
+  const parsed = parseNativeHolderMarkerText(raw);
+  if (parsed !== null) return parsed;
+  try {
+    const stat = statSync(markerPath);
+    if (Date.now() - stat.mtimeMs < NATIVE_HOLDER_PENDING_MARKER_MS) {
+      return { kind: "pending" };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { kind: "enoent" };
+    }
+    return { kind: "corrupt" };
+  }
+  return { kind: "corrupt" };
+}
+
+function readNativeHolderGenerationState(
+  socketPath: string,
+  generation: number,
+): NativeHolderPidMarkerState | { kind: "enoent" } {
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+  for (;;) {
+    if (existsSync(closedPath)) {
+      return existsSync(basePath) ? { kind: "closed" } : { kind: "enoent" };
+    }
+    const holderState = readNativeHolderSingleFileState(holderPath);
+    if (holderState.kind !== "enoent") {
+      if (!existsSync(basePath)) return { kind: "enoent" };
+      if (existsSync(closedPath)) return { kind: "closed" };
+      return holderState;
+    }
+    const baseState = readNativeHolderSingleFileState(basePath);
+    if (baseState.kind === "enoent") return { kind: "enoent" };
+    if (existsSync(closedPath) || existsSync(holderPath)) continue;
+    return baseState;
+  }
+}
+
+function readHighestNativeHolderPidMarker(socketPath: string): {
+  generation: number;
+  state: NativeHolderPidMarkerState;
+} {
+  for (;;) {
+    const highest = listNativeHolderMarkerGenerations(socketPath).at(-1);
+    if (highest === undefined) {
+      return { generation: 0, state: { kind: "missing" } };
+    }
+    const state = readNativeHolderGenerationState(socketPath, highest);
+    if (state.kind === "enoent") continue;
+    return { generation: highest, state };
+  }
+}
+
+function pruneLowerMarkerGenerations(
+  socketPath: string,
+  keepGeneration: number,
+): void {
+  const dir = path.dirname(socketPath);
+  const prefix = `${path.basename(nativeHolderPidMarkerPrefix(socketPath))}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const lowerGenerations = new Set<number>();
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const suffix = entry.slice(prefix.length);
+    const match = /^([1-9]\d*)(?:\.(?:holder|closed))?$/u.exec(suffix);
+    if (match === null) continue;
+    const generation = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isSafeInteger(generation) && generation < keepGeneration) {
+      lowerGenerations.add(generation);
+    }
+  }
+  const sorted = [...lowerGenerations].sort((a, b) => a - b);
+  for (const generation of sorted) {
+    for (const filePath of [
+      nativeHolderPidMarkerGenerationPath(socketPath, generation),
+      nativeHolderPidMarkerHolderPath(socketPath, generation),
+      nativeHolderPidMarkerClosedPath(socketPath, generation),
+    ]) {
+      try {
+        unlinkSync(filePath);
+      } catch {
+        continue;
+      }
+    }
+  }
+}
+
+function holderOwnsClaimedGeneration(
+  socketPath: string,
+  holderPid: number,
+  generation: number,
+  token: string,
+): boolean {
+  const currentHighest =
+    listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0;
+  if (currentHighest !== generation) return false;
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+  if (existsSync(closedPath)) return false;
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  let baseRaw: string;
+  let holderRaw: string;
+  try {
+    baseRaw = readFileSync(basePath, "utf8");
+    holderRaw = readFileSync(holderPath, "utf8");
+  } catch {
+    return false;
+  }
+  const baseParsed = parseNativeHolderMarkerText(baseRaw);
+  const holderParsed = parseNativeHolderMarkerText(holderRaw);
+  if (
+    baseParsed === null ||
+    baseParsed.kind !== "launch" ||
+    baseParsed.token !== token ||
+    holderParsed === null ||
+    holderParsed.kind !== "holder" ||
+    holderParsed.pid !== holderPid
+  ) {
+    return false;
+  }
+  if (existsSync(closedPath)) return false;
+  return (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) === generation
+  );
+}
+
+function closeGenerationMarkerForHolder(
+  socketPath: string,
+  generation: number,
+  holderPid: number,
+): void {
+  if (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) > generation
+  ) {
+    return;
+  }
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  if (!existsSync(basePath)) return;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  const ownerPath = existsSync(holderPath) ? holderPath : basePath;
+  try {
+    const parsed = parseNativeHolderMarkerText(readFileSync(ownerPath, "utf8"));
+    if (
+      parsed === null ||
+      parsed.kind !== "holder" ||
+      parsed.pid !== holderPid
+    ) {
+      return;
+    }
+  } catch {
+    return;
+  }
+  tryCreateExclusiveFile(
+    nativeHolderPidMarkerClosedPath(socketPath, generation),
+    "closed\n",
+  );
+}
+
+function canAdvanceToFallbackGeneration(
+  socketPath: string,
+  generation: number,
+): boolean {
+  if (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) > generation
+  ) {
+    return false;
+  }
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  if (!existsSync(basePath)) return false;
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  if (tryCreateExclusiveFile(holderPath, "closed\n")) {
+    return true;
+  }
+  const state = readNativeHolderGenerationState(socketPath, generation);
+  if (state.kind === "enoent") return false;
+  if (
+    state.kind === "closed" ||
+    state.kind === "corrupt" ||
+    (state.kind === "holder" && !state.alive)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export interface NativeHolderLaunchClaim {
+  claimed: boolean;
+  generation: number | null;
+  token: string | null;
+  release(): void;
+}
+
+export function claimNativeHolderLaunch(
+  socketPath: string,
+  pid: number = process.pid,
+): NativeHolderLaunchClaim {
+  mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  const token = randomBytes(8).toString("hex");
+  const payload = `launch:${pid}:${token}`;
+  for (;;) {
+    const { generation, state } = readHighestNativeHolderPidMarker(socketPath);
+    if (
+      state.kind === "pending" ||
+      ((state.kind === "holder" || state.kind === "launch") && state.alive)
+    ) {
+      return {
+        claimed: false,
+        generation: null,
+        token: null,
+        release: () => undefined,
+      };
+    }
+    if (generation > 0 && state.kind === "launch") {
+      const prevBasePath = nativeHolderPidMarkerGenerationPath(
+        socketPath,
+        generation,
+      );
+      const prevHolderPath = nativeHolderPidMarkerHolderPath(
+        socketPath,
+        generation,
+      );
+      if (!tryCreateExclusiveFile(prevHolderPath, "closed\n")) {
+        continue;
+      }
+      if (!existsSync(prevBasePath)) {
+        try {
+          unlinkSync(prevHolderPath);
+        } catch {}
+        continue;
+      }
+    }
+    const nextGeneration = generation + 1;
+    const nextPath = nativeHolderPidMarkerGenerationPath(
+      socketPath,
+      nextGeneration,
+    );
+    if (!tryCreateExclusiveFile(nextPath, `${payload}\n`)) {
+      continue;
+    }
+    const currentHighest =
+      listNativeHolderMarkerGenerations(socketPath).at(-1) ?? nextGeneration;
+    if (currentHighest > nextGeneration) {
+      try {
+        unlinkSync(nextPath);
+      } catch {}
+      continue;
+    }
+    pruneLowerMarkerGenerations(socketPath, nextGeneration);
+    const holderPath = nativeHolderPidMarkerHolderPath(
+      socketPath,
+      nextGeneration,
+    );
+    const release = (): void => {
+      if (
+        (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) >
+        nextGeneration
+      ) {
+        return;
+      }
+      if (!existsSync(nextPath)) return;
+      tryCreateExclusiveFile(holderPath, "closed\n");
+    };
+    return { claimed: true, generation: nextGeneration, token, release };
+  }
+}
+
+export function writeNativeHolderPidMarker(
+  socketPath: string,
+  pid: number,
+  generation: number,
+  token: string,
+): number | null {
+  if (
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    !Number.isSafeInteger(generation) ||
+    generation <= 0 ||
+    !/^[0-9a-f]+$/u.test(token)
+  ) {
+    return null;
+  }
+  const currentHighest =
+    listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0;
+  if (currentHighest !== generation) return null;
+  const basePath = nativeHolderPidMarkerGenerationPath(socketPath, generation);
+  const closedPath = nativeHolderPidMarkerClosedPath(socketPath, generation);
+  if (existsSync(closedPath)) return null;
+  let baseRaw: string;
+  try {
+    baseRaw = readFileSync(basePath, "utf8");
+  } catch {
+    return null;
+  }
+  const baseParsed = parseNativeHolderMarkerText(baseRaw);
+  if (
+    baseParsed === null ||
+    baseParsed.kind !== "launch" ||
+    baseParsed.token !== token
+  ) {
+    return null;
+  }
+  const holderPath = nativeHolderPidMarkerHolderPath(socketPath, generation);
+  if (!tryCreateExclusiveFile(holderPath, `${pid}\n`)) {
+    try {
+      const existing = parseNativeHolderMarkerText(
+        readFileSync(holderPath, "utf8"),
+      );
+      if (
+        existing !== null &&
+        existing.kind === "holder" &&
+        existing.pid === pid &&
+        !existsSync(closedPath)
+      ) {
+        return generation;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  if (
+    (listNativeHolderMarkerGenerations(socketPath).at(-1) ?? 0) > generation ||
+    !existsSync(basePath) ||
+    existsSync(closedPath)
+  ) {
+    try {
+      unlinkSync(holderPath);
+    } catch {}
+    return null;
+  }
+  return generation;
+}
+
+export function nativeHolderProcessIsAlive(socketPath: string): boolean {
+  const { state } = readHighestNativeHolderPidMarker(socketPath);
+  return state.kind === "holder" && state.alive;
+}
+
+export interface NativeHolderWaitProgress {
+  elapsedMs: number;
+  stage: "launching" | "starting";
+}
+
+export function formatNativeHolderBootProgress(
+  progress: NativeHolderWaitProgress,
+): string {
+  const seconds = Math.floor(progress.elapsedMs / 1_000);
+  const what =
+    progress.stage === "launching"
+      ? "Launching the agent host"
+      : "Starting the agent";
+  return `${what}... ${seconds}s`;
+}
+
 export type NativeHolderConnection =
   | { kind: "attached"; socket: net.Socket }
   | { kind: "ended" }
@@ -769,32 +1291,88 @@ export type NativeHolderConnection =
 export async function openNativeHolderConnection(args: {
   socketPath: string;
   reattachOnly: boolean;
-  startHolder(): void;
-  startFallbackHolder?(): void;
+  startHolder(markerGeneration: number, markerToken: string): void;
+  startFallbackHolder?(markerGeneration: number, markerToken: string): void;
+  holderHasStarted?(): boolean;
+  onWaiting?(progress: NativeHolderWaitProgress): void;
   fallbackWindowMs?: number;
   startTimeoutMs: number;
 }): Promise<NativeHolderConnection> {
   const running = await connectNativeHolder(args.socketPath);
   if (running !== null) return { kind: "attached", socket: running };
   if (args.reattachOnly) return { kind: "ended" };
-  args.startHolder();
-  let remainingMs = args.startTimeoutMs;
-  if (args.startFallbackHolder !== undefined) {
-    const windowMs = Math.min(
-      args.fallbackWindowMs ?? NATIVE_HOLDER_FALLBACK_WINDOW_MS,
-      args.startTimeoutMs,
+  const beganAt = Date.now();
+  const holderHasStarted =
+    args.holderHasStarted ??
+    (() => nativeHolderProcessIsAlive(args.socketPath));
+  const report = (): void => {
+    args.onWaiting?.({
+      elapsedMs: Date.now() - beganAt,
+      stage: holderHasStarted() ? "starting" : "launching",
+    });
+  };
+  const claim = claimNativeHolderLaunch(args.socketPath);
+  if (!claim.claimed || claim.generation === null || claim.token === null) {
+    report();
+    const joined = await waitForNativeHolder(
+      args.socketPath,
+      Math.max(0, args.startTimeoutMs - (Date.now() - beganAt)),
+      report,
     );
-    const early = await waitForNativeHolder(args.socketPath, windowMs);
-    if (early !== null) return { kind: "attached", socket: early };
-    const late = await connectNativeHolder(args.socketPath);
-    if (late !== null) return { kind: "attached", socket: late };
-    args.startFallbackHolder();
-    remainingMs = args.startTimeoutMs - windowMs;
+    return joined === null
+      ? { kind: "did-not-start" }
+      : { kind: "attached", socket: joined };
   }
-  const started = await waitForNativeHolder(args.socketPath, remainingMs);
-  return started === null
-    ? { kind: "did-not-start" }
-    : { kind: "attached", socket: started };
+  let activeClaim = claim;
+  try {
+    const raced = await connectNativeHolder(args.socketPath);
+    if (raced !== null) return { kind: "attached", socket: raced };
+    args.startHolder(claim.generation, claim.token);
+    report();
+    let remainingMs = args.startTimeoutMs - (Date.now() - beganAt);
+    if (args.startFallbackHolder !== undefined) {
+      const windowMs = Math.min(
+        args.fallbackWindowMs ?? NATIVE_HOLDER_FALLBACK_WINDOW_MS,
+        Math.max(0, remainingMs),
+      );
+      const early = await waitForNativeHolder(
+        args.socketPath,
+        windowMs,
+        report,
+      );
+      if (early !== null) return { kind: "attached", socket: early };
+      const late = await connectNativeHolder(args.socketPath);
+      if (late !== null) return { kind: "attached", socket: late };
+      if (
+        !holderHasStarted() &&
+        canAdvanceToFallbackGeneration(args.socketPath, claim.generation)
+      ) {
+        const fallbackClaim = claimNativeHolderLaunch(args.socketPath);
+        if (
+          fallbackClaim.claimed &&
+          fallbackClaim.generation !== null &&
+          fallbackClaim.token !== null
+        ) {
+          activeClaim = fallbackClaim;
+          args.startFallbackHolder(
+            fallbackClaim.generation,
+            fallbackClaim.token,
+          );
+        }
+      }
+      remainingMs = args.startTimeoutMs - (Date.now() - beganAt);
+    }
+    const started = await waitForNativeHolder(
+      args.socketPath,
+      Math.max(0, remainingMs),
+      report,
+    );
+    return started === null
+      ? { kind: "did-not-start" }
+      : { kind: "attached", socket: started };
+  } finally {
+    activeClaim.release();
+  }
 }
 
 export async function connectNativeHolder(
@@ -823,11 +1401,13 @@ export async function connectNativeHolder(
 export async function waitForNativeHolder(
   socketPath: string,
   timeoutMs: number,
+  onPoll?: () => void,
 ): Promise<net.Socket | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const socket = await connectNativeHolder(socketPath);
     if (socket !== null) return socket;
+    onPoll?.();
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return null;

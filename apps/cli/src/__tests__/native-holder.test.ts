@@ -1,17 +1,21 @@
-import { spawn as spawnProcess } from "node:child_process";
+import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import readline from "node:readline";
 import http from "node:http";
-import type net from "node:net";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -22,17 +26,23 @@ import * as nativeHolder from "../native-holder.js";
 import {
   NativeHolderFrame,
   NativeHolderFrameDecoder,
+  claimNativeHolderLaunch,
+  nativeHolderPidMarkerPath,
+  nativeHolderProcessIsAlive,
   encodeNativeHolderFrame,
   ignoreNativeHolderSignals,
   nativeHolderSocketPath,
   nativeHolderIsAlive,
   nativeTerminalCheck,
   nativeTerminalClosedForGood,
+  formatNativeHolderBootProgress,
+  type NativeHolderWaitProgress,
   openNativeHolderConnection,
   pipeNativeHolderClient,
   runNativeHolder,
   waitForNativeHolder,
   writeNativeHolderAttachMarker,
+  writeNativeHolderPidMarker,
   type NativeHolderProcess,
   type NativeTerminalCheck,
 } from "../native-holder.js";
@@ -82,14 +92,64 @@ function oversizedHolderTestFields(): Record<string, number> {
   return fields;
 }
 
+const bashSupportsPs0 =
+  spawnSync("/bin/bash", [
+    "-c",
+    "(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))",
+  ]).status === 0;
+
+function claimTestHolderMarker(
+  socketPath: string,
+  holderPid: number = process.pid,
+  claimed?: { generation: number; token: string },
+): { generation: number; token: string } {
+  if (claimed !== undefined) {
+    writeNativeHolderPidMarker(
+      socketPath,
+      holderPid,
+      claimed.generation,
+      claimed.token,
+    );
+    return claimed;
+  }
+  const claim = claimNativeHolderLaunch(socketPath, process.pid);
+  if (claim.claimed && claim.generation !== null && claim.token !== null) {
+    writeNativeHolderPidMarker(
+      socketPath,
+      holderPid,
+      claim.generation,
+      claim.token,
+    );
+    return { generation: claim.generation, token: claim.token };
+  }
+  const baseName = `${path.basename(socketPath).replace(/\.sock$/u, ".pid")}.`;
+  let highest = 0;
+  for (const entry of readdirSync(path.dirname(socketPath))) {
+    if (!entry.startsWith(baseName)) continue;
+    const suffix = entry.slice(baseName.length);
+    if (!/^\d+$/u.test(suffix)) continue;
+    const n = Number(suffix);
+    if (n > highest) highest = n;
+  }
+  const prefix = socketPath.replace(/\.sock$/u, ".pid");
+  const raw = readFileSync(`${prefix}.${highest}`, "utf8").trim();
+  const token = raw.split(":")[2] ?? "";
+  writeNativeHolderPidMarker(socketPath, holderPid, highest, token);
+  return { generation: highest, token };
+}
+
 function startHolder(
   socketPath: string,
   child: NativeHolderProcess,
   reapAfterMs?: number,
   checkTerminal?: () => Promise<NativeTerminalCheck>,
+  claimed?: { generation: number; token: string },
 ): Promise<number> {
+  const marker = claimTestHolderMarker(socketPath, process.pid, claimed);
   return runNativeHolder({
     socketPath,
+    holderMarkerGeneration: marker.generation,
+    holderMarkerToken: marker.token,
     cwd: os.tmpdir(),
     env: { ...process.env, PS1: "" },
     ...(reapAfterMs === undefined ? {} : { reapAfterMs }),
@@ -173,8 +233,11 @@ function startHolderWithTick(
   checkTerminal: () => Promise<NativeTerminalCheck>,
   tick: () => Promise<void>,
 ): Promise<number> {
+  const marker = claimTestHolderMarker(socketPath);
   return runNativeHolder({
     socketPath,
+    holderMarkerGeneration: marker.generation,
+    holderMarkerToken: marker.token,
     cwd: os.tmpdir(),
     env: { ...process.env, PS1: "" },
     reapAfterMs,
@@ -271,32 +334,33 @@ describe("native terminal holder", () => {
       current?: (event: { exitCode: number; signal?: number }) => void;
     } = {};
     let firstOwnsSocket = false;
+    const firstMarker = claimTestHolderMarker(socketPath);
     const run = (
       onSocketReady?: () => void,
       onSocketClosed?: () => void,
     ): Promise<number> =>
-      runNativeHolder(
-        {
-          socketPath,
-          cwd: os.tmpdir(),
-          env: {},
-          onSocketReady,
-          onSocketClosed,
-          prepare: async () => ({ command: "fake", args: [] }),
-          spawnPty: () => ({
-            pid: 654,
-            onData: () => undefined,
-            onExit: (
-              listener: (event: { exitCode: number; signal?: number }) => void,
-            ) => {
-              firstPtyExit.current = listener;
-            },
-            write: () => undefined,
-            resize: () => undefined,
-            kill: () => undefined,
-          }),
-        } as unknown as Parameters<typeof runNativeHolder>[0],
-      );
+      runNativeHolder({
+        socketPath,
+        holderMarkerGeneration: firstMarker.generation,
+        holderMarkerToken: firstMarker.token,
+        cwd: os.tmpdir(),
+        env: {},
+        onSocketReady,
+        onSocketClosed,
+        prepare: async () => ({ command: "fake", args: [] }),
+        spawnPty: () => ({
+          pid: 654,
+          onData: () => undefined,
+          onExit: (
+            listener: (event: { exitCode: number; signal?: number }) => void,
+          ) => {
+            firstPtyExit.current = listener;
+          },
+          write: () => undefined,
+          resize: () => undefined,
+          kill: () => undefined,
+        }),
+      });
     const first = run(() => {
       firstOwnsSocket = true;
     }, () => {
@@ -334,21 +398,18 @@ describe("native terminal holder", () => {
 let ownsSocket = false;
 ignoreNativeHolderSignals(process, ${JSON.stringify(socketPath)}, () => ownsSocket);
 process.emit("SIGTERM");
-try {
-  await runNativeHolder({
-    socketPath: ${JSON.stringify(socketPath)},
-    cwd: ${JSON.stringify(os.tmpdir())},
-    env: {},
-    onSocketReady: () => { ownsSocket = true; },
-    onSocketClosed: () => { ownsSocket = false; },
-    prepare: async () => ({ command: "fake", args: [] }),
-    spawnPty: () => { throw new Error("must not start a PTY"); },
-  });
-  process.stdout.write("unexpected socket ownership\\n");
-} catch (error) {
-  console.error("competing holder startup failure");
-  process.stdout.write(String(error.code) + "\\n");
-}`,
+const code = await runNativeHolder({
+  socketPath: ${JSON.stringify(socketPath)},
+  holderMarkerGeneration: ${String(firstMarker.generation)},
+  holderMarkerToken: ${JSON.stringify(firstMarker.token)},
+  cwd: ${JSON.stringify(os.tmpdir())},
+  env: {},
+  onSocketReady: () => { ownsSocket = true; },
+  onSocketClosed: () => { ownsSocket = false; },
+  prepare: async () => ({ command: "fake", args: [] }),
+  spawnPty: () => { throw new Error("must not start a PTY"); },
+});
+process.stdout.write("exit:" + String(code) + ":" + String(ownsSocket) + "\\n");`,
         ],
         { stdio: ["ignore", "pipe", "ignore"] },
       );
@@ -364,7 +425,7 @@ try {
         });
       });
       await secondExit;
-      expect(secondOutput.trim()).toBe("EADDRINUSE");
+      expect(secondOutput.trim()).toBe("exit:1:false");
 
       expect(readFileSync(logPath, "utf8")).toBe(firstLog);
       firstPtyExit.current?.({ exitCode: 0 });
@@ -467,8 +528,11 @@ try {
     const socketPath = socketIn();
     let current: () => string | null = () => null;
     let changes = 0;
+    const marker = claimTestHolderMarker(socketPath);
     const held = runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       cwd: os.tmpdir(),
       env: { ...process.env, PS1: "" },
       onCredentialChanged: () => {
@@ -519,8 +583,11 @@ try {
   it("logs each credential change and a repeated frame at most once per window, by fingerprint and never by value", async () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const marker = claimTestHolderMarker(socketPath);
     const held = runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       cwd: os.tmpdir(),
       env: { ...process.env, PS1: "" },
       prepare: async () => ECHO_LOOP,
@@ -887,8 +954,11 @@ try {
     let resizeCalls = 0;
     let ptyFdClosed = false;
     const resizeRows: number[] = [];
+    const marker = claimTestHolderMarker(socketPath);
     const held = runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       cwd: os.tmpdir(),
       env: {},
       prepare: async () => ({ command: "fake", args: [] }),
@@ -970,8 +1040,11 @@ try {
 
   it("gives up when no terminal ever attaches", async () => {
     const socketPath = socketIn();
+    const marker = claimTestHolderMarker(socketPath);
     const code = await runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       cwd: os.tmpdir(),
       env: process.env,
       firstClientTimeoutMs: 100,
@@ -986,8 +1059,11 @@ try {
 
   it("shows why the CLI could not be prepared and exits", async () => {
     const socketPath = socketIn();
+    const marker = claimTestHolderMarker(socketPath);
     const held = runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       cwd: os.tmpdir(),
       env: process.env,
       prepare: async () => {
@@ -1168,6 +1244,1123 @@ describe("native holder app fallback window", () => {
     await expect(held).resolves.toBe(7);
   });
 
+  it("starts no fallback when the holder is alive but slow to listen under load", async () => {
+    const socketPath = socketIn();
+    let held: Promise<number> | null = null;
+    let fallbacks = 0;
+    const progress: NativeHolderWaitProgress[] = [];
+    let holderAlive = false;
+    const connection = await openNativeHolderConnection({
+      socketPath,
+      reattachOnly: false,
+      startHolder: () => {
+        setTimeout(() => {
+          holderAlive = true;
+        }, 100);
+        setTimeout(() => {
+          held = startHolder(socketPath, ECHO_LOOP);
+        }, 900);
+      },
+      startFallbackHolder: () => {
+        fallbacks += 1;
+      },
+      holderHasStarted: () => holderAlive,
+      onWaiting: (entry) => progress.push(entry),
+      fallbackWindowMs: 300,
+      startTimeoutMs: 6_000,
+    });
+    if (connection.kind !== "attached") throw new Error(connection.kind);
+    expect(fallbacks).toBe(0);
+    expect(progress[0]?.stage).toBe("launching");
+    expect(progress.at(-1)?.stage).toBe("starting");
+    expect(progress.at(-1)?.elapsedMs).toBeGreaterThan(300);
+    const client = new Client(connection.socket);
+    await client.waitFor(/started:/u);
+    client.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("formats boot progress by stage", () => {
+    expect(
+      formatNativeHolderBootProgress({ elapsedMs: 4_200, stage: "launching" }),
+    ).toBe("Launching the agent host... 4s");
+    expect(
+      formatNativeHolderBootProgress({ elapsedMs: 9_900, stage: "starting" }),
+    ).toBe("Starting the agent... 9s");
+  });
+
+  it("launches one holder across two concurrent child-process launchers racing on the pid marker", async () => {
+    const socketPath = socketIn();
+    const dir = path.dirname(socketPath);
+    const launchesPath = path.join(dir, "launches.txt");
+    const fallbacksPath = path.join(dir, "fallbacks.txt");
+    const ownersPath = path.join(dir, "owners.txt");
+    const holderModule = pathToFileURL(
+      path.join(import.meta.dirname, "..", "native-holder.ts"),
+    ).href;
+    const holderScript = [
+      `import { appendFileSync } from "node:fs";`,
+      `const { runNativeHolder, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});`,
+      `const markerGen = Number.parseInt(process.env.BB_HOLDER_GEN ?? "", 10);`,
+      `const markerToken = process.env.BB_HOLDER_TOKEN ?? "";`,
+      `const owned = writeNativeHolderPidMarker(${JSON.stringify(socketPath)}, process.pid, markerGen, markerToken);`,
+      `if (owned === null) process.exit(1);`,
+      `await new Promise((resolve) => setTimeout(resolve, 2_200));`,
+      `let onData = () => undefined;`,
+      `let onExit = () => undefined;`,
+      `const code = await runNativeHolder({`,
+      `  socketPath: ${JSON.stringify(socketPath)},`,
+      `  holderMarkerGeneration: owned,`,
+      `  holderMarkerToken: markerToken,`,
+      `  cwd: ${JSON.stringify(os.tmpdir())},`,
+      `  env: {},`,
+      `  firstClientTimeoutMs: 10_000,`,
+      `  reapAfterMs: 2_000,`,
+      `  onSocketReady: () => appendFileSync(${JSON.stringify(ownersPath)}, String(process.pid) + "\\n"),`,
+      `  prepare: async () => ({ command: "fake", args: [] }),`,
+      `  spawnPty: () => {`,
+      `    setTimeout(() => onData("owner:" + String(process.pid) + "\\r\\n"), 10);`,
+      `    return {`,
+      `      pid: process.pid,`,
+      `      onData: (cb) => { onData = cb; },`,
+      `      onExit: (cb) => { onExit = cb; },`,
+      `      write: (input) => { if (input.includes("\\u0004")) onExit({ exitCode: 0 }); },`,
+      `      resize: () => undefined,`,
+      `      kill: () => onExit({ exitCode: 0 }),`,
+      `    };`,
+      `  },`,
+      `});`,
+      `process.exit(code);`,
+    ].join("\n");
+    const launcherScript = [
+      `import { spawn } from "node:child_process";`,
+      `import { appendFileSync } from "node:fs";`,
+      `const { openNativeHolderConnection } = await import(${JSON.stringify(holderModule)});`,
+      `const connection = await openNativeHolderConnection({`,
+      `  socketPath: ${JSON.stringify(socketPath)},`,
+      `  reattachOnly: false,`,
+      `  startHolder: (generation, token) => {`,
+      `    appendFileSync(${JSON.stringify(launchesPath)}, String(process.pid) + "\\n");`,
+      `    spawn(`,
+      `      process.execPath,`,
+      `      ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", ${JSON.stringify(holderScript)}],`,
+      `      { detached: true, stdio: "ignore", env: { ...process.env, BB_HOLDER_GEN: String(generation), BB_HOLDER_TOKEN: token } },`,
+      `    ).unref();`,
+      `  },`,
+      `  startFallbackHolder: () => {`,
+      `    appendFileSync(${JSON.stringify(fallbacksPath)}, String(process.pid) + "\\n");`,
+      `  },`,
+      `  fallbackWindowMs: 1_800,`,
+      `  startTimeoutMs: 15_000,`,
+      `});`,
+      `if (connection.kind === "attached") connection.socket.destroy();`,
+      `process.stdout.write(connection.kind + "\\n");`,
+    ].join("\n");
+    const runLauncher = (): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const child = spawnProcess(
+          process.execPath,
+          [
+            "--experimental-strip-types",
+            "--no-warnings",
+            "--input-type=module",
+            "-e",
+            launcherScript,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code === 0 && signal === null) resolve(stdout.trim());
+          else reject(new Error(`launcher exited ${code} ${signal}: ${stderr}`));
+        });
+      });
+
+    const [firstResult, secondResult] = await Promise.all([
+      runLauncher(),
+      runLauncher(),
+    ]);
+    expect(firstResult).toBe("attached");
+    expect(secondResult).toBe("attached");
+    const launches = readFileSync(launchesPath, "utf8").trim().split("\n");
+    expect(launches).toHaveLength(1);
+    expect(existsSync(fallbacksPath)).toBe(false);
+    const owners = readFileSync(ownersPath, "utf8").trim().split("\n");
+    expect(owners).toHaveLength(1);
+    const client = await attach(socketPath);
+    const match = await client.waitFor(/owner:(\d+)/u);
+    expect(match[1]).toBe(owners[0]);
+    client.type("\u0004");
+    await expect.poll(() => existsSync(socketPath)).toBe(false);
+    client.socket.destroy();
+  });
+
+  it(
+    "claims and launches once across 25 multiprocess iterations when both racers pass a dead marker check before creating",
+    async () => {
+      const suiteDir = path.dirname(socketIn());
+      const holderModule = pathToFileURL(
+        path.join(import.meta.dirname, "..", "native-holder.ts"),
+      ).href;
+      const deadPid = await new Promise<number>((resolve, reject) => {
+        const exitedChild = spawnProcess(
+          process.execPath,
+          ["-e", "process.exit(0)"],
+          { stdio: "ignore" },
+        );
+        exitedChild.once("error", reject);
+        exitedChild.once("exit", () => {
+          if (exitedChild.pid === undefined) {
+            reject(new Error("missing dead child pid"));
+          } else {
+            resolve(exitedChild.pid);
+          }
+        });
+      });
+
+      const holderWorkerScript = [
+        `import readline from "node:readline";`,
+        `const { runNativeHolder, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});`,
+        `const rl = readline.createInterface({ input: process.stdin });`,
+        `rl.on("line", (line) => {`,
+        `  const msg = JSON.parse(line);`,
+        `  if (msg.type !== "start") return;`,
+        `  const generation = typeof msg.generation === "number" ? msg.generation : -1;`,
+        `  const token = typeof msg.token === "string" ? msg.token : "";`,
+        `  const owned = writeNativeHolderPidMarker(msg.socketPath, process.pid, generation, token);`,
+        `  if (owned === null) {`,
+        `    process.stdout.write(JSON.stringify({ type: "exited", iter: msg.iter, ok: false }) + "\\n");`,
+        `    return;`,
+        `  }`,
+        `  let onData = () => undefined;`,
+        `  let onExit = () => undefined;`,
+        `  void runNativeHolder({`,
+        `    socketPath: msg.socketPath,`,
+        `    holderMarkerGeneration: owned,`,
+        `    holderMarkerToken: token,`,
+        `    cwd: ${JSON.stringify(os.tmpdir())},`,
+        `    env: {},`,
+        `    firstClientTimeoutMs: 20_000,`,
+        `    reapAfterMs: 5_000,`,
+        `    onSocketReady: () => {`,
+        `      process.stdout.write(JSON.stringify({ type: "ready", iter: msg.iter, pid: process.pid }) + "\\n");`,
+        `    },`,
+        `    prepare: async () => ({ command: "fake", args: [] }),`,
+        `    spawnPty: () => {`,
+        `      setTimeout(() => onData("owner:" + String(process.pid) + "\\r\\n"), 5);`,
+        `      return {`,
+        `        pid: process.pid,`,
+        `        onData: (cb) => { onData = cb; },`,
+        `        onExit: (cb) => { onExit = cb; },`,
+        `        write: (input) => { if (input.includes("\\u0004")) onExit({ exitCode: 0 }); },`,
+        `        resize: () => undefined,`,
+        `        kill: () => onExit({ exitCode: 0 }),`,
+        `      };`,
+        `    },`,
+        `  }).then(`,
+        `    () => process.stdout.write(JSON.stringify({ type: "exited", iter: msg.iter, ok: true }) + "\\n"),`,
+        `    () => process.stdout.write(JSON.stringify({ type: "exited", iter: msg.iter, ok: false }) + "\\n"),`,
+        `  );`,
+        `});`,
+        `process.stdout.write(JSON.stringify({ type: "booted" }) + "\\n");`,
+      ].join("\n");
+
+      const racerWorkerScript = (role: number): string =>
+        [
+          `import fs from "node:fs";`,
+          `import path from "node:path";`,
+          `import readline from "node:readline";`,
+          `import { syncBuiltinESMExports } from "node:module";`,
+          `const ROLE = ${String(role)};`,
+          `const sleepBuf = new Int32Array(new SharedArrayBuffer(4));`,
+          `const waitUntil = (predicate, timeoutMs = 15_000) => {`,
+          `  const deadline = Date.now() + timeoutMs;`,
+          `  while (!predicate()) {`,
+          `    if (Date.now() >= deadline) throw new Error("barrier timeout");`,
+          `    Atomics.wait(sleepBuf, 0, 0, 1);`,
+          `  }`,
+          `};`,
+          `let state = null;`,
+          `const origWriteFileSync = fs.writeFileSync;`,
+          `const origRmSync = fs.rmSync;`,
+          `const origUnlinkSync = fs.unlinkSync;`,
+          `fs.rmSync = (targetPath, options) => {`,
+          `  const active = state;`,
+          `  const text = String(targetPath);`,
+          `  if (active !== null && !active.settled && text.endsWith(".pid.lock") && !active.lockSynced) {`,
+          `    active.lockSynced = true;`,
+          `    origWriteFileSync(path.join(active.barrierDir, "ready-" + String(ROLE)), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "ready-0")) && fs.existsSync(path.join(active.barrierDir, "ready-1")));`,
+          `    if (ROLE === 1) {`,
+          `      waitUntil(() => fs.existsSync(path.join(active.barrierDir, "r0-cs")));`,
+          `    }`,
+          `  } else if (active !== null && !active.settled && active.lockSynced && ROLE === 0 && text.endsWith(".pid") && !fs.existsSync(path.join(active.barrierDir, "r0-cs"))) {`,
+          `    origWriteFileSync(path.join(active.barrierDir, "r0-cs"), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "r1-claimed")));`,
+          `  }`,
+          `  return origRmSync(targetPath, options);`,
+          `};`,
+          `fs.unlinkSync = (targetPath) => {`,
+          `  const active = state;`,
+          `  if (active !== null && !active.settled) {`,
+          `    active.claimedPaths.delete(String(targetPath));`,
+          `  }`,
+          `  return origUnlinkSync(targetPath);`,
+          `};`,
+          `fs.writeFileSync = (filePath, data, options) => {`,
+          `  const active = state;`,
+          `  const text = String(filePath);`,
+          `  const isExclusive = typeof options === "object" && options !== null && "flag" in options && options.flag === "wx";`,
+          `  const isLaunchClaim = isExclusive && typeof data === "string" && data.startsWith("launch:");`,
+          `  const isGenClaim = isLaunchClaim && text.includes(".pid.") && !text.endsWith(".pid.lock");`,
+          `  if (active !== null && !active.settled && isGenClaim && !active.launchSynced) {`,
+          `    active.launchSynced = true;`,
+          `    origWriteFileSync(path.join(active.barrierDir, "ready-" + String(ROLE)), "1");`,
+          `    waitUntil(() => fs.existsSync(path.join(active.barrierDir, "ready-0")) && fs.existsSync(path.join(active.barrierDir, "ready-1")));`,
+          `  }`,
+          `  const result = origWriteFileSync(filePath, data, options);`,
+          `  if (active !== null && !active.settled && isLaunchClaim) {`,
+          `    active.claimedPaths.add(text);`,
+          `    if (active.lockSynced && ROLE === 1) {`,
+          `      origWriteFileSync(path.join(active.barrierDir, "r1-claimed"), "1");`,
+          `    }`,
+          `  }`,
+          `  return result;`,
+          `};`,
+          `syncBuiltinESMExports();`,
+          `const { openNativeHolderConnection } = await import(${JSON.stringify(holderModule)});`,
+          `const rl = readline.createInterface({ input: process.stdin });`,
+          `rl.on("line", async (line) => {`,
+          `  const msg = JSON.parse(line);`,
+          `  if (msg.type !== "race") return;`,
+          `  const current = {`,
+          `    barrierDir: msg.barrierDir,`,
+          `    claimedPaths: new Set(),`,
+          `    launchSynced: false,`,
+          `    lockSynced: false,`,
+          `    settled: false,`,
+          `  };`,
+          `  origWriteFileSync(path.join(msg.barrierDir, "enter-" + String(ROLE)), "1");`,
+          `  waitUntil(() => fs.existsSync(path.join(msg.barrierDir, "enter-0")) && fs.existsSync(path.join(msg.barrierDir, "enter-1")));`,
+          `  state = current;`,
+          `  let fallbacks = 0;`,
+          `  try {`,
+          `    const connection = await openNativeHolderConnection({`,
+          `      socketPath: msg.socketPath,`,
+          `      reattachOnly: false,`,
+          `      startHolder: (generation, token) => {`,
+          `        current.settled = true;`,
+          `        process.stdout.write(JSON.stringify({`,
+          `          type: "start-holder",`,
+          `          iter: msg.iter,`,
+          `          socketPath: msg.socketPath,`,
+          `          generation,`,
+          `          token,`,
+          `        }) + "\\n");`,
+          `      },`,
+          `      startFallbackHolder: (generation, token) => {`,
+          `        fallbacks += 1;`,
+          `        process.stdout.write(JSON.stringify({`,
+          `          type: "start-holder",`,
+          `          iter: msg.iter,`,
+          `          socketPath: msg.socketPath,`,
+          `          generation,`,
+          `          token,`,
+          `        }) + "\\n");`,
+          `      },`,
+          `      onWaiting: () => {`,
+          `        current.settled = true;`,
+          `      },`,
+          `      fallbackWindowMs: 8_000,`,
+          `      startTimeoutMs: 25_000,`,
+          `    });`,
+          `    current.settled = true;`,
+          `    if (connection.kind === "attached") connection.socket.destroy();`,
+          `    process.stdout.write(JSON.stringify({`,
+          `      type: "result",`,
+          `      iter: msg.iter,`,
+          `      kind: connection.kind,`,
+          `      claims: current.claimedPaths.size,`,
+          `      fallbacks,`,
+          `    }) + "\\n");`,
+          `  } catch (error) {`,
+          `    process.stdout.write(JSON.stringify({`,
+          `      type: "error",`,
+          `      iter: msg.iter,`,
+          `      message: error instanceof Error ? error.message : String(error),`,
+          `    }) + "\\n");`,
+          `  }`,
+          `});`,
+          `process.stdout.write(JSON.stringify({ type: "booted" }) + "\\n");`,
+        ].join("\n");
+
+      interface IterTracking {
+        exited: number;
+        exitWaiters: (() => void)[];
+        launches: { generation: number | null }[];
+        owners: number[];
+        ownerWaiters: (() => void)[];
+      }
+
+      const iterations = new Map<number, IterTracking>();
+      const getIter = (iter: number): IterTracking => {
+        let entry = iterations.get(iter);
+        if (entry === undefined) {
+          entry = {
+            exited: 0,
+            exitWaiters: [],
+            launches: [],
+            owners: [],
+            ownerWaiters: [],
+          };
+          iterations.set(iter, entry);
+        }
+        return entry;
+      };
+
+      const children: ReturnType<typeof spawnProcess>[] = [];
+      const spawnJsonWorker = (
+        script: string,
+        onMessage: (msg: Record<string, unknown>) => void,
+      ): Promise<ReturnType<typeof spawnProcess>> =>
+        new Promise((resolve, reject) => {
+          const child = spawnProcess(
+            process.execPath,
+            [
+              "--experimental-strip-types",
+              "--no-warnings",
+              "--input-type=module",
+              "-e",
+              script,
+            ],
+            { stdio: ["pipe", "pipe", "pipe"] },
+          );
+          children.push(child);
+          let stderr = "";
+          let booted = false;
+          child.stderr?.on("data", (chunk: Buffer) => {
+            stderr += chunk.toString("utf8");
+          });
+          if (child.stdout === null) {
+            reject(new Error("worker missing stdout"));
+            return;
+          }
+          const rl = readline.createInterface({ input: child.stdout });
+          rl.on("line", (line) => {
+            const msg = JSON.parse(line) as Record<string, unknown>;
+            if (msg.type === "booted" && !booted) {
+              booted = true;
+              resolve(child);
+              return;
+            }
+            onMessage(msg);
+          });
+          child.once("error", reject);
+          child.once("exit", (code, signal) => {
+            if (!booted) {
+              reject(
+                new Error(`worker exited before boot ${code} ${signal}: ${stderr}`),
+              );
+            }
+          });
+        });
+
+      interface RacerResult {
+        claims: number;
+        fallbacks: number;
+        kind: string;
+      }
+
+      const racerWaiters = [
+        new Map<
+          number,
+          { resolve: (res: RacerResult) => void; reject: (err: Error) => void }
+        >(),
+        new Map<
+          number,
+          { resolve: (res: RacerResult) => void; reject: (err: Error) => void }
+        >(),
+      ] as const;
+
+      try {
+        const holderWorkers = await Promise.all([
+          spawnJsonWorker(holderWorkerScript, (msg) => {
+            const iter = Number(msg.iter);
+            const entry = getIter(iter);
+            if (msg.type === "ready") {
+              entry.owners.push(Number(msg.pid));
+              for (const notify of entry.ownerWaiters.splice(0)) notify();
+            } else if (msg.type === "exited") {
+              entry.exited += 1;
+              for (const notify of entry.exitWaiters.splice(0)) notify();
+            }
+          }),
+          spawnJsonWorker(holderWorkerScript, (msg) => {
+            const iter = Number(msg.iter);
+            const entry = getIter(iter);
+            if (msg.type === "ready") {
+              entry.owners.push(Number(msg.pid));
+              for (const notify of entry.ownerWaiters.splice(0)) notify();
+            } else if (msg.type === "exited") {
+              entry.exited += 1;
+              for (const notify of entry.exitWaiters.splice(0)) notify();
+            }
+          }),
+        ]);
+
+        const handleRacerMessage =
+          (role: 0 | 1) =>
+          (msg: Record<string, unknown>): void => {
+            const iter = Number(msg.iter);
+            if (msg.type === "start-holder") {
+              const entry = getIter(iter);
+              const generation =
+                typeof msg.generation === "number" ? msg.generation : null;
+              entry.launches.push({ generation });
+              const worker =
+                holderWorkers[(entry.launches.length - 1) % holderWorkers.length];
+              worker?.stdin?.write(
+                `${JSON.stringify({
+                  type: "start",
+                  iter,
+                  socketPath: msg.socketPath,
+                  generation,
+                  token: typeof msg.token === "string" ? msg.token : null,
+                })}\n`,
+              );
+              return;
+            }
+            const waiter = racerWaiters[role].get(iter);
+            if (waiter === undefined) return;
+            racerWaiters[role].delete(iter);
+            if (msg.type === "error") {
+              waiter.reject(new Error(String(msg.message)));
+              return;
+            }
+            waiter.resolve({
+              claims: Number(msg.claims),
+              fallbacks: Number(msg.fallbacks),
+              kind: String(msg.kind),
+            });
+          };
+
+        const racers = await Promise.all([
+          spawnJsonWorker(racerWorkerScript(0), handleRacerMessage(0)),
+          spawnJsonWorker(racerWorkerScript(1), handleRacerMessage(1)),
+        ]);
+
+        for (let iter = 0; iter < 25; iter += 1) {
+          const iterDir = path.join(suiteDir, `i${String(iter)}`);
+          const barrierDir = path.join(iterDir, "b");
+          mkdirSync(barrierDir, { recursive: true, mode: 0o700 });
+          const socketPath = path.join(iterDir, "t.sock");
+          const markerPrefix = socketPath.replace(/\.sock$/u, ".pid");
+          writeFileSync(markerPrefix, `${String(deadPid)}\n`, { mode: 0o600 });
+          writeFileSync(`${markerPrefix}.lock`, `${String(deadPid)}\n`, {
+            mode: 0o600,
+          });
+          writeFileSync(`${markerPrefix}.1`, `${String(deadPid)}\n`, {
+            mode: 0o600,
+          });
+
+          const runRacer = (role: 0 | 1): Promise<RacerResult> =>
+            new Promise((resolve, reject) => {
+              racerWaiters[role].set(iter, { resolve, reject });
+              racers[role]?.stdin?.write(
+                `${JSON.stringify({
+                  type: "race",
+                  iter,
+                  socketPath,
+                  barrierDir,
+                })}\n`,
+              );
+            });
+
+          const [first, second] = await Promise.all([
+            runRacer(0),
+            runRacer(1),
+          ]);
+          expect(readdirSync(barrierDir)).toEqual(
+            expect.arrayContaining(["ready-0", "ready-1"]),
+          );
+          expect(first.kind).toBe("attached");
+          expect(second.kind).toBe("attached");
+          expect(first.claims + second.claims).toBe(1);
+          expect(first.fallbacks + second.fallbacks).toBe(0);
+          const entry = getIter(iter);
+          expect(entry.launches).toEqual([{ generation: 2 }]);
+          await new Promise<void>((resolve, reject) => {
+            if (entry.owners.length >= 1) {
+              resolve();
+              return;
+            }
+            const timer = setTimeout(
+              () => reject(new Error("timed out waiting for holder ready")),
+              5_000,
+            );
+            entry.ownerWaiters.push(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+          expect(entry.owners).toHaveLength(1);
+          expect(existsSync(`${markerPrefix}.1`)).toBe(false);
+          expect(existsSync(`${markerPrefix}.2`)).toBe(true);
+
+          const client = await attach(socketPath);
+          const match = await client.waitFor(/owner:(\d+)/u);
+          expect(Number(match[1])).toBe(entry.owners[0]);
+          client.type("\u0004");
+          await new Promise<void>((resolve) => {
+            if (entry.exited >= entry.launches.length) {
+              resolve();
+              return;
+            }
+            entry.exitWaiters.push(resolve);
+          });
+          client.socket.destroy();
+          expect(existsSync(socketPath)).toBe(false);
+        }
+      } finally {
+        for (const child of children) {
+          child.kill("SIGKILL");
+        }
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "keeps socket ownership and pid marker aligned across 20 multiprocess iterations of same-generation app and fallback races",
+    async () => {
+      const shortTmp = existsSync("/tmp") ? "/tmp" : os.tmpdir();
+      const suiteDir = mkdtempSync(path.join(shortTmp, "bb-r3-"));
+      tempDirs.push(suiteDir);
+      const holderModule = pathToFileURL(
+        path.join(import.meta.dirname, "..", "native-holder.ts"),
+      ).href;
+
+      const sameGenWorkerScript = (role: 0 | 1): string =>
+        [
+          `import fs from "node:fs";`,
+          `import path from "node:path";`,
+          `import readline from "node:readline";`,
+          `const ROLE = ${String(role)};`,
+          `const NL = String.fromCharCode(10);`,
+          `const CRLF = String.fromCharCode(13, 10);`,
+          `const EOT = String.fromCharCode(4);`,
+          `const sleepBuf = new Int32Array(new SharedArrayBuffer(4));`,
+          `const waitUntil = (predicate, timeoutMs = 5_000) => {`,
+          `  const deadline = Date.now() + timeoutMs;`,
+          `  while (!predicate()) {`,
+          `    if (Date.now() >= deadline) throw new Error("barrier timeout");`,
+          `    Atomics.wait(sleepBuf, 0, 0, 1);`,
+          `  }`,
+          `};`,
+          `const writeFlag = (barrierDir, name) => {`,
+          `  if (!barrierDir) return;`,
+          `  const target = path.join(barrierDir, name);`,
+          `  if (!fs.existsSync(target)) fs.writeFileSync(target, "1");`,
+          `};`,
+          `const { runNativeHolder, writeNativeHolderPidMarker } = await import(${JSON.stringify(holderModule)});`,
+          `const stops = new Map();`,
+          `const rl = readline.createInterface({ input: process.stdin });`,
+          `rl.on("line", (line) => {`,
+          `  const msg = JSON.parse(line);`,
+          `  if (msg.type === "stop") {`,
+          `    const stop = stops.get(msg.caseId);`,
+          `    if (stop !== undefined) stop();`,
+          `    return;`,
+          `  }`,
+          `  if (msg.type !== "run") return;`,
+          `  if (msg.mode === "app-first" && ROLE === 1) {`,
+          `    waitUntil(() => fs.existsSync(path.join(msg.barrierDir, "r0-ready")));`,
+          `  }`,
+          `  if (msg.mode === "fallback-first" && ROLE === 0) {`,
+          `    waitUntil(() => fs.existsSync(path.join(msg.barrierDir, "r1-ready")));`,
+          `  }`,
+          `  if (msg.mode === "crossed" && ROLE === 1) {`,
+          `    waitUntil(() => fs.existsSync(path.join(msg.barrierDir, "r0-marked")));`,
+          `  }`,
+          `  const owned = writeNativeHolderPidMarker(msg.socketPath, process.pid, msg.generation, msg.token);`,
+          `  if (msg.mode === "crossed" && ROLE === 0) {`,
+          `    writeFlag(msg.barrierDir, "r0-marked");`,
+          `    waitUntil(() => fs.existsSync(path.join(msg.barrierDir, "r1-settled")));`,
+          `  }`,
+          `  let onData = () => undefined;`,
+          `  let onExit = () => undefined;`,
+          `  let stopped = false;`,
+          `  const triggerExit = () => {`,
+          `    if (stopped) return;`,
+          `    stopped = true;`,
+          `    onExit({ exitCode: 0 });`,
+          `  };`,
+          `  stops.set(msg.caseId, triggerExit);`,
+          `  let bound = false;`,
+          `  void runNativeHolder({`,
+          `    socketPath: msg.socketPath,`,
+          `    holderMarkerGeneration: owned,`,
+          `    holderMarkerToken: msg.token,`,
+          `    cwd: ${JSON.stringify(os.tmpdir())},`,
+          `    env: {},`,
+          `    firstClientTimeoutMs: 8_000,`,
+          `    reapAfterMs: 5_000,`,
+          `    onSocketReady: () => {`,
+          `      bound = true;`,
+          `      if (msg.mode === "app-first" && ROLE === 0) writeFlag(msg.barrierDir, "r0-ready");`,
+          `      if (msg.mode === "fallback-first" && ROLE === 1) writeFlag(msg.barrierDir, "r1-ready");`,
+          `      if (msg.mode === "crossed" && ROLE === 1) writeFlag(msg.barrierDir, "r1-settled");`,
+          `      process.stdout.write(JSON.stringify({ type: "bound", caseId: msg.caseId, role: ROLE, pid: process.pid, owned }) + NL);`,
+          `    },`,
+          `    prepare: async () => ({ command: "fake", args: [] }),`,
+          `    spawnPty: () => {`,
+          `      if (stopped) setImmediate(() => onExit({ exitCode: 0 }));`,
+          `      else setImmediate(() => onData("owner:" + String(process.pid) + CRLF));`,
+          `      return {`,
+          `        pid: process.pid,`,
+          `        onData: (cb) => { onData = cb; },`,
+          `        onExit: (cb) => { onExit = cb; if (stopped) setImmediate(() => cb({ exitCode: 0 })); },`,
+          `        write: (input) => { if (input.includes(EOT)) triggerExit(); },`,
+          `        resize: () => undefined,`,
+          `        kill: () => triggerExit(),`,
+          `      };`,
+          `    },`,
+          `  }).then(`,
+          `    (code) => {`,
+          `      stops.delete(msg.caseId);`,
+          `      if (msg.mode === "app-first" && ROLE === 0) writeFlag(msg.barrierDir, "r0-ready");`,
+          `      if (msg.mode === "fallback-first" && ROLE === 1) writeFlag(msg.barrierDir, "r1-ready");`,
+          `      if (msg.mode === "crossed" && ROLE === 1) writeFlag(msg.barrierDir, "r1-settled");`,
+          `      process.stdout.write(JSON.stringify({ type: "done", caseId: msg.caseId, role: ROLE, pid: process.pid, owned, bound, ok: true, code }) + NL);`,
+          `    },`,
+          `    (error) => {`,
+          `      stops.delete(msg.caseId);`,
+          `      if (msg.mode === "app-first" && ROLE === 0) writeFlag(msg.barrierDir, "r0-ready");`,
+          `      if (msg.mode === "fallback-first" && ROLE === 1) writeFlag(msg.barrierDir, "r1-ready");`,
+          `      if (msg.mode === "crossed" && ROLE === 1) writeFlag(msg.barrierDir, "r1-settled");`,
+          `      process.stdout.write(JSON.stringify({ type: "done", caseId: msg.caseId, role: ROLE, pid: process.pid, owned, bound, ok: false, code: 1, error: error instanceof Error ? error.message : String(error) }) + NL);`,
+          `    },`,
+          `  );`,
+          `});`,
+          `process.stdout.write(JSON.stringify({ type: "booted", pid: process.pid }) + NL);`,
+        ].join("\n");
+
+      interface HolderDoneEvent {
+        bound: boolean;
+        code: number;
+        error?: string;
+        ok: boolean;
+        owned: number | null;
+        pid: number;
+        role: number;
+      }
+
+      interface CaseState {
+        boundEvents: { owned: number | null; pid: number; role: number }[];
+        boundWaiters: (() => void)[];
+        doneEvents: Map<number, HolderDoneEvent>;
+        doneWaiters: (() => void)[];
+      }
+
+      const cases = new Map<string, CaseState>();
+      const getCase = (caseId: string): CaseState => {
+        let state = cases.get(caseId);
+        if (state === undefined) {
+          state = {
+            boundEvents: [],
+            boundWaiters: [],
+            doneEvents: new Map(),
+            doneWaiters: [],
+          };
+          cases.set(caseId, state);
+        }
+        return state;
+      };
+
+      const children: ReturnType<typeof spawnProcess>[] = [];
+      const spawnHolderWorker = (
+        role: 0 | 1,
+      ): Promise<{ child: ReturnType<typeof spawnProcess>; pid: number }> =>
+        new Promise((resolve, reject) => {
+          const child = spawnProcess(
+            process.execPath,
+            [
+              "--experimental-strip-types",
+              "--no-warnings",
+              "--input-type=module",
+              "-e",
+              sameGenWorkerScript(role),
+            ],
+            { stdio: ["pipe", "pipe", "pipe"] },
+          );
+          children.push(child);
+          let stderr = "";
+          let booted = false;
+          child.stderr?.on("data", (chunk: Buffer) => {
+            stderr += chunk.toString("utf8");
+          });
+          if (child.stdout === null) {
+            reject(new Error("worker missing stdout"));
+            return;
+          }
+          const rl = readline.createInterface({ input: child.stdout });
+          rl.on("line", (line) => {
+            const msg = JSON.parse(line) as Record<string, unknown>;
+            if (msg.type === "booted" && !booted) {
+              booted = true;
+              resolve({ child, pid: Number(msg.pid) });
+              return;
+            }
+            const caseId = String(msg.caseId ?? "");
+            const entry = getCase(caseId);
+            if (msg.type === "bound") {
+              entry.boundEvents.push({
+                role: Number(msg.role),
+                pid: Number(msg.pid),
+                owned: typeof msg.owned === "number" ? msg.owned : null,
+              });
+              for (const notify of entry.boundWaiters.splice(0)) notify();
+            } else if (msg.type === "done") {
+              entry.doneEvents.set(Number(msg.role), {
+                role: Number(msg.role),
+                pid: Number(msg.pid),
+                owned: typeof msg.owned === "number" ? msg.owned : null,
+                bound: Boolean(msg.bound),
+                ok: Boolean(msg.ok),
+                code: Number(msg.code),
+                ...(typeof msg.error === "string" ? { error: msg.error } : {}),
+              });
+              for (const notify of entry.doneWaiters.splice(0)) notify();
+            }
+          });
+          child.once("error", reject);
+          child.once("exit", (code, signal) => {
+            if (!booted) {
+              reject(
+                new Error(
+                  `holder worker exited before boot ${code} ${signal}: ${stderr}`,
+                ),
+              );
+            }
+          });
+        });
+
+      const waitForCaseCondition = (
+        label: string,
+        entry: CaseState,
+        predicate: () => boolean,
+        timeoutMs = 5_000,
+      ): Promise<void> =>
+        new Promise((resolve, reject) => {
+          if (predicate()) {
+            resolve();
+            return;
+          }
+          const timer = setTimeout(() => {
+            reject(new Error(`timed out at ${label}: bound=${JSON.stringify(entry.boundEvents)} done=${JSON.stringify([...entry.doneEvents.entries()])}`));
+          }, timeoutMs);
+          const check = (): void => {
+            if (predicate()) {
+              clearTimeout(timer);
+              resolve();
+              return;
+            }
+            entry.boundWaiters.push(check);
+            entry.doneWaiters.push(check);
+          };
+          entry.boundWaiters.push(check);
+          entry.doneWaiters.push(check);
+        });
+
+      try {
+        const [worker0, worker1] = await Promise.all([
+          spawnHolderWorker(0),
+          spawnHolderWorker(1),
+        ]);
+        expect(worker0.pid).not.toBe(worker1.pid);
+
+        const assertSingleLiveOwnerAndCleanup = async (
+          caseId: string,
+          socketPath: string,
+          expectedPid: number,
+          expectedGeneration: number,
+          activeRoles: number[],
+        ): Promise<void> => {
+          const entry = getCase(caseId);
+          expect(entry.boundEvents).toHaveLength(1);
+          expect(entry.boundEvents[0]).toEqual({
+            role: expectedPid === worker0.pid ? 0 : 1,
+            pid: expectedPid,
+            owned: expectedGeneration,
+          });
+          expect(() => process.kill(expectedPid, 0)).not.toThrow();
+          expect(nativeHolderProcessIsAlive(socketPath)).toBe(true);
+          const markerPath = nativeHolderPidMarkerPath(socketPath);
+          expect(existsSync(markerPath)).toBe(true);
+          expect(readFileSync(markerPath, "utf8").trim()).toBe(
+            String(expectedPid),
+          );
+          const thirdClaim = claimNativeHolderLaunch(socketPath);
+          expect(thirdClaim.claimed).toBe(false);
+
+          let extraLaunches = 0;
+          let extraFallbacks = 0;
+          const connection = await openNativeHolderConnection({
+            socketPath,
+            reattachOnly: false,
+            startHolder: () => {
+              extraLaunches += 1;
+            },
+            startFallbackHolder: () => {
+              extraFallbacks += 1;
+            },
+            fallbackWindowMs: 200,
+            startTimeoutMs: 3_000,
+          });
+          expect(extraLaunches).toBe(0);
+          expect(extraFallbacks).toBe(0);
+          if (connection.kind !== "attached") throw new Error(connection.kind);
+          const client = new Client(connection.socket);
+          client.socket.write(
+            encodeNativeHolderFrame(
+              NativeHolderFrame.resize,
+              Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
+            ),
+          );
+          const match = await client.waitFor(/owner:(\d+)/u);
+          expect(Number(match[1])).toBe(expectedPid);
+          client.type("\u0004");
+          worker0.child.stdin?.write(
+            `${JSON.stringify({ type: "stop", caseId })}\n`,
+          );
+          worker1.child.stdin?.write(
+            `${JSON.stringify({ type: "stop", caseId })}\n`,
+          );
+          await waitForCaseCondition(caseId + ":cleanup", entry, () =>
+            activeRoles.every((r) => entry.doneEvents.has(r)),
+          );
+          client.socket.destroy();
+          expect(existsSync(socketPath)).toBe(false);
+          expect(nativeHolderProcessIsAlive(socketPath)).toBe(false);
+        };
+
+        const readClaimToken = (
+          socketPath: string,
+          generation: number,
+          claimToken: string | null | undefined,
+        ): string => {
+          if (typeof claimToken === "string" && claimToken.length > 0) {
+            return claimToken;
+          }
+          const raw = readFileSync(
+            `${socketPath.replace(/\.sock$/u, ".pid")}.${String(generation)}`,
+            "utf8",
+          ).trim();
+          return raw.split(":")[2] ?? "";
+        };
+
+        for (let iter = 0; iter < 20; iter += 1) {
+          const iterDir = path.join(suiteDir, `r3-${String(iter)}`);
+          mkdirSync(iterDir, { recursive: true, mode: 0o700 });
+
+          for (const scenario of [
+            {
+              mode: "app-first",
+              expectedWinnerRole: 0 as const,
+              expectedFlag: "r0-ready",
+            },
+            {
+              mode: "fallback-first",
+              expectedWinnerRole: 1 as const,
+              expectedFlag: "r1-ready",
+            },
+            {
+              mode: "crossed",
+              expectedWinnerRole: 0 as const,
+              expectedFlag: "r0-marked",
+            },
+          ]) {
+            const caseId = `${String(iter)}-${scenario.mode}`;
+            const caseDir = path.join(iterDir, scenario.mode);
+            const barrierDir = path.join(caseDir, "b");
+            mkdirSync(barrierDir, { recursive: true, mode: 0o700 });
+            const socketPath = path.join(caseDir, "t.sock");
+            const claim = claimNativeHolderLaunch(socketPath);
+            expect(claim.claimed).toBe(true);
+            const generation = claim.generation ?? 1;
+            const token = readClaimToken(socketPath, generation, claim.token);
+
+            if (scenario.mode === "app-first") {
+              const wrongTokenId = `${caseId}-wrong-token`;
+              const wrongEntry = getCase(wrongTokenId);
+              worker1.child.stdin?.write(
+                `${JSON.stringify({
+                  type: "run",
+                  caseId: wrongTokenId,
+                  mode: "single",
+                  socketPath,
+                  generation,
+                  token: "deadbeefdeadbeef",
+                  barrierDir: "",
+                })}\n`,
+              );
+              await waitForCaseCondition(
+                wrongTokenId,
+                wrongEntry,
+                () => wrongEntry.doneEvents.has(1),
+              );
+              expect(wrongEntry.boundEvents).toHaveLength(0);
+              expect(wrongEntry.doneEvents.get(1)?.owned).toBeNull();
+              expect(wrongEntry.doneEvents.get(1)?.code).toBe(1);
+            }
+
+            const entry = getCase(caseId);
+            const payload = JSON.stringify({
+              type: "run",
+              caseId,
+              mode: scenario.mode,
+              socketPath,
+              generation,
+              token,
+              barrierDir,
+            });
+            worker0.child.stdin?.write(`${payload}\n`);
+            worker1.child.stdin?.write(`${payload}\n`);
+
+            const loserRole = scenario.expectedWinnerRole === 0 ? 1 : 0;
+            const winnerPid =
+              scenario.expectedWinnerRole === 0 ? worker0.pid : worker1.pid;
+            await waitForCaseCondition(
+              caseId + ":settle",
+              entry,
+              () =>
+                (entry.boundEvents.length >= 1 &&
+                  entry.doneEvents.has(loserRole)) ||
+                (entry.doneEvents.has(0) && entry.doneEvents.has(1)),
+            );
+            expect(existsSync(path.join(barrierDir, scenario.expectedFlag))).toBe(
+              true,
+            );
+            if (scenario.mode === "crossed") {
+              expect(existsSync(path.join(barrierDir, "r1-settled"))).toBe(
+                true,
+              );
+            }
+            const loserDone = entry.doneEvents.get(loserRole);
+            expect(loserDone?.bound).toBe(false);
+            expect(loserDone?.owned).toBeNull();
+            expect(loserDone?.code).toBe(1);
+
+            await assertSingleLiveOwnerAndCleanup(
+              caseId,
+              socketPath,
+              winnerPid,
+              generation,
+              [0, 1],
+            );
+            claim.release();
+          }
+
+          const failCaseDir = path.join(iterDir, "bind-loss");
+          const failBarrierDir = path.join(failCaseDir, "b");
+          mkdirSync(failBarrierDir, { recursive: true, mode: 0o700 });
+          const failSocketPath = path.join(failCaseDir, "t.sock");
+          const blocker = net.createServer();
+          await new Promise<void>((resolve, reject) => {
+            blocker.once("error", reject);
+            blocker.listen(failSocketPath, () => resolve());
+          });
+          try {
+            const firstClaim = claimNativeHolderLaunch(failSocketPath);
+            expect(firstClaim.claimed).toBe(true);
+            const gen1 = firstClaim.generation ?? 1;
+            const tok1 = readClaimToken(
+              failSocketPath,
+              gen1,
+              firstClaim.token,
+            );
+            const failCaseId = `${String(iter)}-bind-loss-g1`;
+            const failEntry = getCase(failCaseId);
+            const failPayload = JSON.stringify({
+              type: "run",
+              caseId: failCaseId,
+              mode: "app-first",
+              socketPath: failSocketPath,
+              generation: gen1,
+              token: tok1,
+              barrierDir: failBarrierDir,
+            });
+            worker0.child.stdin?.write(`${failPayload}\n`);
+            worker1.child.stdin?.write(`${failPayload}\n`);
+            await waitForCaseCondition(
+              failCaseId + ":fail",
+              failEntry,
+              () =>
+                failEntry.doneEvents.has(0) && failEntry.doneEvents.has(1),
+            );
+            expect(failEntry.boundEvents).toHaveLength(0);
+            expect(failEntry.doneEvents.get(0)?.owned).toBe(gen1);
+            expect(failEntry.doneEvents.get(0)?.ok).toBe(false);
+            expect(failEntry.doneEvents.get(1)?.owned).toBeNull();
+            expect(failEntry.doneEvents.get(1)?.bound).toBe(false);
+            expect(nativeHolderProcessIsAlive(failSocketPath)).toBe(false);
+            firstClaim.release();
+          } finally {
+            await new Promise<void>((resolve) => blocker.close(() => resolve()));
+            rmSync(failSocketPath, { force: true });
+          }
+
+          const recoverCaseId = `${String(iter)}-bind-loss-g2`;
+          let recoveryLaunches = 0;
+          const recovered = await openNativeHolderConnection({
+            socketPath: failSocketPath,
+            reattachOnly: false,
+            startHolder: (gen2, tok2) => {
+              recoveryLaunches += 1;
+              const token2 = readClaimToken(failSocketPath, gen2, tok2);
+              worker1.child.stdin?.write(
+                `${JSON.stringify({
+                  type: "run",
+                  caseId: recoverCaseId,
+                  mode: "single",
+                  socketPath: failSocketPath,
+                  generation: gen2,
+                  token: token2,
+                  barrierDir: "",
+                })}\n`,
+              );
+            },
+            startTimeoutMs: 5_000,
+          });
+          expect(recoveryLaunches).toBe(1);
+          if (recovered.kind !== "attached") throw new Error(recovered.kind);
+          recovered.socket.destroy();
+
+          await assertSingleLiveOwnerAndCleanup(
+            recoverCaseId,
+            failSocketPath,
+            worker1.pid,
+            2,
+            [1],
+          );
+        }
+      } finally {
+        for (const child of children) {
+          child.kill("SIGKILL");
+        }
+      }
+    },
+    60_000,
+  );
+
   it("reports did-not-start after the fallback also never listens", async () => {
     let fallbacks = 0;
     const connection = await openNativeHolderConnection({
@@ -1206,10 +2399,228 @@ describe("native holder app fallback window", () => {
     again.type("\u0004");
     await expect(held).resolves.toBe(7);
   });
+
+  it("never binds the socket and leaves marker, socket, and log files unchanged when runNativeHolder or writeNativeHolderPidMarker lacks an owned marker for this pid", async () => {
+    const snapshotDir = (
+      dir: string,
+    ): { entries: string[]; contents: Record<string, string> } => {
+      const entries = readdirSync(dir).sort();
+      const contents: Record<string, string> = {};
+      for (const entry of entries) {
+        const full = path.join(dir, entry);
+        const stat = lstatSync(full);
+        contents[entry] = stat.isSocket()
+          ? "<socket>"
+          : stat.isDirectory()
+            ? "<dir>"
+            : readFileSync(full, "utf8");
+      }
+      return { entries, contents };
+    };
+
+    const callUntypedWriteMarker = writeNativeHolderPidMarker as unknown as (
+      ...args: unknown[]
+    ) => number | null;
+    const callUntypedRunHolder = runNativeHolder as unknown as (
+      options: Record<string, unknown>,
+    ) => Promise<number>;
+
+    const baseHolderOptions = (
+      targetSocketPath: string,
+      counters: { ready: number; prepared: number; spawned: number },
+    ): Record<string, unknown> => ({
+      socketPath: targetSocketPath,
+      cwd: os.tmpdir(),
+      env: {},
+      onSocketReady: () => {
+        counters.ready += 1;
+      },
+      prepare: async () => {
+        counters.prepared += 1;
+        return { command: "fake", args: [] };
+      },
+      spawnPty: () => {
+        counters.spawned += 1;
+        throw new Error("must not spawn PTY");
+      },
+    });
+
+    const emptySocket = socketIn();
+    const emptyDir = path.dirname(emptySocket);
+    const beforeEmpty = snapshotDir(emptyDir);
+    expect(beforeEmpty).toEqual({ entries: [], contents: {} });
+
+    expect(callUntypedWriteMarker(emptySocket)).toBeNull();
+    expect(callUntypedWriteMarker(emptySocket, process.pid)).toBeNull();
+    expect(callUntypedWriteMarker(emptySocket, process.pid, 1)).toBeNull();
+    expect(
+      writeNativeHolderPidMarker(emptySocket, process.pid, 1, "0123456789abcdef"),
+    ).toBeNull();
+    expect(snapshotDir(emptyDir)).toEqual(beforeEmpty);
+
+    const emptyCounters = { ready: 0, prepared: 0, spawned: 0 };
+    for (const extra of [
+      {},
+      { holderMarkerGeneration: undefined, holderMarkerToken: undefined },
+      { holderMarkerGeneration: null, holderMarkerToken: "0123456789abcdef" },
+      { holderMarkerGeneration: 0, holderMarkerToken: "0123456789abcdef" },
+      { holderMarkerGeneration: -1, holderMarkerToken: "0123456789abcdef" },
+      {
+        holderMarkerGeneration: Number.MAX_SAFE_INTEGER + 1,
+        holderMarkerToken: "0123456789abcdef",
+      },
+      { holderMarkerGeneration: 1 },
+      { holderMarkerToken: "0123456789abcdef" },
+      { holderMarkerGeneration: 1, holderMarkerToken: "" },
+      { holderMarkerGeneration: 1, holderMarkerToken: "not-hex!" },
+      { holderMarkerGeneration: 1, holderMarkerToken: "0123456789abcdef" },
+    ]) {
+      await expect(
+        callUntypedRunHolder({
+          ...baseHolderOptions(emptySocket, emptyCounters),
+          ...extra,
+        }),
+      ).resolves.toBe(1);
+      expect(snapshotDir(emptyDir)).toEqual(beforeEmpty);
+    }
+    expect(emptyCounters).toEqual({ ready: 0, prepared: 0, spawned: 0 });
+    expect(await waitForNativeHolder(emptySocket, 80)).toBeNull();
+
+    const launchOnlySocket = socketIn();
+    const launchOnlyDir = path.dirname(launchOnlySocket);
+    const launchClaim = claimNativeHolderLaunch(launchOnlySocket);
+    expect(launchClaim.claimed).toBe(true);
+    const beforeLaunchOnly = snapshotDir(launchOnlyDir);
+    const launchCounters = { ready: 0, prepared: 0, spawned: 0 };
+    await expect(
+      runNativeHolder({
+        socketPath: launchOnlySocket,
+        holderMarkerGeneration: launchClaim.generation ?? 1,
+        holderMarkerToken: launchClaim.token ?? "",
+        cwd: os.tmpdir(),
+        env: {},
+        onSocketReady: () => {
+          launchCounters.ready += 1;
+        },
+        prepare: async () => {
+          launchCounters.prepared += 1;
+          return { command: "fake", args: [] };
+        },
+        spawnPty: () => {
+          launchCounters.spawned += 1;
+          throw new Error("must not spawn PTY");
+        },
+      }),
+    ).resolves.toBe(1);
+    expect(launchCounters).toEqual({ ready: 0, prepared: 0, spawned: 0 });
+    expect(snapshotDir(launchOnlyDir)).toEqual(beforeLaunchOnly);
+    launchClaim.release();
+
+    const otherPidSocket = socketIn();
+    const otherPidDir = path.dirname(otherPidSocket);
+    const otherClaim = claimNativeHolderLaunch(otherPidSocket);
+    expect(otherClaim.claimed).toBe(true);
+    const otherGen = otherClaim.generation ?? 1;
+    const otherToken = otherClaim.token ?? "";
+    expect(
+      writeNativeHolderPidMarker(
+        otherPidSocket,
+        process.ppid,
+        otherGen,
+        otherToken,
+      ),
+    ).toBe(otherGen);
+    writeFileSync(
+      otherPidSocket.replace(/\.sock$/u, ".log"),
+      "owner-log-line\n",
+      { mode: 0o600 },
+    );
+    const otherServer = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      otherServer.once("error", reject);
+      otherServer.listen(otherPidSocket, () => resolve());
+    });
+    try {
+      const beforeOther = snapshotDir(otherPidDir);
+      const otherCounters = { ready: 0, prepared: 0, spawned: 0 };
+      for (const extra of [
+        {},
+        { holderMarkerGeneration: otherGen },
+        { holderMarkerGeneration: otherGen, holderMarkerToken: "" },
+        {
+          holderMarkerGeneration: otherGen,
+          holderMarkerToken: "deadbeefdeadbeef",
+        },
+        { holderMarkerGeneration: otherGen, holderMarkerToken: otherToken },
+      ]) {
+        await expect(
+          callUntypedRunHolder({
+            ...baseHolderOptions(otherPidSocket, otherCounters),
+            ...extra,
+          }),
+        ).resolves.toBe(1);
+        expect(snapshotDir(otherPidDir)).toEqual(beforeOther);
+      }
+      expect(callUntypedWriteMarker(otherPidSocket, process.pid)).toBeNull();
+      expect(snapshotDir(otherPidDir)).toEqual(beforeOther);
+      expect(otherCounters).toEqual({ ready: 0, prepared: 0, spawned: 0 });
+    } finally {
+      otherClaim.release();
+      await new Promise<void>((resolve) => otherServer.close(() => resolve()));
+    }
+
+    const otherUnboundSocket = socketIn();
+    const otherUnboundDir = path.dirname(otherUnboundSocket);
+    const unboundClaim = claimNativeHolderLaunch(otherUnboundSocket);
+    expect(unboundClaim.claimed).toBe(true);
+    const unboundGen = unboundClaim.generation ?? 1;
+    const unboundToken = unboundClaim.token ?? "";
+    expect(
+      writeNativeHolderPidMarker(
+        otherUnboundSocket,
+        process.ppid,
+        unboundGen,
+        unboundToken,
+      ),
+    ).toBe(unboundGen);
+    writeFileSync(
+      otherUnboundSocket.replace(/\.sock$/u, ".log"),
+      "keep-log\n",
+      { mode: 0o600 },
+    );
+    const beforeUnbound = snapshotDir(otherUnboundDir);
+    const unboundCounters = { ready: 0, prepared: 0, spawned: 0 };
+    await expect(
+      runNativeHolder({
+        socketPath: otherUnboundSocket,
+        holderMarkerGeneration: unboundGen,
+        holderMarkerToken: unboundToken,
+        cwd: os.tmpdir(),
+        env: {},
+        onSocketReady: () => {
+          unboundCounters.ready += 1;
+        },
+        prepare: async () => {
+          unboundCounters.prepared += 1;
+          return { command: "fake", args: [] };
+        },
+        spawnPty: () => {
+          unboundCounters.spawned += 1;
+          throw new Error("must not spawn PTY");
+        },
+      }),
+    ).resolves.toBe(1);
+    expect(unboundCounters).toEqual({ ready: 0, prepared: 0, spawned: 0 });
+    expect(existsSync(otherUnboundSocket)).toBe(false);
+    expect(snapshotDir(otherUnboundDir)).toEqual(beforeUnbound);
+    unboundClaim.release();
+  });
 });
 
 describe("native holder signals", () => {
-  it("keeps bash OSC command and cwd reports through the holder PTY", async () => {
+  it.skipIf(!bashSupportsPs0)(
+    "keeps bash OSC command and cwd reports through the holder PTY",
+    async () => {
     const socketPath = socketIn();
     const rcFile = path.join(path.dirname(socketPath), "bashrc");
     writeFileSync(
@@ -1231,7 +2642,8 @@ describe("native holder signals", () => {
       client.type("exit\r");
       await held;
     }
-  });
+  },
+  );
 
   it("survives the termination signals a bb quit or a process manager sends, so its CLI keeps running", async () => {
     const holderModule = pathToFileURL(
@@ -1296,8 +2708,11 @@ setInterval(() => {}, 1000);`,
     const ptyExit: {
       current: ((event: { exitCode: number; signal?: number }) => void) | null;
     } = { current: null };
+    const marker = claimTestHolderMarker(socketPath, 321);
     const held = runNativeHolder({
       socketPath,
+      holderMarkerGeneration: marker.generation,
+      holderMarkerToken: marker.token,
       holderPid: 321,
       holderPgid: 321,
       holderSid: 321,

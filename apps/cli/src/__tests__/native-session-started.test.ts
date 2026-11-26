@@ -17,6 +17,7 @@ import { holdNativeHarness } from "../commands/thread/native.js";
 import { NativeActivityReader } from "../native-activity-reader.js";
 import { createNativeActivityPump } from "../native-activity-wiring.js";
 import {
+  claimNativeHolderLaunch,
   encodeNativeHolderFrame,
   NativeHolderFrame,
   NativeHolderFrameDecoder,
@@ -551,6 +552,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
       threadId,
     });
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(
       sdkServer.baseUrl,
       threadId,
@@ -560,6 +563,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
         cwd: root,
         env: cleanHolderEnv(home),
         home,
+        markerGeneration: claim.generation ?? 1,
+        markerToken: claim.token ?? "",
         tmpDir,
       },
     );
@@ -595,6 +600,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
 
     client.type("exit\n");
     expect(await holderDone).toBe(0);
+    claim.release();
     expect(sdkServer.recordSessionCalls).toHaveLength(1);
   });
 
@@ -613,6 +619,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
       threadId,
     });
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(
       sdkServer.baseUrl,
       threadId,
@@ -625,6 +633,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
           CLAUDE_CONFIG_DIR: claudeConfigDir,
         },
         home: blockedPath,
+        markerGeneration: claim.generation ?? 1,
+        markerToken: claim.token ?? "",
         tmpDir: path.join(blockedPath, "tmp"),
       },
     );
@@ -666,6 +676,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
 
     client.type("exit\n");
     expect(await holderDone).toBe(0);
+    claim.release();
     expect(sdkServer.recordSessionCalls).toEqual([]);
     expect(sdkServer.settleCount).toBe(1);
   });
@@ -780,6 +791,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
     }
     const baseUrl = `http://127.0.0.1:${address.port}`;
 
+    const claim = claimNativeHolderLaunch(socketPath);
+    expect(claim.claimed).toBe(true);
     const holderDone = holdNativeHarness(baseUrl, threadId, socketPath, {
       activityPollIntervalMs: 25,
       cwd: root,
@@ -788,6 +801,8 @@ describe("holdNativeHarness preassigned start ordering", () => {
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       },
       home,
+      markerGeneration: claim.generation ?? 1,
+      markerToken: claim.token ?? "",
       tmpDir: blockedTmpFile,
     });
 
@@ -800,6 +815,7 @@ describe("holdNativeHarness preassigned start ordering", () => {
     );
 
     expect(await holderDone).toBe(1);
+    claim.release();
     expect(existsSync(spawnMarkerPath)).toBe(false);
     expect(recordSessionCalls).toEqual([]);
   });
