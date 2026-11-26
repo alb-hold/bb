@@ -312,6 +312,66 @@ describe("the credential helpers the fetch replays", () => {
     },
   );
 
+  it("replays a global per-URL username through --config-env and keeps its value out of argv", () => {
+    const replayed = replayedCredentialHelpers(
+      configured([
+        ["credential.https://github.com/orgA.username", "orgA-user"],
+        ["credential.username", "fallback-user"],
+        ["credential.https://github.com/orgB.username", ""],
+      ]),
+    );
+
+    expect(replayed.args).toEqual([
+      "--config-env=credential.https://github.com/orgA.username=BB_FETCH_CREDENTIAL_HELPER_0",
+      "--config-env=credential.username=BB_FETCH_CREDENTIAL_HELPER_1",
+    ]);
+    expect(replayed.env).toEqual({
+      BB_FETCH_CREDENTIAL_HELPER_0: "orgA-user",
+      BB_FETCH_CREDENTIAL_HELPER_1: "fallback-user",
+    });
+    expect(replayed.args.join(" ")).not.toContain("orgA-user");
+    expect(replayed.args.join(" ")).not.toContain("fallback-user");
+  });
+
+  it("replays useHttpPath only when it is a git boolean", () => {
+    const replayed = replayedCredentialHelpers(
+      configured([
+        ["credential.usehttppath", "TRUE"],
+        ["credential.https://github.com.usehttppath", "off"],
+        ["credential.https://example.com.usehttppath", "maybe"],
+        ["credential.https://example.org.usehttppath", "!echo no"],
+        ["credential.https://example.net.usehttppath", ""],
+      ]),
+    );
+
+    expect(replayed.args).toEqual([
+      "--config-env=credential.usehttppath=BB_FETCH_CREDENTIAL_HELPER_0",
+      "--config-env=credential.https://github.com.usehttppath=BB_FETCH_CREDENTIAL_HELPER_1",
+    ]);
+    expect(replayed.env).toEqual({
+      BB_FETCH_CREDENTIAL_HELPER_0: "TRUE",
+      BB_FETCH_CREDENTIAL_HELPER_1: "off",
+    });
+  });
+
+  it("ignores a username and useHttpPath set in the repository, its worktree, the command line or an included file", () => {
+    const entries: [string, string][] = [
+      ["credential.https://github.com/orgA.username", "orgA-user"],
+      ["credential.usehttppath", "true"],
+    ];
+    for (const scope of ["local", "worktree", "command"])
+      expect(
+        replayedCredentialHelpers(
+          configured(entries, "file:/repo/.git/config", scope),
+        ),
+      ).toEqual({ args: [], env: {} });
+    for (const origin of ["command line:", "blob:0123abcd", "standard input:"])
+      expect(replayedCredentialHelpers(configured(entries, origin))).toEqual({
+        args: [],
+        env: {},
+      });
+  });
+
   it("drops keys that are not a credential helper, keys git cannot carry on its command line, and entries without a value", () => {
     expect(
       replayedCredentialHelpers(
