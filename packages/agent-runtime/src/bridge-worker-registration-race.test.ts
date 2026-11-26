@@ -39,7 +39,7 @@ function createTempDir(directories: string[]): string {
   return directory;
 }
 
-function spawnWorker(dir: string) {
+function spawnWorker(dir: string, errors?: Error[]) {
   const worker = new SocketBridgeWorker({
     kind: "spawn",
     command: process.execPath,
@@ -61,7 +61,9 @@ function spawnWorker(dir: string) {
       personalWorkspaceRoot: null,
     },
   });
-  worker.on("error", () => undefined);
+  worker.on("error", (error) => {
+    errors?.push(error);
+  });
   return worker;
 }
 
@@ -114,9 +116,10 @@ describe("bridge worker registration close race", () => {
 
   it("awaits registration on stop and does not write or reject when closed mid-registration", async () => {
     const unhandled = captureUnhandledRejections();
+    const errors: Error[] = [];
     const { started, identity } = interceptRegistration();
     const dir = createTempDir(directories);
-    const worker = spawnWorker(dir);
+    const worker = spawnWorker(dir, errors);
     if (worker.pid !== undefined) pidsToKill.push(worker.pid);
 
     await started.promise;
@@ -142,14 +145,16 @@ describe("bridge worker registration close race", () => {
     expect(stopResolved).toBe(true);
     expect(worker.registeredPid).toBeNull();
     expect(existsSync(join(dir, "w"))).toBe(false);
+    expect(errors).toEqual([]);
     expect(unhandled).toEqual([]);
   });
 
   it("does not write or reject when the spawned worker exits by signal while registering", async () => {
     const unhandled = captureUnhandledRejections();
+    const errors: Error[] = [];
     const { started, identity } = interceptRegistration();
     const dir = createTempDir(directories);
-    const worker = spawnWorker(dir);
+    const worker = spawnWorker(dir, errors);
     if (worker.pid !== undefined) pidsToKill.push(worker.pid);
 
     await started.promise;
@@ -170,18 +175,20 @@ describe("bridge worker registration close race", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(worker.registeredPid).toBeNull();
+    expect(errors).toEqual([]);
     expect(unhandled).toEqual([]);
   });
 
-  it("does not write or reject when released while registering", async () => {
+  it("opens the log fd synchronously and does not write, error, or reject when released immediately while registering", async () => {
     const unhandled = captureUnhandledRejections();
+    const errors: Error[] = [];
     const { started, identity } = interceptRegistration();
     const dir = createTempDir(directories);
-    const worker = spawnWorker(dir);
+    const worker = spawnWorker(dir, errors);
     const pid = worker.pid;
     if (pid !== undefined) pidsToKill.push(pid);
 
-    await started.promise;
+    expect(existsSync(worker.logPath)).toBe(true);
 
     worker.release();
     if (pid !== undefined) {
@@ -191,10 +198,12 @@ describe("bridge worker registration close race", () => {
     }
 
     rmSync(dir, { recursive: true, force: true });
+    await started.promise;
     identity.resolve("linux:test-boot:99999");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(worker.registeredPid).toBeNull();
+    expect(errors).toEqual([]);
     expect(unhandled).toEqual([]);
   });
 });

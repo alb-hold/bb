@@ -539,14 +539,31 @@ export class SocketBridgeWorker
     child: ReturnType<typeof spawnManagedProcess>["child"];
     managedProcess: ManagedProcess;
   } {
-    const managedProcess = spawnManagedProcess({
-      command: args.command,
-      args: args.args,
-      cwd: args.cwd,
-      env,
-    });
+    const logFd = openSync(this.logPath, "a", 0o600);
+    let managedProcess: ManagedProcess;
+    try {
+      managedProcess = spawnManagedProcess({
+        command: args.command,
+        args: args.args,
+        cwd: args.cwd,
+        env,
+      });
+    } catch (error) {
+      closeSync(logFd);
+      throw error;
+    }
     const child = managedProcess.child;
-    const log = createWriteStream(this.logPath, { flags: "a", mode: 0o600 });
+    let log: ReturnType<typeof createWriteStream>;
+    try {
+      log = createWriteStream(this.logPath, { fd: logFd, autoClose: true });
+    } catch (error) {
+      closeSync(logFd);
+      void managedProcess.stop({ gracePeriodMs: 0 });
+      throw error;
+    }
+    log.on("error", (error) => {
+      this.emit("error", error);
+    });
     try {
       child.stdout.pipe(log, { end: false });
       child.stderr.pipe(log, { end: false });
