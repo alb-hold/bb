@@ -51,6 +51,7 @@ import {
 } from "./RootComposeRecentRows";
 
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { RECENT_THREAD_ROW_CLASS } from "./RootComposeRecentRows";
 
 import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 
@@ -1066,3 +1067,71 @@ it.each([
     expect(view.container.querySelectorAll("li")).toHaveLength(2);
   },
 );
+
+describe("RootComposeMobileRecents pending placeholder", () => {
+  function renderRecents({
+    isPending,
+    threads,
+  }: {
+    isPending: boolean;
+    threads: ThreadListEntry[];
+  }) {
+    return (
+      <TestProviders>
+        <RootComposeMobileRecents
+          maxRows={3}
+          highlightedThreadId={null}
+          projectNamesById={new Map()}
+          providersById={new Map()}
+          showCreatingRow={false}
+          threads={threads}
+          isPending={isPending}
+        />
+      </TestProviders>
+    );
+  }
+
+  it("reserves the Recent label and row geometry while the query is pending, then swaps in real rows", () => {
+    const view = render(renderRecents({ isPending: true, threads: [] }));
+    const section = view.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    );
+    expect(section).not.toBeNull();
+    expect(section!.querySelector("h2")?.textContent).toBe("Recent");
+    const placeholderRows = [...section!.querySelectorAll("li")];
+    expect(placeholderRows).toHaveLength(3);
+    for (const row of placeholderRows) {
+      expect(row.className).toBe(RECENT_THREAD_ROW_CLASS);
+    }
+    expect(section!.querySelector("ul")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
+    const placeholderLabelClass = section!
+      .querySelector("h2")
+      ?.getAttribute("class");
+
+    view.rerender(
+      renderRecents({
+        isPending: false,
+        threads: [makeThread({ id: "thr_real", title: "Real work" })],
+      }),
+    );
+    const settled = view.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    )!;
+    expect(settled.querySelector("h2")?.getAttribute("class")).toBe(
+      placeholderLabelClass,
+    );
+    expect(settled.querySelector("ul")?.getAttribute("aria-hidden")).toBeNull();
+    const realRows = [...settled.querySelectorAll("li")];
+    expect(realRows).toHaveLength(1);
+    expect(realRows[0]!.className).toBe(RECENT_THREAD_ROW_CLASS);
+  });
+
+  it("renders nothing when the query settled with no recent rows", () => {
+    const view = render(renderRecents({ isPending: false, threads: [] }));
+    expect(
+      view.container.querySelector("[data-root-compose-mobile-recents]"),
+    ).toBeNull();
+  });
+});
