@@ -237,9 +237,11 @@ export function hookAppendCommand(
     `f=${shellQuote(file)}`,
     'o="$d/.sequence"',
     'lq="$d/.sequence.lock"',
+    "rl=/bin/readlink",
+    '[ -x "$rl" ] || rl=/usr/bin/readlink',
     "tries=0",
     'while ! /bin/ln -s "$$" "$lq" 2>/dev/null; do ' +
-      'p=$(/bin/readlink "$lq" 2>/dev/null); case "$p" in \'\'|*[!0-9]*) p=0;; esac; ' +
+      'p=$("$rl" "$lq" 2>/dev/null); case "$p" in \'\'|*[!0-9]*) p=0;; esac; ' +
       'if [ "$p" -gt 0 ] && ! kill -0 "$p" 2>/dev/null; then /bin/rm -f "$lq"; fi; ' +
       `tries=$((tries+1)); if [ "$tries" -ge ${sequenceLockMaxTries} ]; then ` +
       "if r=$(cat); then s=$(date +%s); " +
@@ -250,7 +252,7 @@ export function hookAppendCommand(
       ': >"$d/.lost.$$" && exit 0; exit 1; fi; sleep 0.01; done',
     'n=$(cat "$o" 2>/dev/null); case "$n" in \'\'|*[!0-9]*) n=0;; esac; ' +
       'q=$((n+1)); printf \'%s\' "$q" >"$o.$$" && mv -f "$o.$$" "$o"; ' +
-      '[ "$(/bin/readlink "$lq" 2>/dev/null)" = "$$" ] && /bin/rm -f "$lq"',
+      '[ "$("$rl" "$lq" 2>/dev/null)" = "$$" ] && /bin/rm -f "$lq"',
     `l="$d/${APPEND_LOCK_NAME}"`,
     'm="$d/.tmp.$$.mark"',
     ': >"$m" || exit 0',

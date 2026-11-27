@@ -51,6 +51,23 @@ describe("packaged CLI plugin build", () => {
       { cwd: cliRoot },
     );
 
+    const unresolvableFacade = join(
+      tempRoot,
+      "node_modules",
+      "@get-bb",
+      "plugin-sdk",
+    );
+    await mkdir(unresolvableFacade, { recursive: true });
+    await writeFile(
+      join(unresolvableFacade, "package.json"),
+      JSON.stringify({
+        name: "@get-bb/plugin-sdk",
+        version: "0.0.0",
+        type: "module",
+        exports: {},
+      }),
+    );
+
     await mkdir(pluginRoot, { recursive: true });
     await writeFile(
       join(pluginRoot, "package.json"),
