@@ -22,7 +22,6 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { NATIVE_TERMINAL_IDLE_EXIT_CODE } from "@bb/domain";
 
 export const NATIVE_HOLDER_REAP_AFTER_MS = 15 * 60_000;
 const NATIVE_HOLDER_FIRST_CLIENT_TIMEOUT_MS = 20_000;
@@ -254,7 +253,10 @@ export interface NativeHolderPty {
 export interface NativeHolderProcess {
   command: string;
   args: string[];
-  mayReapIdle?(lastInputAt: number): Promise<(() => boolean) | null>;
+  idleReap?: {
+    exitCode: number;
+    check(lastInputAt: number): Promise<(() => boolean) | null>;
+  };
 }
 
 export interface RunNativeHolderOptions {
@@ -580,6 +582,7 @@ export async function runNativeHolder(
     pty.onData((data) => {
       sendOutput(Buffer.from(data, "utf8"));
     });
+    const idleReap = child.idleReap;
     pty.onExit(({ exitCode, signal }) => {
       ptyExited = true;
       logNativeHolderEvent(options.socketPath, "pty-child-exit", {
@@ -587,16 +590,15 @@ export async function runNativeHolder(
         signal: signal ?? null,
       });
       finish(
-        finishReason === "idle"
-          ? NATIVE_TERMINAL_IDLE_EXIT_CODE
+        finishReason === "idle" && idleReap !== undefined
+          ? idleReap.exitCode
           : Number.isInteger(exitCode) && exitCode >= 0
             ? exitCode
             : 128 + (signal ?? 0),
         finishReason,
       );
     });
-    if (child.mayReapIdle !== undefined) {
-      const mayReapIdle = child.mayReapIdle;
+    if (idleReap !== undefined) {
       let checking = false;
       timers.push(
         setInterval(() => {
@@ -604,7 +606,7 @@ export async function runNativeHolder(
             return;
           const inputAt = lastInputAt;
           checking = true;
-          void mayReapIdle(inputAt)
+          void idleReap.check(inputAt)
             .then((stillIdle) => {
               if (
                 pty === null ||

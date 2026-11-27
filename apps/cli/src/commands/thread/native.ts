@@ -12,7 +12,10 @@ import {
   withSocketCredential,
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
-import { fillNativeTerminalTemplate } from "@bb/domain";
+import {
+  fillNativeTerminalTemplate,
+  NATIVE_TERMINAL_IDLE_EXIT_CODE,
+} from "@bb/domain";
 import { createSessionDiscoverer } from "../../native-session-discovery.js";
 import {
   createNativeActivityPump,
@@ -659,7 +662,12 @@ export async function holdNativeHarness(
           command: launch.command,
           args: launch.args,
           ...(activity?.idleReapEvidence === "claude-stop-v1"
-            ? { mayReapIdle }
+            ? {
+                idleReap: {
+                  exitCode: NATIVE_TERMINAL_IDLE_EXIT_CODE,
+                  check: mayReapIdle,
+                },
+              }
             : {}),
         };
       },
