@@ -2106,6 +2106,7 @@ function ThreadDetailViewInternal(
                     projectId={thread.projectId}
                     runtime={thread.runtime}
                     threadId={thread.id}
+                    threadIsArchived={thread.archivedAt !== null}
                     threadIsProvisioning={
                       thread.status === "pending" ||
                       thread.status === "starting"

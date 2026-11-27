@@ -462,6 +462,37 @@ export async function holdNativeHarness(
       report(reader?.finish() ?? null);
     };
     let pty: ReturnType<typeof nodePty.spawn> | null = null;
+    const mayReapIdle = async (lastInputAt: number) => {
+      readActivity();
+      const evidence = reader?.claudeIdleEvidence();
+      const credential = currentCredential();
+      if (!evidence || credential === null) return null;
+      const startedAt = performance.now();
+      const { approved } = await sdk.nativeTerminals.claimIdleReap({
+        authorization: `Bearer ${credential}`,
+        idleForMs: Math.max(
+          0,
+          Date.now() - Math.ceil(Math.max(evidence.activityAt, lastInputAt)),
+        ),
+        nativeSessionId: evidence.nativeSessionId,
+        signal: AbortSignal.timeout(5_000),
+        threadId,
+      });
+      if (!approved) return null;
+      return () => {
+        if (
+          performance.now() - startedAt >= 5_000 ||
+          credential !== currentCredential()
+        )
+          return false;
+        readActivity();
+        const latest = reader?.claudeIdleEvidence();
+        return (
+          latest?.nativeSessionId === evidence.nativeSessionId &&
+          latest.activityAt === evidence.activityAt
+        );
+      };
+    };
     const exitCode = await runNativeHolder({
       socketPath,
       holderMarkerGeneration,
@@ -624,7 +655,13 @@ export async function holdNativeHarness(
             }, ACTIVITY_HEARTBEAT_INTERVAL_MS),
           );
         }
-        return { command: launch.command, args: launch.args };
+        return {
+          command: launch.command,
+          args: launch.args,
+          ...(activity?.idleReapEvidence === "claude-stop-v1"
+            ? { mayReapIdle }
+            : {}),
+        };
       },
       spawnPty: (child, options) => {
         pty = nodePty.spawn(child.command, child.args, {

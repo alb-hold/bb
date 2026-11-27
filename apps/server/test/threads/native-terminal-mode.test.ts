@@ -53,6 +53,7 @@ import * as titleGeneration from "../../src/services/threads/title-generation.js
 import {
   isNativeTerminalQuestion,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  turnScope,
   type PendingInteraction,
   type ProviderNativeTerminalActivity,
 } from "@bb/domain";
@@ -103,6 +104,7 @@ import {
   seedProjectWithSource,
   seedThread,
   seedThreadIdentity,
+  seedStoredEvent,
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
@@ -356,6 +358,204 @@ async function enterTerminal(fixture: Fixture, threadId: string) {
     view: nativeTerminalThreadSchema.parse(await readJson(response)),
   };
 }
+
+describe("reaping a native Claude terminal", () => {
+  it.each([
+    { name: "idle", expected: true },
+    { name: "recent activity", expected: false },
+    { name: "running turn", expected: false },
+    { name: "pending permission", expected: false },
+    { name: "pending ask", expected: false },
+    { name: "stored background task", expected: false },
+    { name: "attached viewer", expected: false },
+    { name: "Codex", expected: false },
+  ])(
+    "only reaps with no live work or viewer ($name)",
+    async ({ name, expected }) => {
+      const fixture = await createFixture();
+      const thread = seedChatThread(fixture, {
+        providerId: name === "Codex" ? "codex" : "claude-code",
+        providerThreadId: SESSION_ID,
+      });
+      const { open } = await enterTerminal(fixture, thread.id);
+      const credential = currentHolderCredential(fixture, thread.id);
+      expect(credential).toBeDefined();
+      if (name === "running turn") {
+        recordNativeTerminalActivity(fixture.harness.deps, {
+          threadId: thread.id,
+          authorization: `Bearer ${credential}`,
+          confirms: true,
+          state: "working",
+          prompt: "Working",
+        });
+      }
+      if (name === "attached viewer") {
+        fixture.harness.hub.registerTerminalClient(open.terminalId, {
+          close: vi.fn(),
+          send: vi.fn(),
+        });
+      }
+      if (name === "pending permission" || name === "pending ask") {
+        const waiting = await reportActivity(fixture, thread.id, {
+          state: "waiting",
+          questions: [
+            {
+              id:
+                name === "pending permission"
+                  ? "permission:Bash#idle.1"
+                  : "toolu_idle_ask",
+              prompt: "Do you want to continue?",
+            },
+          ],
+        });
+        expect(waiting.status).toBe(200);
+        expect(
+          fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+            thread.id,
+          ),
+        ).toHaveLength(1);
+      }
+      if (name === "stored background task") {
+        seedStoredEvent(fixture.harness.deps, {
+          threadId: thread.id,
+          environmentId: fixture.environment.id,
+          sequence: 100,
+          scope: turnScope("previous-turn"),
+          providerThreadId: SESSION_ID,
+          type: "item/started",
+          itemKind: "backgroundTask",
+          itemId: "task:running",
+          data: {
+            providerThreadId: SESSION_ID,
+            item: {
+              type: "backgroundTask",
+              id: "task:running",
+              taskType: "local_bash",
+              description: "Watch tests",
+              status: "pending",
+              taskStatus: "running",
+              skipTranscript: false,
+              foreground: false,
+            },
+          },
+        });
+        expect(threadStatus(fixture, thread.id)).toBe("idle");
+      }
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+      try {
+        const response = await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/idle-reap`,
+          {
+            nativeSessionId: SESSION_ID,
+            idleForMs: (name === "recent activity" ? 29 : 31) * 60_000,
+          },
+          `Bearer ${credential}`,
+        );
+        expect(response.status).toBe(200);
+        const result = await readJson(response);
+        expect(result).toEqual({ approved: expected });
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
+  it("keeps the snapshot and resumes the same Claude session on the next turn", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    const terminalSessions = fixture.harness.deps.terminalSessions;
+    const output = (terminalId: string, seq: number, text: string) =>
+      terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.output",
+          terminalId,
+          chunk: { seq, dataBase64: Buffer.from(text).toString("base64") },
+        },
+      });
+    await output(open.terminalId, 0, "earlier context");
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 31 * 60_000);
+    try {
+      const credential = currentHolderCredential(fixture, thread.id);
+      const approved = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/idle-reap`,
+        { nativeSessionId: SESSION_ID, idleForMs: 31 * 60_000 },
+        `Bearer ${credential}`,
+      );
+      expect(approved.status).toBe(200);
+      expect(await readJson(approved)).toEqual({ approved: true });
+    } finally {
+      clock.mockRestore();
+    }
+    await terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: 202,
+        closeReason: "native-idle-reaped",
+      },
+    });
+    const snapshot = await terminalSessions.readTerminalOutput({
+      terminalId: open.terminalId,
+      query: {},
+    });
+    expect(snapshot).toMatchObject({
+      status: "exited",
+      closeReason: "native-idle-reaped",
+    });
+    expect(
+      snapshot.chunks
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+        .join(""),
+    ).toContain("earlier context");
+    const sending = postJson(fixture, `/threads/${thread.id}/send`, {
+      mode: "start",
+      input: [
+        {
+          type: "text",
+          text: "Recall our previous conversation",
+          mentions: [],
+        },
+      ],
+    });
+    const resumed = await waitForDaemonMessage(fixture, "terminal.open", 1);
+    expect(resumed.terminalId).not.toBe(open.terminalId);
+    acknowledgeOpen(fixture, resumed);
+    const launch = await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/launch`,
+      {},
+    );
+    expect(
+      nativeTerminalLaunchSpecSchema.parse(await readJson(launch))
+        .nativeSessionId,
+    ).toBe(SESSION_ID);
+    await output(resumed.terminalId, 0, "❯ ");
+    const paste = await waitForDaemonMessage(fixture, "terminal.input");
+    expect(paste.terminalId).toBe(resumed.terminalId);
+    expect(Buffer.from(paste.dataBase64, "base64").toString()).toContain(
+      "Recall our previous conversation",
+    );
+    await output(resumed.terminalId, 1, "Recall our previous conversation");
+    const enter = await waitForDaemonMessage(fixture, "terminal.input", 1);
+    expect(enter).toMatchObject({
+      terminalId: resumed.terminalId,
+      dataBase64: Buffer.from("\r").toString("base64"),
+    });
+    expect((await sending).status).toBe(200);
+  });
+});
 
 describe("archiving an exited native Codex thread", () => {
   it.each(

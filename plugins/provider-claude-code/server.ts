@@ -108,6 +108,7 @@ export default function plugin(bb: BbPluginApi) {
         transcript: "projects/*/{sessionId}.jsonl",
       },
       activity: {
+        idleReapEvidence: "claude-stop-v1",
         hooks: {
           args: ["--settings", "{settings}"],
           working: ["UserPromptSubmit", "PreToolUse"],

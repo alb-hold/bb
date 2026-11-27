@@ -321,6 +321,7 @@ export interface HookSpoolRead {
 
 const hookSequences = new WeakMap<object, number>();
 const hookStartedAtSeconds = new WeakMap<object, number>();
+const hookPublishedAt = new WeakMap<object, number>();
 const lateHookRecords = new WeakSet<object>();
 
 export function hookSequenceOf(record: unknown): number | null {
@@ -332,6 +333,12 @@ export function hookSequenceOf(record: unknown): number | null {
 export function hookStartedAtSecondsOf(record: unknown): number | null {
   return typeof record === "object" && record !== null
     ? (hookStartedAtSeconds.get(record) ?? null)
+    : null;
+}
+
+export function hookPublishedAtOf(record: unknown): number | null {
+  return typeof record === "object" && record !== null
+    ? (hookPublishedAt.get(record) ?? null)
     : null;
 }
 
@@ -465,7 +472,11 @@ export class HookSpoolReader {
     const records: unknown[] = [];
     let unreadable = 0;
     try {
-      records.push(JSON.parse(content.text));
+      const record: unknown = JSON.parse(content.text);
+      if (typeof record === "object" && record !== null) {
+        hookPublishedAt.set(record, content.modifiedAt);
+      }
+      records.push(record);
     } catch {
       unreadable = 1;
     }
@@ -707,7 +718,7 @@ export function reserveSequence(
 }
 
 type RegularRead =
-  | { kind: "text"; text: string; identity: FileIdentity }
+  | { kind: "text"; text: string; identity: FileIdentity; modifiedAt: number }
   | { kind: "missing" }
   | { kind: "irregular" }
   | { kind: "error" };
@@ -743,6 +754,7 @@ function readRegularFile(file: string): RegularRead {
       identity: { dev: stats.dev, ino: stats.ino },
       kind: "text",
       text: readFileSync(descriptor, "utf8"),
+      modifiedAt: Number(stats.mtimeNs / 1_000_000n),
     };
   } catch {
     return { kind: "error" };

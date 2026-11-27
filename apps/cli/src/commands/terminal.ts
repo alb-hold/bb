@@ -891,8 +891,25 @@ export function registerTerminalCommands(
             outputJson(opts, session);
             return;
           }
+          const baseUrl = getUrl();
+          const sdk = createCliBbSdk(baseUrl);
+          const session = await sdk.terminals.get({ terminalId });
+          if (
+            session.closeReason === "native-idle-reaped" &&
+            session.threadId !== null
+          ) {
+            const native = await sdk.nativeTerminals.get({
+              threadId: session.threadId,
+            });
+            if (native?.terminal?.id === terminalId) {
+              const reopened = await sdk.nativeTerminals.open({
+                threadId: session.threadId,
+              });
+              terminalId = reopened.terminal?.id ?? terminalId;
+            }
+          }
           await attachTerminal({
-            baseUrl: getUrl(),
+            baseUrl,
             detachKey: opts.detachKey,
             reportTiming: opts.reportTiming,
             terminalId,

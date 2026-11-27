@@ -15,6 +15,7 @@ import {
   getStoredProviderSession,
   getTerminalSession,
   listTerminalSessions,
+  listLatestOpenBackgroundTaskStateRowsForThread,
   listThreadTerminalLatestOutputSeqs,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
@@ -34,6 +35,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type {
+  ClaimNativeTerminalIdleReapRequest,
   NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalThread,
@@ -72,7 +74,7 @@ import {
 } from "./native-terminal-echo.js";
 import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
-import { createClientTurnRequestId } from "./thread-events.js";
+import { createClientTurnRequestId, getActiveTurnId } from "./thread-events.js";
 import { interruptActiveThreadsForHost } from "./thread-lifecycle.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import type { ThreadProvisioningDeps } from "./thread-provisioning-environment.js";
@@ -86,6 +88,7 @@ type ThreadRow = NonNullable<ReturnType<typeof getThread>>;
 
 const NATIVE_TERMINAL_DEFAULT_COLS = 120;
 const NATIVE_TERMINAL_DEFAULT_ROWS = 36;
+const NATIVE_TERMINAL_IDLE_REAP_AFTER_MS = 30 * 60_000;
 
 type NativeTerminalDeps = Pick<
   AppDeps,
@@ -145,6 +148,7 @@ const NATIVE_REATTACH_DEADLINE_MS = 45_000;
 const NATIVE_REATTACH_RETRY_MS = 2_000;
 const NATIVE_TERMINAL_ECHO_POLL_MS = 100;
 const NATIVE_TERMINAL_ECHO_TIMEOUT_MS = 5000;
+const NATIVE_TERMINAL_RESUME_TIMEOUT_MS = 20_000;
 const NATIVE_TERMINAL_ECHO_CONTEXT_BYTES = 64 * 1024;
 
 export interface NativeTerminalProvider {
@@ -460,7 +464,14 @@ async function openNativeTerminalOnce(
   },
 ): Promise<NativeTerminalThread> {
   const record = requireNativeTerminalThreadRecord(deps, args.threadId);
-  const existing = readRecordTerminal(deps, record);
+  let existing = readRecordTerminal(deps, record);
+  if (existing !== null) {
+    const reaping = deps.terminalSessions.nativeIdleReapInFlight(existing.id);
+    if (reaping !== null) {
+      await reaping;
+      existing = readRecordTerminal(deps, record);
+    }
+  }
   if (
     !args.replaceLiveTerminal &&
     terminalIsLive(existing) &&
@@ -1218,6 +1229,50 @@ export function requireLiveNativeTerminalToolThread(
   return lookup;
 }
 
+export function claimNativeTerminalIdleReap(
+  deps: NativeTerminalDeps,
+  args: ClaimNativeTerminalIdleReapRequest & {
+    authorization: string | undefined;
+    threadId: string;
+  },
+): boolean {
+  const { threadId, nativeSessionId, idleForMs } = args;
+  const { terminalSessionId } = requireNativeTerminalToolCredential(deps, args);
+  const record = getNativeTerminalThread(deps.db, threadId);
+  const thread = getThread(deps.db, threadId);
+  if (
+    idleForMs < NATIVE_TERMINAL_IDLE_REAP_AFTER_MS ||
+    record === null ||
+    findNativeTerminalProvider(deps, record.providerId)?.cli.activity
+      ?.idleReapEvidence !== "claude-stop-v1" ||
+    record.nativeSessionId !== nativeSessionId ||
+    record.terminalStatus !== "running" ||
+    record.awaitingSessionStart ||
+    thread?.status !== "idle" ||
+    thread.archivedAt !== null ||
+    thread.deletedAt !== null ||
+    pendingOpens.has(threadId) ||
+    pendingSends.has(threadId) ||
+    isNativeTerminalRebindInFlight(threadId)
+  )
+    return false;
+  const latestActivity = Math.max(
+    record.terminalCreatedAt ?? Date.now(),
+    record.terminalLastUserInputAt ?? 0,
+    record.lastToolCallAt ?? 0,
+  );
+  if (
+    Date.now() - latestActivity < NATIVE_TERMINAL_IDLE_REAP_AFTER_MS ||
+    getActiveTurnId(deps, threadId) !== null ||
+    deps.pendingInteractions.listPendingThreadInteractions(threadId).length >
+      0 ||
+    listLatestOpenBackgroundTaskStateRowsForThread(deps.db, { threadId })
+      .length > 0
+  )
+    return false;
+  return deps.terminalSessions.claimNativeIdleReap(terminalSessionId);
+}
+
 export function nativeTerminalAwaitsReattach(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   threadId: string,
@@ -1430,7 +1485,45 @@ async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
   args: NativeTerminalSendArgs,
 ): Promise<TerminalSession> {
-  const view = getNativeTerminalThreadView(deps, args.threadId);
+  let view = getNativeTerminalThreadView(deps, args.threadId);
+  if (view.terminal !== null) {
+    const reaping = deps.terminalSessions.nativeIdleReapInFlight(
+      view.terminal.id,
+    );
+    if (reaping !== null) {
+      await reaping;
+      view = getNativeTerminalThreadView(deps, args.threadId);
+    }
+  }
+  if (view.terminal?.closeReason === "native-idle-reaped") {
+    view = await openNativeTerminal(deps, {
+      threadId: args.threadId,
+      request: {},
+    });
+    const terminal = view.terminal;
+    if (terminal === null) throw nativeTerminalNotRunning();
+    const deadline = performance.now() + NATIVE_TERMINAL_RESUME_TIMEOUT_MS;
+    for (;;) {
+      const screen = await deps.terminalSessions.readTerminalPromptScreen(
+        terminal.id,
+      );
+      if (screen !== null && terminalScreenInputBoxIsEmpty(screen)) break;
+      if (
+        getNativeTerminalThread(deps.db, args.threadId)?.terminalStatus !==
+        "running"
+      ) {
+        throw nativeTerminalNotRunning();
+      }
+      if (performance.now() >= deadline) {
+        throw nativeTerminalInputOccupied(
+          requireNativeTerminalProvider(deps, view.providerId),
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, NATIVE_TERMINAL_ECHO_POLL_MS),
+      );
+    }
+  }
   if (view.terminal === null || view.terminal.status !== "running") {
     throw nativeTerminalNotRunning();
   }

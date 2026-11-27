@@ -124,6 +124,7 @@ const questionLabelSchema = z.string().trim().min(1).max(256);
 
 export const providerNativeTerminalActivitySchema = z
   .object({
+    idleReapEvidence: z.literal("claude-stop-v1").optional(),
     hooks: z
       .object({
         args: templateArgsSchema(["settings"]),

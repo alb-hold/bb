@@ -1,4 +1,5 @@
 import type { ProviderNativeTerminal } from "@bb/domain";
+import { readFileSync, statSync } from "node:fs";
 import {
   classifyHookRecord,
   classifyTranscriptRecord,
@@ -15,6 +16,7 @@ import {
 import { EvictedRecordIndex } from "./native-activity-index.js";
 import {
   hookRecordSource,
+  hookPublishedAtOf,
   hookSequenceOf,
   hookStartedAtSecondsOf,
   isLateHookRecord,
@@ -36,6 +38,68 @@ const ADOPTION_RETRY_AFTER_MS = 2_000;
 const MAX_ADOPTION_ATTEMPTS_TRACKED = 64;
 const MAX_HELD_FOREIGN_RECORDS = 64;
 const HELD_FOREIGN_RECORD_TTL_MS = 60_000;
+const MAX_CLAUDE_IDLE_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
+
+function claudeTranscriptIsQuiescent(
+  transcript: string,
+  sessionId: string,
+  stopStartedAt: number,
+): boolean {
+  if (!transcript.endsWith("\n")) return false;
+  const tools = new Set<string>();
+  let stopCompleted = false;
+  let turnCompleted = false;
+  try {
+    for (const line of transcript.split("\n")) {
+      if (line.length === 0) continue;
+      const record: unknown = JSON.parse(line);
+      const type = readRecordField(record, "type");
+      if (type === "queue-operation") {
+        stopCompleted = false;
+        turnCompleted = false;
+      }
+      if (type === "user" || type === "assistant") {
+        if (readRecordField(record, "sessionId") !== sessionId) return false;
+        stopCompleted = false;
+        turnCompleted = false;
+        const content = readRecordField(record, "message.content");
+        if (!Array.isArray(content)) continue;
+        for (const block of content) {
+          switch (readRecordField(block, "type")) {
+            case "tool_use": {
+              const id = readRecordField(block, "id");
+              if (typeof id !== "string") return false;
+              tools.add(id);
+              break;
+            }
+            case "tool_result": {
+              const id = readRecordField(block, "tool_use_id");
+              if (typeof id !== "string") return false;
+              tools.delete(id);
+              break;
+            }
+          }
+        }
+      }
+      if (type !== "system") continue;
+      const subtype = readRecordField(record, "subtype");
+      const timestamp = readRecordField(record, "timestamp");
+      const afterStop =
+        typeof timestamp === "string" && Date.parse(timestamp) >= stopStartedAt;
+      if (subtype === "stop_hook_summary") {
+        stopCompleted =
+          afterStop &&
+          readRecordField(record, "preventedContinuation") === false;
+        turnCompleted = false;
+      } else if (subtype === "turn_duration") {
+        turnCompleted = stopCompleted && afterStop;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return turnCompleted && tools.size === 0;
+}
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -121,6 +185,14 @@ export class NativeActivityReader {
   private readonly completedTurns = new Map<string, string>();
 
   private sessionStartedAt: string | null = null;
+  private claudeStop: {
+    file: string;
+    sessionId: string;
+    startedAt: number;
+    observedAt: number;
+  } | null = null;
+  private claudeIdleTranscript: { key: string; quiescent: boolean } | null =
+    null;
 
   constructor(
     private readonly cli: ProviderNativeTerminal,
@@ -274,6 +346,34 @@ export class NativeActivityReader {
           }
         }
         const hookEvent = readRecordField(record, "hook_event_name");
+        if (activity.idleReapEvidence === "claude-stop-v1") {
+          this.claudeStop = null;
+          this.claudeIdleTranscript = null;
+          const file = readRecordField(record, "transcript_path");
+          const publishedAt = hookPublishedAtOf(record);
+          const tasks = readRecordField(record, "background_tasks");
+          const crons = readRecordField(record, "session_crons");
+          if (
+            hookEvent === "Stop" &&
+            fresh &&
+            !isLateHookRecord(record) &&
+            this.sessionId !== null &&
+            readRecordField(record, "session_id") === this.sessionId &&
+            typeof file === "string" &&
+            publishedAt !== null &&
+            Array.isArray(tasks) &&
+            tasks.length === 0 &&
+            Array.isArray(crons) &&
+            crons.length === 0
+          ) {
+            this.claudeStop = {
+              file,
+              sessionId: this.sessionId,
+              startedAt: publishedAt,
+              observedAt: Date.now(),
+            };
+          }
+        }
         if (
           typeof hookEvent === "string" &&
           hooks.started?.includes(hookEvent) === true
@@ -405,6 +505,48 @@ export class NativeActivityReader {
       return null;
     }
     return this.tracker.heartbeat();
+  }
+
+  claudeIdleEvidence(): { nativeSessionId: string; activityAt: number } | null {
+    const stop = this.claudeStop;
+    const file = this.transcriptFile;
+    if (
+      stop === null ||
+      file === null ||
+      file !== stop.file ||
+      stop.sessionId !== this.sessionId ||
+      this.suspended ||
+      this.historyIncomplete ||
+      this.hooksUnavailable ||
+      this.awaitingBinding ||
+      (this.cli.activity?.hooks?.sessionIdField !== undefined &&
+        !this.hookIdentityConfirmed) ||
+      this.tracker.heartbeat() !== null
+    )
+      return null;
+    try {
+      const stat = statSync(file);
+      if (stat.size > MAX_CLAUDE_IDLE_TRANSCRIPT_BYTES) return null;
+      const key = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+      if (this.claudeIdleTranscript?.key !== key) {
+        this.claudeIdleTranscript = {
+          key,
+          quiescent: claudeTranscriptIsQuiescent(
+            readFileSync(file, "utf8"),
+            stop.sessionId,
+            stop.startedAt,
+          ),
+        };
+      }
+      return this.claudeIdleTranscript.quiescent
+        ? {
+            nativeSessionId: stop.sessionId,
+            activityAt: Math.max(stop.observedAt, stat.mtimeMs),
+          }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   finish(): NativeActivityReport | null {

@@ -128,6 +128,16 @@ export type ReportNativeTerminalActivityRequest = z.infer<
   typeof reportNativeTerminalActivityRequestSchema
 >;
 
+export const claimNativeTerminalIdleReapRequestSchema = z
+  .object({
+    nativeSessionId: z.string().min(1).max(256),
+    idleForMs: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ClaimNativeTerminalIdleReapRequest = z.infer<
+  typeof claimNativeTerminalIdleReapRequestSchema
+>;
+
 export const recordNativeSessionRequestSchema = z
   .object({
     nativeSessionId: z

@@ -42,6 +42,7 @@ interface NativeThreadTerminalMainProps {
   projectId: string;
   runtime: ThreadRuntimeState;
   threadId: string;
+  threadIsArchived?: boolean;
   threadIsProvisioning: boolean;
   view: NativeTerminalThread;
 }
@@ -61,6 +62,7 @@ export function NativeThreadTerminalMain({
   projectId,
   runtime,
   threadId,
+  threadIsArchived = false,
   threadIsProvisioning,
   view,
 }: NativeThreadTerminalMainProps) {
@@ -107,7 +109,23 @@ export function NativeThreadTerminalMain({
     view,
     viewUpdatedAt: nativeQuery.dataUpdatedAt,
   });
-  const [prevProvisioning, setPrevProvisioning] = useState(threadIsProvisioning);
+  const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
+  const idleTerminalId =
+    session?.closeReason === "native-idle-reaped" ? session.id : undefined;
+  const [resumedTerminalId, setResumedTerminalId] = useState<string>();
+  const resumeOnAttach =
+    paneIsFocused &&
+    !threadIsArchived &&
+    idleTerminalId !== undefined &&
+    resumedTerminalId !== idleTerminalId;
+  const { mutate: open } = openNative;
+  useEffect(() => {
+    if (!resumeOnAttach) return;
+    setResumedTerminalId(idleTerminalId);
+    open({ threadId });
+  }, [idleTerminalId, open, resumeOnAttach, threadId]);
+  const [prevProvisioning, setPrevProvisioning] =
+    useState(threadIsProvisioning);
   const [
     awaitingTerminalAfterProvisioning,
     setAwaitingTerminalAfterProvisioning,
@@ -124,9 +142,13 @@ export function NativeThreadTerminalMain({
     setAwaitingTerminalAfterProvisioning(false);
   }
   const state = resolveNativeTerminalState({
-    session,
+    session:
+      idleTerminalId !== undefined && (resumeOnAttach || openNative.isPending)
+        ? null
+        : session,
     terminalIsStarting:
       Boolean(view.starting) ||
+      resumeOnAttach ||
       openNative.isPending ||
       awaitingTerminalAfterProvisioning,
     threadIsProvisioning,
@@ -146,7 +168,6 @@ export function NativeThreadTerminalMain({
   const hasTerminalOutput = Boolean(
     view.hasOutput || session?.firstLiveFrame !== undefined || reply !== null,
   );
-  const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const { refetch } = nativeQuery;
   const terminalsUpdatedAt = terminalsQuery.dataUpdatedAt;

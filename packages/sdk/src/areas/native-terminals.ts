@@ -44,6 +44,12 @@ export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadAr
   closes?: string[];
 }
 
+interface NativeTerminalClaimIdleReapArgs extends NativeTerminalThreadArgs {
+  authorization: string;
+  nativeSessionId: string;
+  idleForMs: number;
+}
+
 export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
   arguments: Record<string, unknown>;
   callId: string;
@@ -70,6 +76,9 @@ export interface NativeTerminalsArea {
     args: NativeTerminalSwitchModeArgs,
   ): Promise<NativeTerminalThreadResult | null>;
   reportActivity(args: NativeTerminalReportActivityArgs): Promise<{ ok: true }>;
+  claimIdleReap(
+    args: NativeTerminalClaimIdleReapArgs,
+  ): Promise<{ approved: boolean }>;
 }
 
 export function createNativeTerminalsArea(
@@ -178,6 +187,20 @@ export function createNativeTerminalsArea(
             },
           },
           ...(Object.keys(init).length === 0 ? [] : [{ init }]),
+        ),
+      );
+    },
+    async claimIdleReap({
+      threadId,
+      signal,
+      authorization,
+      nativeSessionId,
+      idleForMs,
+    }) {
+      return transport.readJson(
+        route()["idle-reap"].$post(
+          { param: { id: threadId }, json: { nativeSessionId, idleForMs } },
+          { init: { signal, headers: { authorization } } },
         ),
       );
     },
