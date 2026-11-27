@@ -1204,13 +1204,14 @@ describe("connecting to a native holder between bind and listen", () => {
     "server.bind(path)",
     "os.chmod(path, 0o600)",
     "sys.stdout.write('bound\\n'); sys.stdout.flush()",
-    "sys.stdin.readline()",
+    "if not sys.stdin.readline(): sys.exit(0)",
     "server.listen(8)",
     "sys.stdout.write('listening\\n'); sys.stdout.flush()",
     "sys.stdin.readline()",
   ].join("\n");
 
   interface BindOnlyChild {
+    pid: number;
     listen(): Promise<void>;
     stop(): Promise<void>;
   }
@@ -1237,6 +1238,7 @@ describe("connecting to a native holder between bind and listen", () => {
         : new Promise((resolve) => waiters.set(event, resolve));
     await waitFor("bound");
     return {
+      pid: child.pid ?? 0,
       async listen() {
         child.stdin.write("go\n");
         await waitFor("listening");
@@ -1252,7 +1254,8 @@ describe("connecting to a native holder between bind and listen", () => {
     const socketPath = socketIn();
     const child = await bindWithoutListening(socketPath);
     try {
-      claimTestHolderMarker(socketPath, process.pid);
+      expect(child.pid).toBeGreaterThan(0);
+      claimTestHolderMarker(socketPath, child.pid);
       expect(nativeHolderProcessIsAlive(socketPath)).toBe(true);
       const before = lstatSync(socketPath);
 
@@ -1297,10 +1300,9 @@ describe("connecting to a native holder between bind and listen", () => {
     const socketPath = socketIn();
     const child = await bindWithoutListening(socketPath);
     try {
-      const exited = spawnSync(process.execPath, ["-e", ""]);
-      const deadPid = exited.pid;
-      expect(deadPid).toBeGreaterThan(0);
-      claimTestHolderMarker(socketPath, deadPid);
+      await child.stop();
+      expect(child.pid).toBeGreaterThan(0);
+      claimTestHolderMarker(socketPath, child.pid);
       expect(nativeHolderProcessIsAlive(socketPath)).toBe(false);
       expect(existsSync(socketPath)).toBe(true);
 
