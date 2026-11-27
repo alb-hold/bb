@@ -402,11 +402,14 @@ describe("stops", () => {
     });
     expect(swallowed.next.status).toBe("stopping");
     expect(kinds(swallowed.effects)).not.toContain("drain-queue");
-    const answered = transitionThreadLifecycle(swallowed.next, {
-      type: "stop.answered",
-      answer: { kind: "retained" },
-      now: 4,
-    });
+    const answered = transitionThreadLifecycle(
+      state({
+        status: swallowed.next.status,
+        activeTurnId: "turn-1",
+        stop: swallowed.next.stop,
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 4 },
+    );
     expect(answered.next.status).toBe("active");
     expect(answered.effects).toContainEqual({
       kind: "drain-queue",
