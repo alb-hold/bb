@@ -8,7 +8,7 @@ import {
 import { listEvents } from "@bb/db/testing";
 import { turnScope, type ResolvedThreadExecutionOptions } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   requestThreadStopForCurrentState,
   stopThreadForCurrentState,
@@ -361,6 +361,7 @@ describe("repeated stops", () => {
     ["after", 1],
     ["before", 0],
     ["in the same millisecond as", 0],
+    ["after and in the same millisecond as", 1],
   ] as const)(
     "a retained stop pauses only follow-ups queued %s the stop was requested",
     async (when, expectedRequests) => {
@@ -406,16 +407,37 @@ describe("repeated stops", () => {
           );
           expect(response.status, await response.clone().text()).toBe(200);
         };
-        if (when !== "after") {
+        if (when === "before" || when === "in the same millisecond as") {
           await sendFollowUp("typed before the stop");
         }
 
+        const pinClock = when === "after and in the same millisecond as";
+        if (pinClock) {
+          vi.useFakeTimers({ toFake: ["Date"] });
+          vi.setSystemTime(new Date(1_800_000_000_000));
+        }
         requestThreadStopForCurrentState(harness.deps, thread);
         const stop = await waitForQueuedCommand(
           harness,
           ({ command }) =>
             command.type === "thread.stop" && command.threadId === thread.id,
         );
+        if (pinClock) {
+          try {
+            await sendFollowUp("typed right after the stop");
+          } finally {
+            vi.useRealTimers();
+          }
+          const queued = listQueuedThreadMessages(harness.db, thread.id);
+          const interruption = harness.db.$client
+            .prepare(
+              "select created_at as at from events where thread_id = ? and type = 'system/thread/interrupted'",
+            )
+            .get(thread.id) as { at: number };
+          expect(queued).toHaveLength(1);
+          expect(queued[0]?.createdAt).toBe(interruption.at);
+          expect(queued[0]?.waitingOn).toBe(JSON.stringify({ kind: "stopping" }));
+        }
         if (when === "in the same millisecond as") {
           harness.db.$client
             .prepare(
