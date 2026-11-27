@@ -21,7 +21,7 @@ import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import type { ThreadDetailSentMessageEdit } from "./ThreadDetailPromptArea";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
-import { takeRetryOfClientRequestId } from "./restored-draft-retry";
+import { peekRetryOfClientRequestId } from "./restored-draft-retry";
 import type { ThreadResponse } from "@bb/server-contract";
 
 const mocks = vi.hoisted(() => ({
@@ -782,7 +782,7 @@ describe("ThreadScreen", () => {
       threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
       restoreManually("retry_unedited_row", "req_original");
       expect(
-        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
       ).toBe("req_original");
     });
 
@@ -795,7 +795,7 @@ describe("ThreadScreen", () => {
         attachments: [],
       });
       expect(
-        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
       ).toBeNull();
     });
 
@@ -842,7 +842,7 @@ describe("ThreadScreen", () => {
       };
       view.rerender(screenElement({ kind: "page" }));
       expect(
-        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
       ).toBe("req_auto");
     });
 
@@ -868,7 +868,7 @@ describe("ThreadScreen", () => {
       };
       view.rerender(screenElement({ kind: "page" }));
       expect(
-        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
       ).toBeNull();
     });
   });

@@ -26,12 +26,11 @@ export function clearRestoredDraftRetry(threadId: string): void {
   restoredDraftRetryByThreadId.delete(threadId);
 }
 
-export function takeRetryOfClientRequestId(
+export function peekRetryOfClientRequestId(
   threadId: string,
   submittedDraft: PromptDraftState,
 ): string | null {
   const registered = restoredDraftRetryByThreadId.get(threadId);
-  restoredDraftRetryByThreadId.delete(threadId);
   if (
     registered === undefined ||
     !arePromptDraftStatesEqual(registered.draft, submittedDraft)

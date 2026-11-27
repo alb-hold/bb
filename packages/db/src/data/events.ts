@@ -6260,17 +6260,9 @@ export function hasStoredClientRequestEcho(
       .where(
         and(
           eq(events.threadId, args.threadId),
-          or(
-            and(
-              eq(events.type, "turn/input/accepted"),
-              sql`json_extract(${events.data}, '$.clientRequestId') = ${args.requestId}`,
-            ),
-            and(
-              eq(events.type, "item/completed"),
-              eq(events.itemKind, "userMessage"),
-              sql`json_extract(${events.data}, '$.item.clientRequestId') = ${args.requestId}`,
-            ),
-          ),
+          eq(events.type, "item/completed"),
+          eq(events.itemKind, "userMessage"),
+          sql`json_extract(${events.data}, '$.item.clientRequestId') = ${args.requestId}`,
         ),
       )
       .limit(1)

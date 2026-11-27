@@ -163,7 +163,10 @@ import {
 } from "@/components/promptbox/FollowUpPromptBox";
 import type { SendMessageMutationLike } from "./threadDetailMutationTypes";
 import { useTimeHasPassed } from "@/hooks/useTimeHasPassed";
-import { takeRetryOfClientRequestId } from "./restored-draft-retry";
+import {
+  clearRestoredDraftRetry,
+  peekRetryOfClientRequestId,
+} from "./restored-draft-retry";
 import {
   buildAutoFollowUpRequest,
   buildFollowUpSubmitMode,
@@ -1461,7 +1464,7 @@ export function ThreadDetailPromptArea({
         ? "queue_message"
         : "send_message";
       try {
-        const retryOfClientRequestId = takeRetryOfClientRequestId(
+        const retryOfClientRequestId = peekRetryOfClientRequestId(
           thread.id,
           submittedDraft,
         );
@@ -1478,6 +1481,7 @@ export function ThreadDetailPromptArea({
             ...sendAtFields,
             ...pluginSubmissionFields,
           });
+          clearRestoredDraftRetry(thread.id);
           if (!isQueuingMessage) {
             setFullHistoryThreadId(null);
           }
@@ -1539,7 +1543,7 @@ export function ThreadDetailPromptArea({
         await submitDraft(async () => {
           promptDraft.clearIfCurrentMatches(submittedDraft);
           setBottomAttachmentError(null);
-          const retryOfClientRequestId = takeRetryOfClientRequestId(
+          const retryOfClientRequestId = peekRetryOfClientRequestId(
             thread.id,
             submittedDraft,
           );
@@ -1555,6 +1559,7 @@ export function ThreadDetailPromptArea({
                   ...sendAtFields,
                   ...pluginSubmissionFields,
                 });
+                clearRestoredDraftRetry(thread.id);
               } catch (nextError) {
                 promptDraft.restoreIfEmpty(submittedDraft);
                 throw reportMutationError({

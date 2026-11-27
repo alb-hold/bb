@@ -199,6 +199,34 @@ describe("a re-send that names the request it retries", () => {
     });
   });
 
+  it("is dispatched when the original request was accepted but never echoed", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(harness, "accepted-no-echo");
+      await postDaemonEvents(harness, {
+        hostId: original.hostId,
+        sessionId: original.sessionId,
+        events: [
+          {
+            type: "turn/input/accepted",
+            threadId: original.threadId,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(TURN_ID),
+            clientRequestId: original.clientRequestId,
+          },
+        ],
+      });
+
+      const retry = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+      );
+
+      expect(retry.delivery).not.toBe("alreadyDelivered");
+      expect(retry.delivery).toBe("queued");
+    });
+  });
+
   it("stays queued when the original never got an echo and the queue is drained", async () => {
     await withTestHarness(async (harness) => {
       const original = await interruptedRequest(harness, "queued-undelivered");
