@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishedMigrationWhensByTag } from "../src/migration-history.js";
 import {
+  dropNativeIdleReapUntilColumn,
   dropPluginEnabledFollowsDefaultColumn,
   dropIdleLifecycleIndexes,
   rewindThreadPruningWork,
@@ -12,7 +13,7 @@ import {
   dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropThreadStatusChangedAtColumn,
-  dropTerminalFirstLiveFrameColumn,
+  rewindTerminalSessionColumns,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
   restoreDiffViewedFilesTable,
@@ -766,7 +767,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_insert");
@@ -820,7 +821,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   const columns = db.$client
@@ -906,7 +907,7 @@ function rewindMachineProvidersMigration(db: DbConnection): void {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client.exec("DROP TABLE IF EXISTS ui_preference_defaults");
@@ -1581,6 +1582,7 @@ function runThreadPinningMigration(db: DbConnection): void {
 }
 
 function deleteDeferredCleanupMigrationRows(db: DbConnection): void {
+  dropNativeIdleReapUntilColumn(db);
   db.$client
     .prepare<DeleteMigrationsParameters>(
       `
@@ -2710,7 +2712,7 @@ describe("migrate", () => {
         providerId: "codex",
       });
       dropThreadStatusChangedAtColumn(db);
-      dropTerminalFirstLiveFrameColumn(db);
+      rewindTerminalSessionColumns(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
       restoreDiffViewedFilesTable(db);
@@ -3550,7 +3552,7 @@ describe("migrate", () => {
       dropTerminalDefaultColorsColumn(db);
       dropQueuedMessageDeliveryColumns(db);
       dropThreadStatusChangedAtColumn(db);
-      dropTerminalFirstLiveFrameColumn(db);
+      rewindTerminalSessionColumns(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
       db.$client.prepare("DROP INDEX projects_deleted_idx").run();
@@ -3969,7 +3971,7 @@ describe("migrate", () => {
           `,
         )
         .run(projectSourcesDefaultIndexMigrationWhen);
-      dropTerminalFirstLiveFrameColumn(db);
+      rewindTerminalSessionColumns(db);
       dropThreadRunStateTables(db);
       dropPluginFailureLabelColumns(db);
 

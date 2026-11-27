@@ -22,6 +22,7 @@ import {
 } from "../src/index.js";
 import { ensureNativeTerminalThreadsTable } from "../src/fork-native-terminal-threads.js";
 import { createMigratedConnection } from "../src/testing.js";
+import { dropNativeIdleReapUntilColumn } from "./helpers/rewind.js";
 
 const MIGRATION_0166_CREATED_AT = 1795519008894;
 const STAGED_WAIT_COLUMN = "_bb_session_start_awaited_terminal_id_pending";
@@ -383,6 +384,7 @@ describe("native terminal session-start wait", () => {
       nativeSessionId: "session-preexisting-column",
       terminalSessionId: "terminal-preexisting",
     });
+    dropNativeIdleReapUntilColumn(db);
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
@@ -415,6 +417,7 @@ describe("native terminal session-start wait", () => {
       nativeSessionId: "session-settled-before-migrator",
       terminalSessionId: "terminal-settled-before-migrator",
     });
+    dropNativeIdleReapUntilColumn(db);
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
@@ -484,6 +487,7 @@ describe("native terminal session-start wait", () => {
       nativeSessionId: "session-settled-before-restore",
       terminalSessionId: "terminal-settled-before-restore",
     });
+    dropNativeIdleReapUntilColumn(db);
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
@@ -599,6 +603,7 @@ describe("native terminal session-start wait", () => {
       nativeSessionId: "session-ensure-order",
       terminalSessionId: "terminal-ensure-order",
     });
+    dropNativeIdleReapUntilColumn(db);
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
