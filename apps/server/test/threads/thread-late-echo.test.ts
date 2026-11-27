@@ -1,5 +1,9 @@
 import { threadTimelineResponseSchema } from "@bb/server-contract";
-import { turnScope } from "@bb/domain";
+import {
+  clientTurnRequestIdSchema,
+  turnScope,
+  type ThreadEvent,
+} from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
 import { requestThreadStopForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
@@ -22,7 +26,11 @@ type EchoTiming = "before the turn ended" | "after the turn ended";
 
 async function postDaemonEvents(
   harness: TestAppHarness,
-  args: { hostId: string; sessionId: string; events: readonly object[] },
+  args: {
+    hostId: string;
+    sessionId: string;
+    events: readonly ThreadEvent[];
+  },
 ): Promise<void> {
   const response = await harness.app.request("/internal/session/events", {
     method: "POST",
@@ -30,10 +38,7 @@ async function postDaemonEvents(
     body: JSON.stringify({
       sessionId: args.sessionId,
       eventGroups: groupHostDaemonEvents(
-        args.events.map((event) => ({
-          threadId: (event as { threadId: string }).threadId,
-          event: event as never,
-        })),
+        args.events.map((event) => ({ threadId: event.threadId, event })),
       ),
     }),
   });
@@ -116,8 +121,9 @@ describe("a CLI echo that arrives after the interrupt", () => {
           )
           .all(thread.id) as { id: string | null }[];
         expect(requested).toHaveLength(1);
-        const clientRequestId = requested[0]?.id;
-        expect(clientRequestId).toBeTruthy();
+        const clientRequestId = clientTurnRequestIdSchema.parse(
+          requested[0]?.id,
+        );
 
         await postDaemonEvents(harness, {
           hostId: host.id,
@@ -136,7 +142,7 @@ describe("a CLI echo that arrives after the interrupt", () => {
           providerThreadId: PROVIDER_THREAD_ID,
           scope: turnScope(TURN_ID),
         };
-        const echo = {
+        const echo: ThreadEvent = {
           ...base,
           type: "item/completed",
           item: {
@@ -146,12 +152,12 @@ describe("a CLI echo that arrives after the interrupt", () => {
             clientRequestId,
           },
         };
-        const accepted = {
+        const accepted: ThreadEvent = {
           ...base,
           type: "turn/input/accepted",
           clientRequestId,
         };
-        const interrupted = {
+        const interrupted: ThreadEvent = {
           ...base,
           type: "turn/completed",
           status: "interrupted",

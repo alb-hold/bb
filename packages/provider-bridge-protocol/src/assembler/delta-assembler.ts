@@ -1357,7 +1357,10 @@ export function createDeltaAssembler(
       }
 
       case "input.provider": {
-        if (state.currentTurnId === undefined) {
+        const echoTurnId =
+          state.currentTurnId ??
+          (delta.clientRequestId === undefined ? undefined : state.lastTurnId);
+        if (echoTurnId === undefined) {
           return;
         }
         const parentToolCallId = mapParentRef(state, delta.parentRef);
@@ -1365,7 +1368,7 @@ export function createDeltaAssembler(
           type: "item/completed",
           threadId: UNSTAMPED_THREAD_ID,
           providerThreadId: "",
-          scope: turnScope(state.currentTurnId),
+          scope: turnScope(echoTurnId),
           item: {
             type: "userMessage",
             id: mintItemId(),

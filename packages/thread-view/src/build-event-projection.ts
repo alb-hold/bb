@@ -1080,6 +1080,14 @@ export function startEventProjectionFold(
   return { events: orderedEvents, lookups, options, state };
 }
 
+function isRequestConsumingUserMessage(event: ThreadEvent): boolean {
+  return (
+    event.type === "item/completed" &&
+    event.item.type === "userMessage" &&
+    event.item.clientRequestId !== undefined
+  );
+}
+
 export function resumeEventProjectionFold(
   fold: EventProjectionFold,
   appended: readonly ThreadEventWithMeta[],
@@ -1088,7 +1096,8 @@ export function resumeEventProjectionFold(
   for (const { event, meta } of appended) {
     if (
       meta.seq <= lastSeq ||
-      PROJECTION_FOLD_LOOKUP_EVENT_TYPES.has(event.type)
+      PROJECTION_FOLD_LOOKUP_EVENT_TYPES.has(event.type) ||
+      isRequestConsumingUserMessage(event)
     ) {
       return false;
     }

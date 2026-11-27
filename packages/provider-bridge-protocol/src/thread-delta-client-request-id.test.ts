@@ -51,6 +51,33 @@ describe("input.provider clientRequestId wire compatibility", () => {
     });
   });
 
+  it("scopes an echo that lands after the turn closed to that turn, and drops one without an id", () => {
+    const assembler = createDeltaAssembler({
+      providerId: "pi",
+      entropyPrefix: "compat",
+      textDeltaFlushMs: 0,
+    });
+    const assemble = (delta: unknown) =>
+      assembler.assemble({
+        threadId: "thr_1",
+        deltas: [threadDeltaSchema.parse(delta)],
+      });
+    const opened = assemble({ kind: "turn.open" });
+    const turnStarted = opened.find((event) => event.type === "turn/started");
+    assemble({ kind: "turn.boundary", status: "interrupted" });
+    expect(
+      userMessageItems(assemble({ kind: "input.provider", text: "late" })),
+    ).toHaveLength(0);
+    const late = assemble({
+      kind: "input.provider",
+      text: "late",
+      clientRequestId: CREQ,
+    });
+    const echo = late.find((event) => event.type === "item/completed");
+    expect(echo?.scope).toEqual(turnStarted?.scope);
+    expect(userMessageItems(late)[0]).toMatchObject({ clientRequestId: CREQ });
+  });
+
   it("is stripped, not rejected, by a reader whose schema predates the field", () => {
     const previousShape = z.object({
       kind: z.literal("input.provider"),
