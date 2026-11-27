@@ -175,6 +175,7 @@ interface ParseUserFromClientRequestArgs {
   decoded: ThreadEvent;
   meta: EventMeta;
   options?: BuildEventProjectionMessagesOptions;
+  undelivered?: boolean;
 }
 
 interface ParseAcceptedSteerFromClientRequestArgs extends ParseUserFromClientRequestArgs {
@@ -381,7 +382,7 @@ function buildClientUserMessagesForInputGroups({
 export function parseUsersFromClientRequest(
   args: ParseUserFromClientRequestArgs,
 ): EventProjectionUserMessage[] {
-  const { acceptedClientRequest, decoded, meta, options } = args;
+  const { acceptedClientRequest, decoded, meta, options, undelivered } = args;
   if (decoded.type !== "client/turn/requested") {
     return [];
   }
@@ -402,7 +403,11 @@ export function parseUsersFromClientRequest(
     acceptedClientRequest,
     decoded,
     meta,
-    requestStatus: acceptedClientRequest ? "accepted" : "pending",
+    requestStatus: undelivered
+      ? "undelivered"
+      : acceptedClientRequest
+        ? "accepted"
+        : "pending",
   });
 }
 

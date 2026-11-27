@@ -15,7 +15,8 @@ import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { TimelineImageGallery } from "./TimelineImageGallery";
-import type { PromptInput, ThreadRuntimeDisplayStatus } from "@bb/domain";
+import type { ThreadRuntimeDisplayStatus } from "@bb/domain";
+import { userRowToPromptInput } from "./user-row-prompt-input.js";
 import {
   THREAD_INTERRUPTION_RETRY_DETAIL,
   THREAD_INTERRUPTION_TITLE_PREFIX,
@@ -1128,38 +1129,17 @@ const ConversationRowContent = memo(function ConversationRowContent({
       row.initiator === "user" &&
       !row.turnRequest.isGrouped &&
       row.turnRequest.kind === "message" &&
-      row.turnRequest.status === "accepted" &&
+      (row.turnRequest.status === "accepted" ||
+        row.turnRequest.status === "undelivered") &&
       (row.attachments?.imageUrls.length ?? 0) === 0;
     const onEdit = canEditMessage
       ? () => {
-          const input: PromptInput[] = [];
-          if (row.text.trim().length > 0) {
-            input.push({
-              type: "text",
-              text: row.text,
-              mentions: [...row.mentions],
-            });
-          }
-          for (const path of row.attachments?.localImagePaths ?? []) {
-            input.push({ type: "localImage", path });
-          }
-          for (const path of row.attachments?.localFilePaths ?? []) {
-            const detail = row.attachments?.localFileDetails.find(
-              (file) => file.path === path,
-            );
-            input.push({
-              type: "localFile",
-              path,
-              ...(detail ? { name: detail.name } : {}),
-              ...(detail?.sizeBytes == null
-                ? {}
-                : { sizeBytes: detail.sizeBytes }),
-            });
-          }
+          const input = userRowToPromptInput(row);
           onEditMessage({
             messageId: row.id,
             expectedRequestSequence: row.sourceSeqStart,
             input,
+            restoreToComposer: row.turnRequest.status === "undelivered",
           });
         }
       : undefined;
@@ -2425,7 +2405,11 @@ function TimelineRowItemWrapper({
   return (
     <div
       ref={composedRef}
-      {...{ elementtiming: isTopLevel ? `bb-thread-content:${row.threadId}` : undefined }}
+      {...{
+        elementtiming: isTopLevel
+          ? `bb-thread-content:${row.threadId}`
+          : undefined,
+      }}
       data-timeline-row-id={row.id}
       data-timeline-window-key={row.id}
       data-timeline-gap-before={marginTop}

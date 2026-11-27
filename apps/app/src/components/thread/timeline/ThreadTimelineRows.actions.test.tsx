@@ -480,6 +480,7 @@ describe("ThreadTimelineRows actions", () => {
     expect(onEditMessage).toHaveBeenCalledWith({
       messageId: expect.any(String),
       expectedRequestSequence: 11,
+      restoreToComposer: false,
       input: [
         { type: "localImage", path: "uploads/screenshot.png" },
         {
@@ -490,6 +491,43 @@ describe("ThreadTimelineRows actions", () => {
         },
       ],
     });
+  });
+
+  it("offers an undelivered message back to the composer", () => {
+    const onEditMessage = vi.fn();
+    renderWithRouter(
+      <ThreadTimelineRows
+        timelineRows={[
+          conversationRow({
+            role: "user",
+            text: "never reached the provider",
+            sourceSeqStart: 4,
+            turnRequest: {
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ]}
+        onEditMessage={onEditMessage}
+        threadRuntimeDisplayStatus="idle"
+        threadIsActive={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    expect(onEditMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoreToComposer: true,
+        input: [
+          {
+            type: "text",
+            text: "never reached the provider",
+            mentions: [],
+          },
+        ],
+      }),
+    );
   });
 
   it("adds a copy action to a remote-image-only row", () => {

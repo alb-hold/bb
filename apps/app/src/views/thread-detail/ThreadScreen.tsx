@@ -12,7 +12,9 @@ import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
 import {
   appendQuoteAndAttachmentsToDraft,
   isNativeActivityUnconfirmed,
+  isPromptDraftEmpty,
   promptInputToDraft,
+  restoreDraftBefore,
   type PromptDraftAttachment,
   type PromptDraftState,
   type PromptMentionLinkResolver,
@@ -34,6 +36,10 @@ import {
   useThreadTimelineController,
 } from "@/components/thread/timeline";
 import type { HostConnectionNotice } from "@/components/thread/timeline/ThreadTimelineSurface";
+import {
+  findLatestUndeliveredUserRow,
+  userRowToPromptInput,
+} from "@/components/thread/timeline/user-row-prompt-input";
 import { ThreadTimelinePanelLoadingSkeleton } from "@/components/thread/timeline/ThreadChatLoading";
 import { resolveThreadOngoingIndicator } from "@/components/thread/timeline/thread-ongoing-indicator";
 import { ThreadTableOfContents } from "@/components/thread/toc/ThreadTableOfContents";
@@ -270,8 +276,11 @@ function useChildThreadsSection(
   }, [childThreadsSection, childPendingInteractions]);
 }
 
+const autoRestoredUndeliveredRowIds = new Set<string>();
+
 interface UseSentMessageEditingArgs {
   canStartEdit: boolean;
+  projectId: string;
   threadId: string;
   timelineLoading: boolean;
   timelineRows: readonly TimelineRow[];
@@ -279,6 +288,7 @@ interface UseSentMessageEditingArgs {
 
 function useSentMessageEditing({
   canStartEdit,
+  projectId,
   threadId,
   timelineLoading,
   timelineRows,
@@ -296,6 +306,21 @@ function useSentMessageEditing({
     canStartEdit && sentMessageEditSession === null && !editMessage.isPending;
   const handleEditSentMessage = useCallback<ThreadTimelineEditMessageHandler>(
     (target: ThreadTimelineEditMessageTarget) => {
+      if (target.restoreToComposer) {
+        const promptDraft = getPromptDraftAccessor({
+          kind: "thread",
+          projectId,
+          threadId,
+        });
+        promptDraft.setDraft(
+          restoreDraftBefore(
+            promptDraft.getCurrent(),
+            promptInputToDraft(target.input),
+          ),
+        );
+        requestComposerFocus(promptDraft.storageKey);
+        return;
+      }
       if (!canEditSentMessages) {
         return;
       }
@@ -308,7 +333,7 @@ function useSentMessageEditing({
         threadId,
       });
     },
-    [canEditSentMessages, threadId],
+    [canEditSentMessages, projectId, threadId],
   );
   const sentMessageEditThreadId = sentMessageEditSession?.threadId ?? null;
   const sentMessageEditTargetMessageId =
@@ -332,6 +357,30 @@ function useSentMessageEditing({
     setSentMessageEditSession(null);
     setDiscardedSentMessageEditId(sentMessageEditSession.operationId);
   }
+  const undeliveredRow = findLatestUndeliveredUserRow(timelineRows);
+  const undeliveredRowId = undeliveredRow?.id ?? null;
+  useEffect(() => {
+    if (
+      undeliveredRow === null ||
+      undeliveredRowId === null ||
+      autoRestoredUndeliveredRowIds.has(undeliveredRowId)
+    ) {
+      return;
+    }
+    autoRestoredUndeliveredRowIds.add(undeliveredRowId);
+    const promptDraft = getPromptDraftAccessor({
+      kind: "thread",
+      projectId,
+      threadId,
+    });
+    if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
+      return;
+    }
+    promptDraft.setDraft(
+      promptInputToDraft(userRowToPromptInput(undeliveredRow)),
+    );
+    requestComposerFocus(promptDraft.storageKey);
+  }, [projectId, threadId, undeliveredRow, undeliveredRowId]);
   useEffect(() => {
     if (discardedSentMessageEditId === null) {
       return;
@@ -557,6 +606,7 @@ export function ThreadScreen({
         !hasPendingInteraction &&
         !sendMessage.isPending &&
         !isThreadTimelinePending,
+      projectId: thread.projectId,
       threadId: thread.id,
       timelineLoading,
       timelineRows,

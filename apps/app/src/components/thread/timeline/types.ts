@@ -26,6 +26,7 @@ export interface ThreadTimelineEditMessageTarget {
   messageId: string;
   expectedRequestSequence: number;
   input: PromptInput[];
+  restoreToComposer: boolean;
 }
 
 export type ThreadTimelineEditMessageHandler = (

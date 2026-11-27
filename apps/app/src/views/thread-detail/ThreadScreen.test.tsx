@@ -267,6 +267,7 @@ function startEditingMessage(messageId: string) {
       expectedRequestSequence: 1,
       input: [{ type: "text", text: "/compact", mentions: [] }],
       messageId,
+      restoreToComposer: false,
     });
   });
 }

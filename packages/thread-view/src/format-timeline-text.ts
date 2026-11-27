@@ -385,6 +385,7 @@ function formatConversationRequestLabel(
   }
   if (row.turnRequest.status === "pending") return "steer pending";
   if (row.turnRequest.status === "rejected") return "steer failed";
+  if (row.turnRequest.status === "undelivered") return "steer not delivered";
   return "steer";
 }
 

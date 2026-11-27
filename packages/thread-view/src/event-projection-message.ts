@@ -88,6 +88,7 @@ const eventProjectionTurnRequestStatusValues = [
   "pending",
   "accepted",
   "rejected",
+  "undelivered",
 ] as const;
 type EventProjectionTurnRequestStatus =
   (typeof eventProjectionTurnRequestStatusValues)[number];

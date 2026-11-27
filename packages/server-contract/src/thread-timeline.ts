@@ -103,6 +103,7 @@ export const timelineConversationTurnRequestStatusValues = [
   "pending",
   "accepted",
   "rejected",
+  "undelivered",
 ] as const;
 export const timelineConversationTurnRequestSchema = z.object({
   isGrouped: z.boolean(),

@@ -396,6 +396,10 @@ function applyCompletion(
   });
 }
 
+function isIdle(draft: Draft): boolean {
+  return draft.status === "idle";
+}
+
 function releaseHeld(draft: Draft): void {
   const held = draft.heldCompletion;
   if (held === null || draft.awaitingAnswers()) return;
@@ -986,7 +990,7 @@ export function transitionThreadLifecycle(
           } else if (draft.status === "stopping") {
             if (draft.heldCompletion !== null) {
               releaseHeld(draft);
-              if (draft.status === "idle") {
+              if (isIdle(draft)) {
                 draft.effect({ kind: "drain-queue", wake: "thread-ready" });
               }
             } else {

@@ -9,6 +9,7 @@ import {
   parsePromptDraftStorage,
   promptDraftToInput,
   promptInputToDraft,
+  restoreDraftBefore,
   serializePromptDraftStorage,
 } from "../src/prompt/prompt-draft.js";
 
@@ -189,7 +190,11 @@ describe("prompt draft helpers", () => {
         { start: 30, end: 48, resource: removed },
       ],
       attachments: [
-        { type: "localFile", path: "Pasted-text-1.txt", name: "Pasted text.txt" },
+        {
+          type: "localFile",
+          path: "Pasted-text-1.txt",
+          name: "Pasted text.txt",
+        },
       ],
     });
 
@@ -417,5 +422,40 @@ describe("appendQuoteAndAttachmentsToDraft", () => {
     };
 
     expect(appendQuoteAndAttachmentsToDraft(base, "", [attachment])).toBe(base);
+  });
+});
+
+describe("restoreDraftBefore", () => {
+  const file = (path: string) => ({
+    type: "localFile" as const,
+    path,
+    name: path,
+  });
+
+  it("returns the restored draft when the composer is empty", () => {
+    const restored = {
+      text: "hello",
+      mentions: [],
+      attachments: [file("/a")],
+    };
+    expect(restoreDraftBefore(emptyPromptDraftState(), restored)).toEqual(
+      restored,
+    );
+  });
+
+  it("puts the restored text first and keeps the typed text and attachments", () => {
+    const merged = restoreDraftBefore(
+      {
+        text: "typed",
+        mentions: [],
+        attachments: [file("/a"), file("/b")],
+      },
+      { text: "lost", mentions: [], attachments: [file("/a")] },
+    );
+    expect(merged.text).toBe("lost\n\ntyped");
+    expect(merged.attachments.map((attachment) => attachment.path)).toEqual([
+      "/a",
+      "/b",
+    ]);
   });
 });
