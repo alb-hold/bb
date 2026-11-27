@@ -92,6 +92,7 @@ export interface CreateQueuedThreadMessageInput {
   systemNotice: QueuedMessageSystemNotice | null;
   deliveryMode?: QueuedMessageDeliveryMode;
   coalesce?: { key: string; state: string } | null;
+  resendOfClientRequestId?: string | null;
 }
 
 export interface UpdateCoalescedQueuedThreadMessageInput {
@@ -834,6 +835,7 @@ export function createQueuedThreadMessageInTransaction(
       retryAttempt:
         input.payload.kind === "retry" ? input.payload.attempt : null,
       retryReason: input.payload.kind === "retry" ? input.payload.reason : null,
+      resendOfClientRequestId: input.resendOfClientRequestId ?? null,
       deliveryMode: input.deliveryMode ?? "steer",
       coalesceKey: input.coalesce?.key ?? null,
       coalesceState: input.coalesce?.state ?? null,

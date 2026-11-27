@@ -6,8 +6,10 @@ import {
   createQueuedThreadMessageInTransaction,
   getEnvironment,
   getHost,
+  deleteClaimedQueuedThreadMessageBatchInTransaction,
   getQueuedThreadMessage,
   getStoredProviderSession,
+  hasStoredClientRequestEcho,
   getThread,
   getThreadSpawner,
   holdQueuedThreadMessageForEdit,
@@ -24,6 +26,7 @@ import {
   type QueuedThreadMessageGroupEligibility,
 } from "@bb/db";
 import {
+  clientTurnRequestIdSchema,
   flattenPromptInputGroups,
   isQueuedMessageFailedState,
 } from "@bb/domain";
@@ -68,6 +71,7 @@ import { attemptDispatch, threadTargetHostId } from "./dispatch-attempt.js";
 import {
   QUEUED_MESSAGE_AUTO_SEND_PAUSED_CODE,
   QUEUED_MESSAGE_CLAIM_LOST_CODE,
+  createQueuedMessageClaimLostError,
 } from "./queue-waits.js";
 import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
 import {
@@ -575,6 +579,28 @@ async function sendClaimedQueuedMessageForThread(
       sendNow: args.sendNow,
     });
     assertSendNowDispatched(args, outcome);
+    return toThreadQueuedMessage(args.queuedMessages[0]!);
+  }
+  const alreadyDelivered = args.queuedMessages.some(
+    (row) =>
+      row.resendOfClientRequestId !== null &&
+      hasStoredClientRequestEcho(deps.db, {
+        threadId: args.thread.id,
+        requestId: clientTurnRequestIdSchema.parse(row.resendOfClientRequestId),
+      }),
+  );
+  if (alreadyDelivered) {
+    const dropped = deps.db.transaction(
+      (tx) =>
+        deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
+          queuedMessages: args.queuedMessages,
+        }),
+      { behavior: "immediate" },
+    );
+    if (!dropped) {
+      throw createQueuedMessageClaimLostError();
+    }
+    deps.hub.notifyThread(args.thread.id, ["queue-changed"]);
     return toThreadQueuedMessage(args.queuedMessages[0]!);
   }
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);

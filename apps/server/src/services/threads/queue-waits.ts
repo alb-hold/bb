@@ -83,6 +83,7 @@ export interface QueuedDispatchMessage {
   payload: QueuedMessagePayload;
   systemNotice: QueuedMessageSystemNotice | null;
   deliveryMode: QueuedMessageDeliveryMode;
+  resendOfClientRequestId?: string | null;
   overrideRecovery?: PreparedThreadModelOverrideRecovery | null;
   requestedModel?: string;
   executionInputSources?: SendMessageRequest["executionInputSources"];
@@ -145,6 +146,7 @@ export function recordQueuedMessageWait(
           payload: args.message.payload,
           systemNotice: args.message.systemNotice,
           deliveryMode: args.message.deliveryMode,
+          resendOfClientRequestId: args.message.resendOfClientRequestId ?? null,
         });
         return args.placement === "front"
           ? moveQueuedThreadMessageToFrontInTransaction(tx, created)

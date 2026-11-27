@@ -3,7 +3,11 @@ import {
   isStandaloneBuiltinCompactCommand,
   type Thread,
 } from "@bb/domain";
-import { getThreadSpawner, isNativeTerminalThread } from "@bb/db";
+import {
+  getThreadSpawner,
+  hasStoredClientRequestEcho,
+  isNativeTerminalThread,
+} from "@bb/db";
 import { ApiError } from "../../errors.js";
 import {
   admitNativeTerminalDispatch,
@@ -36,6 +40,15 @@ export async function acceptThreadSendRequest(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
+  if (
+    args.payload.retryOfClientRequestId !== undefined &&
+    hasStoredClientRequestEcho(deps.db, {
+      threadId: args.thread.id,
+      requestId: args.payload.retryOfClientRequestId,
+    })
+  ) {
+    return { ok: true, delivery: "alreadyDelivered" };
+  }
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
     if (args.payload.sendAt !== undefined) {
       throw new ApiError(

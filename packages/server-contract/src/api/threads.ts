@@ -331,6 +331,7 @@ const sendMessageRequestObjectSchema = z.object({
     .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
     .optional(),
   compactFirst: z.literal(true).optional(),
+  retryOfClientRequestId: clientTurnRequestIdSchema.optional(),
 });
 
 const sendMessageRequestFieldsSchema = sendMessageRequestObjectSchema;
@@ -388,6 +389,10 @@ export const sendMessageResponseSchema = z.discriminatedUnion("delivery", [
     delivery: z.literal("queued"),
     queuedMessage: threadQueuedMessageSchema,
   }),
+  z.object({
+    ok: z.literal(true),
+    delivery: z.literal("alreadyDelivered"),
+  }),
 ]);
 export type SendMessageResponse = z.infer<typeof sendMessageResponseSchema>;
 
@@ -397,6 +402,7 @@ export const editMessageRequestSchema = sendMessageRequestFieldsSchema
     sendAt: true,
     pluginSubmission: true,
     compactFirst: true,
+    retryOfClientRequestId: true,
   })
   .extend({
     operationId: z.string().min(1),

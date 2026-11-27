@@ -1,7 +1,9 @@
 import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import {
+  clientTurnRequestIdSchema,
   threadVisibilitySchema,
+  type ClientTurnRequestId,
   type PermissionMode,
   type ReasoningLevel,
   type ServiceTier,
@@ -103,6 +105,7 @@ interface ThreadTellCommandOptions {
   sendAt?: string;
   deliverBy?: string;
   compactFirst?: boolean;
+  retryOf?: string;
 }
 
 interface ThreadActionOptions {
@@ -144,6 +147,7 @@ interface PostThreadMessageArgs {
   sendAt?: number;
   deliverBy?: number;
   compactFirst: boolean;
+  retryOf?: ClientTurnRequestId;
 }
 
 type PostThreadMessageResult = ThreadSendResult & {
@@ -609,6 +613,10 @@ export function registerActionsCommands(
       "--compact-first",
       "Compact the idle thread's context first, then send this message when compaction finishes",
     )
+    .option(
+      "--retry-of <requestId>",
+      "Re-send of this earlier turn request id: dropped, and reported as already delivered, when that request's prompt reached the agent",
+    )
     .option("--plan", PLAN_HELP)
     .option(
       "--file <path>",
@@ -655,6 +663,9 @@ export function registerActionsCommands(
               ? {}
               : { deliverBy: parseDeliverBy(opts.deliverBy, opts.mode) }),
             compactFirst: opts.compactFirst === true,
+            ...(opts.retryOf === undefined
+              ? {}
+              : { retryOf: clientTurnRequestIdSchema.parse(opts.retryOf) }),
           });
           if (response.delivery === "sent" && response.refusal) {
             process.exitCode = 1;
@@ -790,6 +801,9 @@ async function postThreadMessage(
       ...(args.sendAt === undefined ? {} : { sendAt: args.sendAt }),
       ...(args.deliverBy === undefined ? {} : { deliverBy: args.deliverBy }),
       ...(args.compactFirst ? { compactFirst: true } : {}),
+      ...(args.retryOf === undefined
+        ? {}
+        : { retryOfClientRequestId: args.retryOf }),
     });
   } catch (error: unknown) {
     throw await withRestoreEnvironmentHint(sdk, args.threadId, error);
@@ -823,6 +837,9 @@ function describeThreadTellOutcome(
   threadId: string,
   response: PostThreadMessageResult,
 ): string {
+  if (response.delivery === "alreadyDelivered") {
+    return `Thread ${threadId} already received that message; nothing re-sent`;
+  }
   if (response.delivery === "queued") {
     return `Thread ${threadId} message queued (${describeQueueWait(response.queuedMessage)}); it dispatches when that clears`;
   }

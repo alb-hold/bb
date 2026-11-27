@@ -535,6 +535,7 @@ async function runDispatchAttempt(
     payload: args.queuePayload,
     systemNotice,
     deliveryMode: run.deliveryMode,
+    resendOfClientRequestId: payload.retryOfClientRequestId ?? null,
     requestedModel: payload.model,
     executionInputSources: payload.executionInputSources,
   };

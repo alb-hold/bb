@@ -7,6 +7,8 @@ copied from `bb pull-request show`. The host compares those displayed values
 with a fresh pull request read before starting `gh pr ready` or
 `gh pr merge`.
 
+`bb thread tell <id> --retry-of <requestId>` (SDK `threads.send({ retryOfClientRequestId })`, HTTP `retryOfClientRequestId` on `POST /threads/:id/send`) marks a message as a re-send of an earlier turn request. When that request's prompt already reached the agent, including an echo that landed after an interrupt, or lands while the re-send is still queued, the server drops the re-send and answers `delivery: "alreadyDelivered"` instead of sending the message twice.
+
 `bb terminal attach <id> --report-timing` writes one JSON line to stderr after the first live nonblank frame finishes rendering on the server for this attachment. The record contains `terminalId`, the last rendered `seq`, epoch milliseconds `at`, and `provenance: "live"`. Timing requires a change to visible nonblank content in the server’s terminal model. Color-palette-only changes are not counted. Replay, control-only writes that leave the screen unchanged, and intermediate synchronized writes do not trigger it. An idle terminal may produce no timing line. The first frame for the whole session is available as `firstLiveFrame` from `bb terminal show <id> --json` and `sdk.terminals.get({ terminalId })`. Older servers omit timing data.
 
 Thread terminal actions are available through `bb terminal surfaces --thread

@@ -454,6 +454,7 @@ export {
   isStoredTurnContextCompactionOnly,
   isTurnAimedAtByEarlierStop,
   findLatestUnresolvedClientTurnRequestIdAfterSequence,
+  hasStoredClientRequestEcho,
   hasStoredTerminalClientTurnRequestEvent,
   hasStoredTurnStarted,
   classifyStoredProviderThreadClaim,

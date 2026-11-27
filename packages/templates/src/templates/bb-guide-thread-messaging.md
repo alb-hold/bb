@@ -24,6 +24,7 @@ Messaging:
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
     --deliver-by <when>                    With --mode inbox: latest delivery time (ISO 8601 or a duration, at most 6h)
     --compact-first                        Compact the idle thread's context, then send when compaction finishes
+    --retry-of <requestId>                 Re-send of an earlier turn request: dropped as already delivered when its prompt reached the agent
     --file <path>                          CLI-local absolute path, file: URL, or uploaded file path
     --image <path>                         CLI-local absolute path, file: URL, or uploaded image path
 
@@ -209,6 +210,13 @@ Queued messages:
   supports manual compaction; it cannot be combined with --send-at. The SDK
   takes `compactFirst: true` on `threads.send`, which also rejects
   `mode: "steer"`.
+
+  --retry-of marks this message as a re-send of an earlier turn request. When
+  the original request's prompt already reached the agent, including a late
+  echo that landed after an interrupt, or lands while the re-send is still
+  queued, the re-send is dropped and the response reports `alreadyDelivered`
+  instead of sending the message twice. The SDK takes
+  `retryOfClientRequestId` on `threads.send`.
 
   --send-at takes an ISO 8601 timestamp (2026-08-25T09:00, local without an
   offset) or a duration from now (30s, 10m, 2h, 7d). A time that has already

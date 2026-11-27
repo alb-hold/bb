@@ -1,0 +1,1 @@
+ALTER TABLE `queued_thread_messages` ADD `resend_of_client_request_id` text;
