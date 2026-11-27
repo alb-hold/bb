@@ -1124,12 +1124,11 @@ export class TerminalSessionLifecycle {
         liveFrom === null
           ? (retained ?? [])
           : this.readLiveFrameHistory(current, retained ?? [], liveFrom);
-      state = new TerminalScreenState(
-        rebuild.cols,
-        rebuild.rows,
-        false,
-        chunks[0]?.seq ?? liveFrom ?? 0,
-      );
+      if (chunks === null) {
+        this.terminalScreenStates.markHistoryUnavailable(session.id);
+        return;
+      }
+      state = new TerminalScreenState(rebuild.cols, rebuild.rows);
       for (const chunk of chunks) {
         if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
         state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
@@ -1171,13 +1170,11 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     retained: TerminalOutputChunk[],
     liveFrom: number,
-  ): TerminalOutputChunk[] {
+  ): TerminalOutputChunk[] | null {
+    if (liveFrom >= TERMINAL_SCREEN_REPLAY_BYTES) return null;
     const bySequence = new Map<number, TerminalOutputChunk>();
-    const lowerBound = Math.max(0, liveFrom - TERMINAL_SCREEN_REPLAY_BYTES);
     const add = (chunks: TerminalOutputChunk[]) => {
-      for (let index = chunks.length - 1; index >= 0; index -= 1) {
-        const chunk = chunks[index]!;
-        if (chunk.seq < lowerBound) break;
+      for (const chunk of chunks) {
         if (chunk.seq < liveFrom) bySequence.set(chunk.seq, chunk);
       }
     };
@@ -1187,14 +1184,14 @@ export class TerminalSessionLifecycle {
     }
     const history: TerminalOutputChunk[] = [];
     let bytes = 0;
-    for (let sequence = liveFrom - 1; sequence >= lowerBound; sequence -= 1) {
+    for (let sequence = 0; sequence < liveFrom; sequence += 1) {
       const chunk = bySequence.get(sequence);
-      if (chunk === undefined) break;
+      if (chunk === undefined) return null;
       bytes += Buffer.byteLength(chunk.dataBase64, "base64");
-      if (bytes > TERMINAL_SCREEN_REPLAY_BYTES) break;
+      if (bytes >= TERMINAL_SCREEN_REPLAY_BYTES) return null;
       history.push(chunk);
     }
-    return history.reverse();
+    return history;
   }
 
   private isTerminalScreenStateRebuildActive(
@@ -2455,7 +2452,9 @@ export class TerminalSessionLifecycle {
     if (
       rendered !== undefined &&
       chunk.seq !== 0 &&
+      chunk.seq < TERMINAL_SCREEN_REPLAY_BYTES &&
       !this.terminalScreenStates.has(session.id) &&
+      !this.terminalScreenStates.isHistoryUnavailable(session.id) &&
       (!this.activeTerminalReplays.has(session.id) ||
         this.frameObservers.has(session.id))
     ) {

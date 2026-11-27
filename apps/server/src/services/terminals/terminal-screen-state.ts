@@ -505,7 +505,7 @@ export class TerminalScreenState {
   private rows: number;
   private pending = Promise.resolve();
   private draining = false;
-  private nextSeq: number;
+  private nextSeq = 0;
   private valid = true;
   private disposed = false;
   private readonly parserState = createTerminalReplayParserState();
@@ -527,11 +527,9 @@ export class TerminalScreenState {
     cols: number,
     rows: number,
     private readonly captureReplay = false,
-    readonly firstSequence = 0,
   ) {
     this.cols = cols;
     this.rows = rows;
-    this.nextSeq = firstSequence;
     this.terminal = new Terminal({
       allowProposedApi: true,
       cols,
@@ -975,14 +973,22 @@ export class TerminalScreenState {
 }
 
 export class TerminalScreenStateCache {
-  private readonly states = new Map<string, TerminalScreenState>();
+  private readonly states = new Map<string, TerminalScreenState | null>();
 
   has(terminalId: string): boolean {
-    return this.states.has(terminalId);
+    return this.states.get(terminalId) != null;
+  }
+
+  isHistoryUnavailable(terminalId: string): boolean {
+    return this.states.get(terminalId) === null;
+  }
+
+  markHistoryUnavailable(terminalId: string): void {
+    if (!this.states.has(terminalId)) this.set(terminalId, null);
   }
 
   create(terminalId: string, cols: number, rows: number): void {
-    if (this.states.has(terminalId)) return;
+    if (this.has(terminalId)) return;
     this.set(terminalId, new TerminalScreenState(cols, rows));
   }
 
@@ -991,7 +997,8 @@ export class TerminalScreenStateCache {
     this.set(terminalId, state);
   }
 
-  private set(terminalId: string, state: TerminalScreenState): void {
+  private set(terminalId: string, state: TerminalScreenState | null): void {
+    this.states.delete(terminalId);
     this.states.set(terminalId, state);
     if (this.states.size > TERMINAL_SCREEN_STATE_CACHE_LIMIT) {
       const oldest = this.states.keys().next().value;
@@ -1001,10 +1008,9 @@ export class TerminalScreenStateCache {
 
   private touch(terminalId: string): TerminalScreenState | undefined {
     const state = this.states.get(terminalId);
-    if (state !== undefined) {
-      this.states.delete(terminalId);
-      this.states.set(terminalId, state);
-    }
+    if (state == null) return undefined;
+    this.states.delete(terminalId);
+    this.states.set(terminalId, state);
     return state;
   }
 
@@ -1042,28 +1048,21 @@ export class TerminalScreenStateCache {
   }
 
   promptScreen(terminalId: string) {
-    const state = this.touch(terminalId);
-    return state?.firstSequence === 0
-      ? state.promptScreen()
-      : Promise.resolve(null);
+    return this.touch(terminalId)?.promptScreen() ?? Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {
-    const state = this.touch(terminalId);
-    return state?.firstSequence === 0
-      ? state.snapshot()
-      : Promise.resolve(null);
+    return this.touch(terminalId)?.snapshot() ?? Promise.resolve(null);
   }
 
   remove(terminalId: string): void {
     const state = this.states.get(terminalId);
-    if (state === undefined) return;
     this.states.delete(terminalId);
-    state.dispose();
+    state?.dispose();
   }
 
   dispose(): void {
-    for (const state of this.states.values()) state.dispose();
+    for (const state of this.states.values()) state?.dispose();
     this.states.clear();
   }
 }
