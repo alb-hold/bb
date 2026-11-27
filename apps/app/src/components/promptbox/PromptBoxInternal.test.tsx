@@ -4187,6 +4187,7 @@ describe("ComposerBox compact layout", () => {
     });
     const { rerender } = render(<ControlledComposerBox {...props} />);
     const textarea = screen.getByRole("textbox");
+    textarea.focus();
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledOnce();
 
@@ -4198,6 +4199,7 @@ describe("ComposerBox compact layout", () => {
       />,
     );
     const stop = screen.getByRole("button", { name: "Stop run" });
+    expect(document.activeElement).toBe(textarea);
     fireEvent.keyDown(textarea, { key: "Enter", repeat: true });
     fireEvent.keyUp(textarea, { key: "Enter" });
     fireEvent.keyDown(stop, { key: "Enter", repeat: true });

@@ -515,7 +515,9 @@ describe("ThreadTimelineRows actions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore to composer" }),
+    );
     expect(onEditMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         restoreToComposer: true,

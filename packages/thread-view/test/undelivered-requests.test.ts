@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatThreadTimelineText } from "../src/format-timeline-text.js";
 import {
   createTimelineEventFactory,
   renderTimelineFixture,
@@ -30,6 +31,33 @@ describe("undelivered user messages", () => {
       event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
     ]);
     expect(requests.map((request) => request.status)).toEqual(["undelivered"]);
+  });
+
+  it("marks the input undelivered when the stop was recorded before the turn started", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requests = userTurnRequests([
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.systemThreadInterrupted(),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    expect(requests.map((request) => request.status)).toEqual(["undelivered"]);
+  });
+
+  it("tells the CLI text timeline that the message was not delivered", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const fixture = renderTimelineFixture({
+      events: [
+        event.clientTurnRequested({ requestId, text: "hello" }),
+        event.turnStarted({ turnId: "turn-1" }),
+        event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+        event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+      ],
+      projectionOptions: { threadStatus: "idle", turnMessageDetail: "full" },
+    });
+    const text = formatThreadTimelineText(fixture.rows, { verbose: true });
+    expect(text).toContain("not delivered");
   });
 
   it("keeps the input accepted when the provider produced an item after it", () => {

@@ -64,6 +64,7 @@ interface MessageActionBarProps {
   ) => void;
   onCopyLink?: () => void;
   onEdit?: () => void;
+  editLabel?: string;
   onFork?: () => void;
   disabled?: boolean;
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
@@ -390,6 +391,7 @@ export function MessageActionBar({
   onAddToChat,
   onCopyLink,
   onEdit,
+  editLabel = "Edit message",
   onFork,
   disabled,
   pluginActions = [],
@@ -440,7 +442,7 @@ export function MessageActionBar({
       ? [
           {
             icon: "Edit" as const,
-            label: "Edit message",
+            label: editLabel,
             onSelect: onEdit,
           },
         ]

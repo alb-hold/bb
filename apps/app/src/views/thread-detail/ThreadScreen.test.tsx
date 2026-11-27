@@ -458,6 +458,90 @@ describe("ThreadScreen", () => {
     );
   });
 
+  describe("undelivered messages", () => {
+    function undeliveredTimeline(id: string): UseThreadTimelineControllerResult {
+      return {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id,
+            role: "user",
+            text: "never reached the provider",
+            turnRequest: {
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ],
+      };
+    }
+    function threadDraft() {
+      return getPromptDraftAccessor({
+        kind: "thread",
+        projectId: THREAD.projectId,
+        threadId: THREAD.id,
+      });
+    }
+
+    it("puts an undelivered message back into an empty composer once", () => {
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_empty") },
+      );
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      cleanup();
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_empty") },
+      );
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("leaves a draft the user is typing alone", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_typing") },
+      );
+      expect(threadDraft().getCurrent().text).toBe("already typing");
+    });
+
+    it("restores an undelivered message in front of the current draft", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_restore") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "undelivered_restore",
+          restoreToComposer: true,
+        });
+      });
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider\n\nalready typing",
+      );
+    });
+  });
+
   it("keeps a submitted edit quiet when its own rewrite removes the edited message first", async () => {
     let resolveEdit!: () => void;
     mocks.editMessageMutateAsync.mockReturnValue(

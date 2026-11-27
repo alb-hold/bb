@@ -1154,6 +1154,11 @@ const ConversationRowContent = memo(function ConversationRowContent({
           onAddToChat={onSelectionAddToChat}
           onCopyLink={onCopyLink}
           onEdit={onEdit}
+          editLabel={
+            row.turnRequest?.status === "undelivered"
+              ? "Restore to composer"
+              : undefined
+          }
           projectId={projectId}
           resolveMentionLink={resolveMentionLink}
           resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
