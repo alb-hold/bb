@@ -3,12 +3,17 @@ import {
   clientTurnRequestIdSchema,
   turnScope,
   type ClientTurnRequestId,
+  type PromptInput,
   type ThreadEvent,
 } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
 import { requestThreadStopForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
-import { internalAuthHeaders } from "../helpers/commands.js";
+import {
+  internalAuthHeaders,
+  reportQueuedCommandSuccess,
+  waitForQueuedCommand,
+} from "../helpers/commands.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -21,6 +26,22 @@ import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 const PROVIDER_THREAD_ID = "provider-retry-of";
 const TURN_ID = "turn-retry-of";
 const MESSAGE_TEXT = "send me once";
+
+function mentionedInput(threadId: string): PromptInput[] {
+  return [
+    {
+      type: "text",
+      text: MESSAGE_TEXT,
+      mentions: [
+        {
+          start: 0,
+          end: 4,
+          resource: { kind: "thread", threadId, label: "send" },
+        },
+      ],
+    },
+  ];
+}
 
 async function postDaemonEvents(
   harness: TestAppHarness,
@@ -48,7 +69,7 @@ async function sendMessage(
   harness: TestAppHarness,
   threadId: string,
   retryOfClientRequestId?: ClientTurnRequestId,
-  text: string = MESSAGE_TEXT,
+  input: string | PromptInput[] = MESSAGE_TEXT,
 ) {
   const response = await harness.app.request(
     `/api/v1/threads/${threadId}/send`,
@@ -57,7 +78,8 @@ async function sendMessage(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         mode: "auto",
-        input: [{ type: "text", text }],
+        input:
+          typeof input === "string" ? [{ type: "text", text: input }] : input,
         model: "gpt-5",
         permissionMode: "full",
         reasoningLevel: "medium",
@@ -88,7 +110,7 @@ async function echoOriginal(
         item: {
           type: "userMessage",
           id: "echo-item",
-          content: [{ type: "text", text: MESSAGE_TEXT }],
+          content: original.input,
           clientRequestId: original.clientRequestId,
         },
       },
@@ -129,9 +151,11 @@ function countSubmissions(harness: TestAppHarness, threadId: string): number {
 async function interruptedRequest(
   harness: TestAppHarness,
   slug: string,
+  input: PromptInput[] = [{ type: "text", text: MESSAGE_TEXT, mentions: [] }],
 ): Promise<{
   clientRequestId: ClientTurnRequestId;
   hostId: string;
+  input: PromptInput[];
   sessionId: string;
   threadId: string;
 }> {
@@ -158,7 +182,7 @@ async function interruptedRequest(
     providerThreadId: PROVIDER_THREAD_ID,
     threadId: thread.id,
   });
-  await sendMessage(harness, thread.id);
+  await sendMessage(harness, thread.id, undefined, input);
   const requested = harness.db.$client
     .prepare(
       "select json_extract(data, '$.requestId') as id from events where thread_id = ? and type = 'client/turn/requested' and json_extract(data, '$.input[0].text') = ?",
@@ -185,6 +209,7 @@ async function interruptedRequest(
   return {
     clientRequestId,
     hostId: host.id,
+    input,
     sessionId: session.id,
     threadId: thread.id,
   };
@@ -193,30 +218,15 @@ async function interruptedRequest(
 describe("a re-send that names the request it retries", () => {
   it("is dropped when the original request's echo arrived after the turn closed", async () => {
     await withTestHarness(async (harness) => {
-      const original = await interruptedRequest(harness, "delivered");
-      await postDaemonEvents(harness, {
-        hostId: original.hostId,
-        sessionId: original.sessionId,
-        events: [
-          {
-            type: "item/completed",
-            threadId: original.threadId,
-            providerThreadId: PROVIDER_THREAD_ID,
-            scope: turnScope(TURN_ID),
-            item: {
-              type: "userMessage",
-              id: "echo-item",
-              content: [{ type: "text", text: MESSAGE_TEXT }],
-              clientRequestId: original.clientRequestId,
-            },
-          },
-        ],
-      });
+      const input = mentionedInput("original-mention");
+      const original = await interruptedRequest(harness, "delivered", input);
+      await echoOriginal(harness, original);
 
       const retry = await sendMessage(
         harness,
         original.threadId,
         original.clientRequestId,
+        input,
       );
 
       expect(retry).toEqual({ ok: true, delivery: "alreadyDelivered" });
@@ -355,11 +365,13 @@ describe("a re-send that names the request it retries", () => {
 
   it("removes only the echoed retry and keeps a distinct follow-up claimed with it, unclaimed and intact", async () => {
     await withTestHarness(async (harness) => {
-      const original = await interruptedRequest(harness, "mixed");
+      const input = mentionedInput("original-mention");
+      const original = await interruptedRequest(harness, "mixed", input);
       const retry = await sendMessage(
         harness,
         original.threadId,
         original.clientRequestId,
+        input,
       );
       if (retry.delivery !== "queued") {
         throw new Error(`expected the retry to queue, got ${retry.delivery}`);
@@ -447,6 +459,109 @@ describe("a re-send that names the request it retries", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.content).toContain("the merged and edited text");
       expect(rows[0]?.resendOf).toBeNull();
+    });
+  });
+
+  it.each([
+    {
+      field: "mention target",
+      input: mentionedInput("original-mention"),
+      retry: mentionedInput("changed-mention"),
+    },
+    {
+      field: "visibility",
+      input: [{ type: "text", text: MESSAGE_TEXT, mentions: [] }],
+      retry: [
+        {
+          type: "text",
+          text: MESSAGE_TEXT,
+          mentions: [],
+          visibility: "agent-only",
+        },
+      ],
+    },
+  ] satisfies { field: string; input: PromptInput[]; retry: PromptInput[] }[])(
+    "queues a normal send without the retry id when only the $field changes",
+    async ({ input, retry }) => {
+      await withTestHarness(async (harness) => {
+        const original = await interruptedRequest(
+          harness,
+          "changed-field",
+          input,
+        );
+        await echoOriginal(harness, original);
+
+        const response = await sendMessage(
+          harness,
+          original.threadId,
+          original.clientRequestId,
+          retry,
+        );
+
+        expect(response.delivery).toBe("queued");
+        const rows = queuedRows(harness, original.threadId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.resendOf).toBeNull();
+        expect(JSON.parse(rows[0]!.content)).toEqual(retry);
+      });
+    },
+  );
+
+  it("dispatches a queued retry whose only change is the mention target", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(
+        harness,
+        "changed-queued-mention",
+        mentionedInput("original-mention"),
+      );
+      const input = mentionedInput("changed-mention");
+      const retry = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+        input,
+      );
+      if (retry.delivery !== "queued") {
+        throw new Error(`expected the retry to queue, got ${retry.delivery}`);
+      }
+      await echoOriginal(harness, original);
+
+      const waiting = await harness.app.request(
+        `/api/v1/threads/${original.threadId}/queued-messages/${retry.queuedMessage.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "auto" }),
+        },
+      );
+      expect(waiting.status, await waiting.clone().text()).toBe(200);
+      expect(await waiting.json()).toMatchObject({
+        delivery: "queued",
+        queuedMessage: { id: retry.queuedMessage.id, content: input },
+      });
+
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" &&
+          command.threadId === original.threadId,
+      );
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      await expect
+        .poll(() => countSubmissions(harness, original.threadId))
+        .toBe(2);
+      const submitted = harness.db.$client
+        .prepare(
+          "select json_extract(data, '$.input') as input from events where thread_id = ? and type = 'client/turn/requested' and json_extract(data, '$.input[0].text') = ? order by sequence",
+        )
+        .all(original.threadId, MESSAGE_TEXT) as { input: string }[];
+      expect(submitted.map((event) => JSON.parse(event.input))).toEqual([
+        original.input,
+        input,
+      ]);
+      expect(queuedRows(harness, original.threadId)).toEqual([]);
     });
   });
 });

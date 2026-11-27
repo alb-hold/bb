@@ -1,3 +1,4 @@
+import { toRecord } from "@bb/core-ui";
 import {
   listStoredClientTurnRequestRowsByKeys,
   type DbQueryConnection,
@@ -12,20 +13,15 @@ interface StoredRequestInputArgs {
 }
 
 function promptInputKey(input: readonly PromptInput[]): string {
-  return JSON.stringify(
-    input.map((part) => {
-      switch (part.type) {
-        case "text":
-          return ["text", part.text];
-        case "image":
-          return ["image", part.url];
-        case "localImage":
-          return ["localImage", part.path];
-        case "localFile":
-          return ["localFile", part.path];
-      }
-    }),
-  );
+  return JSON.stringify(input, (_key, value: unknown) => {
+    const record = toRecord(value);
+    if (record === null) return value;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, record[key]]),
+    );
+  });
 }
 
 export function matchesStoredRequestInput(
