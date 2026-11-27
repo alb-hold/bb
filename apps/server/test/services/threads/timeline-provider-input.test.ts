@@ -190,7 +190,12 @@ describe("timeline pages with provider-recorded input", () => {
         kind: "conversation",
         role: "user",
         initiator: "system",
-        turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+        turnRequest: {
+          isGrouped: false,
+          kind: "steer",
+          requestId: null,
+          status: "accepted",
+        },
         text: PROCESS_EVENT,
       }),
     ]);

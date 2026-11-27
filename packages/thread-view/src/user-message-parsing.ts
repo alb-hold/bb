@@ -175,6 +175,7 @@ interface ParseUserFromClientRequestArgs {
   decoded: ThreadEvent;
   meta: EventMeta;
   options?: BuildEventProjectionMessagesOptions;
+  undelivered?: boolean;
 }
 
 interface ParseAcceptedSteerFromClientRequestArgs extends ParseUserFromClientRequestArgs {
@@ -252,6 +253,7 @@ function buildTurnRequest(
       acceptedClientRequest,
       decoded,
     }),
+    requestId: decoded.requestId,
     status,
   };
 }
@@ -381,7 +383,7 @@ function buildClientUserMessagesForInputGroups({
 export function parseUsersFromClientRequest(
   args: ParseUserFromClientRequestArgs,
 ): EventProjectionUserMessage[] {
-  const { acceptedClientRequest, decoded, meta, options } = args;
+  const { acceptedClientRequest, decoded, meta, options, undelivered } = args;
   if (decoded.type !== "client/turn/requested") {
     return [];
   }
@@ -402,7 +404,11 @@ export function parseUsersFromClientRequest(
     acceptedClientRequest,
     decoded,
     meta,
-    requestStatus: acceptedClientRequest ? "accepted" : "pending",
+    requestStatus: undelivered
+      ? "undelivered"
+      : acceptedClientRequest
+        ? "accepted"
+        : "pending",
   });
 }
 
@@ -483,7 +489,8 @@ export function parseProviderUserMessage(
 ): EventProjectionUserMessage | null {
   if (
     decoded.type !== "item/completed" ||
-    decoded.item.type !== "userMessage"
+    decoded.item.type !== "userMessage" ||
+    decoded.item.clientRequestId !== undefined
   ) {
     return null;
   }
@@ -510,7 +517,12 @@ export function parseProviderUserMessage(
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
-    turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      kind: "steer",
+      requestId: null,
+      status: "accepted",
+    },
     text,
     mentions: [],
   };

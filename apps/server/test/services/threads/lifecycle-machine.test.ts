@@ -361,6 +361,77 @@ describe("stops", () => {
     expect(transition.next.stop).toBeNull();
   });
 
+  it("settles a stopping thread whose stop was retained instead of leaving it stopping", () => {
+    const running = transitionThreadLifecycle(
+      state({
+        status: "stopping",
+        activeTurnId: "turn-1",
+        stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 3 },
+    );
+    expect(running.next.stop).toBeNull();
+    expect(running.next.status).toBe("active");
+
+    const ended = transitionThreadLifecycle(
+      state({
+        status: "stopping",
+        activeTurnId: "turn-1",
+        heldCompletion: { status: "interrupted", turnId: "turn-1" },
+        stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 3 },
+    );
+    expect(ended.next.stop).toBeNull();
+    expect(ended.next.status).toBe("idle");
+    expect(ended.next.heldCompletion).toBeNull();
+    expect(kinds(ended.effects)).toContain("drain-queue");
+  });
+
+  it("drains the queue when a stop is retained after its turn start was swallowed", () => {
+    const stopping = state({
+      status: "stopping",
+      activeTurnId: "turn-1",
+      stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+    });
+    const swallowed = transitionThreadLifecycle(stopping, {
+      type: "turn.started",
+      aimedAtByStop: true,
+      turnId: "turn-1",
+      now: 3,
+    });
+    expect(swallowed.next.status).toBe("stopping");
+    expect(kinds(swallowed.effects)).not.toContain("drain-queue");
+    const answered = transitionThreadLifecycle(
+      state({
+        status: swallowed.next.status,
+        activeTurnId: "turn-1",
+        stop: swallowed.next.stop,
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 4 },
+    );
+    expect(answered.next.status).toBe("active");
+    expect(answered.effects).toContainEqual({
+      kind: "drain-queue",
+      wake: "turn-started",
+    });
+  });
+
+  it("drains the queue when an idle thread's stop is retained", () => {
+    const transition = transitionThreadLifecycle(
+      state({
+        status: "idle",
+        stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 3 },
+    );
+    expect(transition.next.status).toBe("active");
+    expect(transition.effects).toContainEqual({
+      kind: "drain-queue",
+      wake: "turn-started",
+    });
+  });
+
   it("revives instead of re-stopping when an idle release finds the agent's own turn", () => {
     const transition = transitionThreadLifecycle(
       state({ status: "idle", stop: ackedStop }),

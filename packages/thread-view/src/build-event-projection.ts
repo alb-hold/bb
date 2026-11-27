@@ -10,6 +10,7 @@ import {
   parseBackgroundTaskLifecycleEvent,
   upsertBackgroundTaskMessage,
 } from "./background-task-projection.js";
+import { buildUndeliveredClientRequestIds } from "./undelivered-requests.js";
 import { getEventParentToolCallId, getEventTurnId } from "./event-decode.js";
 import {
   parseExecLifecycleEvent,
@@ -504,6 +505,7 @@ interface ProjectionFoldLookups {
   clientRequestById: Map<string, ClientTurnRequestedWithMeta>;
   rejectedClientRequestIds: ReadonlySet<string>;
   selectedStartedTurnIds: ReadonlySet<string>;
+  undeliveredClientRequestIds: ReadonlySet<string>;
 }
 
 const PROJECTION_FOLD_LOOKUP_EVENT_TYPES: ReadonlySet<ThreadEvent["type"]> =
@@ -512,6 +514,7 @@ const PROJECTION_FOLD_LOOKUP_EVENT_TYPES: ReadonlySet<ThreadEvent["type"]> =
     "client/turn/rejected",
     "turn/input/accepted",
     "turn/started",
+    "turn/completed",
   ]);
 
 function createProjectionFoldLookups(
@@ -535,6 +538,7 @@ function createProjectionFoldLookups(
       acceptedClientRequestById,
     ),
     selectedStartedTurnIds: buildSelectedStartedTurnIds(orderedEvents),
+    undeliveredClientRequestIds: buildUndeliveredClientRequestIds(orderedEvents),
   };
 }
 
@@ -550,6 +554,7 @@ function foldProjectionEvent(
     clientRequestById,
     rejectedClientRequestIds,
     selectedStartedTurnIds,
+    undeliveredClientRequestIds,
   } = lookups;
   const eventType = decoded.type;
   const eventTurnId = getEventTurnId(decoded);
@@ -698,6 +703,9 @@ function foldProjectionEvent(
     decoded,
     meta,
     options: options,
+    undelivered:
+      decoded.type === "client/turn/requested" &&
+      undeliveredClientRequestIds.has(decoded.requestId),
   });
   if (usersFromClientRequest.length > 0) {
     for (const userFromClientRequest of usersFromClientRequest) {
@@ -1072,6 +1080,18 @@ export function startEventProjectionFold(
   return { events: orderedEvents, lookups, options, state };
 }
 
+function isLateEchoOfUndeliveredRequest(
+  event: ThreadEvent,
+  undeliveredClientRequestIds: ReadonlySet<string>,
+): boolean {
+  return (
+    event.type === "item/completed" &&
+    event.item.type === "userMessage" &&
+    event.item.clientRequestId !== undefined &&
+    undeliveredClientRequestIds.has(event.item.clientRequestId)
+  );
+}
+
 export function resumeEventProjectionFold(
   fold: EventProjectionFold,
   appended: readonly ThreadEventWithMeta[],
@@ -1080,7 +1100,11 @@ export function resumeEventProjectionFold(
   for (const { event, meta } of appended) {
     if (
       meta.seq <= lastSeq ||
-      PROJECTION_FOLD_LOOKUP_EVENT_TYPES.has(event.type)
+      PROJECTION_FOLD_LOOKUP_EVENT_TYPES.has(event.type) ||
+      isLateEchoOfUndeliveredRequest(
+        event,
+        fold.lookups.undeliveredClientRequestIds,
+      )
     ) {
       return false;
     }

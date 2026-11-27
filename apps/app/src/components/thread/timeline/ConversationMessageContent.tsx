@@ -106,6 +106,7 @@ interface ConversationMessageContentUserProps extends ConversationMessageContent
   mentions: readonly PromptTextMention[];
   onAddToChat?: ThreadTimelineAddToChatHandler;
   onEdit?: () => void;
+  editLabel?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
   onTitleAction?: TimelineTitleActionResolver;
   senderThreadId: TimelineUserConversationRow["senderThreadId"];
@@ -168,6 +169,7 @@ interface UserConversationMessageProps {
   onAddToChat?: ThreadTimelineAddToChatHandler;
   onCopyLink?: () => void;
   onEdit?: () => void;
+  editLabel?: string;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
   onTitleAction?: TimelineTitleActionResolver;
@@ -430,6 +432,7 @@ function UserConversationMessage({
   onAddToChat,
   onCopyLink,
   onEdit,
+  editLabel,
   pluginActions = [],
   projectId,
   resolveMentionLink,
@@ -571,6 +574,7 @@ function UserConversationMessage({
             onAddToChat={onAddToChat}
             onCopyLink={onCopyLink}
             onEdit={onEdit}
+            editLabel={editLabel}
             pluginActions={pluginActions}
             metadata={actionMetadata}
           />
@@ -793,6 +797,7 @@ export function ConversationMessageContent(
         onAddToChat={props.onAddToChat}
         onCopyLink={props.onCopyLink}
         onEdit={props.onEdit}
+        editLabel={props.editLabel}
         projectId={projectId}
         resolveMentionLink={props.resolveMentionLink}
         onTitleAction={props.onTitleAction}

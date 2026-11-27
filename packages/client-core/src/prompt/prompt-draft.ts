@@ -375,3 +375,34 @@ export function getProjectStoredPromptAttachmentPaths(
     ),
   ];
 }
+
+export function restoreDraftBefore(
+  current: PromptDraftState,
+  restored: PromptDraftState,
+): PromptDraftState {
+  if (isPromptDraftEmpty(current)) return restored;
+  if (isPromptDraftEmpty(restored)) return current;
+  const separator =
+    restored.text.length > 0 && current.text.length > 0 ? "\n\n" : "";
+  const shift = restored.text.length + separator.length;
+  const attachmentPaths = new Set(
+    restored.attachments.map((attachment) => attachment.path),
+  );
+  return {
+    text: `${restored.text}${separator}${current.text}`,
+    mentions: [
+      ...restored.mentions,
+      ...current.mentions.map((mention) => ({
+        ...mention,
+        start: mention.start + shift,
+        end: mention.end + shift,
+      })),
+    ],
+    attachments: [
+      ...restored.attachments,
+      ...current.attachments.filter(
+        (attachment) => !attachmentPaths.has(attachment.path),
+      ),
+    ],
+  };
+}

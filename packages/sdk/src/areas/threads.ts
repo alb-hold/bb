@@ -867,6 +867,7 @@ function sendJson(args: ThreadSendArgs): SendMessageRequest {
     sendAt: args.sendAt,
     deliverBy: args.deliverBy,
     compactFirst: args.compactFirst,
+    retryOfClientRequestId: args.retryOfClientRequestId,
   };
 }
 

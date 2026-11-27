@@ -15,7 +15,7 @@ import {
   type EnvironmentRow,
   getThread,
   getThreadSpawner,
-  isThreadQueueAutoSendPaused,
+  isQueuedMessageAutoSendPaused,
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
   type RunningThreadRow,
@@ -52,6 +52,7 @@ import {
   throwThreadNotWritable,
 } from "../lib/lifecycle-api-errors.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
+import { DeliveredRetryDetected } from "./delivered-retry.js";
 import {
   dispatchEnvironmentAndHost,
   dispatchExecutionSources,
@@ -270,7 +271,7 @@ export function listRunningThreadsWithIntendedHosts(
   );
 }
 
-export type DispatchAttemptSource =
+export type DispatchAttemptSource = (
   | { kind: "inline" }
   | {
       kind: "drain";
@@ -286,7 +287,8 @@ export type DispatchAttemptSource =
         forkSourceProviderThreadId: string | null;
         onCommandSettled?: () => void | Promise<void>;
       };
-    };
+    }
+) & { checkDeliveredRetry?: SendThreadMessageTransactionPreflight };
 
 export interface DispatchAttemptArgs {
   thread: Thread;
@@ -353,6 +355,9 @@ async function runOperationDispatch(
     payload: args.payload,
     thread: args.thread,
     trigger: args.trigger,
+    ...(source.checkDeliveredRetry !== undefined
+      ? { checkDeliveredRetry: source.checkDeliveredRetry }
+      : {}),
     ...(source.beforeAppendInTransaction !== undefined
       ? { beforeAppendInTransaction: source.beforeAppendInTransaction }
       : {}),
@@ -535,6 +540,7 @@ async function runDispatchAttempt(
     payload: args.queuePayload,
     systemNotice,
     deliveryMode: run.deliveryMode,
+    resendOfClientRequestId: payload.retryOfClientRequestId ?? null,
     requestedModel: payload.model,
     executionInputSources: payload.executionInputSources,
   };
@@ -791,6 +797,7 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         author,
+        checkDeliveredRetry: args.source.checkDeliveredRetry,
         originPluginId: args.originPluginId,
         claimed,
         assertExplicitModel:
@@ -870,6 +877,10 @@ async function runDispatchAttempt(
       await continueThroughCoreWaits();
     }
   } catch (error) {
+    if (error instanceof DeliveredRetryDetected) {
+      releaseWorkspaceForThread(deps, thread);
+      throw error;
+    }
     if (
       !(error instanceof ThreadQueueScopeChangedError) &&
       !(error instanceof DispatchThreadScopeChangedError)
@@ -926,6 +937,9 @@ async function runDispatchAttempt(
       ...(systemNotice !== null ? { systemNotice } : {}),
       onTurnRequestCreated: args.onTurnRequestCreated,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+      ...(args.source.checkDeliveredRetry !== undefined
+        ? { checkDeliveredRetry: args.source.checkDeliveredRetry }
+        : {}),
       beforeAppendInTransaction: ({ tx }) => {
         const current = getThread(tx, thread.id);
         if (current === null || current.status !== thread.status) {
@@ -954,11 +968,7 @@ async function runDispatchAttempt(
           throw new DispatchThreadScopeChangedError();
         }
         if (claimed !== null) {
-          consumeClaimedRows(
-            claimed,
-            thread.id,
-            respectManualStopPause,
-          )({ tx });
+          consumeClaimedRows(claimed, respectManualStopPause)({ tx });
         }
       },
     });
@@ -974,7 +984,12 @@ async function runDispatchAttempt(
         : {}),
     };
   } catch (error) {
-    releaseWorkspaceForThread(deps, thread);
+    if (
+      !(error instanceof DeliveredRetryDetected) ||
+      getThread(deps.db, thread.id)?.status !== "active"
+    ) {
+      releaseWorkspaceForThread(deps, thread);
+    }
     if (
       error instanceof DispatchThreadStatusChangedError ||
       error instanceof DispatchThreadScopeChangedError
@@ -1022,11 +1037,13 @@ export function reattemptDispatchForThreadChange(
 
 function consumeClaimedRows(
   claimed: readonly ClaimedQueuedThreadMessageRow[],
-  threadId: string,
   respectManualStopPause: boolean,
 ): SendThreadMessageTransactionPreflight {
   return ({ tx }) => {
-    if (respectManualStopPause && isThreadQueueAutoSendPaused(tx, threadId)) {
+    if (
+      respectManualStopPause &&
+      claimed.some((row) => isQueuedMessageAutoSendPaused(tx, row))
+    ) {
       throw createQueuedMessageAutoSendPausedError();
     }
     const consumed = deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
@@ -1040,6 +1057,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   author: DispatchAuthor;
+  checkDeliveredRetry: SendThreadMessageTransactionPreflight | undefined;
   originPluginId: string | null;
   claimed: ClaimedQueuedThreadMessageRow[] | null;
   assertExplicitModel: boolean;
@@ -1105,12 +1123,9 @@ async function admitPendingThread(
           }
           throw new PendingThreadAdmissionLost(true);
         }
+        args.checkDeliveredRetry?.({ tx });
         if (args.claimed !== null && args.claimed.length > 0) {
-          consumeClaimedRows(
-            args.claimed,
-            args.thread.id,
-            args.respectManualStopPause,
-          )({ tx });
+          consumeClaimedRows(args.claimed, args.respectManualStopPause)({ tx });
         }
         const prepared = runThreadLifecycleInTransaction(
           { db: tx, hub: deps.hub, logger: deps.logger },

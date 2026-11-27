@@ -88,6 +88,7 @@ const eventProjectionTurnRequestStatusValues = [
   "pending",
   "accepted",
   "rejected",
+  "undelivered",
 ] as const;
 type EventProjectionTurnRequestStatus =
   (typeof eventProjectionTurnRequestStatusValues)[number];
@@ -95,6 +96,7 @@ type EventProjectionTurnRequestStatus =
 export interface EventProjectionTurnRequest {
   isGrouped: boolean;
   kind: EventProjectionTurnRequestKind;
+  requestId: string | null;
   status: EventProjectionTurnRequestStatus;
 }
 

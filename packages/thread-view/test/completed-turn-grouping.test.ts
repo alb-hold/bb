@@ -75,6 +75,7 @@ function userMessage(args: UserMessageArgs): EventProjectionUserMessage {
     systemMessageSubject: null,
     turnRequest: args.turnRequest ?? {
       isGrouped: false,
+      requestId: null,
       kind: "message",
       status: "accepted",
     },

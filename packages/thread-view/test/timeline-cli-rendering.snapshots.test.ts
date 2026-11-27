@@ -209,6 +209,7 @@ describe("timeline CLI rendering snapshots", () => {
             turnRequest: {
               isGrouped: false,
               kind: "steer",
+              requestId: null,
               status: "accepted",
             },
             text: '<process_event kind="success">Process completed successfully</process_event>',
@@ -533,6 +534,7 @@ describe("timeline CLI rendering snapshots", () => {
     expect(pendingSteerRow?.turnRequest).toEqual({
       isGrouped: false,
       kind: "steer",
+      requestId: "creq_2222222225",
       status: "pending",
     });
     expect(timeline.text).toMatchInlineSnapshot(`
@@ -574,6 +576,7 @@ describe("timeline CLI rendering snapshots", () => {
     expect(rejectedSteerRow?.turnRequest).toEqual({
       isGrouped: false,
       kind: "steer",
+      requestId: "creq_2222222223",
       status: "rejected",
     });
     expect(timeline.text).toContain("steer failed");
@@ -699,6 +702,7 @@ describe("timeline CLI rendering snapshots", () => {
     expect(steerMessage?.turnRequest).toEqual({
       isGrouped: false,
       kind: "steer",
+      requestId: "creq_2222222223",
       status: "accepted",
     });
     expect(
@@ -716,6 +720,7 @@ describe("timeline CLI rendering snapshots", () => {
     expect(steerRow?.turnRequest).toEqual({
       isGrouped: false,
       kind: "steer",
+      requestId: "creq_2222222223",
       status: "accepted",
     });
     expect(timeline.turnRows).toHaveLength(2);
@@ -791,8 +796,18 @@ describe("timeline CLI rendering snapshots", () => {
       "Follow-up task",
     ]);
     expect(userMessages.map((message) => message.turnRequest)).toEqual([
-      { isGrouped: false, kind: "message", status: "accepted" },
-      { isGrouped: false, kind: "message", status: "accepted" },
+      {
+        isGrouped: false,
+        kind: "message",
+        requestId: "creq_2222222223",
+        status: "accepted",
+      },
+      {
+        isGrouped: false,
+        kind: "message",
+        requestId: "creq_2222222228",
+        status: "accepted",
+      },
     ]);
     const topLevelUserRows = timeline.rows.filter(
       (row) => row.kind === "conversation" && row.role === "user",

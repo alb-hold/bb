@@ -1128,6 +1128,7 @@ export const queuedThreadMessages = sqliteTable(
       .notNull()
       .default("inline"),
     retryOfTurnRequestId: text("retry_of_turn_request_id"),
+    resendOfClientRequestId: text("resend_of_client_request_id"),
     retryAttempt: integer("retry_attempt"),
     retryReason: text("retry_reason"),
     deliveryMode: text("delivery_mode", {

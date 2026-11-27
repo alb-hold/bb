@@ -4177,6 +4177,38 @@ describe("ComposerBox compact layout", () => {
     },
   );
 
+  it("does not stop the run it just started from the Enter that sent the message", () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    const props = createPromptBoxProps({
+      value: "Send this follow-up",
+      onSubmit,
+      submission: { isRunning: false, onStop },
+    });
+    const { rerender } = render(<ControlledComposerBox {...props} />);
+    const textarea = screen.getByRole("textbox");
+    textarea.focus();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    rerender(
+      <ControlledComposerBox
+        {...props}
+        value=""
+        submission={{ isRunning: true, onStop }}
+      />,
+    );
+    const stop = screen.getByRole("button", { name: "Stop run" });
+    expect(document.activeElement).toBe(textarea);
+    fireEvent.keyDown(textarea, { key: "Enter", repeat: true });
+    fireEvent.keyUp(textarea, { key: "Enter" });
+    fireEvent.keyDown(stop, { key: "Enter", repeat: true });
+    fireEvent.keyUp(stop, { key: "Enter" });
+    fireEvent.keyUp(stop, { key: " " });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
   it("starts voice input once for a deliberate touch tap on the voice action", () => {
     const restoreMatchMedia = mockPointerCoarse(true);
     try {

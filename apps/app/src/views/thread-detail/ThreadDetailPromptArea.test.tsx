@@ -49,6 +49,7 @@ import {
   vi,
 } from "vitest";
 
+import { registerRestoredDraftRetry } from "./restored-draft-retry";
 import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueuedMessagesList";
 
 import { workflowRow } from "@/test/fixtures/thread-timeline-rows";
@@ -819,6 +820,30 @@ describe("ThreadDetailPromptArea", () => {
   });
 
 
+  it("names the original request when a restored draft is steered unedited", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    renderPromptArea({
+      thread: makeThread({
+        runtime: { displayStatus: "active" },
+        status: "active",
+      }),
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerModifierSubmit?.();
+    });
+    expect(
+      mocks.sendMessageMutateAsync.mock.calls[0]?.[0].retryOfClientRequestId,
+    ).toBe("req_original");
+  });
+
   it("refuses sendAt when the modifier action would steer the next queued message", async () => {
     mocks.queuedMessages = [makeQueuedMessage()];
     renderPromptArea({
@@ -862,6 +887,143 @@ describe("ThreadDetailPromptArea", () => {
     expect(request.executionInputSources.reasoningLevel).toBe("explicit");
   });
 
+
+  it("sends the merged draft without a retry request when it differs from the restored row", async () => {
+    registerRestoredDraftRetry(
+      "thr_1",
+      { text: "never reached the provider", mentions: [], attachments: [] },
+      "req_original",
+    );
+    mocks.promptDraft.text = "never reached the provider\n\nsomething I was typing";
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    const request = mocks.sendMessageMutateAsync.mock.calls[0]?.[0];
+    expect(request.retryOfClientRequestId).toBeUndefined();
+    expect(JSON.stringify(request.input)).toContain("something I was typing");
+  });
+
+  it("keeps naming the original request after an unedited restored draft fails to send", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    mocks.sendMessageMutateAsync.mockRejectedValueOnce(new Error("offline"));
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await expect(mocks.composerSubmit?.()).rejects.toThrow();
+    });
+    mocks.promptDraft.text = "never reached the provider";
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.sendMessageMutateAsync.mock.calls[1]?.[0].retryOfClientRequestId,
+    ).toBe("req_original");
+  });
+
+  it("keeps naming the original request after an unedited restored draft fails to steer", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    mocks.sendMessageMutateAsync.mockRejectedValueOnce(new Error("offline"));
+    renderPromptArea({
+      thread: makeThread({
+        runtime: { displayStatus: "active" },
+        status: "active",
+      }),
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await expect(mocks.composerModifierSubmit?.()).rejects.toThrow();
+    });
+    mocks.promptDraft.text = "never reached the provider";
+    await act(async () => {
+      await mocks.composerModifierSubmit?.();
+    });
+    expect(
+      mocks.sendMessageMutateAsync.mock.calls[1]?.[0].retryOfClientRequestId,
+    ).toBe("req_original");
+  });
+
+  it("forgets the original request once the send succeeds", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    mocks.promptDraft.text = "never reached the provider";
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(
+      mocks.sendMessageMutateAsync.mock.calls[1]?.[0].retryOfClientRequestId,
+    ).toBeUndefined();
+  });
+
+  it("names the original request when a restored draft is submitted unedited", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledOnce();
+    expect(
+      mocks.sendMessageMutateAsync.mock.calls[0]?.[0].retryOfClientRequestId,
+    ).toBe("req_original");
+  });
+
+  it("names no request when the restored draft was edited before submitting", async () => {
+    mocks.promptDraft.text = "never reached the provider";
+    registerRestoredDraftRetry(
+      "thr_1",
+      mocks.promptDraft.getCurrent(),
+      "req_original",
+    );
+    mocks.promptDraft.text = "never reached the provider, edited";
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledOnce();
+    expect(mocks.sendMessageMutateAsync.mock.calls[0]?.[0]).not.toHaveProperty(
+      "retryOfClientRequestId",
+    );
+  });
 
   it("preserves plugin submission data through a follow-up composer", async () => {
     mocks.defaultExecutionOptions = {

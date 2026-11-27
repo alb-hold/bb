@@ -176,6 +176,104 @@ describe("event projection fold", () => {
     }
   });
 
+  it("reflects a late echo of an undelivered request when resumed after the turn ended", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requestId = "creq_abcdefghjk";
+    const settled = fromRows([
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    const [echo] = fromRows([
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "hello",
+        turnId: "turn-1",
+      }),
+    ]);
+    const fold = startThreadTimelineProjectionFold({
+      acceptedClientRequestContext: EMPTY_ACCEPTED_CLIENT_REQUEST_CONTEXT,
+      events: settled,
+      options,
+    });
+    const statuses = (rows: ReturnType<typeof build>["rows"]) =>
+      rows.flatMap((row) =>
+        row.kind === "conversation" && row.role === "user" && row.turnRequest
+          ? [row.turnRequest.status]
+          : [],
+      );
+    expect(statuses(build(settled, fold).rows)).toEqual(["undelivered"]);
+    const all = [...settled, echo!];
+    expect(resumeEventProjectionFold(fold, [echo!])).toBe(false);
+    expect(fold.events).toHaveLength(settled.length);
+    expect(statuses(build(all).rows)).toEqual(["accepted"]);
+  });
+
+  it("resumes warm for an echo that arrives during its own turn", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requestId = "creq_abcdefghjk";
+    const settled = fromRows([
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+    ]);
+    const [echo] = fromRows([
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "hello",
+        turnId: "turn-1",
+      }),
+    ]);
+    const fold = startThreadTimelineProjectionFold({
+      acceptedClientRequestContext: EMPTY_ACCEPTED_CLIENT_REQUEST_CONTEXT,
+      events: settled,
+      options,
+    });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    try {
+      expect(resumeEventProjectionFold(fold, [echo!])).toBe(true);
+      expect(fold.events).toHaveLength(settled.length + 1);
+      expect(build([...settled, echo!], fold)).toEqual(
+        build([...settled, echo!]),
+      );
+      expect(clone).not.toHaveBeenCalled();
+    } finally {
+      clone.mockRestore();
+    }
+  });
+
+  it("resumes warm for a late echo of a request the fold already counts as delivered", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requestId = "creq_abcdefghjk";
+    const settled = fromRows([
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.assistantDelta({
+        delta: "Hi",
+        itemId: "assistant-1",
+        turnId: "turn-1",
+      }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    const [echo] = fromRows([
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "hello",
+        turnId: "turn-1",
+      }),
+    ]);
+    const fold = startThreadTimelineProjectionFold({
+      acceptedClientRequestContext: EMPTY_ACCEPTED_CLIENT_REQUEST_CONTEXT,
+      events: settled,
+      options,
+    });
+    const all = [...settled, echo!];
+    expect(resumeEventProjectionFold(fold, [echo!])).toBe(true);
+    expect(build(all, fold)).toEqual(build(all));
+  });
+
   it("refuses events that change the fold's request and turn lookups", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const events = fromRows([

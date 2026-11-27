@@ -164,6 +164,10 @@ import {
 import type { SendMessageMutationLike } from "./threadDetailMutationTypes";
 import { useTimeHasPassed } from "@/hooks/useTimeHasPassed";
 import {
+  clearRestoredDraftRetry,
+  peekRetryOfClientRequestId,
+} from "./restored-draft-retry";
+import {
   buildAutoFollowUpRequest,
   buildFollowUpSubmitMode,
   buildFollowUpShortcutRequest,
@@ -1460,11 +1464,16 @@ export function ThreadDetailPromptArea({
         ? "queue_message"
         : "send_message";
       try {
+        const retryOfClientRequestId = peekRetryOfClientRequestId(
+          thread.id,
+          submittedDraft,
+        );
         const request = buildAutoFollowUpRequest({
           compactFirst: compactRequestFirst,
           threadId: thread.id,
           input: submittedInput,
           execution: followUpExecutionSelection,
+          retryOfClientRequestId,
         });
         if (request) {
           await sendMessage.mutateAsync({
@@ -1472,6 +1481,7 @@ export function ThreadDetailPromptArea({
             ...sendAtFields,
             ...pluginSubmissionFields,
           });
+          clearRestoredDraftRetry(thread.id);
           if (!isQueuingMessage) {
             setFullHistoryThreadId(null);
           }
@@ -1533,15 +1543,23 @@ export function ThreadDetailPromptArea({
         await submitDraft(async () => {
           promptDraft.clearIfCurrentMatches(submittedDraft);
           setBottomAttachmentError(null);
+          const retryOfClientRequestId = peekRetryOfClientRequestId(
+            thread.id,
+            submittedDraft,
+          );
+          const retryFields =
+            retryOfClientRequestId === null ? {} : { retryOfClientRequestId };
           await runWhileFollowUpShortcutSending(
             setIsFollowUpShortcutSending,
             async () => {
               try {
                 await sendMessage.mutateAsync({
                   ...shortcutRequest.request,
+                  ...retryFields,
                   ...sendAtFields,
                   ...pluginSubmissionFields,
                 });
+                clearRestoredDraftRetry(thread.id);
               } catch (nextError) {
                 promptDraft.restoreIfEmpty(submittedDraft);
                 throw reportMutationError({

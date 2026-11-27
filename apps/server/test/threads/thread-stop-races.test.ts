@@ -1,8 +1,14 @@
-import { getThread, readThreadRunState } from "@bb/db";
+import {
+  createQueuedThreadMessage,
+  getThread,
+  listQueuedThreadMessages,
+  listQueuedThreadMessagesWaitingOnKind,
+  readThreadRunState,
+} from "@bb/db";
 import { listEvents } from "@bb/db/testing";
 import { turnScope, type ResolvedThreadExecutionOptions } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   requestThreadStopForCurrentState,
   stopThreadForCurrentState,
@@ -272,6 +278,207 @@ describe("repeated stops", () => {
       expect(getThread(harness.db, thread.id)?.status).toBe("idle");
     });
   });
+
+  it("dispatches a queued follow-up once a stop whose turn start was swallowed is answered as retained", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-stop-races-5",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/stop-races-5",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/stop-races-5",
+        status: "ready",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "active",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-stop-races-5",
+        threadId: thread.id,
+      });
+      createQueuedThreadMessage(harness.db, harness.deps.hub, {
+        threadId: thread.id,
+        content: textInput("send me after the stop"),
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        senderThreadId: null,
+        waitingOn: { kind: "turn-starting" },
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: { kind: "unlabeled", subject: null },
+      });
+
+      requestThreadStopForCurrentState(harness.deps, thread);
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await postDaemonEvent(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        threadId: thread.id,
+        event: { type: "turn/started", turnId: "turn-aimed" },
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("stopping");
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+        activeTurnRetained: true,
+      });
+      await settle();
+
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      const submit = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === thread.id,
+      );
+      expect(submit.command.type).toBe("turn.submit");
+      expect(
+        listQueuedThreadMessagesWaitingOnKind(harness.db, {
+          kind: "turn-starting",
+          threadId: thread.id,
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  it.each([
+    ["after", 1],
+    ["before", 0],
+    ["in the same millisecond as", 0],
+    ["after and in the same millisecond as", 1],
+  ] as const)(
+    "a retained stop pauses only follow-ups queued %s the stop was requested",
+    async (when, expectedRequests) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps, {
+          id: `host-stop-races-retained-${when.replaceAll(" ", "-")}`,
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: `/tmp/stop-races-retained-${when.replaceAll(" ", "-")}`,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+          path: `/tmp/stop-races-retained-${when.replaceAll(" ", "-")}`,
+          status: "ready",
+        });
+        const thread = seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: environment.id,
+          status: "active",
+        });
+        seedTurnStarted(harness.deps, {
+          environmentId: environment.id,
+          threadId: thread.id,
+          turnId: "turn-retained",
+        });
+        const sendFollowUp = async (text: string) => {
+          const response = await harness.app.request(
+            `/api/v1/threads/${thread.id}/send`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                input: [{ type: "text", text }],
+                mode: "queue-if-active",
+                model: "gpt-5",
+                permissionMode: "full",
+                reasoningLevel: "medium",
+                serviceTier: "default",
+              }),
+            },
+          );
+          expect(response.status, await response.clone().text()).toBe(200);
+        };
+        if (when === "before" || when === "in the same millisecond as") {
+          await sendFollowUp("typed before the stop");
+        }
+
+        const pinClock = when === "after and in the same millisecond as";
+        if (pinClock) {
+          vi.useFakeTimers({ toFake: ["Date"] });
+          vi.setSystemTime(new Date(1_800_000_000_000));
+        }
+        requestThreadStopForCurrentState(harness.deps, thread);
+        const stop = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.stop" && command.threadId === thread.id,
+        );
+        if (pinClock) {
+          try {
+            await sendFollowUp("typed right after the stop");
+          } finally {
+            vi.useRealTimers();
+          }
+          const queued = listQueuedThreadMessages(harness.db, thread.id);
+          const interruption = harness.db.$client
+            .prepare(
+              "select created_at as at from events where thread_id = ? and type = 'system/thread/interrupted'",
+            )
+            .get(thread.id) as { at: number };
+          expect(queued).toHaveLength(1);
+          expect(queued[0]?.createdAt).toBe(interruption.at);
+          expect(queued[0]?.waitingOn).toBe(JSON.stringify({ kind: "stopping" }));
+        }
+        if (when === "in the same millisecond as") {
+          harness.db.$client
+            .prepare(
+              "update queued_thread_messages set created_at = (select max(created_at) from events where thread_id = ? and type = 'system/thread/interrupted') where thread_id = ?",
+            )
+            .run(thread.id, thread.id);
+        }
+        await reportQueuedCommandSuccess(harness, stop, {
+          providerCheckpointId: null,
+          activeTurnRetained: true,
+        });
+        await settle();
+        expect(getThread(harness.db, thread.id)?.status).toBe("active");
+        if (when === "after") {
+          await sendFollowUp("typed after the stop");
+        }
+        await postDaemonEvent(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          threadId: thread.id,
+          event: {
+            type: "turn/completed",
+            turnId: "turn-retained",
+            status: "completed",
+          },
+        });
+        await settle();
+        await settle();
+
+        const requested = harness.db.$client
+          .prepare(
+            "select count(*) as n from events where thread_id = ? and type = 'client/turn/requested'",
+          )
+          .get(thread.id) as { n: number };
+        expect(requested.n).toBe(expectedRequests);
+        expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(
+          1 - expectedRequests,
+        );
+      });
+    },
+  );
 
   it("settles an awaited stop of a live thread that has no environment", async () => {
     await withTestHarness(async (harness) => {

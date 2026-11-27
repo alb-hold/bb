@@ -41,6 +41,7 @@ import {
   rollbackSendThreadMessageTransaction,
   rollbackUpdateQueuedMessageTransaction,
 } from "./thread-runtime-cache-owner";
+import { updateCachedThreadStatusState } from "./query-cache";
 
 function makeThreadListEntry(id = "thread-1"): ThreadListEntry {
   return makeThreadListEntryFixture({
@@ -239,9 +240,9 @@ describe("thread runtime cache owner", () => {
     });
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => ({
           content: queuedMessage.content,
           groupWithNext: queuedMessage.groupWithNext,
@@ -269,9 +270,9 @@ describe("thread runtime cache owner", () => {
     });
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => queuedMessage.id),
     ).toEqual(["qmsg-first", "qmsg-edit", "qmsg-last"]);
 
@@ -886,9 +887,9 @@ describe("thread runtime cache owner", () => {
 
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => queuedMessage.id),
     ).toEqual(["qmsg-3"]);
     const timeline = queryClient.getQueryData<ThreadTimelineResponse>(
@@ -1059,6 +1060,65 @@ describe("thread runtime cache owner", () => {
     ).toEqual([]);
   });
 
+  it("lets the server's idle status win over a prediction stamped by a client clock ahead of the server", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const queryClient = createAppQueryClient({
+        defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+        showMutationErrorToasts: false,
+      });
+      const idleThread = {
+        id: "thread-1",
+        status: "idle",
+        updatedAt: 1_000,
+        runtime: { displayStatus: "idle" },
+      };
+      queryClient.setQueryData(threadQueryKey("thread-1"), idleThread);
+      queryClient.setQueryData(
+        threadTimelineQueryKey("thread-1"),
+        makeTimelineResponse(),
+      );
+      queryClient.setQueryData(threadQueuedMessagesQueryKey("thread-1"), []);
+      const request = {
+        id: "thread-1",
+        mode: "auto" as const,
+        input: [{ type: "text" as const, text: "go", mentions: [] }],
+      };
+      const transaction = await beginSendThreadMessageTransaction({
+        queryClient,
+        request,
+      });
+      applySendThreadMessageSuccess({
+        queryClient,
+        realtimeConnected: true,
+        request,
+        result: { ok: true, delivery: "sent", messageSequence: 1 },
+        transaction,
+      });
+      updateCachedThreadStatusState(queryClient, "thread-1", {
+        status: "idle",
+        activity: {
+          activeWorkflowCount: 0,
+          activeBackgroundAgentCount: 0,
+          activeBackgroundCommandCount: 0,
+          activePlanModeCount: 0,
+          activeGoalCount: 0,
+        },
+        runtime: { displayStatus: "idle" },
+        latestAttentionAt: 2_000,
+        updatedAt: 2_000,
+      });
+      expect(
+        queryClient.getQueryData<{ runtime: { displayStatus: string } }>(
+          threadQueryKey("thread-1"),
+        )?.runtime.displayStatus,
+      ).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an accepted send local while realtime is connected: prompt history is prepended, not refetched, and default execution options only go stale", async () => {
     const queryClient = createAppQueryClient({
       defaultOptions: { queries: { gcTime: Infinity, retry: false } },
@@ -1211,7 +1271,12 @@ describe("thread runtime cache owner", () => {
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
-    turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "steer",
+      status: "accepted",
+    },
   };
   const unrelatedRow: TimelineRow = {
     ...serverUserRow,
@@ -1280,7 +1345,11 @@ describe("thread runtime cache owner", () => {
         queryClient,
         realtimeConnected: true,
         request,
-        result: { ok: true, delivery: "sent", messageSequence: messageSequence ?? undefined },
+        result: {
+          ok: true,
+          delivery: "sent",
+          messageSequence: messageSequence ?? undefined,
+        },
         transaction,
       });
 

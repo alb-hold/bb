@@ -248,8 +248,7 @@ interface SendThreadMessageQueuedTransaction {
 }
 
 export type SendThreadMessageTransaction =
-  | SendThreadMessageAcceptedTurnTransaction
-  | SendThreadMessageQueuedTransaction;
+  SendThreadMessageAcceptedTurnTransaction | SendThreadMessageQueuedTransaction;
 
 export interface ReorderQueuedMessageTransaction {
   previousQueuedMessages: ThreadQueuedMessageListResponse | undefined;
@@ -656,6 +655,7 @@ function buildOptimisticUserMessageRow({
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
     turnRequest: {
+      requestId: null,
       isGrouped: false,
       kind: optimisticTurnRequestKind({ mode, threadStatus }),
       status: "pending",
@@ -672,26 +672,45 @@ function predictAcceptedTurnThreadState({
   queryClient: QueryClient;
   threadId: string;
 }): ThreadEntityPrediction {
-  return beginThreadEntityPrediction(queryClient, {
+  let predictedFrom: { updatedAt: number | undefined } | null = null;
+  let accepted = false;
+  const prediction = beginThreadEntityPrediction(queryClient, {
     threadIds: [threadId],
-    update: (entity) => ({
-      ...entity,
-      thread: {
-        ...entity.thread,
-        status: "active",
-        updatedAt: Math.max(entity.thread.updatedAt ?? createdAt, createdAt),
-        ...(entity.thread.runtime && {
-          runtime: {
-            ...entity.thread.runtime,
-            displayStatus:
-              entity.thread.runtime.displayStatus === "waiting-for-host"
-                ? entity.thread.runtime.displayStatus
-                : "active",
-          },
-        }),
-      },
-    }),
+    update: (entity) => {
+      if (predictedFrom === null)
+        predictedFrom = { updatedAt: entity.thread.updatedAt };
+      else if (accepted && entity.thread.updatedAt !== predictedFrom.updatedAt)
+        return entity;
+      return {
+        ...entity,
+        thread: {
+          ...entity.thread,
+          status: "active",
+          updatedAt: entity.thread.updatedAt ?? createdAt,
+          ...(entity.thread.runtime && {
+            runtime: {
+              ...entity.thread.runtime,
+              displayStatus:
+                entity.thread.runtime.displayStatus === "waiting-for-host"
+                  ? entity.thread.runtime.displayStatus
+                  : "active",
+            },
+          }),
+        },
+      };
+    },
   });
+  return {
+    ...prediction,
+    succeed(result) {
+      accepted = true;
+      prediction.succeed(result);
+    },
+    confirm(rows, readBack) {
+      accepted = true;
+      prediction.confirm(rows, readBack);
+    },
+  };
 }
 
 function removeOptimisticTimelineRowIfPresent(
@@ -764,9 +783,12 @@ export function applyThreadGoalClearResult({
   queryClient,
   threadId,
 }: ThreadIdCacheArgs): void {
-  for (const [queryKey, timeline] of queryClient.getQueriesData<ThreadTimelineResponse>(
-    { queryKey: threadTimelineQueryKeyPrefix(threadId) },
-  )) {
+  for (const [
+    queryKey,
+    timeline,
+  ] of queryClient.getQueriesData<ThreadTimelineResponse>({
+    queryKey: threadTimelineQueryKeyPrefix(threadId),
+  })) {
     if (!timeline) continue;
     queryClient.setQueryData<ThreadTimelineResponse>(queryKey, {
       ...timeline,
@@ -776,7 +798,10 @@ export function applyThreadGoalClearResult({
   const activity = getThreadEntity(queryClient, threadId)?.list?.activity;
   if (activity !== undefined) {
     patchThreadEntity(queryClient, threadId, {
-      activity: { ...activity, activeGoalCount: 0 } satisfies ThreadListEntry["activity"],
+      activity: {
+        ...activity,
+        activeGoalCount: 0,
+      } satisfies ThreadListEntry["activity"],
     });
   }
 }
@@ -939,6 +964,24 @@ export function applySendThreadMessageSuccess({
   transaction,
 }: ApplySendThreadMessageSuccessArgs): void {
   const optimisticCreatedAt = transaction?.optimisticCreatedAt ?? Date.now();
+  if (result.delivery === "alreadyDelivered") {
+    if (transaction?.kind === "accepted-turn") {
+      removeOptimisticTimelineRowIfPresent(
+        queryClient,
+        request.id,
+        transaction.optimisticRowId,
+      );
+      transaction.prediction.fail();
+    } else if (transaction?.kind === "queued-message") {
+      removeOptimisticQueuedMessage(
+        queryClient,
+        request.id,
+        transaction.optimisticQueuedMessageId,
+      );
+    }
+    invalidateThreadQueueQueries({ queryClient, threadId: request.id });
+    return;
+  }
   if (result.delivery === "queued") {
     const optimisticTimelineRowRemoved =
       transaction?.kind === "accepted-turn"

@@ -44,7 +44,12 @@ function userRow(args: {
     text: args.text,
     mentions: [],
     attachments: null,
-    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "message",
+      status: "accepted",
+    },
   };
 }
 

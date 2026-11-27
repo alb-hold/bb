@@ -101,6 +101,10 @@ export const QUERY_PLAN_ALLOWLIST: readonly QueryPlanAllowlistEntry[] = [
     "Runs per manual stop; the later-request EXISTS seeks the first request after the stop and the NOT EXISTS ends at the first later turn start; check:query-costs measures it",
   ),
   boundedCorrelatedEvents(
+    `${QUEUED}#isQueuedMessageAutoSendPaused`,
+    "Same manual-stop pause check as isThreadQueueAutoSendPaused with the row's creation time compared to the stop; runs per claimed row",
+  ),
+  boundedCorrelatedEvents(
     `${QUEUED}#listIdleThreadsWithQueuedMessages`,
     "Same manual-stop pause check as isThreadQueueAutoSendPaused, per idle thread with queued messages",
   ),

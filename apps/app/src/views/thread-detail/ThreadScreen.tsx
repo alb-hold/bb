@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -11,8 +12,11 @@ import { defaultAppSettings, type Environment } from "@bb/domain";
 import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
 import {
   appendQuoteAndAttachmentsToDraft,
+  arePromptDraftStatesEqual,
   isNativeActivityUnconfirmed,
+  isPromptDraftEmpty,
   promptInputToDraft,
+  restoreDraftBefore,
   type PromptDraftAttachment,
   type PromptDraftState,
   type PromptMentionLinkResolver,
@@ -34,6 +38,10 @@ import {
   useThreadTimelineController,
 } from "@/components/thread/timeline";
 import type { HostConnectionNotice } from "@/components/thread/timeline/ThreadTimelineSurface";
+import {
+  findLatestUserRow,
+  userRowToPromptInput,
+} from "@/components/thread/timeline/user-row-prompt-input";
 import { ThreadTimelinePanelLoadingSkeleton } from "@/components/thread/timeline/ThreadChatLoading";
 import { resolveThreadOngoingIndicator } from "@/components/thread/timeline/thread-ongoing-indicator";
 import { ThreadTableOfContents } from "@/components/thread/toc/ThreadTableOfContents";
@@ -85,6 +93,10 @@ import type {
   ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
 import { DeferredThreadDetailPromptArea } from "./DeferredThreadDetailPromptArea";
+import {
+  clearRestoredDraftRetry,
+  registerRestoredDraftRetry,
+} from "./restored-draft-retry";
 
 const THREAD_DETAIL_COMPOSER_ID = "thread-detail-follow-up-composer";
 const EMPTY_CHILD_THREAD_ITEMS: readonly ChildThreadPendingAttentionSource[] =
@@ -139,6 +151,21 @@ interface SentMessageEditSession {
   submitting: boolean;
   target: ThreadTimelineEditMessageTarget;
   threadId: string;
+}
+
+function findUserRowStatusById(
+  rows: readonly TimelineRow[],
+  rowId: string,
+): string | null {
+  for (const row of rows) {
+    if (row.kind === "turn" && row.children !== null) {
+      const nested = findUserRowStatusById(row.children, rowId);
+      if (nested !== "missing") return nested;
+    } else if (row.kind === "conversation" && row.id === rowId) {
+      return row.turnRequest?.status ?? null;
+    }
+  }
+  return "missing";
 }
 
 function hasTimelineRowId(
@@ -272,6 +299,7 @@ function useChildThreadsSection(
 
 interface UseSentMessageEditingArgs {
   canStartEdit: boolean;
+  projectId: string;
   threadId: string;
   timelineLoading: boolean;
   timelineRows: readonly TimelineRow[];
@@ -279,6 +307,7 @@ interface UseSentMessageEditingArgs {
 
 function useSentMessageEditing({
   canStartEdit,
+  projectId,
   threadId,
   timelineLoading,
   timelineRows,
@@ -294,8 +323,40 @@ function useSentMessageEditing({
       : null;
   const canEditSentMessages =
     canStartEdit && sentMessageEditSession === null && !editMessage.isPending;
+  const autoRestoredRef = useRef<{
+    draft: PromptDraftState;
+    previousDraft: PromptDraftState;
+    rowId: string;
+    threadId: string;
+  } | null>(null);
   const handleEditSentMessage = useCallback<ThreadTimelineEditMessageHandler>(
     (target: ThreadTimelineEditMessageTarget) => {
+      if (target.restoreToComposer) {
+        const promptDraft = getPromptDraftAccessor({
+          kind: "thread",
+          projectId,
+          threadId,
+        });
+        const previousDraft = promptDraft.getCurrent();
+        promptDraft.setDraft(
+          restoreDraftBefore(previousDraft, promptInputToDraft(target.input)),
+        );
+        autoRestoredRef.current = {
+          draft: promptDraft.getCurrent(),
+          previousDraft,
+          rowId: target.messageId,
+          threadId,
+        };
+        registerRestoredDraftRetry(
+          threadId,
+          isPromptDraftEmpty(previousDraft)
+            ? promptDraft.getCurrent()
+            : promptInputToDraft(target.input),
+          target.requestId,
+        );
+        requestComposerFocus(promptDraft.storageKey);
+        return;
+      }
       if (!canEditSentMessages) {
         return;
       }
@@ -308,7 +369,7 @@ function useSentMessageEditing({
         threadId,
       });
     },
-    [canEditSentMessages, threadId],
+    [canEditSentMessages, projectId, threadId],
   );
   const sentMessageEditThreadId = sentMessageEditSession?.threadId ?? null;
   const sentMessageEditTargetMessageId =
@@ -332,6 +393,100 @@ function useSentMessageEditing({
     setSentMessageEditSession(null);
     setDiscardedSentMessageEditId(sentMessageEditSession.operationId);
   }
+  const latestUserRow = findLatestUserRow(timelineRows);
+  const latestUserRowId = latestUserRow?.id ?? null;
+  const latestUserRowStatus = latestUserRow?.turnRequest?.status ?? null;
+  const seenLatestUserRowRef = useRef<{
+    baselineId: string | null;
+    id: string | null;
+    status: string | null;
+    threadId: string;
+  } | null>(null);
+  useEffect(() => {
+    const seen = seenLatestUserRowRef.current;
+    const previous = seen?.threadId === threadId ? seen : null;
+    if (timelineLoading) {
+      seenLatestUserRowRef.current = null;
+      return;
+    }
+    const baselineId =
+      previous === null ? latestUserRowId : previous.baselineId;
+    seenLatestUserRowRef.current = {
+      baselineId,
+      id: latestUserRowId,
+      status: latestUserRowStatus,
+      threadId,
+    };
+    const becameUndelivered =
+      latestUserRow !== null &&
+      latestUserRowStatus === "undelivered" &&
+      previous !== null &&
+      (previous.id === latestUserRowId
+        ? previous.status !== "undelivered"
+        : latestUserRowId !== baselineId);
+    const restored = autoRestoredRef.current;
+    if (restored !== null && restored.threadId === threadId) {
+      const restoredRowStatus = findUserRowStatusById(
+        timelineRows,
+        restored.rowId,
+      );
+      if (restoredRowStatus !== "undelivered") {
+        autoRestoredRef.current = null;
+        clearRestoredDraftRetry(restored.threadId);
+        if (restoredRowStatus !== "missing") {
+          const restoredDraftAccessor = getPromptDraftAccessor({
+            kind: "thread",
+            projectId,
+            threadId,
+          });
+          if (
+            arePromptDraftStatesEqual(
+              restoredDraftAccessor.getCurrent(),
+              restored.draft,
+            )
+          ) {
+            restoredDraftAccessor.setDraft(restored.previousDraft);
+          }
+        }
+      }
+    }
+    if (!becameUndelivered) {
+      return;
+    }
+    const promptDraft = getPromptDraftAccessor({
+      kind: "thread",
+      projectId,
+      threadId,
+    });
+    if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
+      return;
+    }
+    const restoredDraft = promptInputToDraft(
+      userRowToPromptInput(latestUserRow),
+    );
+    const previousDraft = promptDraft.getCurrent();
+    promptDraft.setDraft(restoredDraft);
+    autoRestoredRef.current = {
+      draft: promptDraft.getCurrent(),
+      previousDraft,
+      rowId: latestUserRowId ?? "",
+      threadId,
+    };
+    registerRestoredDraftRetry(
+      threadId,
+      promptDraft.getCurrent(),
+      latestUserRow.turnRequest?.requestId ?? null,
+    );
+    requestComposerFocus(promptDraft.storageKey);
+  }, [
+    latestUserRow,
+    latestUserRowId,
+    latestUserRowStatus,
+    projectId,
+    threadId,
+    timelineLoading,
+    timelineRows,
+  ]);
   useEffect(() => {
     if (discardedSentMessageEditId === null) {
       return;
@@ -557,6 +712,7 @@ export function ThreadScreen({
         !hasPendingInteraction &&
         !sendMessage.isPending &&
         !isThreadTimelinePending,
+      projectId: thread.projectId,
       threadId: thread.id,
       timelineLoading,
       timelineRows,

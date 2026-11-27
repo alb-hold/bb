@@ -6,6 +6,7 @@ import {
   createQueuedThreadMessageInTransaction,
   getEnvironment,
   getHost,
+  deleteClaimedQueuedThreadMessageBatchInTransaction,
   getQueuedThreadMessage,
   getStoredProviderSession,
   getThread,
@@ -13,6 +14,7 @@ import {
   holdQueuedThreadMessageForEdit,
   isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
+  isQueuedMessageAutoSendPaused,
   isThreadQueueAutoSendPaused,
   releaseQueuedMessageClaim,
   releaseQueuedThreadMessageEditHold,
@@ -26,6 +28,10 @@ import {
   flattenPromptInputGroups,
   isQueuedMessageFailedState,
 } from "@bb/domain";
+import {
+  DeliveredRetryDetected,
+  findDeliveredRetryRows,
+} from "./delivered-retry.js";
 import type {
   QueuedMessageDeliveryMode,
   QueuedMessageWaitingOn,
@@ -67,6 +73,7 @@ import { attemptDispatch, threadTargetHostId } from "./dispatch-attempt.js";
 import {
   QUEUED_MESSAGE_AUTO_SEND_PAUSED_CODE,
   QUEUED_MESSAGE_CLAIM_LOST_CODE,
+  createQueuedMessageClaimLostError,
 } from "./queue-waits.js";
 import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
 import {
@@ -565,17 +572,54 @@ async function sendClaimedQueuedMessage(
 
 async function sendClaimedQueuedMessageForThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
+  claimedArgs: SendClaimedQueuedMessageForThreadArgs,
+): Promise<ThreadQueuedMessage> {
+  if (isNativeTerminalThread(deps.db, claimedArgs.thread.id)) {
+    const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
+      thread: claimedArgs.thread,
+      claimed: claimedArgs.queuedMessages,
+      sendNow: claimedArgs.sendNow,
+    });
+    assertSendNowDispatched(claimedArgs, outcome);
+    return toThreadQueuedMessage(claimedArgs.queuedMessages[0]!);
+  }
+  let queuedMessages = claimedArgs.queuedMessages;
+  let duplicateRows = findDeliveredRetryRows(deps.db, queuedMessages);
+  while (true) {
+    if (duplicateRows.length > 0) {
+      const dropped = deps.db.transaction(
+        (tx) =>
+          deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
+            queuedMessages: duplicateRows,
+          }),
+        { behavior: "immediate" },
+      );
+      if (!dropped) throw createQueuedMessageClaimLostError();
+      deps.hub.notifyThread(claimedArgs.thread.id, ["queue-changed"]);
+      if (duplicateRows.length === queuedMessages.length) {
+        return toThreadQueuedMessage(queuedMessages[0]!);
+      }
+      queuedMessages = queuedMessages.filter(
+        (row) => !duplicateRows.includes(row),
+      );
+    }
+    try {
+      return await dispatchClaimedQueuedMessages(deps, {
+        ...claimedArgs,
+        queuedMessages,
+      });
+    } catch (error) {
+      if (!(error instanceof DeliveredRetryDetected) || error.rows.length === 0)
+        throw error;
+      duplicateRows = error.rows;
+    }
+  }
+}
+
+async function dispatchClaimedQueuedMessages(
+  deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendClaimedQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
-  if (isNativeTerminalThread(deps.db, args.thread.id)) {
-    const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
-      thread: args.thread,
-      claimed: args.queuedMessages,
-      sendNow: args.sendNow,
-    });
-    assertSendNowDispatched(args, outcome);
-    return toThreadQueuedMessage(args.queuedMessages[0]!);
-  }
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
   const inputGroups = queuedMessages.map(
@@ -588,6 +632,9 @@ async function sendClaimedQueuedMessageForThread(
       ? sendModeForDeliveryMode(args.queuedMessages)
       : args.mode;
   const systemNotice = parseStoredQueuedThreadMessageSystemNotice(lead);
+  const hasRetry = args.queuedMessages.some(
+    (row) => row.resendOfClientRequestId !== null,
+  );
   const outcome = await attemptDispatch(deps, {
     thread: args.thread,
     payload: {
@@ -605,6 +652,18 @@ async function sendClaimedQueuedMessageForThread(
       claimed: args.queuedMessages,
       respectManualStopPause: respectsManualStopPause(args),
       sendNow: args.sendNow,
+      ...(hasRetry
+        ? {
+            checkDeliveredRetry: ({ tx }) => {
+              const duplicateRows = findDeliveredRetryRows(
+                tx,
+                args.queuedMessages,
+              );
+              if (duplicateRows.length > 0)
+                throw new DeliveredRetryDetected(duplicateRows);
+            },
+          }
+        : {}),
     },
     queuePayload: queuedMessage.payload,
     pluginSubmission: null,
@@ -623,26 +682,14 @@ async function sendClaimedQueuedMessageForThread(
     onTurnRequestCreated: args.onTurnRequestCreated,
     trigger: "auto-dispatch",
   });
-  if (
-    args.sendNow &&
-    args.mode !== "steer" &&
-    outcome.kind === "queued" &&
-    outcome.entry.waitingOn?.kind !== "stopping"
-  ) {
-    throw new ApiError(
-      409,
-      "queued_message_still_waiting",
-      `This message cannot be sent yet: ${describeCoreWait(outcome.entry.waitingOn)}.`,
-    );
-  }
+  assertSendNowDispatched(args, outcome);
   return queuedMessage;
 }
 
 function assertSendNowDispatched(
   args: SendClaimedQueuedMessageForThreadArgs,
   outcome:
-    | { kind: "dispatched" }
-    | { kind: "queued"; entry: ThreadQueuedMessage },
+    { kind: "dispatched" } | { kind: "queued"; entry: ThreadQueuedMessage },
 ): void {
   if (
     args.sendNow &&
@@ -720,8 +767,11 @@ async function sendClaimedQueuedMessageGroup(
     (isManualCompactionActive(deps, thread) ||
       (args.mode === "auto" &&
         !sendNow &&
-        queuedMessages.some(isOrdinaryTurnEndQueuedMessage) &&
-        isThreadQueueAutoSendPaused(deps.db, thread.id)))
+        queuedMessages.some(
+          (row) =>
+            isOrdinaryTurnEndQueuedMessage(row) &&
+            isQueuedMessageAutoSendPaused(deps.db, row),
+        )))
   ) {
     releaseQueuedMessageClaims(deps, queuedMessages);
     return toThreadQueuedMessage(queuedMessages[0]!);

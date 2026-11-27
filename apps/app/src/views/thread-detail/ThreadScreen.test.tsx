@@ -17,10 +17,11 @@ import type { ThreadTimelineEditMessageHandler } from "@/components/thread/timel
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
-import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
+import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import type { ThreadDetailSentMessageEdit } from "./ThreadDetailPromptArea";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
+import { peekRetryOfClientRequestId } from "./restored-draft-retry";
 import type { ThreadResponse } from "@bb/server-contract";
 
 const mocks = vi.hoisted(() => ({
@@ -101,8 +102,7 @@ vi.mock("@/components/thread/timeline", async (importOriginal) => {
     ThreadTimelineSurface: (props: Record<string, unknown>) => {
       mocks.surfaceProps.push(props);
       const addToChat = props.onSelectionAddToChat as
-        | ((text: string) => void)
-        | undefined;
+        ((text: string) => void) | undefined;
       return (
         <button type="button" onClick={() => addToChat?.("Quoted line")}>
           Add selection to chat
@@ -255,8 +255,7 @@ function timelineWithRowIds(
 
 function latestSentMessageEdit(): ThreadDetailSentMessageEdit | undefined {
   return mocks.promptAreaProps.at(-1)!.sentMessageEdit as
-    | ThreadDetailSentMessageEdit
-    | undefined;
+    ThreadDetailSentMessageEdit | undefined;
 }
 
 function startEditingMessage(messageId: string) {
@@ -267,6 +266,8 @@ function startEditingMessage(messageId: string) {
       expectedRequestSequence: 1,
       input: [{ type: "text", text: "/compact", mentions: [] }],
       messageId,
+      requestId: null,
+      restoreToComposer: false,
     });
   });
 }
@@ -455,6 +456,540 @@ describe("ThreadScreen", () => {
     expect(mocks.promptAreaProps.at(-1)!.composerFocusRequestKey).not.toBe(
       focusKeyBefore,
     );
+  });
+
+  describe("undelivered messages", () => {
+    function undeliveredTimeline(
+      id: string,
+    ): UseThreadTimelineControllerResult {
+      return {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id,
+            role: "user",
+            text: "never reached the provider",
+            turnRequest: {
+              requestId: null,
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ],
+      };
+    }
+    function threadDraft() {
+      return getPromptDraftAccessor({
+        kind: "thread",
+        projectId: THREAD.projectId,
+        threadId: THREAD.id,
+      });
+    }
+
+    function userRowAt(id: string, status: "accepted" | "undelivered") {
+      return conversationRow({
+        id,
+        role: "user",
+        text: "never reached the provider",
+        turnId: "turn_own",
+        turnRequest: {
+          isGrouped: false,
+          requestId: `req_${id}`,
+          kind: "message",
+          status,
+        },
+      });
+    }
+    function timelineOf(
+      ...rows: UseThreadTimelineControllerResult["timelineRows"]
+    ): UseThreadTimelineControllerResult {
+      return { ...TIMELINE, timelineRows: rows };
+    }
+
+    it("leaves an empty composer empty when opening a thread that already holds an undelivered row", () => {
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_old") },
+      );
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("fills an empty composer once when the latest message becomes undelivered while open", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("live_row", "accepted")) },
+      );
+      expect(threadDraft().getCurrent().text).toBe("");
+      mocks.timeline = timelineOf(userRowAt("live_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("takes the restored draft back when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("late_echo_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(userRowAt("late_echo_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+      mocks.timeline = timelineOf(userRowAt("late_echo_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("keeps an edited restored draft when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("edited_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(userRowAt("edited_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      mocks.timeline = timelineOf(userRowAt("edited_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider, edited",
+      );
+    });
+
+    it("fills an empty composer when the undelivered row is followed by its own turn row", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: timelineOf(
+            userRowAt("own_turn_row", "accepted"),
+            turnRow({ turnId: "turn_own" }),
+          ),
+        },
+      );
+      mocks.timeline = timelineOf(
+        userRowAt("own_turn_row", "undelivered"),
+        turnRow({ turnId: "turn_own" }),
+      );
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
+    it("fills an empty composer when a new message arrives already undelivered", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("loaded_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(
+        userRowAt("loaded_row", "accepted"),
+        userRowAt("arrived_row", "undelivered"),
+      );
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
+    it("fills an empty composer when the first message of an empty thread arrives undelivered", () => {
+      const view = renderScreen({ kind: "page" }, { timeline: timelineOf() });
+      mocks.timeline = timelineOf(userRowAt("first_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
+    it("never auto-restores an undelivered row that a later turn follows", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: timelineOf(
+            userRowAt("older_row", "accepted"),
+            turnRow({ turnId: "turn_later" }),
+          ),
+        },
+      );
+      mocks.timeline = timelineOf(
+        userRowAt("older_row", "undelivered"),
+        turnRow({ turnId: "turn_later" }),
+      );
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("leaves a draft the user is typing alone", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_typing") },
+      );
+      expect(threadDraft().getCurrent().text).toBe("already typing");
+    });
+
+    it("restores an undelivered message in front of the current draft", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("undelivered_restore") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "undelivered_restore",
+          requestId: "req_original",
+          restoreToComposer: true,
+        });
+      });
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider\n\nalready typing",
+      );
+    });
+
+    it("takes a manually restored draft back when a late echo clears the undelivered status", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("manual_restore_row") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "manual_restore_row",
+          requestId: "req_original",
+          restoreToComposer: true,
+        });
+      });
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider\n\nalready typing",
+      );
+      mocks.timeline = timelineOf(userRowAt("manual_restore_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("already typing");
+    });
+
+    it("keeps an edited manually restored draft when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("manual_edited_row") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "manual_edited_row",
+          requestId: "req_original",
+          restoreToComposer: true,
+        });
+      });
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      mocks.timeline = timelineOf(userRowAt("manual_edited_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider, edited",
+      );
+    });
+  });
+
+  describe("retry of a restored message", () => {
+    function threadDraft() {
+      return getPromptDraftAccessor({
+        kind: "thread",
+        projectId: THREAD.projectId,
+        threadId: THREAD.id,
+      });
+    }
+
+    function restoreManually(rowId: string, requestId: string | null) {
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: {
+            ...TIMELINE,
+            timelineRows: [
+              conversationRow({
+                id: rowId,
+                role: "user",
+                text: "never reached the provider",
+                turnId: "turn_own",
+                turnRequest: {
+                  isGrouped: false,
+                  requestId,
+                  kind: "message",
+                  status: "undelivered",
+                },
+              }),
+            ],
+          },
+        },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: rowId,
+          requestId,
+          restoreToComposer: true,
+        });
+      });
+      return view;
+    }
+
+    it("names the original request when the restored draft is sent unedited", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      restoreManually("retry_unedited_row", "req_original");
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_original");
+    });
+
+    it("names no request when the restored row is merged into a non-empty draft", () => {
+      threadDraft().setDraft({
+        text: "something I was typing",
+        mentions: [],
+        attachments: [],
+      });
+      restoreManually("retry_merged_row", "req_original");
+      expect(threadDraft().getCurrent().text).toContain(
+        "something I was typing",
+      );
+      expect(threadDraft().getCurrent().text).toContain(
+        "never reached the provider",
+      );
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+    });
+
+    it("names no request when the restored draft was edited before sending", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      restoreManually("retry_edited_row", "req_original");
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+    });
+
+    it("names the original request when the auto-restored draft is sent unedited", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: {
+            ...TIMELINE,
+            timelineRows: [
+              conversationRow({
+                id: "auto_retry_row",
+                role: "user",
+                text: "never reached the provider",
+                turnId: "turn_own",
+                turnRequest: {
+                  isGrouped: false,
+                  requestId: "req_auto",
+                  kind: "message",
+                  status: "accepted",
+                },
+              }),
+            ],
+          },
+        },
+      );
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "auto_retry_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_auto",
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_auto");
+    });
+
+    it("forgets the request once the late echo clears the undelivered status", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_echo_row", "req_original");
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "retry_echo_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_original",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+    });
+
+    it("keeps the request when a newer user row arrives while the restored draft is unsent", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_newer_row", "req_original");
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "retry_newer_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_original",
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+          conversationRow({
+            id: "newer_row",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_row",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_original");
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
+    it("forgets the request and reverts the draft once the restored row is echoed after a newer row arrived", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_newer_echo_row", "req_original");
+      const restoredRow = (status: "undelivered" | "accepted") =>
+        conversationRow({
+          id: "retry_newer_echo_row",
+          role: "user",
+          text: "never reached the provider",
+          turnId: "turn_own",
+          turnRequest: {
+            isGrouped: false,
+            requestId: "req_original",
+            kind: "message",
+            status,
+          },
+        });
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          restoredRow("undelivered"),
+          conversationRow({
+            id: "newer_echo_other",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_echo_other",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          restoredRow("accepted"),
+          conversationRow({
+            id: "newer_echo_other",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_echo_other",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
   });
 
   it("keeps a submitted edit quiet when its own rewrite removes the edited message first", async () => {

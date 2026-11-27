@@ -3,6 +3,7 @@ import type { TimelineConversationTurnRequest } from "@bb/server-contract";
 export function turnRequestLabel(
   turnRequest: TimelineConversationTurnRequest,
 ): string | null {
+  if (turnRequest.status === "undelivered") return "Not delivered";
   if (turnRequest.kind !== "steer") {
     return null;
   }

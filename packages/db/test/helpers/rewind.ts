@@ -206,7 +206,19 @@ export function dropThreadRunStateTables(db: DbConnection): void {
   );
 }
 
+export function dropQueuedMessageResendOfColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(queued_thread_messages)")
+    .all();
+  if (columns.some((column) => column.name === "resend_of_client_request_id")) {
+    db.$client.exec(
+      "ALTER TABLE queued_thread_messages DROP COLUMN resend_of_client_request_id",
+    );
+  }
+}
+
 export function dropPluginFailureLabelColumns(db: DbConnection): void {
+  dropQueuedMessageResendOfColumn(db);
   for (const [table, column] of [
     ["plugins", "last_failure_label"],
     ["plugin_state_snapshots", "rollback_candidate_label"],

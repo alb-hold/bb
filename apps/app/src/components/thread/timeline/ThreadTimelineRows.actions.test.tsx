@@ -403,6 +403,7 @@ describe("ThreadTimelineRows actions", () => {
             role: "user",
             text: "Change direction.",
             turnRequest: {
+              requestId: null,
               isGrouped: false,
               kind: "steer",
               status: "accepted",
@@ -427,6 +428,7 @@ describe("ThreadTimelineRows actions", () => {
             role: "user",
             text: "One message in a group.",
             turnRequest: {
+              requestId: null,
               isGrouped: true,
               kind: "message",
               status: "accepted",
@@ -480,6 +482,8 @@ describe("ThreadTimelineRows actions", () => {
     expect(onEditMessage).toHaveBeenCalledWith({
       messageId: expect.any(String),
       expectedRequestSequence: 11,
+      requestId: null,
+      restoreToComposer: false,
       input: [
         { type: "localImage", path: "uploads/screenshot.png" },
         {
@@ -490,6 +494,92 @@ describe("ThreadTimelineRows actions", () => {
         },
       ],
     });
+  });
+
+  it("offers an undelivered message back to the composer", () => {
+    const onEditMessage = vi.fn();
+    renderWithRouter(
+      <ThreadTimelineRows
+        timelineRows={[
+          conversationRow({
+            role: "user",
+            text: "never reached the provider",
+            sourceSeqStart: 4,
+            turnRequest: {
+              requestId: null,
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ]}
+        onEditMessage={onEditMessage}
+        threadRuntimeDisplayStatus="idle"
+        threadIsActive={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore to composer" }),
+    );
+    expect(onEditMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoreToComposer: true,
+        input: [
+          {
+            type: "text",
+            text: "never reached the provider",
+            mentions: [],
+          },
+        ],
+      }),
+    );
+  });
+
+  it("restores the screenshot of an undelivered message with its text", () => {
+    const onEditMessage = vi.fn();
+    renderWithRouter(
+      <ThreadTimelineRows
+        timelineRows={[
+          conversationRow({
+            role: "user",
+            text: "look at this",
+            sourceSeqStart: 4,
+            attachments: {
+              webImages: 0,
+              localImages: 1,
+              localFiles: 0,
+              imageUrls: [],
+              localImagePaths: ["uploads/screenshot.png"],
+              localFilePaths: [],
+              localFileDetails: [],
+            },
+            turnRequest: {
+              requestId: null,
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ]}
+        onEditMessage={onEditMessage}
+        threadRuntimeDisplayStatus="idle"
+        threadIsActive={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore to composer" }),
+    );
+    expect(onEditMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoreToComposer: true,
+        input: [
+          { type: "text", text: "look at this", mentions: [] },
+          { type: "localImage", path: "uploads/screenshot.png" },
+        ],
+      }),
+    );
   });
 
   it("adds a copy action to a remote-image-only row", () => {

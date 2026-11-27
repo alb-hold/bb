@@ -50,6 +50,7 @@ interface BaseFollowUpRequestArgs {
 interface BuildAutoFollowUpRequestArgs extends BaseFollowUpRequestArgs {
   compactFirst: boolean;
   execution: FollowUpExecutionSelection;
+  retryOfClientRequestId?: string | null;
 }
 
 interface BuildSendQueuedMessageByIdRequestArgs {
@@ -98,9 +99,7 @@ type FollowUpShortcutRequest =
   | { kind: "queued"; request: SendQueuedMessageByIdRequest };
 
 export type DefaultExecutionOptionsState =
-  | "available"
-  | "loading"
-  | "unavailable";
+  "available" | "loading" | "unavailable";
 
 export function shouldQueueFollowUpMessage(
   displayStatus: ThreadRuntimeDisplayStatus,
@@ -184,6 +183,7 @@ export function buildAutoFollowUpRequest({
   compactFirst,
   execution,
   input,
+  retryOfClientRequestId,
   threadId,
 }: BuildAutoFollowUpRequestArgs): SendMessageMutationRequest | null {
   if (input.length === 0) {
@@ -195,6 +195,7 @@ export function buildAutoFollowUpRequest({
     input,
     mode: "queue-if-active",
     ...buildSharedThreadExecutionRequestFields(execution),
+    ...(retryOfClientRequestId ? { retryOfClientRequestId } : {}),
     ...(compactFirst &&
     !isStandaloneBuiltinCompactCommand(input) &&
     !isStandaloneBuiltinClearCommand(input)

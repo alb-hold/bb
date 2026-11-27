@@ -115,6 +115,7 @@ describe("ConversationMessageContent user images", () => {
             threadId="thr_paste"
             projectId="proj_paste"
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "accepted",
@@ -158,6 +159,7 @@ describe("ConversationMessageContent user images", () => {
               timestamp={0}
               threadId="thr_image"
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",
@@ -195,6 +197,7 @@ describe("ConversationMessageContent user HTML", () => {
             timestamp={0}
             threadId="thr_html"
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "accepted",
@@ -230,6 +233,7 @@ describe("ConversationMessageContent user sizing", () => {
             text="Expose the browser window so I can login for you wherever you need."
             timestamp={0}
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "accepted",
@@ -371,6 +375,7 @@ describe("ConversationMessageContent long user messages", () => {
               text={text}
               timestamp={0}
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",
@@ -403,6 +408,7 @@ describe("ConversationMessageContent long user messages", () => {
             text={text}
             timestamp={0}
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "accepted",
@@ -516,6 +522,7 @@ describe("ConversationMessageContent user thread mentions", () => {
               text="Continue in thr_dcwivn5n8w when this is ready."
               timestamp={0}
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",
@@ -562,6 +569,7 @@ describe("ConversationMessageContent user thread mentions", () => {
               text="See @thread:thr_cross_project for the result."
               timestamp={0}
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",
@@ -602,6 +610,7 @@ describe("ConversationMessageContent automation messages", () => {
             timestamp={0}
             threadId="thr_automation"
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "accepted",
@@ -649,6 +658,7 @@ describe("ConversationMessageContent undelivered automation messages", () => {
             timestamp={0}
             threadId="thr_automation"
             turnRequest={{
+              requestId: null,
               isGrouped: false,
               kind: "steer",
               status: "rejected",
@@ -698,6 +708,7 @@ describe("user message overflow", () => {
               text="What does this mean?"
               timestamp={0}
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",

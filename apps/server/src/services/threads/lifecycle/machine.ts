@@ -396,6 +396,10 @@ function applyCompletion(
   });
 }
 
+function isIdle(draft: Draft): boolean {
+  return draft.status === "idle";
+}
+
 function releaseHeld(draft: Draft): void {
   const held = draft.heldCompletion;
   if (held === null || draft.awaitingAnswers()) return;
@@ -534,6 +538,13 @@ function requestStop(
     requestedAt: owed?.requestedAt ?? args.now,
     sentAt: owed?.sentAt ?? null,
   };
+}
+
+function moveToActiveAndDrain(draft: Draft): void {
+  draft.move("run.started");
+  if (draft.status === "active") {
+    draft.effect({ kind: "drain-queue", wake: "turn-started" });
+  }
 }
 
 function sendStopUnlessInFlight(draft: Draft, now: number): void {
@@ -911,10 +922,7 @@ export function transitionThreadLifecycle(
           request.phase = "accepted";
         }
       }
-      draft.move("run.started");
-      if (draft.status === "active") {
-        draft.effect({ kind: "drain-queue", wake: "turn-started" });
-      }
+      moveToActiveAndDrain(draft);
       break;
     case "turn.completed": {
       rejectUnconfirmed(draft, ["steer"]);
@@ -982,7 +990,16 @@ export function transitionThreadLifecycle(
         case "retained":
           draft.stop = null;
           if (draft.status === "idle" || draft.status === "error") {
-            draft.move("run.started");
+            moveToActiveAndDrain(draft);
+          } else if (draft.status === "stopping") {
+            if (draft.heldCompletion !== null) {
+              releaseHeld(draft);
+              if (isIdle(draft)) {
+                draft.effect({ kind: "drain-queue", wake: "thread-ready" });
+              }
+            } else {
+              moveToActiveAndDrain(draft);
+            }
           }
           break;
         case "stopped":

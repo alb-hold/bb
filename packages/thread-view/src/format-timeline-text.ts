@@ -380,9 +380,12 @@ function formatTurnTitle(
 function formatConversationRequestLabel(
   row: TimelineConversationViewRow,
 ): string | null {
-  if (row.role !== "user" || row.turnRequest.kind !== "steer") {
-    return null;
+  if (row.role !== "user") return null;
+  const isSteer = row.turnRequest.kind === "steer";
+  if (row.turnRequest.status === "undelivered") {
+    return isSteer ? "steer not delivered" : "not delivered";
   }
+  if (!isSteer) return null;
   if (row.turnRequest.status === "pending") return "steer pending";
   if (row.turnRequest.status === "rejected") return "steer failed";
   return "steer";

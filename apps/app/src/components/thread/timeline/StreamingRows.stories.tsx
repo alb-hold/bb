@@ -148,7 +148,12 @@ function buildOptimisticUserRow(id: string): TimelineRow {
     text: OPTIMISTIC_USER_PROMPT_TEXT,
     mentions: [],
     attachments: null,
-    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "message",
+      status: "accepted",
+    },
   };
 }
 
@@ -260,7 +265,12 @@ function conversationRowFromStep(
       systemMessageKind: "unlabeled",
       systemMessageSubject: null,
       mentions: [],
-      turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+      turnRequest: {
+        isGrouped: false,
+        requestId: null,
+        kind: "message",
+        status: "accepted",
+      },
     };
   }
   return {
@@ -380,7 +390,12 @@ function AssistantContentStreaming({
     systemMessageSubject: null,
     text: ASSISTANT_STREAMING_USER_PROMPT.text,
     attachments: null,
-    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "message",
+      status: "accepted",
+    },
   };
   const assistantText = ASSISTANT_STREAMING_CHUNKS.slice(0, step).join("");
   const assistantRow: TimelineRow = {

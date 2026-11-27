@@ -145,6 +145,25 @@ describe("threadDetailPromptSubmission", () => {
     },
   );
 
+  it("carries retryOfClientRequestId only when one is given", () => {
+    const retry = buildAutoFollowUpRequest({
+      compactFirst: false,
+      execution: null,
+      input: textInput,
+      retryOfClientRequestId: "req_original",
+      threadId: "thread-1",
+    });
+    expect(retry?.retryOfClientRequestId).toBe("req_original");
+    const fresh = buildAutoFollowUpRequest({
+      compactFirst: false,
+      execution: null,
+      input: textInput,
+      retryOfClientRequestId: null,
+      threadId: "thread-1",
+    });
+    expect(fresh).not.toHaveProperty("retryOfClientRequestId");
+  });
+
   it("omits execution overrides when building auto follow-up requests without concrete defaults", () => {
     expect(
       buildAutoFollowUpRequest({

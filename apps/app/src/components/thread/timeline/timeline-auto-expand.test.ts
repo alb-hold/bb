@@ -177,7 +177,12 @@ describe("collectTimelineAutoExpansionRowIds", () => {
         role: "user",
         text: "please keep going",
         sourceSeqStart: 2,
-        turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+        turnRequest: {
+          isGrouped: false,
+          requestId: null,
+          kind: "message",
+          status: "accepted",
+        },
       }),
     ]);
 
@@ -404,7 +409,12 @@ describe("collectTimelineAutoExpansionRowIds", () => {
         id: "pending-steer-1",
         role: "user",
         text: "Keep this in mind",
-        turnRequest: { isGrouped: false, kind: "steer", status: "pending" },
+        turnRequest: {
+          isGrouped: false,
+          requestId: null,
+          kind: "steer",
+          status: "pending",
+        },
       }),
     ]);
 
