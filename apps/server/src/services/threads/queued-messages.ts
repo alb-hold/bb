@@ -14,6 +14,7 @@ import {
   isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
   isQueuedMessageAutoSendPaused,
+  isThreadQueueAutoSendPaused,
   releaseQueuedMessageClaim,
   releaseQueuedThreadMessageEditHold,
   releaseStaleQueuedMessageClaims,
@@ -317,7 +318,8 @@ export async function createQueuedMessageForThread(
           permissionMode: execution.permissionMode,
           serviceTier: execution.serviceTier,
           waitingOn:
-            currentThread.status === "stopping"
+            currentThread.status === "stopping" ||
+            isThreadQueueAutoSendPaused(tx, thread.id)
               ? { kind: "stopping" }
               : { kind: "thread-busy" },
           sendAt: null,
