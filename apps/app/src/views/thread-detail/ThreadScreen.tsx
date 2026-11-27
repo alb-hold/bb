@@ -360,17 +360,21 @@ function useSentMessageEditing({
   const latestUserRowId = latestUserRow?.id ?? null;
   const latestUserRowStatus = latestUserRow?.turnRequest?.status ?? null;
   const seenLatestUserRowRef = useRef<{
+    baselineId: string;
     id: string;
     status: string | null;
     threadId: string;
   } | null>(null);
   useEffect(() => {
-    const previous = seenLatestUserRowRef.current;
+    const seen = seenLatestUserRowRef.current;
+    const previous = seen?.threadId === threadId ? seen : null;
     if (timelineLoading || latestUserRow === null || latestUserRowId === null) {
       seenLatestUserRowRef.current = null;
       return;
     }
+    const baselineId = previous?.baselineId ?? latestUserRowId;
     seenLatestUserRowRef.current = {
+      baselineId,
       id: latestUserRowId,
       status: latestUserRowStatus,
       threadId,
@@ -378,9 +382,9 @@ function useSentMessageEditing({
     const becameUndelivered =
       latestUserRowStatus === "undelivered" &&
       previous !== null &&
-      previous.threadId === threadId &&
-      previous.id === latestUserRowId &&
-      previous.status !== "undelivered";
+      (previous.id === latestUserRowId
+        ? previous.status !== "undelivered"
+        : latestUserRowId !== baselineId);
     if (!becameUndelivered) {
       return;
     }

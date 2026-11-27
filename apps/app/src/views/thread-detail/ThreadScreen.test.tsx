@@ -543,6 +543,21 @@ describe("ThreadScreen", () => {
       );
     });
 
+    it("fills an empty composer when a new message arrives already undelivered", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("loaded_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(
+        userRowAt("loaded_row", "accepted"),
+        userRowAt("arrived_row", "undelivered"),
+      );
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
     it("never auto-restores an undelivered row that a later turn follows", () => {
       const view = renderScreen(
         { kind: "page" },
