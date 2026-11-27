@@ -1,4 +1,9 @@
-import { getThread, readThreadRunState } from "@bb/db";
+import {
+  createQueuedThreadMessage,
+  getThread,
+  listQueuedThreadMessagesWaitingOnKind,
+  readThreadRunState,
+} from "@bb/db";
 import { listEvents } from "@bb/db/testing";
 import { turnScope, type ResolvedThreadExecutionOptions } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
@@ -270,6 +275,84 @@ describe("repeated stops", () => {
         },
       });
       expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+    });
+  });
+
+  it("dispatches a queued follow-up once a stop whose turn start was swallowed is answered as retained", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-stop-races-5",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/stop-races-5",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/stop-races-5",
+        status: "ready",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "active",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-stop-races-5",
+        threadId: thread.id,
+      });
+      createQueuedThreadMessage(harness.db, harness.deps.hub, {
+        threadId: thread.id,
+        content: textInput("send me after the stop"),
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        senderThreadId: null,
+        waitingOn: { kind: "turn-starting" },
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: { kind: "unlabeled", subject: null },
+      });
+
+      requestThreadStopForCurrentState(harness.deps, thread);
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await postDaemonEvent(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        threadId: thread.id,
+        event: { type: "turn/started", turnId: "turn-aimed" },
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("stopping");
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+        activeTurnRetained: true,
+      });
+      await settle();
+
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      const submit = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === thread.id,
+      );
+      expect(submit.command.type).toBe("turn.submit");
+      expect(
+        listQueuedThreadMessagesWaitingOnKind(harness.db, {
+          kind: "turn-starting",
+          threadId: thread.id,
+        }),
+      ).toEqual([]);
     });
   });
 

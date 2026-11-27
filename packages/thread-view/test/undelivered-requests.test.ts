@@ -139,4 +139,55 @@ describe("undelivered user messages", () => {
       "accepted",
     ]);
   });
+
+  it("keeps the local image restorable when a stop lands before the CLI consumed the message", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const fixture = renderTimelineFixture({
+      events: [
+        event.clientTurnRequested({
+          requestId,
+          text: "look at this",
+          input: [
+            { type: "text", text: "look at this", mentions: [] },
+            { type: "localImage", path: "/tmp/shot.png" },
+          ],
+        }),
+        event.turnStarted({ turnId: "turn-1" }),
+        event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+        event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+      ],
+      projectionOptions: { threadStatus: "idle", turnMessageDetail: "full" },
+    });
+    const userRows = fixture.rows.flatMap((row) =>
+      row.kind === "conversation" && row.role === "user" ? [row] : [],
+    );
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]?.turnRequest?.status).toBe("undelivered");
+    expect(userRows[0]?.attachments?.localImagePaths).toEqual([
+      "/tmp/shot.png",
+    ]);
+  });
+
+  it("does not mark the same message undelivered once the CLI echoed it before the stop", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requests = userTurnRequests([
+      event.clientTurnRequested({
+        requestId,
+        text: "look at this",
+        input: [
+          { type: "text", text: "look at this", mentions: [] },
+          { type: "localImage", path: "/tmp/shot.png" },
+        ],
+      }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "look at this",
+        turnId: "turn-1",
+      }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    expect(requests.map((request) => request.status)).toEqual(["accepted"]);
+  });
 });
