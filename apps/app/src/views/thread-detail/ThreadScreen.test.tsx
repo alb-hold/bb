@@ -658,6 +658,65 @@ describe("ThreadScreen", () => {
         "never reached the provider\n\nalready typing",
       );
     });
+
+    it("takes a manually restored draft back when a late echo clears the undelivered status", () => {
+      threadDraft().setDraft({
+        text: "already typing",
+        mentions: [],
+        attachments: [],
+      });
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("manual_restore_row") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "manual_restore_row",
+          restoreToComposer: true,
+        });
+      });
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider\n\nalready typing",
+      );
+      mocks.timeline = timelineOf(userRowAt("manual_restore_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("already typing");
+    });
+
+    it("keeps an edited manually restored draft when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: undeliveredTimeline("manual_edited_row") },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: "manual_edited_row",
+          restoreToComposer: true,
+        });
+      });
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      mocks.timeline = timelineOf(userRowAt("manual_edited_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider, edited",
+      );
+    });
   });
 
   it("keeps a submitted edit quiet when its own rewrite removes the edited message first", async () => {

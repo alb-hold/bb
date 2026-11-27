@@ -13,7 +13,6 @@ import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
 import {
   appendQuoteAndAttachmentsToDraft,
   arePromptDraftStatesEqual,
-  emptyPromptDraftState,
   isNativeActivityUnconfirmed,
   isPromptDraftEmpty,
   promptInputToDraft,
@@ -305,6 +304,12 @@ function useSentMessageEditing({
       : null;
   const canEditSentMessages =
     canStartEdit && sentMessageEditSession === null && !editMessage.isPending;
+  const autoRestoredRef = useRef<{
+    draft: PromptDraftState;
+    previousDraft: PromptDraftState;
+    rowId: string;
+    threadId: string;
+  } | null>(null);
   const handleEditSentMessage = useCallback<ThreadTimelineEditMessageHandler>(
     (target: ThreadTimelineEditMessageTarget) => {
       if (target.restoreToComposer) {
@@ -313,12 +318,16 @@ function useSentMessageEditing({
           projectId,
           threadId,
         });
+        const previousDraft = promptDraft.getCurrent();
         promptDraft.setDraft(
-          restoreDraftBefore(
-            promptDraft.getCurrent(),
-            promptInputToDraft(target.input),
-          ),
+          restoreDraftBefore(previousDraft, promptInputToDraft(target.input)),
         );
+        autoRestoredRef.current = {
+          draft: promptDraft.getCurrent(),
+          previousDraft,
+          rowId: target.messageId,
+          threadId,
+        };
         requestComposerFocus(promptDraft.storageKey);
         return;
       }
@@ -367,11 +376,6 @@ function useSentMessageEditing({
     status: string | null;
     threadId: string;
   } | null>(null);
-  const autoRestoredRef = useRef<{
-    draft: PromptDraftState;
-    rowId: string;
-    threadId: string;
-  } | null>(null);
   useEffect(() => {
     const seen = seenLatestUserRowRef.current;
     const previous = seen?.threadId === threadId ? seen : null;
@@ -417,7 +421,7 @@ function useSentMessageEditing({
             restored.draft,
           )
         ) {
-          restoredDraftAccessor.setDraft(emptyPromptDraftState());
+          restoredDraftAccessor.setDraft(restored.previousDraft);
         }
       }
     }
@@ -433,9 +437,11 @@ function useSentMessageEditing({
       return;
     }
     const restoredDraft = promptInputToDraft(userRowToPromptInput(latestUserRow));
+    const previousDraft = promptDraft.getCurrent();
     promptDraft.setDraft(restoredDraft);
     autoRestoredRef.current = {
       draft: promptDraft.getCurrent(),
+      previousDraft,
       rowId: latestUserRowId ?? "",
       threadId,
     };

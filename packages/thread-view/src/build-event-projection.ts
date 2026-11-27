@@ -1080,11 +1080,15 @@ export function startEventProjectionFold(
   return { events: orderedEvents, lookups, options, state };
 }
 
-function isRequestConsumingUserMessage(event: ThreadEvent): boolean {
+function isLateEchoOfUndeliveredRequest(
+  event: ThreadEvent,
+  undeliveredClientRequestIds: ReadonlySet<string>,
+): boolean {
   return (
     event.type === "item/completed" &&
     event.item.type === "userMessage" &&
-    event.item.clientRequestId !== undefined
+    event.item.clientRequestId !== undefined &&
+    undeliveredClientRequestIds.has(event.item.clientRequestId)
   );
 }
 
@@ -1097,7 +1101,10 @@ export function resumeEventProjectionFold(
     if (
       meta.seq <= lastSeq ||
       PROJECTION_FOLD_LOOKUP_EVENT_TYPES.has(event.type) ||
-      isRequestConsumingUserMessage(event)
+      isLateEchoOfUndeliveredRequest(
+        event,
+        fold.lookups.undeliveredClientRequestIds,
+      )
     ) {
       return false;
     }
