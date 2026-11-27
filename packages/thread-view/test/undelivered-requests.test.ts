@@ -6,6 +6,7 @@ import {
 } from "./timeline-test-harness.js";
 
 const requestId = "creq_abcdefghjk";
+const steerRequestId = "creq_mnpqrstuvw";
 
 function userTurnRequests(
   events: Parameters<typeof renderTimelineFixture>[0]["events"],
@@ -85,5 +86,57 @@ describe("undelivered user messages", () => {
       event.turnCompleted({ turnId: "turn-1", status: "completed" }),
     ]);
     expect(requests.map((request) => request.status)).toEqual(["accepted"]);
+  });
+
+  it("marks a steer undelivered when the earlier prompt kept producing items after it was accepted", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requests = userTurnRequests([
+      event.clientTurnRequested({ requestId, text: "first" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "first",
+        turnId: "turn-1",
+      }),
+      event.clientTurnRequested({ requestId: steerRequestId, text: "second" }),
+      event.inputAccepted({ clientRequestId: steerRequestId, turnId: "turn-1" }),
+      event.commandStarted({
+        command: "ls",
+        itemId: "command-1",
+        turnId: "turn-1",
+      }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    expect(requests.map((request) => request.status)).toEqual([
+      "accepted",
+      "undelivered",
+    ]);
+  });
+
+  it("keeps a steer accepted when the provider reported consuming it before the stop", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requests = userTurnRequests([
+      event.clientTurnRequested({ requestId, text: "first" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "first",
+        turnId: "turn-1",
+      }),
+      event.clientTurnRequested({ requestId: steerRequestId, text: "second" }),
+      event.inputAccepted({ clientRequestId: steerRequestId, turnId: "turn-1" }),
+      event.providerUserMessage({
+        clientRequestId: steerRequestId,
+        text: "second",
+        turnId: "turn-1",
+      }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    expect(requests.map((request) => request.status)).toEqual([
+      "accepted",
+      "accepted",
+    ]);
   });
 });

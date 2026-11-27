@@ -1192,7 +1192,11 @@ function emitCanonicalTurnInputAccepted(
   promptId: string,
 ): void {
   threadSession.contextUsageCollector.invalidate();
-  threadSession.translator.trackPushedPrompt(threadId, promptId);
+  threadSession.translator.trackPushedPrompt(
+    threadId,
+    promptId,
+    acceptance.clientRequestId,
+  );
   sendThreadDeltas(
     threadId,
     threadSession.translator.acceptInput(threadId, acceptance.clientRequestId),

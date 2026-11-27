@@ -434,6 +434,7 @@ interface ClaudeThreadDialectState {
   tasksById: ClaudeTaskMap;
   taskPlan: ClaudeTaskPlanState;
   unconsumedPromptIds: Set<string>;
+  clientRequestIdByPromptId: Map<string, ClientTurnRequestId>;
   promptConsumedSinceResult: boolean;
   promptConsumptionReported: boolean;
 }
@@ -456,6 +457,7 @@ function createThreadState(): ClaudeThreadDialectState {
     tasksById: new Map(),
     taskPlan: new Map(),
     unconsumedPromptIds: new Set(),
+    clientRequestIdByPromptId: new Map(),
     promptConsumedSinceResult: false,
     promptConsumptionReported: false,
   };
@@ -1087,9 +1089,26 @@ export function createClaudeDeltaTranslator(
     const toolResults = extractToolResults(parsedMessage.data);
     if (toolResults.length === 0) {
       const message = parsedMessage.data;
+      const consumedClientRequestId =
+        message.uuid === undefined
+          ? undefined
+          : state.clientRequestIdByPromptId.get(message.uuid);
       if (message.uuid !== undefined) {
         consumePrompt(state, message.uuid);
+        state.clientRequestIdByPromptId.delete(message.uuid);
       }
+      const consumedDeltas: ThreadDelta[] =
+        consumedClientRequestId !== undefined &&
+        message.isSynthetic !== true &&
+        message.parent_tool_use_id == null
+          ? [
+              {
+                kind: "input.provider",
+                text: "input consumed",
+                clientRequestId: consumedClientRequestId,
+              },
+            ]
+          : [];
       if (
         message.uuid === undefined ||
         message.isSynthetic === true ||
@@ -1097,10 +1116,10 @@ export function createClaudeDeltaTranslator(
         context?.parentToolCallId !== undefined ||
         !state.mirror.turnOpen
       ) {
-        return [];
+        return consumedDeltas;
       }
       state.latestProviderCheckpointId ??= message.uuid;
-      return [];
+      return consumedDeltas;
     }
     if (!state.mirror.turnOpen) {
       return unexpectedSdkEventDeltas(event, context);
@@ -1507,8 +1526,14 @@ export function createClaudeDeltaTranslator(
     return [{ kind: "turn.open" }, { kind: "input.accepted", clientRequestId }];
   }
 
-  function trackPushedPrompt(threadId: string, promptId: string): void {
-    stateFor({ threadId }).unconsumedPromptIds.add(promptId);
+  function trackPushedPrompt(
+    threadId: string,
+    promptId: string,
+    clientRequestId: ClientTurnRequestId,
+  ): void {
+    const state = stateFor({ threadId });
+    state.unconsumedPromptIds.add(promptId);
+    state.clientRequestIdByPromptId.set(promptId, clientRequestId);
   }
 
   function buildSessionSettlementDeltas(threadId: string): ThreadDelta[] {

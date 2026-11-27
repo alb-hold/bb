@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ClientTurnRequestId } from "@get-bb/plugin-sdk/provider-bridge";
 import type { ThreadEvent } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import {
   ITEM_ID_PATTERN,
@@ -2077,5 +2078,61 @@ describe("claude error translation", () => {
         }),
       }),
     ]);
+  });
+
+  it("reports the CLI consuming a pushed prompt as a user item carrying its clientRequestId", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "bb-consume";
+    harness.translator.trackPushedPrompt(
+      threadId,
+      "prompt-1",
+      "creq_23456789af" as ClientTurnRequestId,
+    );
+    harness.acceptInput("creq_23456789af", threadId);
+    const events = harness.translate(
+      {
+        type: "user",
+        uuid: "prompt-1",
+        message: { role: "user", content: "hello" },
+        parent_tool_use_id: null,
+        isReplay: true,
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "userMessage",
+          clientRequestId: "creq_23456789af",
+        }),
+      }),
+    );
+  });
+
+  it("reports no consumption for a prompt the CLI never echoed", () => {
+    const harness = createClaudeDeltaHarness();
+    const threadId = "bb-unconsumed";
+    harness.translator.trackPushedPrompt(
+      threadId,
+      "prompt-2",
+      "creq_23456789af" as ClientTurnRequestId,
+    );
+    harness.acceptInput("creq_23456789af", threadId);
+    const events = harness.translate(
+      {
+        type: "user",
+        uuid: "someone-else",
+        message: { role: "user", content: "other" },
+        parent_tool_use_id: null,
+        isReplay: true,
+        session_id: "sess-1",
+      },
+      { threadId },
+    );
+    expect(events.filter((event) => event.type === "item/completed")).toEqual(
+      [],
+    );
   });
 });

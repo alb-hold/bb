@@ -1370,6 +1370,9 @@ export function createDeltaAssembler(
             type: "userMessage",
             id: mintItemId(),
             content: [{ type: "text", text: delta.text }],
+            ...(delta.clientRequestId === undefined
+              ? {}
+              : { clientRequestId: delta.clientRequestId }),
             ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
           },
         });

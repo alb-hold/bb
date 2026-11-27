@@ -119,6 +119,7 @@ interface AssistantCompletedArgs extends ProviderTurnEventOptions {
 }
 
 interface ProviderUserMessageArgs extends ProviderTurnEventOptions {
+  clientRequestId?: ClientTurnRequestId;
   itemId?: string;
   text: string;
 }
@@ -674,6 +675,9 @@ export function createTimelineEventFactory(
             type: "userMessage",
             id: args.itemId ?? `provider-input-${base.seq}`,
             content: [{ type: "text", text: args.text }],
+            ...(args.clientRequestId
+              ? { clientRequestId: args.clientRequestId }
+              : {}),
             ...(args.parentToolCallId
               ? { parentToolCallId: args.parentToolCallId }
               : {}),

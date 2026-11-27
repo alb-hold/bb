@@ -488,7 +488,8 @@ export function parseProviderUserMessage(
 ): EventProjectionUserMessage | null {
   if (
     decoded.type !== "item/completed" ||
-    decoded.item.type !== "userMessage"
+    decoded.item.type !== "userMessage" ||
+    decoded.item.clientRequestId !== undefined
   ) {
     return null;
   }

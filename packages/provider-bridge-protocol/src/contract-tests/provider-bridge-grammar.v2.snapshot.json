@@ -38,6 +38,7 @@
     "input.provider": {
       "kind": "required",
       "text": "required",
+      "clientRequestId": "optional",
       "parentRef": "optional"
     },
     "item.close": {
