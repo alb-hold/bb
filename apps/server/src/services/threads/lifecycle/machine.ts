@@ -983,6 +983,15 @@ export function transitionThreadLifecycle(
           draft.stop = null;
           if (draft.status === "idle" || draft.status === "error") {
             draft.move("run.started");
+          } else if (draft.status === "stopping") {
+            if (draft.heldCompletion !== null) {
+              releaseHeld(draft);
+              if (draft.status === "idle") {
+                draft.effect({ kind: "drain-queue", wake: "thread-ready" });
+              }
+            } else {
+              draft.move("run.started");
+            }
           }
           break;
         case "stopped":

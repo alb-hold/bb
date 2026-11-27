@@ -361,6 +361,33 @@ describe("stops", () => {
     expect(transition.next.stop).toBeNull();
   });
 
+  it("settles a stopping thread whose stop was retained instead of leaving it stopping", () => {
+    const running = transitionThreadLifecycle(
+      state({
+        status: "stopping",
+        activeTurnId: "turn-1",
+        stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 3 },
+    );
+    expect(running.next.stop).toBeNull();
+    expect(running.next.status).toBe("active");
+
+    const ended = transitionThreadLifecycle(
+      state({
+        status: "stopping",
+        activeTurnId: "turn-1",
+        heldCompletion: { status: "interrupted", turnId: "turn-1" },
+        stop: { ...ackedStop, ackedAt: null, sentAt: 2 },
+      }),
+      { type: "stop.answered", answer: { kind: "retained" }, now: 3 },
+    );
+    expect(ended.next.stop).toBeNull();
+    expect(ended.next.status).toBe("idle");
+    expect(ended.next.heldCompletion).toBeNull();
+    expect(kinds(ended.effects)).toContain("drain-queue");
+  });
+
   it("revives instead of re-stopping when an idle release finds the agent's own turn", () => {
     const transition = transitionThreadLifecycle(
       state({ status: "idle", stop: ackedStop }),
