@@ -461,14 +461,14 @@ describe("reaping a native Claude terminal", () => {
     },
   );
 
-  it("keeps the snapshot and resumes the same Claude session on the next turn", async () => {
+  it.each([false, true])("keeps the snapshot and resumes the same Claude session on the next turn (restart: %s)", async (restart) => {
     const fixture = await createFixture();
     const thread = seedChatThread(fixture, {
       providerId: "claude-code",
       providerThreadId: SESSION_ID,
     });
     const { open } = await enterTerminal(fixture, thread.id);
-    const terminalSessions = fixture.harness.deps.terminalSessions;
+    let terminalSessions = fixture.harness.deps.terminalSessions;
     const output = (terminalId: string, seq: number, text: string) =>
       terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
@@ -493,6 +493,28 @@ describe("reaping a native Claude terminal", () => {
       );
       expect(approved.status).toBe(200);
       expect(await readJson(approved)).toEqual({ approved: true });
+      if (restart) {
+        terminalSessions.flushAllRetainedOutput();
+        const restarted = await createTestAppHarness({
+          db: createConnection(fixture.harness.db.$client.serialize()),
+        });
+        harnesses.push(restarted);
+        fixture.harness = restarted;
+        restarted.hub.registerDaemon(
+          fixture.sessionId,
+          fixture.hostId,
+          fixture.socket,
+        );
+        terminalSessions = restarted.deps.terminalSessions;
+        const duplicate = await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/idle-reap`,
+          { nativeSessionId: SESSION_ID, idleForMs: 31 * 60_000 },
+          `Bearer ${credential}`,
+        );
+        expect(duplicate.status).toBe(200);
+        expect(await readJson(duplicate)).toEqual({ approved: false });
+      }
     } finally {
       clock.mockRestore();
     }

@@ -92,6 +92,7 @@ export type TerminalSessionMutation =
     }
   | { kind: "title"; title: string }
   | { kind: "holder-backed" }
+  | { kind: "claim-native-idle-reap"; until: number }
   | { kind: "user-input" };
 
 export interface ListTerminalSessionsArgs {
@@ -190,6 +191,7 @@ function mutationValues(
     case "exit":
       return {
         closeReason: update.closeReason,
+        nativeIdleReapUntil: null,
         ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
         ...(update.exitCode === undefined ? {} : { exitCode: update.exitCode }),
         status: "exited",
@@ -202,6 +204,7 @@ function mutationValues(
         daemonSessionId: update.daemonSessionId,
         exitCode: null,
         initialCwd: update.initialCwd,
+        nativeIdleReapUntil: null,
         rows: update.rows,
         status: "running",
         title: update.title,
@@ -215,8 +218,14 @@ function mutationValues(
       return { title: update.title, updatedAt: now };
     case "holder-backed":
       return { updatedAt: now };
+    case "claim-native-idle-reap":
+      return { nativeIdleReapUntil: update.until };
     case "user-input":
-      return { lastUserInputAt: now, updatedAt: now };
+      return {
+        lastUserInputAt: now,
+        nativeIdleReapUntil: null,
+        updatedAt: now,
+      };
   }
 }
 
@@ -279,6 +288,15 @@ function mutationWhere(
   update: TerminalSessionMutation,
   now: number,
 ): SQL | undefined {
+  if (update.kind === "claim-native-idle-reap") {
+    return and(
+      eq(terminalSessions.status, "running"),
+      or(
+        isNull(terminalSessions.nativeIdleReapUntil),
+        lte(terminalSessions.nativeIdleReapUntil, now),
+      ),
+    );
+  }
   return update.kind === "user-input"
     ? or(
         isNull(terminalSessions.lastUserInputAt),

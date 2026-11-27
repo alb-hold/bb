@@ -589,12 +589,16 @@ export async function runNativeHolder(
         exitCode,
         signal: signal ?? null,
       });
+      const processExitCode =
+        Number.isInteger(exitCode) && exitCode >= 0
+          ? exitCode
+          : 128 + (signal ?? 0);
       finish(
         finishReason === "idle" && idleReap !== undefined
           ? idleReap.exitCode
-          : Number.isInteger(exitCode) && exitCode >= 0
-            ? exitCode
-            : 128 + (signal ?? 0),
+          : processExitCode === idleReap?.exitCode
+            ? 1
+            : processExitCode,
         finishReason,
       );
     });

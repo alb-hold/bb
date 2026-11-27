@@ -2049,7 +2049,7 @@ export class TerminalSessionLifecycle {
     }
     if (
       !isRunningBrowserTerminalSession(current) ||
-      this.nativeIdleReaps.has(args.terminalId)
+      this.nativeIdleReapInFlight(args.terminalId, current)
     ) {
       throw new ApiError(
         409,
@@ -3186,7 +3186,7 @@ export class TerminalSessionLifecycle {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
-      this.nativeIdleReaps.has(terminalId) ||
+      this.nativeIdleReapInFlight(terminalId, current) ||
       current.status !== "running" ||
       current.daemonSessionId === null
     ) {
@@ -3212,12 +3212,33 @@ export class TerminalSessionLifecycle {
 
   claimNativeIdleReap(terminalId: string): boolean {
     if (
-      this.nativeIdleReaps.has(terminalId) ||
       this.options.hub.hasTerminalClients(terminalId) ||
       this.frameObservers.has(terminalId) ||
       this.hasDirectTerminalViewer?.(terminalId) === true
     )
       return false;
+    const now = Date.now();
+    const claimed = updateTerminalSession(this.options.db, {
+      now,
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "claim-native-idle-reap", until: now + 15_000 },
+    });
+    if (claimed === null) return false;
+    this.nativeIdleReapInFlight(terminalId, claimed);
+    return true;
+  }
+
+  nativeIdleReapInFlight(
+    terminalId: string,
+    current = getTerminalById(this.options.db, terminalId),
+  ): Promise<void> | null {
+    const remaining = (current?.nativeIdleReapUntil ?? 0) - Date.now();
+    const pending = this.nativeIdleReaps.get(terminalId);
+    if (remaining <= 0) {
+      pending?.settle();
+      return null;
+    }
+    if (pending !== undefined) return pending.settled;
     let resolve!: () => void;
     const settled = new Promise<void>((done) => {
       resolve = done;
@@ -3227,14 +3248,10 @@ export class TerminalSessionLifecycle {
       this.nativeIdleReaps.delete(terminalId);
       resolve();
     };
-    const expiry = setTimeout(settle, 15_000);
+    const expiry = setTimeout(settle, remaining);
     expiry.unref();
     this.nativeIdleReaps.set(terminalId, { settled, settle });
-    return true;
-  }
-
-  nativeIdleReapInFlight(terminalId: string): Promise<void> | null {
-    return this.nativeIdleReaps.get(terminalId)?.settled ?? null;
+    return settled;
   }
 
   setDaemonSessionDirectOutput(args: {
@@ -4266,9 +4283,10 @@ export class TerminalSessionLifecycle {
           ? null
           : getNativeTerminalThread(this.options.db, current.threadId);
       if (
+        current === null ||
         native === null ||
-        native.terminalSessionId !== current?.id ||
-        !this.nativeIdleReaps.has(args.message.terminalId)
+        native.terminalSessionId !== current.id ||
+        current.nativeIdleReapUntil === null
       ) {
         closeReason = "process-exit";
       }
