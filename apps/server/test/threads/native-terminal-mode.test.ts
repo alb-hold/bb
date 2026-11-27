@@ -534,6 +534,10 @@ describe("reaping a native Claude terminal", () => {
         },
       });
     await output(open.terminalId, 0, "earlier context");
+    expect(
+      terminalSessions.resolveRunningTerminalRoute(open.terminalId),
+    ).toMatchObject({ terminalId: open.terminalId, daemonSessionId: fixture.sessionId });
+    const viewer = { close: vi.fn(), send: vi.fn<(message: string) => void>() };
     const clock = vi
       .spyOn(Date, "now")
       .mockReturnValue(Date.now() + 31 * 60_000);
@@ -547,6 +551,9 @@ describe("reaping a native Claude terminal", () => {
       );
       expect(approved.status).toBe(200);
       expect(await readJson(approved)).toEqual({ approved: true });
+      expect(
+        terminalSessions.resolveRunningTerminalRoute(open.terminalId),
+      ).toBeNull();
       if (restart) {
         terminalSessions.flushAllRetainedOutput();
         const restarted = await createTestAppHarness({
@@ -568,7 +575,19 @@ describe("reaping a native Claude terminal", () => {
         );
         expect(duplicate.status).toBe(200);
         expect(await readJson(duplicate)).toEqual({ approved: false });
+        expect(
+          terminalSessions.resolveRunningTerminalRoute(open.terminalId),
+        ).toBeNull();
       }
+      terminalSessions.attachBrowserTerminal({
+        socket: viewer,
+        sinceSeq: 0,
+        terminalId: open.terminalId,
+        outputAcks: false,
+        resizeAcks: false,
+        resizeSeqEcho: false,
+      });
+      expect(viewer.send).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
     }
@@ -582,6 +601,15 @@ describe("reaping a native Claude terminal", () => {
         closeReason: "native-idle-reaped",
       },
     });
+    expect(
+      viewer.send.mock.calls.map(([message]) => JSON.parse(message)),
+    ).toEqual([
+      expect.objectContaining({ type: "attached" }),
+      expect.objectContaining({
+        type: "exited",
+        session: expect.objectContaining({ closeReason: "native-idle-reaped" }),
+      }),
+    ]);
     const snapshot = await terminalSessions.readTerminalOutput({
       terminalId: open.terminalId,
       query: {},
