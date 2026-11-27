@@ -1078,8 +1078,8 @@ describe("host-daemon command schemas", () => {
     ).toBe(false);
   });
 
-  it("uses the current host-daemon protocol version (test-change-reason: host.remove_path gained temporaryRemoval at version 270)", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(270);
+  it("uses the current host-daemon protocol version (test-change-reason: input.provider gained clientRequestId at version 271)", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(271);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1125,7 +1125,7 @@ describe("host-daemon command schemas", () => {
     );
   });
 
-  it("accepts only the merged daemon protocol (test-change-reason: the fork requires its version 270 wire contract)", () => {
+  it("accepts only the merged daemon protocol (test-change-reason: the fork requires its version 271 wire contract)", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(245)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(246)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(247)).toBe(false);
@@ -1151,7 +1151,8 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(267)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(268)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(269)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(270)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(270)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(271)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);
