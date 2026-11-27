@@ -519,6 +519,26 @@ describe("reaping a native Claude terminal", () => {
         .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
         .join(""),
     ).toContain("earlier context");
+    let nextReplay = countDaemonMessages(fixture, "terminal.attach");
+    const answerReplay = async (nextSeq: number) => {
+      const request = await waitForDaemonMessage(
+        fixture,
+        "terminal.attach",
+        nextReplay++,
+      );
+      await terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.replay",
+          terminalId: request.terminalId,
+          requestId: request.requestId,
+          chunks: [],
+          replayStartSeq: request.sinceSeq,
+          nextSeq,
+        },
+      });
+    };
     const sending = postJson(fixture, `/threads/${thread.id}/send`, {
       mode: "start",
       input: [
@@ -542,12 +562,15 @@ describe("reaping a native Claude terminal", () => {
         .nativeSessionId,
     ).toBe(SESSION_ID);
     await output(resumed.terminalId, 0, "❯ ");
+    await answerReplay(1);
+    await answerReplay(1);
     const paste = await waitForDaemonMessage(fixture, "terminal.input");
     expect(paste.terminalId).toBe(resumed.terminalId);
     expect(Buffer.from(paste.dataBase64, "base64").toString()).toContain(
       "Recall our previous conversation",
     );
     await output(resumed.terminalId, 1, "Recall our previous conversation");
+    await answerReplay(2);
     const enter = await waitForDaemonMessage(fixture, "terminal.input", 1);
     expect(enter).toMatchObject({
       terminalId: resumed.terminalId,

@@ -2,7 +2,7 @@ import { effectiveDisplayStatus } from "@bb/domain";
 import { useQuery } from "@tanstack/react-query";
 import { sdk } from "@/lib/sdk";
 import { threadDefaultExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
-import { useEffect, useState, type FocusEvent } from "react";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
@@ -113,6 +113,7 @@ export function NativeThreadTerminalMain({
   const idleTerminalId =
     session?.closeReason === "native-idle-reaped" ? session.id : undefined;
   const [resumedTerminalId, setResumedTerminalId] = useState<string>();
+  const resumeAttempt = useRef<string>(undefined);
   const resumeOnAttach =
     paneIsFocused &&
     !threadIsArchived &&
@@ -120,12 +121,14 @@ export function NativeThreadTerminalMain({
     resumedTerminalId !== idleTerminalId;
   const { mutate: open } = openNative;
   useEffect(() => {
-    if (!resumeOnAttach) return;
-    setResumedTerminalId(idleTerminalId);
-    open({ threadId });
+    if (!resumeOnAttach || resumeAttempt.current === idleTerminalId) return;
+    resumeAttempt.current = idleTerminalId;
+    open(
+      { threadId },
+      { onSettled: () => setResumedTerminalId(idleTerminalId) },
+    );
   }, [idleTerminalId, open, resumeOnAttach, threadId]);
-  const [prevProvisioning, setPrevProvisioning] =
-    useState(threadIsProvisioning);
+  const [prevProvisioning, setPrevProvisioning] = useState(threadIsProvisioning);
   const [
     awaitingTerminalAfterProvisioning,
     setAwaitingTerminalAfterProvisioning,

@@ -3379,8 +3379,20 @@ export class TerminalSessionLifecycle {
     if (reaping !== null) {
       this.awaitingNativeIdleReap.add(args.socket);
       void reaping.then(() => {
-        if (this.awaitingNativeIdleReap.delete(args.socket))
+        if (!this.awaitingNativeIdleReap.delete(args.socket)) return;
+        try {
           this.attachBrowserTerminal(args);
+        } catch (error) {
+          this.sendTerminalSocketError({
+            socket: args.socket,
+            code:
+              error instanceof ApiError
+                ? error.body.code
+                : "terminal_attach_failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+          args.socket.close(1013, "attach-failed");
+        }
       });
       return;
     }
