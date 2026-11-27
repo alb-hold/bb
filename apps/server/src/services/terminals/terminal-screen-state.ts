@@ -9,7 +9,7 @@ import {
 import type { TerminalScreenResponse } from "@bb/server-contract";
 import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
-const TERMINAL_SCREEN_STATE_CACHE_LIMIT = 32;
+export const TERMINAL_SCREEN_STATE_CACHE_LIMIT = 32;
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 const SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE = Buffer.from("\u001b[?2026h");
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
@@ -505,7 +505,7 @@ export class TerminalScreenState {
   private rows: number;
   private pending = Promise.resolve();
   private draining = false;
-  private nextSeq = 0;
+  private nextSeq: number;
   private valid = true;
   private disposed = false;
   private readonly parserState = createTerminalReplayParserState();
@@ -527,9 +527,11 @@ export class TerminalScreenState {
     cols: number,
     rows: number,
     private readonly captureReplay = false,
+    readonly firstSequence = 0,
   ) {
     this.cols = cols;
     this.rows = rows;
+    this.nextSeq = firstSequence;
     this.terminal = new Terminal({
       allowProposedApi: true,
       cols,
@@ -1040,11 +1042,17 @@ export class TerminalScreenStateCache {
   }
 
   promptScreen(terminalId: string) {
-    return this.touch(terminalId)?.promptScreen() ?? Promise.resolve(null);
+    const state = this.touch(terminalId);
+    return state?.firstSequence === 0
+      ? state.promptScreen()
+      : Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {
-    return this.touch(terminalId)?.snapshot() ?? Promise.resolve(null);
+    const state = this.touch(terminalId);
+    return state?.firstSequence === 0
+      ? state.snapshot()
+      : Promise.resolve(null);
   }
 
   remove(terminalId: string): void {
