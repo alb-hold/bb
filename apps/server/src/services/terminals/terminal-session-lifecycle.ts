@@ -1099,6 +1099,9 @@ export class TerminalSessionLifecycle {
   ): Promise<void> {
     let state: TerminalScreenState | null = null;
     try {
+      if (rebuild.liveFromSequence !== null) {
+        await this.waitForTerminalReplay(session.id);
+      }
       await yieldToEventLoop();
       if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
       const current = getTerminalById(this.options.db, session.id);
@@ -2452,7 +2455,9 @@ export class TerminalSessionLifecycle {
     if (
       rendered !== undefined &&
       chunk.seq !== 0 &&
-      !this.terminalScreenStates.has(session.id)
+      !this.terminalScreenStates.has(session.id) &&
+      (!this.activeTerminalReplays.has(session.id) ||
+        this.frameObservers.has(session.id))
     ) {
       this.scheduleTerminalScreenStateRebuild(session, chunk.seq);
     }
