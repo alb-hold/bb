@@ -15,7 +15,7 @@ import {
   type EnvironmentRow,
   getThread,
   getThreadSpawner,
-  isThreadQueueAutoSendPaused,
+  isQueuedMessageAutoSendPaused,
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
   type RunningThreadRow,
@@ -954,11 +954,7 @@ async function runDispatchAttempt(
           throw new DispatchThreadScopeChangedError();
         }
         if (claimed !== null) {
-          consumeClaimedRows(
-            claimed,
-            thread.id,
-            respectManualStopPause,
-          )({ tx });
+          consumeClaimedRows(claimed, respectManualStopPause)({ tx });
         }
       },
     });
@@ -1022,11 +1018,13 @@ export function reattemptDispatchForThreadChange(
 
 function consumeClaimedRows(
   claimed: readonly ClaimedQueuedThreadMessageRow[],
-  threadId: string,
   respectManualStopPause: boolean,
 ): SendThreadMessageTransactionPreflight {
   return ({ tx }) => {
-    if (respectManualStopPause && isThreadQueueAutoSendPaused(tx, threadId)) {
+    if (
+      respectManualStopPause &&
+      claimed.some((row) => isQueuedMessageAutoSendPaused(tx, row))
+    ) {
       throw createQueuedMessageAutoSendPausedError();
     }
     const consumed = deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
@@ -1108,7 +1106,6 @@ async function admitPendingThread(
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(
             args.claimed,
-            args.thread.id,
             args.respectManualStopPause,
           )({ tx });
         }

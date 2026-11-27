@@ -1272,6 +1272,7 @@ function notSupersededQueuedThreadMessage() {
 function manuallyStoppedQueuePauseQuery(
   db: DbQueryConnection,
   threadId: string | typeof queuedThreadMessages.threadId,
+  rowCreatedAt?: number | typeof queuedThreadMessages.createdAt,
 ) {
   const interruption = alias(events, "queue_pause_interruption");
   const laterInterruption = alias(events, "queue_pause_later_interruption");
@@ -1285,6 +1286,9 @@ function manuallyStoppedQueuePauseQuery(
         sql`${interruption.threadId} = ${threadId}`,
         eq(interruption.type, "system/thread/interrupted"),
         sql`json_extract(${interruption.data}, '$.reason') = 'manual-stop'`,
+        rowCreatedAt === undefined
+          ? undefined
+          : sql`${rowCreatedAt} < ${interruption.createdAt}`,
         notExists(
           db
             .select({ sequence: laterInterruption.sequence })
@@ -1333,6 +1337,16 @@ export function isThreadQueueAutoSendPaused(
   threadId: string,
 ): boolean {
   return manuallyStoppedQueuePauseQuery(db, threadId).get() !== undefined;
+}
+
+export function isQueuedMessageAutoSendPaused(
+  db: DbQueryConnection,
+  row: Pick<QueuedThreadMessageRow, "createdAt" | "threadId">,
+): boolean {
+  return (
+    manuallyStoppedQueuePauseQuery(db, row.threadId, row.createdAt).get() !==
+    undefined
+  );
 }
 
 function notOrdinaryTurnEndQueuedThreadMessage() {
@@ -1395,7 +1409,11 @@ export function listIdleThreadsWithQueuedMessages(
         liveThread,
         or(
           notExists(
-            manuallyStoppedQueuePauseQuery(db, queuedThreadMessages.threadId),
+            manuallyStoppedQueuePauseQuery(
+              db,
+              queuedThreadMessages.threadId,
+              queuedThreadMessages.createdAt,
+            ),
           ),
           notOrdinaryTurnEndQueuedThreadMessage(),
         ),
@@ -1460,7 +1478,7 @@ export type QueuedThreadMessageGroupClaimPolicy =
 
 function isAutomaticQueuedThreadMessageGroupClaimAllowed(
   rows: readonly QueuedThreadMessageRow[],
-  pauseOrdinaryMessages: boolean,
+  isPausedRow: (row: QueuedThreadMessageRow) => boolean,
   retryingFailure: boolean,
   now: number,
 ): boolean {
@@ -1468,8 +1486,7 @@ function isAutomaticQueuedThreadMessageGroupClaimAllowed(
     !isQueuedThreadMessageGroupEditHeld(rows, now) &&
     (retryingFailure ||
       rows.every((row) => !isQueuedMessageFailedState(row.state))) &&
-    (!pauseOrdinaryMessages ||
-      rows.every((row) => !isOrdinaryTurnEndQueuedMessage(row)))
+    rows.every((row) => !isOrdinaryTurnEndQueuedMessage(row) || !isPausedRow(row))
   );
 }
 
@@ -1504,7 +1521,7 @@ export function claimQueuedThreadMessageGroup(
         (policy.kind === "automatic" &&
           !isAutomaticQueuedThreadMessageGroupClaimAllowed(
             group,
-            isThreadQueueAutoSendPaused(tx, existing.threadId),
+            (row) => isQueuedMessageAutoSendPaused(tx, row),
             policy.retryingFailure,
             Date.now(),
           )) ||
@@ -1543,7 +1560,6 @@ export function claimNextQueuedThreadMessageGroup(
         return null;
       }
       const queuedMessages = listQueuedThreadMessages(tx, threadId);
-      const pauseOrdinaryMessages = isThreadQueueAutoSendPaused(tx, threadId);
       const now = Date.now();
       const drainableGroups = partitionQueuedMessageGroups(
         queuedMessages,
@@ -1559,7 +1575,7 @@ export function claimNextQueuedThreadMessageGroup(
               isGroupEligible(rows) &&
               isAutomaticQueuedThreadMessageGroupClaimAllowed(
                 rows,
-                pauseOrdinaryMessages,
+                (row) => isQueuedMessageAutoSendPaused(tx, row),
                 false,
                 now,
               ),

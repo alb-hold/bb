@@ -5,6 +5,7 @@ import { noopNotifier } from "../../src/notifier.js";
 import { insertEvents } from "../../src/data/events.js";
 import {
   claimNextQueuedThreadMessageGroup,
+  isQueuedMessageAutoSendPaused,
   claimQueuedThreadMessageGroup,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessage,
@@ -1287,6 +1288,72 @@ describe("queued thread messages", () => {
     expect(
       listQueuedThreadMessages(db, thread.id).map((row) => row.id),
     ).toEqual([heldBack.id]);
+  });
+
+  it("pauses only ordinary rows queued before the manual stop was requested", () => {
+    const { db, project } = setup();
+    const thread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      status: "idle",
+    });
+    const create = (content: typeof defaultInput, createdAt: number) => {
+      const row = createQueuedThreadMessage(db, noopNotifier, {
+        threadId: thread.id,
+        content,
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+        waitingOn: { kind: "thread-busy" },
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: null,
+      });
+      db.update(queuedThreadMessages)
+        .set({ createdAt })
+        .where(eq(queuedThreadMessages.id, row.id))
+        .run();
+      return { ...row, createdAt };
+    };
+    const before = create(defaultInput, 1_000);
+    const after = create(altInput, 3_000);
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 1,
+        type: "system/thread/interrupted",
+        scope: threadScope(),
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ reason: "manual-stop" }),
+      },
+    ]);
+    db.$client
+      .prepare("update events set created_at = 2000 where thread_id = ?")
+      .run(thread.id);
+
+    expect(isQueuedMessageAutoSendPaused(db, before)).toBe(true);
+    expect(isQueuedMessageAutoSendPaused(db, after)).toBe(false);
+    expect(
+      claimQueuedThreadMessageGroup(db, noopNotifier, before.id, {
+        kind: "automatic",
+        isGroupEligible: () => true,
+        retryingFailure: false,
+      }),
+    ).toBeNull();
+    expect(
+      claimNextQueuedThreadMessageGroup(
+        db,
+        noopNotifier,
+        thread.id,
+        () => true,
+      )?.map((row) => row.id),
+    ).toEqual([after.id]);
+    expect(
+      listQueuedThreadMessages(db, thread.id).map((row) => row.id),
+    ).toEqual([before.id]);
   });
 
   it("keeps a paused thread off the idle drain when every row is an ordinary turn-end wait", () => {

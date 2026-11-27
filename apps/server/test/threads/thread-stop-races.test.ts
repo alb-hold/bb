@@ -1,6 +1,7 @@
 import {
   createQueuedThreadMessage,
   getThread,
+  listQueuedThreadMessages,
   listQueuedThreadMessagesWaitingOnKind,
   readThreadRunState,
 } from "@bb/db";
@@ -355,6 +356,100 @@ describe("repeated stops", () => {
       ).toEqual([]);
     });
   });
+
+  it.each([
+    ["after", 1],
+    ["before", 0],
+  ] as const)(
+    "a retained stop pauses only follow-ups queued %s the stop was requested",
+    async (when, expectedRequests) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps, {
+          id: `host-stop-races-retained-${when}`,
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: `/tmp/stop-races-retained-${when}`,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+          path: `/tmp/stop-races-retained-${when}`,
+          status: "ready",
+        });
+        const thread = seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: environment.id,
+          status: "active",
+        });
+        seedTurnStarted(harness.deps, {
+          environmentId: environment.id,
+          threadId: thread.id,
+          turnId: "turn-retained",
+        });
+        const sendFollowUp = async (text: string) => {
+          const response = await harness.app.request(
+            `/api/v1/threads/${thread.id}/send`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                input: [{ type: "text", text }],
+                mode: "queue-if-active",
+                model: "gpt-5",
+                permissionMode: "full",
+                reasoningLevel: "medium",
+                serviceTier: "default",
+              }),
+            },
+          );
+          expect(response.status, await response.clone().text()).toBe(200);
+        };
+        if (when === "before") {
+          await sendFollowUp("typed before the stop");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+
+        requestThreadStopForCurrentState(harness.deps, thread);
+        const stop = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.stop" && command.threadId === thread.id,
+        );
+        await reportQueuedCommandSuccess(harness, stop, {
+          providerCheckpointId: null,
+          activeTurnRetained: true,
+        });
+        await settle();
+        expect(getThread(harness.db, thread.id)?.status).toBe("active");
+        if (when === "after") {
+          await sendFollowUp("typed after the stop");
+        }
+        await postDaemonEvent(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          threadId: thread.id,
+          event: {
+            type: "turn/completed",
+            turnId: "turn-retained",
+            status: "completed",
+          },
+        });
+        await settle();
+        await settle();
+
+        const requested = harness.db.$client
+          .prepare(
+            "select count(*) as n from events where thread_id = ? and type = 'client/turn/requested'",
+          )
+          .get(thread.id) as { n: number };
+        expect(requested.n).toBe(expectedRequests);
+        expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(
+          1 - expectedRequests,
+        );
+      });
+    },
+  );
 
   it("settles an awaited stop of a live thread that has no environment", async () => {
     await withTestHarness(async (harness) => {

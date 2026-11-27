@@ -13,7 +13,7 @@ import {
   holdQueuedThreadMessageForEdit,
   isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
-  isThreadQueueAutoSendPaused,
+  isQueuedMessageAutoSendPaused,
   releaseQueuedMessageClaim,
   releaseQueuedThreadMessageEditHold,
   releaseStaleQueuedMessageClaims,
@@ -317,8 +317,7 @@ export async function createQueuedMessageForThread(
           permissionMode: execution.permissionMode,
           serviceTier: execution.serviceTier,
           waitingOn:
-            currentThread.status === "stopping" ||
-            isThreadQueueAutoSendPaused(tx, thread.id)
+            currentThread.status === "stopping"
               ? { kind: "stopping" }
               : { kind: "thread-busy" },
           sendAt: null,
@@ -720,8 +719,11 @@ async function sendClaimedQueuedMessageGroup(
     (isManualCompactionActive(deps, thread) ||
       (args.mode === "auto" &&
         !sendNow &&
-        queuedMessages.some(isOrdinaryTurnEndQueuedMessage) &&
-        isThreadQueueAutoSendPaused(deps.db, thread.id)))
+        queuedMessages.some(
+          (row) =>
+            isOrdinaryTurnEndQueuedMessage(row) &&
+            isQueuedMessageAutoSendPaused(deps.db, row),
+        )))
   ) {
     releaseQueuedMessageClaims(deps, queuedMessages);
     return toThreadQueuedMessage(queuedMessages[0]!);

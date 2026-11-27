@@ -18,6 +18,7 @@ import {
   hasLiveQueuedRetry,
   hasQueuedRetryOfTurnRequest,
   holdQueuedThreadMessageForEdit,
+  isQueuedMessageAutoSendPaused,
   isThreadQueueAutoSendPaused,
   listDueScheduledQueuedThreadMessages,
   listIdleThreadsWithQueuedMessages,
@@ -556,6 +557,14 @@ export const QUEUED_THREAD_MESSAGES_COST_CASES: readonly QueryCostCase[] = [
   {
     name: `${QUEUED}#isThreadQueueAutoSendPaused`,
     run: (db, fixture) => isThreadQueueAutoSendPaused(db, fixture.threadId),
+  },
+  {
+    name: `${QUEUED}#isQueuedMessageAutoSendPaused`,
+    run: (db, fixture) =>
+      isQueuedMessageAutoSendPaused(db, {
+        threadId: fixture.threadId,
+        createdAt: 0,
+      }),
   },
   {
     name: `${QUEUED}#claimQueuedThreadMessageGroup`,
