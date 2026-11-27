@@ -190,4 +190,48 @@ describe("undelivered user messages", () => {
     ]);
     expect(requests.map((request) => request.status)).toEqual(["accepted"]);
   });
+
+  it("clears the undelivered status when the echo arrives after the turn already completed interrupted", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requests = userTurnRequests([
+      event.clientTurnRequested({
+        requestId,
+        text: "look at this",
+        input: [
+          { type: "text", text: "look at this", mentions: [] },
+          { type: "localImage", path: "/tmp/shot.png" },
+        ],
+      }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "look at this",
+        turnId: "turn-1",
+      }),
+    ]);
+    expect(requests.map((request) => request.status)).toEqual(["accepted"]);
+  });
+
+  it("stays undelivered until the echo arrives and then clears", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const base = [
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ];
+    expect(userTurnRequests(base).map((r) => r.status)).toEqual([
+      "undelivered",
+    ]);
+    const echo = event.providerUserMessage({
+      clientRequestId: requestId,
+      text: "hello",
+      turnId: "turn-1",
+    });
+    expect(userTurnRequests([...base, echo]).map((r) => r.status)).toEqual([
+      "accepted",
+    ]);
+  });
 });

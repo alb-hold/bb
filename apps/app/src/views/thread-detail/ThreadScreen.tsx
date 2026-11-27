@@ -12,6 +12,8 @@ import { defaultAppSettings, type Environment } from "@bb/domain";
 import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
 import {
   appendQuoteAndAttachmentsToDraft,
+  arePromptDraftStatesEqual,
+  emptyPromptDraftState,
   isNativeActivityUnconfirmed,
   isPromptDraftEmpty,
   promptInputToDraft,
@@ -365,6 +367,11 @@ function useSentMessageEditing({
     status: string | null;
     threadId: string;
   } | null>(null);
+  const autoRestoredRef = useRef<{
+    draft: PromptDraftState;
+    rowId: string;
+    threadId: string;
+  } | null>(null);
   useEffect(() => {
     const seen = seenLatestUserRowRef.current;
     const previous = seen?.threadId === threadId ? seen : null;
@@ -387,6 +394,33 @@ function useSentMessageEditing({
       (previous.id === latestUserRowId
         ? previous.status !== "undelivered"
         : latestUserRowId !== baselineId);
+    const restored = autoRestoredRef.current;
+    if (
+      restored !== null &&
+      (restored.threadId !== threadId ||
+        restored.rowId !== latestUserRowId ||
+        latestUserRowStatus !== "undelivered")
+    ) {
+      autoRestoredRef.current = null;
+      if (
+        restored.threadId === threadId &&
+        restored.rowId === latestUserRowId
+      ) {
+        const restoredDraftAccessor = getPromptDraftAccessor({
+          kind: "thread",
+          projectId,
+          threadId,
+        });
+        if (
+          arePromptDraftStatesEqual(
+            restoredDraftAccessor.getCurrent(),
+            restored.draft,
+          )
+        ) {
+          restoredDraftAccessor.setDraft(emptyPromptDraftState());
+        }
+      }
+    }
     if (!becameUndelivered) {
       return;
     }
@@ -398,9 +432,13 @@ function useSentMessageEditing({
     if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
       return;
     }
-    promptDraft.setDraft(
-      promptInputToDraft(userRowToPromptInput(latestUserRow)),
-    );
+    const restoredDraft = promptInputToDraft(userRowToPromptInput(latestUserRow));
+    promptDraft.setDraft(restoredDraft);
+    autoRestoredRef.current = {
+      draft: promptDraft.getCurrent(),
+      rowId: latestUserRowId ?? "",
+      threadId,
+    };
     requestComposerFocus(promptDraft.storageKey);
   }, [
     latestUserRow,

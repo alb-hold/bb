@@ -523,6 +523,40 @@ describe("ThreadScreen", () => {
       expect(threadDraft().getCurrent().text).toBe("");
     });
 
+    it("takes the restored draft back when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("late_echo_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(userRowAt("late_echo_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+      mocks.timeline = timelineOf(userRowAt("late_echo_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("keeps an edited restored draft when a late echo clears the undelivered status", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("edited_row", "accepted")) },
+      );
+      mocks.timeline = timelineOf(userRowAt("edited_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      mocks.timeline = timelineOf(userRowAt("edited_row", "accepted"));
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider, edited",
+      );
+    });
+
     it("fills an empty composer when the undelivered row is followed by its own turn row", () => {
       const view = renderScreen(
         { kind: "page" },
