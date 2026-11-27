@@ -349,7 +349,9 @@ function useSentMessageEditing({
         };
         registerRestoredDraftRetry(
           threadId,
-          promptDraft.getCurrent(),
+          isPromptDraftEmpty(previousDraft)
+            ? promptDraft.getCurrent()
+            : promptInputToDraft(target.input),
           target.requestId,
         );
         requestComposerFocus(promptDraft.storageKey);

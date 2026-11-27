@@ -786,6 +786,24 @@ describe("ThreadScreen", () => {
       ).toBe("req_original");
     });
 
+    it("names no request when the restored row is merged into a non-empty draft", () => {
+      threadDraft().setDraft({
+        text: "something I was typing",
+        mentions: [],
+        attachments: [],
+      });
+      restoreManually("retry_merged_row", "req_original");
+      expect(threadDraft().getCurrent().text).toContain(
+        "something I was typing",
+      );
+      expect(threadDraft().getCurrent().text).toContain(
+        "never reached the provider",
+      );
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+    });
+
     it("names no request when the restored draft was edited before sending", () => {
       threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
       restoreManually("retry_edited_row", "req_original");

@@ -888,6 +888,25 @@ describe("ThreadDetailPromptArea", () => {
   });
 
 
+  it("sends the merged draft without a retry request when it differs from the restored row", async () => {
+    registerRestoredDraftRetry(
+      "thr_1",
+      { text: "never reached the provider", mentions: [], attachments: [] },
+      "req_original",
+    );
+    mocks.promptDraft.text = "never reached the provider\n\nsomething I was typing";
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    const request = mocks.sendMessageMutateAsync.mock.calls[0]?.[0];
+    expect(request.retryOfClientRequestId).toBeUndefined();
+    expect(JSON.stringify(request.input)).toContain("something I was typing");
+  });
+
   it("keeps naming the original request after an unedited restored draft fails to send", async () => {
     mocks.promptDraft.text = "never reached the provider";
     registerRestoredDraftRetry(
