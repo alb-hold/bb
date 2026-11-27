@@ -101,8 +101,7 @@ vi.mock("@/components/thread/timeline", async (importOriginal) => {
     ThreadTimelineSurface: (props: Record<string, unknown>) => {
       mocks.surfaceProps.push(props);
       const addToChat = props.onSelectionAddToChat as
-        | ((text: string) => void)
-        | undefined;
+        ((text: string) => void) | undefined;
       return (
         <button type="button" onClick={() => addToChat?.("Quoted line")}>
           Add selection to chat
@@ -255,8 +254,7 @@ function timelineWithRowIds(
 
 function latestSentMessageEdit(): ThreadDetailSentMessageEdit | undefined {
   return mocks.promptAreaProps.at(-1)!.sentMessageEdit as
-    | ThreadDetailSentMessageEdit
-    | undefined;
+    ThreadDetailSentMessageEdit | undefined;
 }
 
 function startEditingMessage(messageId: string) {
@@ -459,7 +457,9 @@ describe("ThreadScreen", () => {
   });
 
   describe("undelivered messages", () => {
-    function undeliveredTimeline(id: string): UseThreadTimelineControllerResult {
+    function undeliveredTimeline(
+      id: string,
+    ): UseThreadTimelineControllerResult {
       return {
         ...TIMELINE,
         timelineRows: [
@@ -489,6 +489,7 @@ describe("ThreadScreen", () => {
         id,
         role: "user",
         text: "never reached the provider",
+        turnId: "turn_own",
         turnRequest: { isGrouped: false, kind: "message", status },
       });
     }
@@ -522,19 +523,39 @@ describe("ThreadScreen", () => {
       expect(threadDraft().getCurrent().text).toBe("");
     });
 
+    it("fills an empty composer when the undelivered row is followed by its own turn row", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: timelineOf(
+            userRowAt("own_turn_row", "accepted"),
+            turnRow({ turnId: "turn_own" }),
+          ),
+        },
+      );
+      mocks.timeline = timelineOf(
+        userRowAt("own_turn_row", "undelivered"),
+        turnRow({ turnId: "turn_own" }),
+      );
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
     it("never auto-restores an undelivered row that a later turn follows", () => {
       const view = renderScreen(
         { kind: "page" },
         {
           timeline: timelineOf(
             userRowAt("older_row", "accepted"),
-            turnRow({ children: [] }),
+            turnRow({ turnId: "turn_later" }),
           ),
         },
       );
       mocks.timeline = timelineOf(
         userRowAt("older_row", "undelivered"),
-        turnRow({ children: [] }),
+        turnRow({ turnId: "turn_later" }),
       );
       view.rerender(screenElement({ kind: "page" }));
       expect(threadDraft().getCurrent().text).toBe("");

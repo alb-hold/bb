@@ -392,7 +392,9 @@ function useSentMessageEditing({
     if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
       return;
     }
-    promptDraft.setDraft(promptInputToDraft(userRowToPromptInput(latestUserRow)));
+    promptDraft.setDraft(
+      promptInputToDraft(userRowToPromptInput(latestUserRow)),
+    );
     requestComposerFocus(promptDraft.storageKey);
   }, [
     latestUserRow,
