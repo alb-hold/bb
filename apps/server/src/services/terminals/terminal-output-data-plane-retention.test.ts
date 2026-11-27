@@ -595,6 +595,80 @@ async function retainReplayAcrossLifecycleTransition(args: {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("evicts cold maintained screens while terminal reads still replay the stored output", async () => {
+    const fixture = await setup({ threadless: true });
+    const terminalIds = [fixture.terminal.id];
+    for (let index = 0; index < 32; index += 1) {
+      terminalIds.push(
+        createTerminalSession(fixture.db, {
+          cols: 80,
+          environmentId: null,
+          hostId: fixture.host.id,
+          daemonSessionId: fixture.session.id,
+          initialCwd: "/tmp",
+          rows: 24,
+          status: "running",
+          threadId: null,
+          title: "Retained screen",
+        }).id,
+      );
+    }
+    try {
+      for (const [index, terminalId] of terminalIds.entries()) {
+        fixture.terminalSessions.recordDirectTerminalOutputBatch({
+          daemonSessionId: fixture.session.id,
+          terminalId,
+          chunks: [
+            {
+              seq: 0,
+              dataBase64: Buffer.from(`retained screen ${index}`).toString(
+                "base64",
+              ),
+            },
+          ],
+        });
+      }
+      const hot = await fixture.terminalSessions.readTerminalPromptScreen(
+        terminalIds[32]!,
+      );
+      expect(hot?.rows.join("\n")).toContain("retained screen 32");
+      expect(
+        await fixture.terminalSessions.readTerminalPromptScreen(
+          fixture.terminal.id,
+        ),
+      ).toBeNull();
+      fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+        close() {},
+        send(data: string) {
+          const request = JSON.parse(data) as {
+            type: string;
+            requestId: string;
+          };
+          if (request.type !== "terminal.attach") return;
+          void fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId: fixture.session.id,
+            message: {
+              type: "terminal.replay",
+              requestId: request.requestId,
+              terminalId: fixture.terminal.id,
+              replayStartSeq: 1,
+              nextSeq: 1,
+              chunks: [],
+            },
+          });
+        },
+      });
+      const recovered = await fixture.terminalSessions.readTerminalScreen({
+        query: {},
+        terminalId: fixture.terminal.id,
+      });
+      expect(recovered.rows.join("\n")).toContain("retained screen 0");
+    } finally {
+      fixture.child.shutdown();
+    }
+  });
+
   it("yields a single large marker chunk while preserving replay and live output", async () => {
     const fixture = await setup();
     const marker = `\u001b]7717;bb-holder;${fixture.terminal.id}\u0007`;

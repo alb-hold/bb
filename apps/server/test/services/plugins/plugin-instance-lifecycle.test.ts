@@ -63,6 +63,7 @@ const fixture = `
         wait: { input: z.null(), output: z.number() },
         ping: { input: z.null(), output: z.number() },
         keep: { input: z.null(), output: z.number() },
+        held: { input: z.null(), output: z.number() },
       }),
       {
         async wait(_input: null, context: any) {
@@ -77,6 +78,11 @@ const fixture = `
         ping: () => generation,
         keep(_input: null, context: any) {
           control.keptSignals.push(context.experimental_signal);
+          return generation;
+        },
+        async held() {
+          control.rpcEntered(generation);
+          await control.release;
           return generation;
         },
       },
@@ -347,6 +353,45 @@ describe("plugin instance lifecycle on a running server", () => {
       generation: 2,
       aborted: false,
     });
+  });
+
+  it("caps outstanding RPCs until their handlers actually settle", async () => {
+    await install();
+    let entered = 0;
+    control().rpcEntered = () => {
+      entered += 1;
+    };
+    const invoke = (method: string, signal?: AbortSignal) =>
+      server.app.request(`/api/v1/plugins/lifecycle/rpc/${method}`, {
+        method: "POST",
+        body: "null",
+        headers: { "content-type": "application/json" },
+        signal,
+      });
+    const callers = Array.from({ length: 32 }, () => new AbortController());
+    const pending = callers.map((caller) => invoke("held", caller.signal));
+    try {
+      await expect.poll(() => entered).toBe(32);
+      for (const caller of callers) caller.abort();
+      const status = await Promise.race([
+        invoke("held").then((response) => response.status),
+        new Promise<null>((resolve) => setImmediate(() => resolve(null))),
+      ]);
+      expect(status).toBe(503);
+      expect(entered).toBe(32);
+      releaseGate();
+      const responses = await Promise.all(pending);
+      for (const response of responses) {
+        expect(await response.json()).toEqual({ ok: true, result: 1 });
+      }
+      expect(await (await invoke("ping")).json()).toEqual({
+        ok: true,
+        result: 1,
+      });
+    } finally {
+      releaseGate();
+      await Promise.allSettled(pending);
+    }
   });
 
   it("unlinks a finished rpc call's signal from the plugin instance", async () => {

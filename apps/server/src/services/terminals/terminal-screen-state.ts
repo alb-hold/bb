@@ -9,6 +9,7 @@ import {
 import type { TerminalScreenResponse } from "@bb/server-contract";
 import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
+const TERMINAL_SCREEN_STATE_CACHE_LIMIT = 32;
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 const SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE = Buffer.from("\u001b[?2026h");
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
@@ -982,12 +983,25 @@ export class TerminalScreenStateCache {
 
   create(terminalId: string, cols: number, rows: number): void {
     if (this.states.has(terminalId)) return;
-    this.states.set(terminalId, new TerminalScreenState(cols, rows));
+    this.install(terminalId, new TerminalScreenState(cols, rows));
   }
 
   install(terminalId: string, state: TerminalScreenState): void {
     this.remove(terminalId);
     this.states.set(terminalId, state);
+    if (this.states.size > TERMINAL_SCREEN_STATE_CACHE_LIMIT) {
+      const oldest = this.states.keys().next().value;
+      if (oldest !== undefined) this.remove(oldest);
+    }
+  }
+
+  private touch(terminalId: string): TerminalScreenState | undefined {
+    const state = this.states.get(terminalId);
+    if (state !== undefined) {
+      this.states.delete(terminalId);
+      this.states.set(terminalId, state);
+    }
+    return state;
   }
 
   push(
@@ -997,12 +1011,9 @@ export class TerminalScreenStateCache {
     seq: number,
     data: Uint8Array,
   ): void {
-    let state = this.states.get(terminalId);
-    if (state === undefined) {
-      if (seq !== 0) return;
-      state = new TerminalScreenState(cols, rows);
-      this.states.set(terminalId, state);
-    }
+    if (seq === 0) this.create(terminalId, cols, rows);
+    const state = this.touch(terminalId);
+    if (state === undefined) return;
     state.resize(cols, rows);
     state.push(seq, data);
   }
@@ -1015,26 +1026,23 @@ export class TerminalScreenStateCache {
     data: string,
     rendered?: () => void,
   ): void {
-    let state = this.states.get(terminalId);
-    if (state === undefined) {
-      if (seq !== 0) return;
-      state = new TerminalScreenState(cols, rows);
-      this.states.set(terminalId, state);
-    }
+    if (seq === 0) this.create(terminalId, cols, rows);
+    const state = this.touch(terminalId);
+    if (state === undefined) return;
     state.resize(cols, rows);
     state.pushBase64(seq, data, rendered);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
-    this.states.get(terminalId)?.resize(cols, rows);
+    this.touch(terminalId)?.resize(cols, rows);
   }
 
   promptScreen(terminalId: string) {
-    return this.states.get(terminalId)?.promptScreen() ?? Promise.resolve(null);
+    return this.touch(terminalId)?.promptScreen() ?? Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {
-    return this.states.get(terminalId)?.snapshot() ?? Promise.resolve(null);
+    return this.touch(terminalId)?.snapshot() ?? Promise.resolve(null);
   }
 
   remove(terminalId: string): void {
