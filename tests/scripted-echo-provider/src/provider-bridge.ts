@@ -282,6 +282,7 @@ interface TurnPlan {
   recoverNowKind: ProviderRecoveryHint["kind"] | null;
   backgroundTask: boolean;
   backgroundTaskDurationMs: number | null;
+  foregroundHold: boolean;
   backgroundDelegation: boolean;
   settleBackgroundTasks: boolean;
   streamChunks: number;
@@ -332,6 +333,7 @@ function parseTurnPlan(inputText: string): TurnPlan {
       const m = /(?:^|\s)bg_task_ms:(\d+)(?:\s|$)/u.exec(inputText);
       return m?.[1] === undefined ? null : Number(m[1]);
     })(),
+    foregroundHold: /(?:^|\s)fg_hold(?:\s|$)/u.test(inputText),
     backgroundDelegation: /(?:^|\s)bg_delegation(?:\s|$)/u.test(inputText),
     settleBackgroundTasks:
       /(?:^|\s)bg_task_done(?:\s|$)/u.test(inputText) ||
@@ -749,6 +751,29 @@ function beginTurn(args: {
     settleBackgroundTasks(session);
   }
 
+  if (plan.foregroundHold) {
+    emitDeltas(session.threadId, [
+      {
+        kind: "item.open",
+        key: { providerItemId: "fg-cmd-1" },
+        item: { type: "command", command: "echo fg", cwd: "/workspace" },
+        presentation: {
+          label: { pending: "Running fg", completed: "Ran fg" },
+          icon: { glyph: "FileText" },
+          title: "echo fg",
+        },
+        providerTurnId,
+      },
+      {
+        kind: "item.textDelta",
+        key: { channel: "assistant" },
+        channel: "agentMessage",
+        text: "Hello ",
+        providerTurnId,
+      },
+    ]);
+    return;
+  }
   if (plan.holdTurn) {
     emitRecoveryHint(session.threadId, plan.recoverKind);
     return;
@@ -1364,6 +1389,8 @@ const handlers: Record<string, RequestHandler> = {
       return;
     }
     const providerTurnId = session.activeTurn.providerTurnId;
+    const steerText = promptText(parsed.data.input);
+    const settleForeground = /(?:^|\s)fg_settle(?:\s|$)/u.test(steerText);
     const acceptSteer = (): void => {
       emitDeltas(session.threadId, [
         {
@@ -1373,6 +1400,48 @@ const handlers: Record<string, RequestHandler> = {
         },
       ]);
       io.sendResult(id, {});
+      if (settleForeground && session.activeTurn?.providerTurnId === providerTurnId) {
+        clearActiveTurn(session);
+        emitDeltas(session.threadId, [
+          {
+            kind: "item.progress",
+            key: { providerItemId: "fg-cmd-1" },
+            message: "fg progress",
+            flush: true,
+            providerTurnId,
+          },
+          {
+            kind: "item.outputDelta",
+            key: { providerItemId: "fg-cmd-1" },
+            channel: "command",
+            text: "fg out\n",
+            providerTurnId,
+          },
+          {
+            kind: "item.close",
+            key: { providerItemId: "fg-cmd-1" },
+            status: "completed",
+            exitCode: 0,
+            aggregatedOutput: "fg out\n",
+            item: { type: "command", command: "echo fg", cwd: "/workspace" },
+            providerTurnId,
+          },
+          {
+            kind: "item.textDelta",
+            key: { channel: "assistant" },
+            channel: "agentMessage",
+            text: "world",
+            providerTurnId,
+          },
+          {
+            kind: "item.textClose",
+            key: { channel: "assistant" },
+            channel: "agentMessage",
+            providerTurnId,
+          },
+          { kind: "turn.boundary", status: "completed", providerTurnId },
+        ]);
+      }
     };
     if (options.steerResponseDelayMs === undefined) {
       acceptSteer();

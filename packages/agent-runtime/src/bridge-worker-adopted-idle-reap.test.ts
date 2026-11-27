@@ -726,6 +726,153 @@ describe("idle reaping of adopted provider sessions", () => {
     });
   }, WORKER_EXIT_TIMEOUT_MS);
 
+  it("preserves replayed open foreground items across adoption open-work seeding so later progress and close complete cleanly", async () => {
+    const beforeEvents: ThreadEvent[] = [];
+    const before = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath,
+        bridgeWorkers,
+        env,
+        onInteractiveRequest: () => new Promise(() => {}),
+        onEvent: (event, delivery) => {
+          beforeEvents.push(event);
+          const isUnackedForeground =
+            (event.type === "item/started" &&
+              (event.item.type === "commandExecution" ||
+                event.item.type === "agentMessage")) ||
+            event.type === "item/agentMessage/delta";
+          if (!isUnackedForeground) {
+            delivery?.onSettled();
+          }
+        },
+      },
+    });
+    runtimes.push(before);
+
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptfg555a",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task fg_hold" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForRuntimeState({
+      label: "turn, background work, and unacked foreground items emitted before detach",
+      predicate: () =>
+        before.getActiveTurnId("t1") !== null &&
+        before.hasOpenBackgroundWork() &&
+        beforeEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "commandExecution",
+        ) &&
+        beforeEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "agentMessage",
+        ),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+    const activeTurnId = before.getActiveTurnId("t1");
+    if (activeTurnId === null) throw new Error("expected active turn");
+    await before.detach();
+
+    const afterEvents: ThreadEvent[] = [];
+    const after = createRuntime(afterEvents);
+    const adopted = after.adoptBridgeWorkers({
+      dir: bridgeWorkers.dir,
+      entries: readBridgeWorkerEntries(bridgeWorkers.dir).entries,
+    });
+    expect(adopted).toEqual([{ threadId: "t1", activeTurnId }]);
+    after.completeBridgeWorkerAdoption(new Map([["t1", activeTurnId]]));
+
+    await waitForRuntimeState({
+      label: "replayed foreground items and open-work snapshot processed",
+      predicate: () =>
+        after.hasOpenBackgroundWork() &&
+        afterEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "commandExecution",
+        ) &&
+        afterEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "agentMessage",
+        ),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+
+    const steerResult = await after.steerTurn({
+      clientRequestId: "creq_adptfg555b",
+      expectedTurnId: activeTurnId,
+      input: [promptTextInput({ text: "fg_settle" })],
+      options: fullRuntimeOptions,
+      threadId: "t1",
+    });
+    expect(steerResult).toEqual({ status: "steered" });
+    await waitForThreadTurnCompleted({ events: afterEvents, threadId: "t1", timeoutMs: WORKER_EXIT_TIMEOUT_MS });
+
+    const cmdStarted = afterEvents.filter(
+      (e): e is Extract<ThreadEvent, { type: "item/started" }> =>
+        e.type === "item/started" && e.item.type === "commandExecution",
+    );
+    const msgStarted = afterEvents.filter(
+      (e): e is Extract<ThreadEvent, { type: "item/started" }> =>
+        e.type === "item/started" && e.item.type === "agentMessage",
+    );
+    expect(cmdStarted).toHaveLength(1);
+    expect(msgStarted).toHaveLength(1);
+    const cmdId = cmdStarted[0]!.item.id;
+    const msgId = msgStarted[0]!.item.id;
+
+    expect(
+      afterEvents.find((e) => e.type === "item/toolCall/progress"),
+    ).toMatchObject({
+      type: "item/toolCall/progress",
+      itemId: cmdId,
+      message: "fg progress",
+    });
+    expect(
+      afterEvents.find((e) => e.type === "item/commandExecution/outputDelta"),
+    ).toMatchObject({
+      type: "item/commandExecution/outputDelta",
+      itemId: cmdId,
+      delta: "fg out\n",
+    });
+    expect(
+      afterEvents.find(
+        (e) => e.type === "item/completed" && e.item.type === "commandExecution",
+      ),
+    ).toMatchObject({
+      type: "item/completed",
+      item: {
+        type: "commandExecution",
+        id: cmdId,
+        status: "completed",
+        exitCode: 0,
+        aggregatedOutput: "fg out\n",
+        presentation: {
+          label: { pending: "Running fg", completed: "Ran fg" },
+          icon: { glyph: "FileText" },
+          title: "echo fg",
+        },
+      },
+    });
+    expect(
+      afterEvents.find(
+        (e) => e.type === "item/completed" && e.item.type === "agentMessage",
+      ),
+    ).toMatchObject({
+      type: "item/completed",
+      item: {
+        type: "agentMessage",
+        id: msgId,
+        text: "Hello world",
+      },
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
   it("stops blocking reaping once work that settled while the daemon was down is reported by the worker", async () => {
     const events: ThreadEvent[] = [];
     const processLog = createScriptedEchoProcessLog();

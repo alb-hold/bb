@@ -2298,18 +2298,24 @@ export function createDeltaAssembler(
 
     seedOpenBackgroundItems(args) {
       const state = stateFor(args.threadId);
-      const previousIds = new Map<string, string>();
+      const previousBackground = new Map<string, OpenItemState>();
       for (const [keyStr, open] of [...state.openItemsByKey]) {
-        if (!open.threadAttached) continue;
-        previousIds.set(keyStr, open.bbItemId);
+        const isBackgroundItem =
+          open.item.type === "backgroundTask" ||
+          (open.item.type === "delegation" && open.item.background);
+        if (!isBackgroundItem) continue;
+        previousBackground.set(keyStr, open);
         state.openItemsByKey.delete(keyStr);
       }
+      const nextBackgroundKeys = new Set<string>();
       const seeded: SeededOpenBackgroundItem[] = [];
       for (const entry of args.items) {
         const keyStr = itemKeyString(entry.key);
+        nextBackgroundKeys.add(keyStr);
         state.settledItemKeys.delete(keyStr);
+        const previousOpen = previousBackground.get(keyStr);
         const bbItemId =
-          previousIds.get(keyStr) ??
+          previousOpen?.bbItemId ??
           (entry.key.providerItemId !== undefined
             ? state.bbItemIdByProviderItemId.get(entry.key.providerItemId)
             : undefined) ??
@@ -2317,23 +2323,40 @@ export function createDeltaAssembler(
         if (entry.key.providerItemId !== undefined) {
           registerItemId(state, entry.key.providerItemId, bbItemId);
         }
-        const parentToolCallId = mapParentRef(state, entry.key.parentRef);
-        const item = buildOpenedItem(
+        const parentToolCallId =
+          mapParentRef(state, entry.key.parentRef) ??
+          previousOpen?.item.parentToolCallId;
+        const builtItem = buildOpenedItem(
           bbItemId,
           entry.item,
           parentToolCallId,
-          entry.presentation,
+          entry.presentation ?? presentationOf(previousOpen?.item),
         );
+        const item =
+          builtItem.type === "delegation" &&
+          builtItem.summary === undefined &&
+          previousOpen?.item.type === "delegation" &&
+          previousOpen.item.summary !== undefined
+            ? { ...builtItem, summary: previousOpen.item.summary }
+            : builtItem;
         state.openItemsByKey.set(keyStr, {
           bbItemId,
           key: entry.key,
           item,
           threadAttached: true,
-          text: "",
-          summaryText: "",
+          text: previousOpen?.text ?? "",
+          summaryText: previousOpen?.summaryText ?? "",
         });
-        rememberProgressEmit(state, keyStr);
+        if (!state.progressLastEmitByKey.has(keyStr)) {
+          rememberProgressEmit(state, keyStr);
+        }
         seeded.push({ bbItemId, item });
+      }
+      for (const keyStr of previousBackground.keys()) {
+        if (!nextBackgroundKeys.has(keyStr)) {
+          state.pendingProgressByKey.delete(keyStr);
+          state.progressLastEmitByKey.delete(keyStr);
+        }
       }
       return seeded;
     },

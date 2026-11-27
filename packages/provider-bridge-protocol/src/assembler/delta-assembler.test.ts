@@ -2871,4 +2871,255 @@ describe("delta assembler text-delta batching", () => {
     expect(assembler.hasPendingOutput()).toBe(false);
     expect(assembler.flushPending()).toEqual([]);
   });
+
+  it("seedOpenBackgroundItems preserves open foreground items, keeps replayed delegation summary, and purges stale background pending progress", () => {
+    let nowMs = 1_000;
+    const assembler = createDeltaAssembler({
+      providerId: "claude-code",
+      entropyPrefix: "as-seed",
+      progressThrottleMs: 100,
+      textDeltaFlushMs: 0,
+      now: () => nowMs,
+    });
+    const fgPresentation = {
+      label: { pending: "Running fg", completed: "Ran fg" },
+      icon: { glyph: "FileText" },
+      title: "echo fg",
+    };
+
+    assembler.seedOpenTurn({
+      threadId: THREAD_ID,
+      bbTurnId: "as-seed-t1",
+      providerTurnId: "turn-1",
+    });
+
+    const opened = assembler.assemble({
+      threadId: THREAD_ID,
+      deltas: [
+        {
+          kind: "item.open",
+          key: { providerItemId: "bg-del-1" },
+          item: {
+            type: "delegation",
+            childRef: "sub-1",
+            label: "Researcher",
+            summary: "Initial summary",
+            background: true,
+          },
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "item.open",
+          key: { providerItemId: "bg-stale" },
+          item: {
+            type: "backgroundTask",
+            familyId: "fam-stale",
+            taskType: "shell",
+            description: "stale bg",
+            status: "pending",
+            taskStatus: "running",
+            skipTranscript: false,
+            foreground: false,
+          },
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "item.open",
+          key: { providerItemId: "fg-cmd-1" },
+          item: { type: "command", command: "echo fg", cwd: "/repo" },
+          presentation: fgPresentation,
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "command.outputSnapshot",
+          key: { providerItemId: "fg-cmd-1" },
+          text: "line 1\n",
+        },
+        {
+          kind: "item.textDelta",
+          key: { channel: "assistant" },
+          channel: "agentMessage",
+          text: "Hello ",
+          providerTurnId: "turn-1",
+        },
+      ],
+    });
+    const fgCmdStarted = opened.find(
+      (e) => e.type === "item/started" && e.item.type === "commandExecution",
+    );
+    const fgMsgStarted = opened.find(
+      (e) => e.type === "item/started" && e.item.type === "agentMessage",
+    );
+    const bgDelStarted = opened.find(
+      (e) => e.type === "item/started" && e.item.type === "delegation",
+    );
+    if (
+      fgCmdStarted?.type !== "item/started" ||
+      fgMsgStarted?.type !== "item/started" ||
+      bgDelStarted?.type !== "item/started"
+    ) {
+      throw new Error("expected started items");
+    }
+
+    nowMs += 10;
+    expect(
+      assembler.assemble({
+        threadId: THREAD_ID,
+        deltas: [
+          {
+            kind: "item.progress",
+            key: { providerItemId: "fg-cmd-1" },
+            message: "throttled fg",
+            providerTurnId: "turn-1",
+          },
+          {
+            kind: "item.progress",
+            key: { providerItemId: "bg-stale" },
+            snapshot: {
+              type: "backgroundTask",
+              familyId: "fam-stale",
+              taskType: "shell",
+              description: "stale bg",
+              status: "pending",
+              taskStatus: "running",
+              skipTranscript: false,
+              foreground: false,
+            },
+          },
+        ],
+      }),
+    ).toEqual([]);
+    expect(assembler.hasPendingOutput()).toBe(true);
+
+    const seeded = assembler.seedOpenBackgroundItems({
+      threadId: THREAD_ID,
+      items: [
+        {
+          key: { providerItemId: "bg-del-1" },
+          item: {
+            type: "delegation",
+            childRef: "sub-1",
+            label: "Researcher",
+            background: true,
+          },
+        },
+      ],
+    });
+    expect(seeded).toHaveLength(1);
+    expect(seeded[0]?.bbItemId).toBe(bgDelStarted.item.id);
+    expect(seeded[0]?.item).toMatchObject({
+      type: "delegation",
+      id: bgDelStarted.item.id,
+      summary: "Initial summary",
+    });
+
+    const flushed = assembler.flushPending();
+    expect(flushed).toEqual([
+      {
+        threadId: THREAD_ID,
+        events: [
+          expect.objectContaining({
+            type: "item/toolCall/progress",
+            itemId: fgCmdStarted.item.id,
+            message: "throttled fg",
+          }),
+        ],
+      },
+    ]);
+
+    const afterSeed = assembler.assemble({
+      threadId: THREAD_ID,
+      deltas: [
+        {
+          kind: "item.progress",
+          key: { providerItemId: "bg-del-1" },
+          flush: true,
+          snapshot: {
+            type: "delegation",
+            childRef: "sub-1",
+            label: "Researcher",
+            background: true,
+          },
+        },
+        {
+          kind: "item.progress",
+          key: { providerItemId: "fg-cmd-1" },
+          flush: true,
+          message: "live fg",
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "command.outputSnapshot",
+          key: { providerItemId: "fg-cmd-1" },
+          text: "line 1\nline 2\n",
+        },
+        {
+          kind: "item.close",
+          key: { providerItemId: "fg-cmd-1" },
+          status: "completed",
+          exitCode: 0,
+          aggregatedOutput: "line 1\nline 2\n",
+          item: { type: "command", command: "echo fg", cwd: "/repo" },
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "item.textDelta",
+          key: { channel: "assistant" },
+          channel: "agentMessage",
+          text: "world",
+          providerTurnId: "turn-1",
+        },
+        {
+          kind: "item.textClose",
+          key: { channel: "assistant" },
+          channel: "agentMessage",
+          providerTurnId: "turn-1",
+        },
+      ],
+    });
+
+    expect(afterSeed).toEqual([
+      expect.objectContaining({
+        type: "item/delegation/progress",
+        item: expect.objectContaining({
+          id: bgDelStarted.item.id,
+          summary: "Initial summary",
+        }),
+      }),
+      expect.objectContaining({
+        type: "item/toolCall/progress",
+        itemId: fgCmdStarted.item.id,
+        message: "live fg",
+      }),
+      expect.objectContaining({
+        type: "item/commandExecution/outputDelta",
+        itemId: fgCmdStarted.item.id,
+        delta: "line 2\n",
+      }),
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "commandExecution",
+          id: fgCmdStarted.item.id,
+          status: "completed",
+          exitCode: 0,
+          aggregatedOutput: "line 1\nline 2\n",
+          presentation: fgPresentation,
+        }),
+      }),
+      expect.objectContaining({
+        type: "item/agentMessage/delta",
+        itemId: fgMsgStarted.item.id,
+        delta: "world",
+      }),
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "agentMessage",
+          id: fgMsgStarted.item.id,
+          text: "Hello world",
+        }),
+      }),
+    ]);
+  });
 });
