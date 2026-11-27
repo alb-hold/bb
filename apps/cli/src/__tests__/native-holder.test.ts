@@ -1196,6 +1196,125 @@ describe("opening a native holder connection", () => {
   });
 });
 
+describe("connecting to a native holder between bind and listen", () => {
+  const BIND_THEN_LISTEN = [
+    "import os, socket, sys",
+    "path = sys.argv[1]",
+    "server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
+    "server.bind(path)",
+    "os.chmod(path, 0o600)",
+    "sys.stdout.write('bound\\n'); sys.stdout.flush()",
+    "if not sys.stdin.readline(): sys.exit(0)",
+    "server.listen(8)",
+    "sys.stdout.write('listening\\n'); sys.stdout.flush()",
+    "sys.stdin.readline()",
+  ].join("\n");
+
+  interface BindOnlyChild {
+    pid: number;
+    listen(): Promise<void>;
+    stop(): Promise<void>;
+  }
+
+  async function bindWithoutListening(
+    socketPath: string,
+  ): Promise<BindOnlyChild> {
+    const child = spawnProcess("python3", ["-c", BIND_THEN_LISTEN, socketPath], {
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const events = readline.createInterface({ input: child.stdout });
+    const waiters = new Map<string, () => void>();
+    const seen = new Set<string>();
+    events.on("line", (line) => {
+      seen.add(line);
+      waiters.get(line)?.();
+    });
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+    });
+    const waitFor = (event: string): Promise<void> =>
+      seen.has(event)
+        ? Promise.resolve()
+        : new Promise((resolve) => waiters.set(event, resolve));
+    await waitFor("bound");
+    return {
+      pid: child.pid ?? 0,
+      async listen() {
+        child.stdin.write("go\n");
+        await waitFor("listening");
+      },
+      async stop() {
+        child.stdin.end();
+        await exited;
+      },
+    };
+  }
+
+  it("keeps the socket of a live holder that has bound but not started listening, then attaches once it listens", async () => {
+    const socketPath = socketIn();
+    const child = await bindWithoutListening(socketPath);
+    try {
+      expect(child.pid).toBeGreaterThan(0);
+      claimTestHolderMarker(socketPath, child.pid);
+      expect(nativeHolderProcessIsAlive(socketPath)).toBe(true);
+      const before = lstatSync(socketPath);
+
+      expect(await nativeHolder.connectNativeHolder(socketPath)).toBeNull();
+
+      const after = lstatSync(socketPath);
+      expect({ dev: after.dev, ino: after.ino }).toEqual({
+        dev: before.dev,
+        ino: before.ino,
+      });
+
+      await child.listen();
+
+      let starts = 0;
+      let fallbacks = 0;
+      const connection = await openNativeHolderConnection({
+        socketPath,
+        reattachOnly: false,
+        startHolder: () => {
+          starts += 1;
+        },
+        startFallbackHolder: () => {
+          fallbacks += 1;
+        },
+        startTimeoutMs: 5_000,
+      });
+      if (connection.kind !== "attached") throw new Error(connection.kind);
+      connection.socket.destroy();
+      expect(starts).toBe(0);
+      expect(fallbacks).toBe(0);
+      const attached = lstatSync(socketPath);
+      expect({ dev: attached.dev, ino: attached.ino }).toEqual({
+        dev: before.dev,
+        ino: before.ino,
+      });
+    } finally {
+      await child.stop();
+    }
+  });
+
+  it("removes a refused socket whose holder marker names a dead process", async () => {
+    const socketPath = socketIn();
+    const child = await bindWithoutListening(socketPath);
+    try {
+      await child.stop();
+      expect(child.pid).toBeGreaterThan(0);
+      claimTestHolderMarker(socketPath, child.pid);
+      expect(nativeHolderProcessIsAlive(socketPath)).toBe(false);
+      expect(existsSync(socketPath)).toBe(true);
+
+      expect(await nativeHolder.connectNativeHolder(socketPath)).toBeNull();
+
+      expect(existsSync(socketPath)).toBe(false);
+    } finally {
+      await child.stop();
+    }
+  });
+});
+
 describe("native holder app fallback window", () => {
   it("starts the fallback once when no socket appears inside the first window", async () => {
     const socketPath = socketIn();
