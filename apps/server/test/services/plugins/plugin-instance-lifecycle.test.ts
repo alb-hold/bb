@@ -361,7 +361,7 @@ describe("plugin instance lifecycle on a running server", () => {
     control().rpcEntered = () => {
       entered += 1;
     };
-    const invoke = (method: string, signal?: AbortSignal) =>
+    const invoke = async (method: string, signal?: AbortSignal) =>
       server.app.request(`/api/v1/plugins/lifecycle/rpc/${method}`, {
         method: "POST",
         body: "null",
