@@ -1,4 +1,5 @@
 import {
+  NATIVE_TERMINAL_IDLE_EXIT_CODE,
   TerminalColorQueries,
   TerminalCursorPositionQueries,
 } from "@bb/domain";
@@ -868,7 +869,13 @@ export class TerminalManager {
           void this.runTerminalOperation({
             operation: () =>
               this.finishTerminalSession({
-                closeReason: session.closeReason ?? "process-exit",
+                closeReason:
+                  session.closeReason ??
+                  (event.exitCode === NATIVE_TERMINAL_IDLE_EXIT_CODE &&
+                  message.start.mode === "command" &&
+                  baseEnv.BB_NATIVE_TOOL_CREDENTIAL !== undefined
+                    ? "native-idle-reaped"
+                    : "process-exit"),
                 exitCode: event.exitCode,
                 session,
               }),

@@ -1368,12 +1368,36 @@ describe("public terminal routes", () => {
   });
 
   it.each([
-    { early: true, paintSpace: false },
-    { early: false, paintSpace: false },
-    { early: false, paintSpace: true },
+    { early: true, paintSpace: false, evicted: false, truncated: false },
+    { early: false, paintSpace: false, evicted: false, truncated: false },
+    { early: false, paintSpace: true, evicted: false, truncated: false },
+    { early: true, paintSpace: false, evicted: true, truncated: false },
+    { early: true, paintSpace: false, evicted: true, truncated: true },
+    {
+      early: false,
+      paintSpace: false,
+      evicted: true,
+      truncated: false,
+      atLimit: true,
+    },
+    {
+      early: false,
+      paintSpace: false,
+      evicted: true,
+      truncated: false,
+      atLimit: true,
+      singleAtLimit: true,
+    },
   ])(
-    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace)",
-    async ({ early, paintSpace }) => {
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted, truncated: $truncated, at limit: $atLimit, single: $singleAtLimit)",
+    async ({
+      early,
+      paintSpace,
+      evicted,
+      truncated,
+      atLimit,
+      singleAtLimit,
+    }) => {
       const fixture = await createTerminalRouteFixture();
       harnesses.push(fixture.harness);
       const stored = createTerminalSession(fixture.harness.db, {
@@ -1398,17 +1422,74 @@ describe("public terminal routes", () => {
             chunk: { seq, dataBase64: Buffer.from(data).toString("base64") },
           },
         });
-      await output(0, "   ");
-      await service.readTerminalPromptScreen(stored.id);
-      expect(
-        service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
-      ).toBeUndefined();
-      await output(1, "first");
+      const reset = "\x1b[0m";
+      const liveFrom = truncated || singleAtLimit ? 1 : 2;
+      if (liveFrom === 2) {
+        await output(0, atLimit ? reset.repeat(8_192) : "   ");
+        await service.readTerminalPromptScreen(stored.id);
+        expect(
+          service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
+        ).toBeUndefined();
+      }
+      const visibleOutput = atLimit
+        ? `${reset.repeat(singleAtLimit ? 16_382 : 8_190)}first   `
+        : "first";
+      await output(
+        liveFrom - 1,
+        truncated ? `first\x1b[2;1H${reset.repeat(17_000)}` : visibleOutput,
+      );
       await vi.waitFor(() =>
         expect(
           service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
-        ).toBe(1),
+        ).toBe(liveFrom - 1),
       );
+      if (evicted) {
+        service.flushAllRetainedOutput();
+        if (truncated || atLimit) {
+          const retained = getRetainedTerminalOutput(fixture.harness.db, {
+            hostId: fixture.host.id,
+            terminalSessionId: stored.id,
+            now: Date.now(),
+          });
+          expect(
+            retained?.map(({ seq, dataBase64 }) => [
+              seq,
+              Buffer.byteLength(dataBase64, "base64"),
+            ]),
+          ).toEqual(
+            liveFrom === 1
+              ? [[0, 65_536]]
+              : [
+                  [0, 32_768],
+                  [1, 32_768],
+                ],
+          );
+          expect(
+            Buffer.from(retained!.at(-1)!.dataBase64, "base64").includes(
+              "first",
+            ),
+          ).toBe(!truncated);
+        }
+        for (let index = 0; index < 32; index += 1) {
+          const other = createTerminalSession(fixture.harness.db, {
+            cols: 80,
+            daemonSessionId: fixture.session.id,
+            environmentId: null,
+            hostId: fixture.host.id,
+            initialCwd: "/tmp",
+            rows: 24,
+            status: "running",
+            threadId: null,
+            title: "Terminal used to evict the observed screen",
+          });
+          service.recordDirectTerminalOutputBatch({
+            daemonSessionId: fixture.session.id,
+            terminalId: other.id,
+            chunks: [{ seq: 0, dataBase64: "eA==" }],
+          });
+        }
+        expect(await service.readTerminalPromptScreen(stored.id)).toBeNull();
+      }
       const browserSocket = createFakeBrowserSocket();
 
       fixture.harness.deps.terminalSessions.attachBrowserTerminal({
@@ -1465,8 +1546,8 @@ describe("public terminal routes", () => {
           requestId: second.requestId,
           terminalId: stored.id,
           chunks: [],
-          replayStartSeq: 2,
-          nextSeq: 2,
+          replayStartSeq: liveFrom,
+          nextSeq: liveFrom,
         },
       });
 
@@ -1479,16 +1560,16 @@ describe("public terminal routes", () => {
       const renderBurst = async () => {
         expect(observed()).toEqual([]);
         await output(
-          2,
+          liveFrom,
           early ? "\x1b[31m" : "\x1b]10;#ff0000\x07\x1b]11;#0000ff\x07",
         );
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
         const repaint = paintSpace ? "\x1b[44m " : "\r   \x1b[7mfirst";
-        await output(3, `\x1b[?2026h${repaint}`);
+        await output(liveFrom + 1, `\x1b[?2026h${repaint}`);
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
-        await output(4, "\x1b[?2026l");
+        await output(liveFrom + 2, "\x1b[?2026l");
         await service.readTerminalPromptScreen(stored.id);
       };
       if (early) {
@@ -1503,10 +1584,13 @@ describe("public terminal routes", () => {
           requestId: attachMessage.requestId,
           terminalId: stored.id,
           chunks: [
-            { seq: 1, dataBase64: Buffer.from("first").toString("base64") },
+            {
+              seq: liveFrom - 1,
+              dataBase64: Buffer.from("first").toString("base64"),
+            },
           ],
-          replayStartSeq: 1,
-          nextSeq: 2,
+          replayStartSeq: liveFrom - 1,
+          nextSeq: liveFrom,
         },
       });
       expect(readBrowserMessages(browserSocket)).toContainEqual(
@@ -1520,7 +1604,7 @@ describe("public terminal routes", () => {
       );
 
       if (!early) await renderBurst();
-      await output(5, "next");
+      await output(liveFrom + 3, "next");
       await service.readTerminalPromptScreen(stored.id);
       expect(
         readBrowserMessages(detachedSocket).some(
@@ -1529,19 +1613,24 @@ describe("public terminal routes", () => {
             message.session.attachLiveFrame,
         ),
       ).toBe(false);
-      await vi.waitFor(() =>
-        expect(observed()).toEqual([
-          {
-            terminalId: stored.id,
-            seq: 4,
-            at: expect.any(Number),
-            provenance: "live",
-          },
-        ]),
-      );
+      if (truncated) {
+        await Reflect.get(service, "terminalScreenStateRebuildQueue");
+        expect(observed()).toEqual([]);
+      } else {
+        await vi.waitFor(() =>
+          expect(observed()).toEqual([
+            {
+              terminalId: stored.id,
+              seq: liveFrom + 2,
+              at: expect.any(Number),
+              provenance: "live",
+            },
+          ]),
+        );
+      }
       expect(
         service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
-      ).toBe(1);
+      ).toBe(liveFrom - 1);
     },
   );
 

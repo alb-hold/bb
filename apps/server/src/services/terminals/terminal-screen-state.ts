@@ -9,6 +9,7 @@ import {
 import type { TerminalScreenResponse } from "@bb/server-contract";
 import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
+export const TERMINAL_SCREEN_STATE_CACHE_LIMIT = 32;
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 const SYNCHRONIZED_OUTPUT_ENABLE_SEQUENCE = Buffer.from("\u001b[?2026h");
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
@@ -828,9 +829,7 @@ export class TerminalScreenState {
                   if (frameCallback && !this.disposed) {
                     if (this.terminal.modes.synchronizedOutputMode) {
                       this.synchronizedRenderCallback ??= frameCallback;
-                    } else if (
-                      isTerminalReplaySafeBoundary(this.parserState)
-                    ) {
+                    } else if (isTerminalReplaySafeBoundary(this.parserState)) {
                       const current = visibleFrameContent(this.terminal);
                       if (current && current !== this.frameBaseline)
                         frameCallback();
@@ -974,20 +973,45 @@ export class TerminalScreenState {
 }
 
 export class TerminalScreenStateCache {
-  private readonly states = new Map<string, TerminalScreenState>();
+  private readonly states = new Map<string, TerminalScreenState | null>();
 
   has(terminalId: string): boolean {
-    return this.states.has(terminalId);
+    return this.states.get(terminalId) != null;
+  }
+
+  isHistoryUnavailable(terminalId: string): boolean {
+    return this.states.get(terminalId) === null;
+  }
+
+  markHistoryUnavailable(terminalId: string): void {
+    if (!this.states.has(terminalId)) this.set(terminalId, null);
   }
 
   create(terminalId: string, cols: number, rows: number): void {
-    if (this.states.has(terminalId)) return;
-    this.states.set(terminalId, new TerminalScreenState(cols, rows));
+    if (this.has(terminalId)) return;
+    this.set(terminalId, new TerminalScreenState(cols, rows));
   }
 
   install(terminalId: string, state: TerminalScreenState): void {
     this.remove(terminalId);
+    this.set(terminalId, state);
+  }
+
+  private set(terminalId: string, state: TerminalScreenState | null): void {
+    this.states.delete(terminalId);
     this.states.set(terminalId, state);
+    if (this.states.size > TERMINAL_SCREEN_STATE_CACHE_LIMIT) {
+      const oldest = this.states.keys().next().value;
+      if (oldest !== undefined) this.remove(oldest);
+    }
+  }
+
+  private touch(terminalId: string): TerminalScreenState | undefined {
+    const state = this.states.get(terminalId);
+    if (state == null) return undefined;
+    this.states.delete(terminalId);
+    this.states.set(terminalId, state);
+    return state;
   }
 
   push(
@@ -997,12 +1021,9 @@ export class TerminalScreenStateCache {
     seq: number,
     data: Uint8Array,
   ): void {
-    let state = this.states.get(terminalId);
-    if (state === undefined) {
-      if (seq !== 0) return;
-      state = new TerminalScreenState(cols, rows);
-      this.states.set(terminalId, state);
-    }
+    if (seq === 0) this.create(terminalId, cols, rows);
+    const state = this.touch(terminalId);
+    if (state === undefined) return;
     state.resize(cols, rows);
     state.push(seq, data);
   }
@@ -1015,37 +1036,33 @@ export class TerminalScreenStateCache {
     data: string,
     rendered?: () => void,
   ): void {
-    let state = this.states.get(terminalId);
-    if (state === undefined) {
-      if (seq !== 0) return;
-      state = new TerminalScreenState(cols, rows);
-      this.states.set(terminalId, state);
-    }
+    if (seq === 0) this.create(terminalId, cols, rows);
+    const state = this.touch(terminalId);
+    if (state === undefined) return;
     state.resize(cols, rows);
     state.pushBase64(seq, data, rendered);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
-    this.states.get(terminalId)?.resize(cols, rows);
+    this.touch(terminalId)?.resize(cols, rows);
   }
 
   promptScreen(terminalId: string) {
-    return this.states.get(terminalId)?.promptScreen() ?? Promise.resolve(null);
+    return this.touch(terminalId)?.promptScreen() ?? Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {
-    return this.states.get(terminalId)?.snapshot() ?? Promise.resolve(null);
+    return this.touch(terminalId)?.snapshot() ?? Promise.resolve(null);
   }
 
   remove(terminalId: string): void {
     const state = this.states.get(terminalId);
-    if (state === undefined) return;
     this.states.delete(terminalId);
-    state.dispose();
+    state?.dispose();
   }
 
   dispose(): void {
-    for (const state of this.states.values()) state.dispose();
+    for (const state of this.states.values()) state?.dispose();
     this.states.clear();
   }
 }

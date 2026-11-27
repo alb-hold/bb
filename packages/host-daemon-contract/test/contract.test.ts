@@ -1078,7 +1078,7 @@ describe("host-daemon command schemas", () => {
     ).toBe(false);
   });
 
-  it("uses the current host-daemon protocol version (test-change-reason: input.provider gained clientRequestId at version 271)", () => {
+  it("uses the current host-daemon protocol version (test-change-reason: terminal.exited gained native-idle-reaped at version 271)", () => {
     expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(271);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });

@@ -1,5 +1,21 @@
 import type { DbConnection } from "../../src/index.js";
 
+export function dropNativeIdleReapColumns(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .all();
+  if (columns.some((column) => column.name === "native_idle_reap_until")) {
+    db.$client.exec(
+      "ALTER TABLE terminal_sessions DROP COLUMN native_idle_reap_until",
+    );
+  }
+  if (columns.some((column) => column.name === "native_idle_reap_token")) {
+    db.$client.exec(
+      "ALTER TABLE terminal_sessions DROP COLUMN native_idle_reap_token",
+    );
+  }
+}
+
 export function dropPluginEnabledFollowsDefaultColumn(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(plugins)")
@@ -173,7 +189,8 @@ export function dropThreadStatusChangedAtColumn(db: DbConnection): void {
   }
 }
 
-export function dropTerminalFirstLiveFrameColumn(db: DbConnection): void {
+export function rewindTerminalSessionColumns(db: DbConnection): void {
+  dropNativeIdleReapColumns(db);
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
     .all();
@@ -255,7 +272,7 @@ export function dropQueuedMessageCoalesceColumns(db: DbConnection): void {
 export function rewindMergedUpstreamMigrations(db: DbConnection): void {
   dropQueuedMessageCoalesceColumns(db);
   dropThreadStatusChangedAtColumn(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   restoreDiffViewedFilesTable(db);

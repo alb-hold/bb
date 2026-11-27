@@ -40,7 +40,9 @@ const hostDaemonTerminalCloseReasonValues = [
   "thread-archived",
   "thread-deleted",
   "open-timeout",
+  "native-idle-reaped",
 ] as const;
+export const NATIVE_TERMINAL_IDLE_EXIT_CODE = 202;
 export type HostDaemonTerminalCloseReason =
   (typeof hostDaemonTerminalCloseReasonValues)[number];
 const terminalSessionCloseReasonValues = [

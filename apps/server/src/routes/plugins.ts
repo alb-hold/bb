@@ -1064,8 +1064,12 @@ export function registerPluginRoutes(
       context.req.raw.signal,
     );
     if (!outcome.ok) {
+      const payload = { ok: false as const, error: outcome.error };
+      if (outcome.status !== undefined) {
+        return context.json(payload, outcome.status);
+      }
       return context.json(
-        { ok: false, error: outcome.error },
+        payload,
         (
           {
             invalid_json: 400,

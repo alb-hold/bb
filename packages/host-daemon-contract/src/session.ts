@@ -460,6 +460,7 @@ const terminalCloseReasonSchema = z.enum([
   "thread-archived",
   "thread-deleted",
   "open-timeout",
+  "native-idle-reaped",
 ]);
 const hostDaemonOnlineRpcRequestIdSchema = z.string().min(1);
 

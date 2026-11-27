@@ -117,6 +117,7 @@ import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.
 import {
   TerminalScreenState,
   TerminalScreenStateCache,
+  TERMINAL_SCREEN_STATE_CACHE_LIMIT,
   TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT,
 } from "./terminal-screen-state.js";
 import {
@@ -203,6 +204,7 @@ interface TerminalScreenStateRebuild {
   cancelled: boolean;
   cols: number;
   daemonSessionId: string | null;
+  liveFromSequence: number | null;
   nextSeq: number;
   rows: number;
   terminalId: string;
@@ -886,6 +888,17 @@ function updateTerminalById(
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
   private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
+  private readonly nativeIdleReaps = new Map<
+    string,
+    {
+      token: string;
+      settled: Promise<void>;
+      settle: () => void;
+      cancelExpiry: () => void;
+    }
+  >();
+  private readonly awaitingNativeIdleReap = new WeakSet<TerminalClientSocket>();
+  private hasDirectTerminalViewer?: (terminalId: string) => boolean;
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -1053,11 +1066,15 @@ export class TerminalSessionLifecycle {
 
   private scheduleTerminalScreenStateRebuild(
     session: TerminalSessionRow,
+    liveFromSequence: number | null = null,
   ): void {
     if (
       this.terminalOutputWritesStopped ||
       this.terminalScreenStates.has(session.id) ||
       this.terminalScreenStateRebuilds.has(session.id) ||
+      (liveFromSequence !== null &&
+        this.terminalScreenStateRebuilds.size >=
+          TERMINAL_SCREEN_STATE_CACHE_LIMIT) ||
       session.status !== "running"
     ) {
       return;
@@ -1068,6 +1085,7 @@ export class TerminalSessionLifecycle {
       cancelled: false,
       cols: session.cols,
       daemonSessionId: session.daemonSessionId,
+      liveFromSequence,
       nextSeq: 0,
       rows: session.rows,
       terminalId: session.id,
@@ -1092,6 +1110,9 @@ export class TerminalSessionLifecycle {
   ): Promise<void> {
     let state: TerminalScreenState | null = null;
     try {
+      if (rebuild.liveFromSequence !== null) {
+        await this.waitForTerminalReplay(session.id);
+      }
       await yieldToEventLoop();
       if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
       const current = getTerminalById(this.options.db, session.id);
@@ -1102,14 +1123,25 @@ export class TerminalSessionLifecycle {
       ) {
         return;
       }
-      const chunks = getRetainedTerminalOutput(this.options.db, {
+      const liveFrom = rebuild.liveFromSequence;
+      const retained = getRetainedTerminalOutput(this.options.db, {
         hostId: current.hostId,
         terminalSessionId: current.id,
         now: Date.now(),
+        wholeChunksOnly: liveFrom !== null,
       });
-      if (chunks !== null && chunks[0]?.seq !== 0) return;
+      if (liveFrom === null && retained !== null && retained[0]?.seq !== 0)
+        return;
+      const chunks =
+        liveFrom === null
+          ? (retained ?? [])
+          : this.readLiveFrameHistory(current, retained ?? [], liveFrom);
+      if (chunks === null) {
+        this.terminalScreenStates.markHistoryUnavailable(session.id);
+        return;
+      }
       state = new TerminalScreenState(rebuild.cols, rebuild.rows);
-      for (const chunk of chunks ?? []) {
+      for (const chunk of chunks) {
         if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
         state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
         rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
@@ -1144,6 +1176,34 @@ export class TerminalSessionLifecycle {
         this.terminalScreenStateRebuilds.delete(session.id);
       }
     }
+  }
+
+  private readLiveFrameHistory(
+    session: TerminalSessionRow,
+    retained: TerminalOutputChunk[],
+    liveFrom: number,
+  ): TerminalOutputChunk[] | null {
+    if (liveFrom > TERMINAL_SCREEN_REPLAY_BYTES) return null;
+    const bySequence = new Map<number, TerminalOutputChunk>();
+    const add = (chunks: TerminalOutputChunk[]) => {
+      for (const chunk of chunks) {
+        if (chunk.seq < liveFrom) bySequence.set(chunk.seq, chunk);
+      }
+    };
+    add(retained);
+    for (const batch of this.pendingRetainedOutput.get(session.id) ?? []) {
+      if (batch.hostId === session.hostId) add(batch.chunks);
+    }
+    const history: TerminalOutputChunk[] = [];
+    let bytes = 0;
+    for (let sequence = 0; sequence < liveFrom; sequence += 1) {
+      const chunk = bySequence.get(sequence);
+      if (chunk === undefined) return null;
+      bytes += Buffer.byteLength(chunk.dataBase64, "base64");
+      if (bytes > TERMINAL_SCREEN_REPLAY_BYTES) return null;
+      history.push(chunk);
+    }
+    return history;
   }
 
   private isTerminalScreenStateRebuildActive(
@@ -2041,7 +2101,10 @@ export class TerminalSessionLifecycle {
         "Terminal session not found",
       );
     }
-    if (!isRunningBrowserTerminalSession(current)) {
+    if (
+      !isRunningBrowserTerminalSession(current) ||
+      this.nativeIdleReapInFlight(args.terminalId, current)
+    ) {
       throw new ApiError(
         409,
         "terminal_not_running",
@@ -2400,6 +2463,18 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
+    const rendered = this.frameCallback(session, chunk.seq);
+    if (
+      rendered !== undefined &&
+      chunk.seq !== 0 &&
+      chunk.seq <= TERMINAL_SCREEN_REPLAY_BYTES &&
+      !this.terminalScreenStates.has(session.id) &&
+      !this.terminalScreenStates.isHistoryUnavailable(session.id) &&
+      (!this.activeTerminalReplays.has(session.id) ||
+        this.frameObservers.has(session.id))
+    ) {
+      this.scheduleTerminalScreenStateRebuild(session, chunk.seq);
+    }
     const rebuild = this.terminalScreenStateRebuilds.get(session.id);
     if (rebuild === undefined) {
       this.terminalScreenStates.pushBase64(
@@ -2408,7 +2483,7 @@ export class TerminalSessionLifecycle {
         session.rows,
         chunk.seq,
         chunk.dataBase64,
-        this.frameCallback(session, chunk.seq),
+        rendered,
       );
     } else if (!rebuild.cancelled) {
       const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
@@ -3177,6 +3252,7 @@ export class TerminalSessionLifecycle {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
+      this.nativeIdleReapInFlight(terminalId, current) ||
       current.status !== "running" ||
       current.daemonSessionId === null
     ) {
@@ -3192,6 +3268,85 @@ export class TerminalSessionLifecycle {
 
   markDirectOutputSocket(socket: TerminalClientSocket): void {
     this.directOutputSockets.add(socket);
+  }
+
+  setDirectTerminalViewerCheck(
+    hasViewer: (terminalId: string) => boolean,
+  ): void {
+    this.hasDirectTerminalViewer = hasViewer;
+  }
+
+  claimNativeIdleReap(terminalId: string, token: string): boolean {
+    if (
+      this.options.hub.hasTerminalClients(terminalId) ||
+      this.frameObservers.has(terminalId) ||
+      this.hasDirectTerminalViewer?.(terminalId) === true
+    )
+      return false;
+    const now = Date.now();
+    const claimed = updateTerminalSession(this.options.db, {
+      now,
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "claim-native-idle-reap", token, until: now + 15_000 },
+    });
+    if (claimed === null) return false;
+    this.nativeIdleReapInFlight(terminalId, claimed);
+    return true;
+  }
+
+  updateNativeIdleReap(
+    terminalId: string,
+    token: string,
+    phase: "commit" | "release",
+  ): boolean {
+    const updated = updateTerminalSession(this.options.db, {
+      scope: { kind: "terminal", terminalId },
+      update: {
+        kind:
+          phase === "commit" ? "commit-native-idle-reap" : "release-native-idle-reap",
+        token,
+      },
+    });
+    if (updated === null) return false;
+    this.nativeIdleReapInFlight(terminalId, updated);
+    return true;
+  }
+
+  nativeIdleReapInFlight(
+    terminalId: string,
+    current = getTerminalById(this.options.db, terminalId),
+  ): Promise<void> | null {
+    const token = current?.nativeIdleReapToken ?? null;
+    const remaining =
+      current?.nativeIdleReapUntil == null
+        ? null
+        : current.nativeIdleReapUntil - Date.now();
+    const pending = this.nativeIdleReaps.get(terminalId);
+    if (token === null || (remaining !== null && remaining <= 0)) {
+      pending?.settle();
+      return null;
+    }
+    if (pending?.token === token) {
+      if (remaining === null) pending.cancelExpiry();
+      return pending.settled;
+    }
+    pending?.settle();
+    let resolve!: () => void;
+    const settled = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const cancelExpiry = () => {
+      if (expiry !== null) clearTimeout(expiry);
+    };
+    const settle = () => {
+      cancelExpiry();
+      this.nativeIdleReaps.delete(terminalId);
+      resolve();
+    };
+    const expiry = remaining === null ? null : setTimeout(settle, remaining);
+    expiry?.unref();
+    this.nativeIdleReaps.set(terminalId, { token, settled, settle, cancelExpiry });
+    return settled;
   }
 
   setDaemonSessionDirectOutput(args: {
@@ -3332,6 +3487,27 @@ export class TerminalSessionLifecycle {
   }
 
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
+    const reaping = this.nativeIdleReapInFlight(args.terminalId);
+    if (reaping !== null) {
+      this.awaitingNativeIdleReap.add(args.socket);
+      void reaping.then(() => {
+        if (!this.awaitingNativeIdleReap.delete(args.socket)) return;
+        try {
+          this.attachBrowserTerminal(args);
+        } catch (error) {
+          this.sendTerminalSocketError({
+            socket: args.socket,
+            code:
+              error instanceof ApiError
+                ? error.body.code
+                : "terminal_attach_failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+          args.socket.close(1013, "attach-failed");
+        }
+      });
+      return;
+    }
     if (args.rawReplay) this.rawReplaySockets.add(args.socket);
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
@@ -3482,6 +3658,7 @@ export class TerminalSessionLifecycle {
   }
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
+    this.awaitingNativeIdleReap.delete(args.socket);
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
     this.removeFrameObserver(args.terminalId, args.socket);
     this.outputFlow.removeClient(args.terminalId, args.socket);
@@ -4193,6 +4370,23 @@ export class TerminalSessionLifecycle {
     if (args.message.type !== "terminal.exited") {
       return;
     }
+    let closeReason = args.message.closeReason;
+    if (closeReason === "native-idle-reaped") {
+      const current = getTerminalById(this.options.db, args.message.terminalId);
+      const native =
+        current?.threadId == null
+          ? null
+          : getNativeTerminalThread(this.options.db, current.threadId);
+      if (
+        current === null ||
+        native === null ||
+        native.terminalSessionId !== current.id ||
+        current.nativeIdleReapToken === null ||
+        current.nativeIdleReapUntil !== null
+      ) {
+        closeReason = "process-exit";
+      }
+    }
     const exited = updateTerminalSession(this.options.db, {
       scope: {
         daemonSessionId: args.sessionId,
@@ -4200,7 +4394,7 @@ export class TerminalSessionLifecycle {
         terminalId: args.message.terminalId,
       },
       update: {
-        closeReason: args.message.closeReason,
+        closeReason,
         exitCode: args.message.exitCode,
         kind: "exit",
         retainDaemonSession: this.directOutputSessionIds.has(args.sessionId),
@@ -4209,6 +4403,7 @@ export class TerminalSessionLifecycle {
     if (!exited) {
       return;
     }
+    this.nativeIdleReaps.get(exited.id)?.settle();
     this.clearDeviceHandoffAttention(exited.id);
     this.forgetForwardedNextSeq(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
@@ -4347,6 +4542,7 @@ export class TerminalSessionLifecycle {
     args: NotifyExitedTerminalSessionArgs,
   ): void {
     if (this.terminalOutputWritesStopped) return;
+    this.nativeIdleReaps.get(args.session.id)?.settle();
     this.clearDeviceHandoffAttention(args.session.id);
     this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
@@ -4529,7 +4725,10 @@ export class TerminalSessionLifecycle {
     if (!current) {
       return null;
     }
-    if (!isRunningBrowserTerminalSession(current)) {
+    if (
+      !isRunningBrowserTerminalSession(current) ||
+      this.nativeIdleReapInFlight(args.terminalId, current)
+    ) {
       if (current.status !== "disconnected") {
         this.sendTerminalSocketError({
           socket: args.socket,
