@@ -134,9 +134,7 @@ async function interruptedRequest(
   await postDaemonEvents(harness, {
     hostId: host.id,
     sessionId: session.id,
-    events: [
-      { ...base, type: "turn/completed", status: "interrupted" },
-    ],
+    events: [{ ...base, type: "turn/completed", status: "interrupted" }],
   });
   return {
     clientRequestId,
@@ -272,7 +270,9 @@ describe("a re-send that names the request it retries", () => {
       expect(drained.status, await drained.clone().text()).toBe(200);
 
       const remaining = harness.db.$client
-        .prepare("select count(*) as n from queued_thread_messages where thread_id = ?")
+        .prepare(
+          "select count(*) as n from queued_thread_messages where thread_id = ?",
+        )
         .get(original.threadId) as { n: number };
       expect(remaining.n).toBe(0);
       expect(countSubmissions(harness, original.threadId)).toBe(1);

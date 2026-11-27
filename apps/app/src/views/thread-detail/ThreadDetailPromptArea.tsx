@@ -1539,12 +1539,17 @@ export function ThreadDetailPromptArea({
         await submitDraft(async () => {
           promptDraft.clearIfCurrentMatches(submittedDraft);
           setBottomAttachmentError(null);
+          const retryOfClientRequestId = takeRetryOfClientRequestId(
+            thread.id,
+            submittedDraft,
+          );
           await runWhileFollowUpShortcutSending(
             setIsFollowUpShortcutSending,
             async () => {
               try {
                 await sendMessage.mutateAsync({
                   ...shortcutRequest.request,
+                  ...(retryOfClientRequestId ? { retryOfClientRequestId } : {}),
                   ...sendAtFields,
                   ...pluginSubmissionFields,
                 });
