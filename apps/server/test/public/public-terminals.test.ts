@@ -1380,9 +1380,24 @@ describe("public terminal routes", () => {
       truncated: false,
       atLimit: true,
     },
+    {
+      early: false,
+      paintSpace: false,
+      evicted: true,
+      truncated: false,
+      atLimit: true,
+      singleAtLimit: true,
+    },
   ])(
-    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted, truncated: $truncated, at limit: $atLimit)",
-    async ({ early, paintSpace, evicted, truncated, atLimit }) => {
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted, truncated: $truncated, at limit: $atLimit, single: $singleAtLimit)",
+    async ({
+      early,
+      paintSpace,
+      evicted,
+      truncated,
+      atLimit,
+      singleAtLimit,
+    }) => {
       const fixture = await createTerminalRouteFixture();
       harnesses.push(fixture.harness);
       const stored = createTerminalSession(fixture.harness.db, {
@@ -1407,22 +1422,26 @@ describe("public terminal routes", () => {
             chunk: { seq, dataBase64: Buffer.from(data).toString("base64") },
           },
         });
-      await output(0, atLimit ? "\x1b[0m".repeat(8_192) : "   ");
-      await service.readTerminalPromptScreen(stored.id);
-      expect(
-        service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
-      ).toBeUndefined();
+      const reset = "\x1b[0m";
+      const liveFrom = truncated || singleAtLimit ? 1 : 2;
+      if (liveFrom === 2) {
+        await output(0, atLimit ? reset.repeat(8_192) : "   ");
+        await service.readTerminalPromptScreen(stored.id);
+        expect(
+          service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
+        ).toBeUndefined();
+      }
       const visibleOutput = atLimit
-        ? `${"\x1b[0m".repeat(8_190)}first   `
+        ? `${reset.repeat(singleAtLimit ? 16_382 : 8_190)}first   `
         : "first";
       await output(
-        1,
-        truncated ? `first\x1b[2;1H${"\x1b[0m".repeat(17_000)}` : visibleOutput,
+        liveFrom - 1,
+        truncated ? `first\x1b[2;1H${reset.repeat(17_000)}` : visibleOutput,
       );
       await vi.waitFor(() =>
         expect(
           service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
-        ).toBe(1),
+        ).toBe(liveFrom - 1),
       );
       if (evicted) {
         service.flushAllRetainedOutput();
@@ -1432,22 +1451,24 @@ describe("public terminal routes", () => {
             terminalSessionId: stored.id,
             now: Date.now(),
           });
-          if (truncated) {
-            expect(retained?.[0]?.seq).toBe(1);
-            expect(
-              Buffer.from(retained![0]!.dataBase64, "base64").includes("first"),
-            ).toBe(false);
-          } else {
-            expect(
-              retained?.map(({ seq, dataBase64 }) => [
-                seq,
-                Buffer.byteLength(dataBase64, "base64"),
-              ]),
-            ).toEqual([
-              [0, 32_768],
-              [1, 32_768],
-            ]);
-          }
+          expect(
+            retained?.map(({ seq, dataBase64 }) => [
+              seq,
+              Buffer.byteLength(dataBase64, "base64"),
+            ]),
+          ).toEqual(
+            liveFrom === 1
+              ? [[0, 65_536]]
+              : [
+                  [0, 32_768],
+                  [1, 32_768],
+                ],
+          );
+          expect(
+            Buffer.from(retained!.at(-1)!.dataBase64, "base64").includes(
+              "first",
+            ),
+          ).toBe(!truncated);
         }
         for (let index = 0; index < 32; index += 1) {
           const other = createTerminalSession(fixture.harness.db, {
@@ -1525,8 +1546,8 @@ describe("public terminal routes", () => {
           requestId: second.requestId,
           terminalId: stored.id,
           chunks: [],
-          replayStartSeq: 2,
-          nextSeq: 2,
+          replayStartSeq: liveFrom,
+          nextSeq: liveFrom,
         },
       });
 
@@ -1539,16 +1560,16 @@ describe("public terminal routes", () => {
       const renderBurst = async () => {
         expect(observed()).toEqual([]);
         await output(
-          2,
+          liveFrom,
           early ? "\x1b[31m" : "\x1b]10;#ff0000\x07\x1b]11;#0000ff\x07",
         );
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
         const repaint = paintSpace ? "\x1b[44m " : "\r   \x1b[7mfirst";
-        await output(3, `\x1b[?2026h${repaint}`);
+        await output(liveFrom + 1, `\x1b[?2026h${repaint}`);
         await service.readTerminalPromptScreen(stored.id);
         expect(observed()).toEqual([]);
-        await output(4, "\x1b[?2026l");
+        await output(liveFrom + 2, "\x1b[?2026l");
         await service.readTerminalPromptScreen(stored.id);
       };
       if (early) {
@@ -1563,10 +1584,13 @@ describe("public terminal routes", () => {
           requestId: attachMessage.requestId,
           terminalId: stored.id,
           chunks: [
-            { seq: 1, dataBase64: Buffer.from("first").toString("base64") },
+            {
+              seq: liveFrom - 1,
+              dataBase64: Buffer.from("first").toString("base64"),
+            },
           ],
-          replayStartSeq: 1,
-          nextSeq: 2,
+          replayStartSeq: liveFrom - 1,
+          nextSeq: liveFrom,
         },
       });
       expect(readBrowserMessages(browserSocket)).toContainEqual(
@@ -1580,7 +1604,7 @@ describe("public terminal routes", () => {
       );
 
       if (!early) await renderBurst();
-      await output(5, "next");
+      await output(liveFrom + 3, "next");
       await service.readTerminalPromptScreen(stored.id);
       expect(
         readBrowserMessages(detachedSocket).some(
@@ -1597,7 +1621,7 @@ describe("public terminal routes", () => {
           expect(observed()).toEqual([
             {
               terminalId: stored.id,
-              seq: 4,
+              seq: liveFrom + 2,
               at: expect.any(Number),
               provenance: "live",
             },
@@ -1606,7 +1630,7 @@ describe("public terminal routes", () => {
       }
       expect(
         service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
-      ).toBe(1);
+      ).toBe(liveFrom - 1);
     },
   );
 

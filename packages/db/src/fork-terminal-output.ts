@@ -38,6 +38,7 @@ interface RetainedTerminalOutputRow {
 
 interface RetainedChunk {
   chunk: RetainedTerminalOutputChunk;
+  completeAtLimit?: true;
   leadingGridMarker?: string;
   retainedAt: number;
 }
@@ -45,6 +46,7 @@ interface RetainedChunk {
 function canonicalRetainedChunk(entry: RetainedChunk): RetainedChunk {
   return {
     chunk: { seq: entry.chunk.seq, dataBase64: entry.chunk.dataBase64 },
+    ...(entry.completeAtLimit ? { completeAtLimit: true } : {}),
     ...(entry.leadingGridMarker === undefined
       ? {}
       : { leadingGridMarker: entry.leadingGridMarker }),
@@ -65,6 +67,7 @@ function parseChunks(chunksJson: string): RetainedChunk[] {
       !("retainedAt" in entry) ||
       typeof entry.retainedAt !== "number" ||
       !Number.isInteger(entry.retainedAt) ||
+      ("completeAtLimit" in entry && entry.completeAtLimit !== true) ||
       ("leadingGridMarker" in entry &&
         typeof entry.leadingGridMarker !== "string") ||
       typeof entry.chunk !== "object" ||
@@ -83,6 +86,9 @@ function parseChunks(chunksJson: string): RetainedChunk[] {
         seq: entry.chunk.seq,
         dataBase64: entry.chunk.dataBase64,
       },
+      ...("completeAtLimit" in entry && entry.completeAtLimit === true
+        ? { completeAtLimit: true }
+        : {}),
       ...(typeof entry.leadingGridMarker === "string"
         ? { leadingGridMarker: entry.leadingGridMarker }
         : {}),
@@ -269,6 +275,9 @@ export function appendRetainedTerminalOutputChunks(
           : { ...chunk, dataBase64: retainedData.toString("base64") };
       chunks.push({
         chunk: boundedChunk,
+        ...(data.byteLength === TERMINAL_RETAINED_OUTPUT_BYTES
+          ? { completeAtLimit: true }
+          : {}),
         ...(leadingGridMarker === undefined ? {} : { leadingGridMarker }),
         retainedAt: now,
       });
@@ -462,7 +471,12 @@ export function dismissRetainedTerminalOutput(
 
 export function getRetainedTerminalOutput(
   db: DbConnection,
-  args: { hostId: string; terminalSessionId: string; now: number },
+  args: {
+    hostId: string;
+    terminalSessionId: string;
+    now: number;
+    wholeChunksOnly?: boolean;
+  },
 ): RetainedTerminalOutputChunk[] | null {
   pruneRetainedTerminalOutput(db, args.now);
   const row = db.$client
@@ -472,35 +486,41 @@ export function getRetainedTerminalOutput(
          AND (expires_at IS NULL OR expires_at > ?)`,
     )
     .get(args.terminalSessionId, args.hostId, args.now) as
-    | { chunksJson: string }
-    | undefined;
+    { chunksJson: string } | undefined;
   if (!row) return null;
-  return parseChunks(row.chunksJson).map(
-    ({ chunk, leadingGridMarker }, index) => {
-      if (index !== 0 || leadingGridMarker === undefined) return chunk;
-      const marker = Buffer.from(leadingGridMarker, "utf8");
-      const data = Buffer.from(chunk.dataBase64, "base64");
-      const leadingOscEnd = data.indexOf(0x07);
-      const existingLeadingMarker =
-        leadingOscEnd >= 0
-          ? data.subarray(0, leadingOscEnd + 1).toString("latin1")
-          : "";
-      if (
-        findLastTerminalGridMarker(existingLeadingMarker) ===
-        existingLeadingMarker
-      ) {
-        return chunk;
-      }
-      const boundedData =
-        marker.byteLength + data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES
-          ? data.subarray(marker.byteLength)
-          : data;
-      return {
-        ...chunk,
-        dataBase64: Buffer.concat([marker, boundedData]).toString("base64"),
-      };
-    },
-  );
+  const chunks = parseChunks(row.chunksJson);
+  if (args.wholeChunksOnly) {
+    return chunks
+      .filter(
+        ({ chunk, completeAtLimit }) =>
+          completeAtLimit || chunkBytes(chunk) < TERMINAL_RETAINED_OUTPUT_BYTES,
+      )
+      .map(({ chunk }) => chunk);
+  }
+  return chunks.map(({ chunk, leadingGridMarker }, index) => {
+    if (index !== 0 || leadingGridMarker === undefined) return chunk;
+    const marker = Buffer.from(leadingGridMarker, "utf8");
+    const data = Buffer.from(chunk.dataBase64, "base64");
+    const leadingOscEnd = data.indexOf(0x07);
+    const existingLeadingMarker =
+      leadingOscEnd >= 0
+        ? data.subarray(0, leadingOscEnd + 1).toString("latin1")
+        : "";
+    if (
+      findLastTerminalGridMarker(existingLeadingMarker) ===
+      existingLeadingMarker
+    ) {
+      return chunk;
+    }
+    const boundedData =
+      marker.byteLength + data.byteLength > TERMINAL_RETAINED_OUTPUT_BYTES
+        ? data.subarray(marker.byteLength)
+        : data;
+    return {
+      ...chunk,
+      dataBase64: Buffer.concat([marker, boundedData]).toString("base64"),
+    };
+  });
 }
 
 export function getRetainedTerminalOutputLatestSeq(

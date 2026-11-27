@@ -1112,12 +1112,13 @@ export class TerminalSessionLifecycle {
       ) {
         return;
       }
+      const liveFrom = rebuild.liveFromSequence;
       const retained = getRetainedTerminalOutput(this.options.db, {
         hostId: current.hostId,
         terminalSessionId: current.id,
         now: Date.now(),
+        wholeChunksOnly: liveFrom !== null,
       });
-      const liveFrom = rebuild.liveFromSequence;
       if (liveFrom === null && retained !== null && retained[0]?.seq !== 0)
         return;
       const chunks =
@@ -1171,7 +1172,7 @@ export class TerminalSessionLifecycle {
     retained: TerminalOutputChunk[],
     liveFrom: number,
   ): TerminalOutputChunk[] | null {
-    if (liveFrom >= TERMINAL_SCREEN_REPLAY_BYTES) return null;
+    if (liveFrom > TERMINAL_SCREEN_REPLAY_BYTES) return null;
     const bySequence = new Map<number, TerminalOutputChunk>();
     const add = (chunks: TerminalOutputChunk[]) => {
       for (const chunk of chunks) {
@@ -1188,7 +1189,7 @@ export class TerminalSessionLifecycle {
       const chunk = bySequence.get(sequence);
       if (chunk === undefined) return null;
       bytes += Buffer.byteLength(chunk.dataBase64, "base64");
-      if (bytes >= TERMINAL_SCREEN_REPLAY_BYTES) return null;
+      if (bytes > TERMINAL_SCREEN_REPLAY_BYTES) return null;
       history.push(chunk);
     }
     return history;
@@ -2452,7 +2453,7 @@ export class TerminalSessionLifecycle {
     if (
       rendered !== undefined &&
       chunk.seq !== 0 &&
-      chunk.seq < TERMINAL_SCREEN_REPLAY_BYTES &&
+      chunk.seq <= TERMINAL_SCREEN_REPLAY_BYTES &&
       !this.terminalScreenStates.has(session.id) &&
       !this.terminalScreenStates.isHistoryUnavailable(session.id) &&
       (!this.activeTerminalReplays.has(session.id) ||
