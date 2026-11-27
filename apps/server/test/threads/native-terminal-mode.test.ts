@@ -30,6 +30,7 @@ import {
   nativeTerminalLaunchSpecSchema,
   nativeTerminalThreadSchema,
   threadResponseSchema,
+  type NativeTerminalIdleReapRequest,
 } from "@bb/server-contract";
 import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS, NATIVE_TERMINAL_SETUP_DELAY_MS } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -135,6 +136,7 @@ type DaemonMessage<TType extends HostDaemonServerWsMessage["type"]> = Extract<
 >;
 
 const SESSION_ID = "2e624c50-68af-4689-9410-06caa371eb8a";
+const IDLE_REAP_TOKEN = "ad0762c8-529d-40b2-8f13-ec90c4342013";
 const harnesses: TestAppHarness[] = [];
 
 afterEach(async () => {
@@ -493,6 +495,8 @@ describe("reaping a native Claude terminal", () => {
           fixture,
           `/threads/${thread.id}/native-terminal/idle-reap`,
           {
+            phase: "claim",
+            token: IDLE_REAP_TOKEN,
             nativeSessionId: SESSION_ID,
             idleForMs: (name === "recent activity" ? 29 : 31) * 60_000,
           },
@@ -514,6 +518,60 @@ describe("reaping a native Claude terminal", () => {
       }
     },
   );
+
+  it("expires a claim before commit and releases when the holder cancels", async () => {
+    const fixture = await createFixture();
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    const credential = currentHolderCredential(fixture, thread.id);
+    const apply = async (payload: NativeTerminalIdleReapRequest) => {
+      const result = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/idle-reap`,
+        payload,
+        `Bearer ${credential}`,
+      );
+      expect(result.status).toBe(200);
+      return readJson(result);
+    };
+    const startedAt = Date.now() + 31 * 60_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    const claim = { nativeSessionId: SESSION_ID, token: IDLE_REAP_TOKEN };
+    const replacement = {
+      ...claim,
+      token: "0b94e3ac-9294-48c3-9862-8ceff738363a",
+    };
+    const router = fixture.harness.deps.terminalSessions;
+    try {
+      expect(
+        await apply({ ...claim, phase: "claim", idleForMs: 31 * 60_000 }),
+      ).toEqual({ approved: true });
+      clock.mockReturnValue(startedAt + 16_000);
+      expect(await apply({ ...claim, phase: "commit" })).toEqual({
+        approved: false,
+      });
+      expect(router.resolveRunningTerminalRoute(open.terminalId)).not.toBeNull();
+      expect(
+        await apply({ ...replacement, phase: "claim", idleForMs: 31 * 60_000 }),
+      ).toEqual({ approved: true });
+      expect(await apply({ ...replacement, phase: "commit" })).toEqual({
+        approved: true,
+      });
+      expect(await apply({ ...claim, phase: "release" })).toEqual({
+        approved: false,
+      });
+      expect(router.resolveRunningTerminalRoute(open.terminalId)).toBeNull();
+      expect(await apply({ ...replacement, phase: "release" })).toEqual({
+        approved: true,
+      });
+      expect(router.resolveRunningTerminalRoute(open.terminalId)).not.toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it.each([false, true])("keeps the snapshot and resumes the same Claude session on the next turn (restart: %s)", async (restart) => {
     const fixture = await createFixture();
@@ -546,7 +604,12 @@ describe("reaping a native Claude terminal", () => {
       const approved = await postJson(
         fixture,
         `/threads/${thread.id}/native-terminal/idle-reap`,
-        { nativeSessionId: SESSION_ID, idleForMs: 31 * 60_000 },
+        {
+          phase: "claim",
+          token: IDLE_REAP_TOKEN,
+          nativeSessionId: SESSION_ID,
+          idleForMs: 31 * 60_000,
+        },
         `Bearer ${credential}`,
       );
       expect(approved.status).toBe(200);
@@ -554,6 +617,15 @@ describe("reaping a native Claude terminal", () => {
       expect(
         terminalSessions.resolveRunningTerminalRoute(open.terminalId),
       ).toBeNull();
+      const commit = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/idle-reap`,
+        { phase: "commit", token: IDLE_REAP_TOKEN, nativeSessionId: SESSION_ID },
+        `Bearer ${credential}`,
+      );
+      expect(commit.status).toBe(200);
+      expect(await readJson(commit)).toEqual({ approved: true });
+      clock.mockReturnValue(Date.now() + 16_000);
       if (restart) {
         terminalSessions.flushAllRetainedOutput();
         const restarted = await createTestAppHarness({
@@ -570,7 +642,12 @@ describe("reaping a native Claude terminal", () => {
         const duplicate = await postJson(
           fixture,
           `/threads/${thread.id}/native-terminal/idle-reap`,
-          { nativeSessionId: SESSION_ID, idleForMs: 31 * 60_000 },
+          {
+            phase: "claim",
+            token: IDLE_REAP_TOKEN,
+            nativeSessionId: SESSION_ID,
+            idleForMs: 31 * 60_000,
+          },
           `Bearer ${credential}`,
         );
         expect(duplicate.status).toBe(200);
@@ -579,6 +656,15 @@ describe("reaping a native Claude terminal", () => {
           terminalSessions.resolveRunningTerminalRoute(open.terminalId),
         ).toBeNull();
       }
+      expect(
+        terminalSessions.resolveRunningTerminalRoute(open.terminalId),
+      ).toBeNull();
+      expect(() =>
+        terminalSessions.sendTerminalInput({
+          terminalId: open.terminalId,
+          payload: { dataBase64: Buffer.from("too late").toString("base64") },
+        }),
+      ).toThrow("Terminal session is not running");
       terminalSessions.attachBrowserTerminal({
         socket: viewer,
         sinceSeq: 0,
@@ -588,6 +674,20 @@ describe("reaping a native Claude terminal", () => {
         resizeSeqEcho: false,
       });
       expect(viewer.send).not.toHaveBeenCalled();
+      const inputCount = countDaemonMessages(fixture, "terminal.input");
+      terminalSessions.handleBrowserTerminalMessage({
+        socket: viewer,
+        terminalId: open.terminalId,
+        message: {
+          type: "input",
+          dataBase64: Buffer.from("too late").toString("base64"),
+        },
+      });
+      expect(countDaemonMessages(fixture, "terminal.input")).toBe(inputCount);
+      expect(viewer.send).toHaveBeenCalledWith(
+        expect.stringContaining("terminal_not_running"),
+      );
+      viewer.send.mockClear();
     } finally {
       clock.mockRestore();
     }

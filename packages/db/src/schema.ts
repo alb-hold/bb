@@ -1289,6 +1289,7 @@ export const terminalSessions = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
     lastUserInputAt: integer("last_user_input_at"),
     nativeIdleReapUntil: integer("native_idle_reap_until"),
+    nativeIdleReapToken: text("native_idle_reap_token"),
     storedFirstLiveFrame: text("first_live_frame", { mode: "json" }).$type<{
       seq: number;
       at: number;

@@ -35,7 +35,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import type {
-  ClaimNativeTerminalIdleReapRequest,
+  NativeTerminalIdleReapRequest,
   NativeTerminalAgentTools,
   NativeTerminalLaunchSpec,
   NativeTerminalThread,
@@ -1229,19 +1229,25 @@ export function requireLiveNativeTerminalToolThread(
   return lookup;
 }
 
-export function claimNativeTerminalIdleReap(
+export function updateNativeTerminalIdleReap(
   deps: NativeTerminalDeps,
-  args: ClaimNativeTerminalIdleReapRequest & {
+  args: NativeTerminalIdleReapRequest & {
     authorization: string | undefined;
     threadId: string;
   },
 ): boolean {
-  const { threadId, nativeSessionId, idleForMs } = args;
+  const { threadId, nativeSessionId, token } = args;
   const { terminalSessionId } = requireNativeTerminalToolCredential(deps, args);
+  if (args.phase === "release") {
+    return deps.terminalSessions.updateNativeIdleReap(
+      terminalSessionId,
+      token,
+      args.phase,
+    );
+  }
   const record = getNativeTerminalThread(deps.db, threadId);
   const thread = getThread(deps.db, threadId);
   if (
-    idleForMs < NATIVE_TERMINAL_IDLE_REAP_AFTER_MS ||
     record === null ||
     findNativeTerminalProvider(deps, record.providerId)?.cli.activity
       ?.idleReapEvidence !== "claude-stop-v1" ||
@@ -1251,8 +1257,6 @@ export function claimNativeTerminalIdleReap(
     thread?.status !== "idle" ||
     thread.archivedAt !== null ||
     thread.deletedAt !== null ||
-    pendingOpens.has(threadId) ||
-    pendingSends.has(threadId) ||
     isNativeTerminalRebindInFlight(threadId)
   )
     return false;
@@ -1270,7 +1274,19 @@ export function claimNativeTerminalIdleReap(
       .length > 0
   )
     return false;
-  return deps.terminalSessions.claimNativeIdleReap(terminalSessionId);
+  if (args.phase === "commit") {
+    return deps.terminalSessions.updateNativeIdleReap(
+      terminalSessionId,
+      token,
+      "commit",
+    );
+  }
+  return (
+    args.idleForMs >= NATIVE_TERMINAL_IDLE_REAP_AFTER_MS &&
+    !pendingOpens.has(threadId) &&
+    !pendingSends.has(threadId) &&
+    deps.terminalSessions.claimNativeIdleReap(terminalSessionId, token)
+  );
 }
 
 export function nativeTerminalAwaitsReattach(

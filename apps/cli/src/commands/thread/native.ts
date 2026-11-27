@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -465,35 +466,71 @@ export async function holdNativeHarness(
       report(reader?.finish() ?? null);
     };
     let pty: ReturnType<typeof nodePty.spawn> | null = null;
+    let unusedReap: { token: string; nativeSessionId: string } | null = null;
+    const releaseIdleReap = async () => {
+      const unused = unusedReap;
+      const credential = currentCredential();
+      if (unused === null || credential === null) return;
+      await sdk.nativeTerminals.updateIdleReap({
+        ...unused,
+        phase: "release",
+        authorization: `Bearer ${credential}`,
+        signal: AbortSignal.timeout(5_000),
+        threadId,
+      });
+      unusedReap = null;
+    };
     const mayReapIdle = async (lastInputAt: number) => {
+      if (unusedReap !== null) {
+        await releaseIdleReap();
+        return null;
+      }
       readActivity();
       const evidence = reader?.claudeIdleEvidence();
       const credential = currentCredential();
       if (!evidence || credential === null) return null;
-      const startedAt = performance.now();
-      const { approved } = await sdk.nativeTerminals.claimIdleReap({
+      const attempt = {
         authorization: `Bearer ${credential}`,
+        nativeSessionId: evidence.nativeSessionId,
+        token: randomUUID(),
+        threadId,
+      };
+      const { approved } = await sdk.nativeTerminals.updateIdleReap({
+        ...attempt,
+        phase: "claim",
         idleForMs: Math.max(
           0,
           Date.now() - Math.ceil(Math.max(evidence.activityAt, lastInputAt)),
         ),
-        nativeSessionId: evidence.nativeSessionId,
         signal: AbortSignal.timeout(5_000),
-        threadId,
       });
       if (!approved) return null;
-      return () => {
-        if (
-          performance.now() - startedAt >= 5_000 ||
-          credential !== currentCredential()
-        )
-          return false;
-        readActivity();
-        const latest = reader?.claudeIdleEvidence();
-        return (
-          latest?.nativeSessionId === evidence.nativeSessionId &&
-          latest.activityAt === evidence.activityAt
-        );
+      unusedReap = {
+        token: attempt.token,
+        nativeSessionId: attempt.nativeSessionId,
+      };
+      const startedAt = performance.now();
+      const committed = await sdk.nativeTerminals.updateIdleReap({
+        ...attempt,
+        phase: "commit",
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!committed.approved) {
+        await releaseIdleReap();
+        return null;
+      }
+      return {
+        release: releaseIdleReap,
+        canReap: () => {
+          readActivity();
+          const latest = reader?.claudeIdleEvidence();
+          return (
+            latest?.nativeSessionId === evidence.nativeSessionId &&
+            latest.activityAt === evidence.activityAt &&
+            performance.now() - startedAt < 5_000 &&
+            credential === currentCredential()
+          );
+        },
       };
     };
     const exitCode = await runNativeHolder({

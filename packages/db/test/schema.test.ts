@@ -178,6 +178,7 @@ describe("db rebuild schema", () => {
         "default_colors",
         "first_live_frame",
         "native_idle_reap_until",
+        "native_idle_reap_token",
       ]);
     } finally {
       closeConnection(db);

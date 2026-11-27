@@ -456,14 +456,14 @@ import {
 } from "./api/writing-assistance.js";
 import {
   callNativeTerminalAgentToolRequestSchema,
-  claimNativeTerminalIdleReapRequestSchema,
+  nativeTerminalIdleReapRequestSchema,
   nativeTerminalLaunchQuerySchema,
   openNativeTerminalRequestSchema,
   recordNativeSessionRequestSchema,
   reportNativeTerminalActivityRequestSchema,
   switchNativeTerminalModeRequestSchema,
   type CallNativeTerminalAgentToolRequest,
-  type ClaimNativeTerminalIdleReapRequest,
+  type NativeTerminalIdleReapRequest,
   type NativeTerminalAgentToolResult,
   type NativeTerminalAgentTools,
   type NativeTerminalLaunchQuery,
@@ -2071,11 +2071,11 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<{ ok: true }>(),
     }),
-    claimIdleReap: defineRoute({
+    updateIdleReap: defineRoute({
       path: "/threads/:id/native-terminal/idle-reap",
       method: "post",
-      request: jsonRequest<PathId, ClaimNativeTerminalIdleReapRequest>(
-        claimNativeTerminalIdleReapRequestSchema,
+      request: jsonRequest<PathId, NativeTerminalIdleReapRequest>(
+        nativeTerminalIdleReapRequestSchema,
       ),
       response: jsonResponse<{ approved: boolean }>(),
     }),

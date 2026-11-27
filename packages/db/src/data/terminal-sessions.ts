@@ -92,7 +92,8 @@ export type TerminalSessionMutation =
     }
   | { kind: "title"; title: string }
   | { kind: "holder-backed" }
-  | { kind: "claim-native-idle-reap"; until: number }
+  | { kind: "claim-native-idle-reap"; token: string; until: number }
+  | { kind: "commit-native-idle-reap" | "release-native-idle-reap"; token: string }
   | { kind: "user-input" };
 
 export interface ListTerminalSessionsArgs {
@@ -191,6 +192,7 @@ function mutationValues(
     case "exit":
       return {
         closeReason: update.closeReason,
+        nativeIdleReapToken: null,
         nativeIdleReapUntil: null,
         ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
         ...(update.exitCode === undefined ? {} : { exitCode: update.exitCode }),
@@ -204,6 +206,7 @@ function mutationValues(
         daemonSessionId: update.daemonSessionId,
         exitCode: null,
         initialCwd: update.initialCwd,
+        nativeIdleReapToken: null,
         nativeIdleReapUntil: null,
         rows: update.rows,
         status: "running",
@@ -219,11 +222,17 @@ function mutationValues(
     case "holder-backed":
       return { updatedAt: now };
     case "claim-native-idle-reap":
-      return { nativeIdleReapUntil: update.until };
+      return {
+        nativeIdleReapToken: update.token,
+        nativeIdleReapUntil: update.until,
+      };
+    case "commit-native-idle-reap":
+      return { nativeIdleReapUntil: null };
+    case "release-native-idle-reap":
+      return { nativeIdleReapToken: null, nativeIdleReapUntil: null };
     case "user-input":
       return {
         lastUserInputAt: now,
-        nativeIdleReapUntil: null,
         updatedAt: now,
       };
   }
@@ -292,10 +301,20 @@ function mutationWhere(
     return and(
       eq(terminalSessions.status, "running"),
       or(
-        isNull(terminalSessions.nativeIdleReapUntil),
+        isNull(terminalSessions.nativeIdleReapToken),
         lte(terminalSessions.nativeIdleReapUntil, now),
       ),
     );
+  }
+  if (update.kind === "commit-native-idle-reap") {
+    return and(
+      eq(terminalSessions.status, "running"),
+      eq(terminalSessions.nativeIdleReapToken, update.token),
+      gt(terminalSessions.nativeIdleReapUntil, now),
+    );
+  }
+  if (update.kind === "release-native-idle-reap") {
+    return eq(terminalSessions.nativeIdleReapToken, update.token);
   }
   return update.kind === "user-input"
     ? or(

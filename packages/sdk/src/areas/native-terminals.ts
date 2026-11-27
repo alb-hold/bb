@@ -2,6 +2,7 @@ import type {
   NativeTerminalActivityState,
   NativeTerminalAgentToolResult,
   NativeTerminalAgentTools,
+  NativeTerminalIdleReapRequest,
   NativeTerminalLaunchSpec,
   NativeTerminalMode,
   NativeTerminalOpenQuestion,
@@ -44,11 +45,8 @@ export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadAr
   closes?: string[];
 }
 
-interface NativeTerminalClaimIdleReapArgs extends NativeTerminalThreadArgs {
-  authorization: string;
-  nativeSessionId: string;
-  idleForMs: number;
-}
+type NativeTerminalIdleReapArgs = NativeTerminalThreadArgs &
+  NativeTerminalIdleReapRequest & { authorization: string };
 
 export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
   arguments: Record<string, unknown>;
@@ -76,8 +74,8 @@ export interface NativeTerminalsArea {
     args: NativeTerminalSwitchModeArgs,
   ): Promise<NativeTerminalThreadResult | null>;
   reportActivity(args: NativeTerminalReportActivityArgs): Promise<{ ok: true }>;
-  claimIdleReap(
-    args: NativeTerminalClaimIdleReapArgs,
+  updateIdleReap(
+    args: NativeTerminalIdleReapArgs,
   ): Promise<{ approved: boolean }>;
 }
 
@@ -190,16 +188,10 @@ export function createNativeTerminalsArea(
         ),
       );
     },
-    async claimIdleReap({
-      threadId,
-      signal,
-      authorization,
-      nativeSessionId,
-      idleForMs,
-    }) {
+    async updateIdleReap({ threadId, signal, authorization, ...request }) {
       return transport.readJson(
         route()["idle-reap"].$post(
-          { param: { id: threadId }, json: { nativeSessionId, idleForMs } },
+          { param: { id: threadId }, json: request },
           { init: { signal, headers: { authorization } } },
         ),
       );

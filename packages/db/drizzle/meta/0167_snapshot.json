@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f370ee24-8070-4306-971d-b91f49df059b",
+  "id": "5649480e-839a-4a78-ad35-59c500391864",
   "prevId": "7d9db3f2-ac6a-4119-b896-49eed34c221c",
   "tables": {
     "app_settings": {
@@ -4594,6 +4594,13 @@
         "native_idle_reap_until": {
           "name": "native_idle_reap_until",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "native_idle_reap_token": {
+          "name": "native_idle_reap_token",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

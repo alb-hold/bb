@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishedMigrationWhensByTag } from "../src/migration-history.js";
 import {
-  dropNativeIdleReapUntilColumn,
+  dropNativeIdleReapColumns,
   dropPluginEnabledFollowsDefaultColumn,
   dropIdleLifecycleIndexes,
   rewindThreadPruningWork,
@@ -1582,7 +1582,7 @@ function runThreadPinningMigration(db: DbConnection): void {
 }
 
 function deleteDeferredCleanupMigrationRows(db: DbConnection): void {
-  dropNativeIdleReapUntilColumn(db);
+  dropNativeIdleReapColumns(db);
   db.$client
     .prepare<DeleteMigrationsParameters>(
       `

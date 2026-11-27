@@ -255,7 +255,10 @@ export interface NativeHolderProcess {
   args: string[];
   idleReap?: {
     exitCode: number;
-    check(lastInputAt: number): Promise<(() => boolean) | null>;
+    check(lastInputAt: number): Promise<{
+      canReap(): boolean;
+      release(): Promise<void>;
+    } | null>;
   };
 }
 
@@ -611,20 +614,36 @@ export async function runNativeHolder(
           const inputAt = lastInputAt;
           checking = true;
           void idleReap.check(inputAt)
-            .then((stillIdle) => {
+            .then((claim) => {
+              if (claim === null) return;
               if (
                 pty === null ||
                 finished ||
                 inputAt !== lastInputAt ||
-                !stillIdle?.()
+                !claim.canReap()
               )
-                return;
+                return claim.release();
               finishReason = "idle";
               try {
                 pty.kill("SIGHUP");
               } catch {
                 finishReason = "process exit";
+                return claim.release();
               }
+              timers.push(
+                setTimeout(() => {
+                  if (ptyExited) return;
+                  try {
+                    pty?.kill("SIGKILL");
+                  } catch {
+                    logNativeHolderEvent(
+                      options.socketPath,
+                      "idle-reap-kill-failed",
+                      {},
+                    );
+                  }
+                }, 2_000),
+              );
             })
             .catch(() => undefined)
             .finally(() => {
