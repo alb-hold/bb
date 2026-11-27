@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Socket } from "node:net";
 import {
   createConnection,
   createInterruptedProviderPendingInteraction,
@@ -34,6 +35,8 @@ import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS, NATIVE_TERMINAL_SETUP_DELAY_MS }
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as parentNotice from "../../src/services/interactions/pending-interaction-parent-notice.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
+import { TerminalDataPlaneRouter } from "../../src/services/terminals/data-plane/data-plane-router.js";
+import { TERMINAL_DATA_PLANE_IPC_VERSION } from "../../src/terminal-data-plane/ipc-contract.js";
 import { NATIVE_QUESTION_ANSWERED_REASON } from "../../src/services/threads/native-terminal-questions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
@@ -368,6 +371,7 @@ describe("reaping a native Claude terminal", () => {
     { name: "pending ask", expected: false },
     { name: "stored background task", expected: false },
     { name: "attached viewer", expected: false },
+    { name: "attached direct viewer", expected: false },
     { name: "Codex", expected: false },
   ])(
     "only reaps with no live work or viewer ($name)",
@@ -394,6 +398,48 @@ describe("reaping a native Claude terminal", () => {
           close: vi.fn(),
           send: vi.fn(),
         });
+      }
+      if (name === "attached direct viewer") {
+        const router = new TerminalDataPlaneRouter(
+          { isReady: true, pendingIpcBytes: 0, send: () => true },
+          {
+            attach: vi.fn(),
+            detach: vi.fn(),
+            handleMessage: vi.fn(),
+            recordInputActivity: vi.fn(),
+            recordOutputBatch: vi.fn(),
+            stripHolderMarkersFromDataPlaneOutput: (_id, chunk) => [chunk],
+          },
+          vi.fn(),
+        );
+        const attachId = router.attachBrowser({
+          daemonSessionId: fixture.sessionId,
+          outputAcks: false,
+          request: {
+            url: `/ws/terminals/${open.terminalId}`,
+            headers: [],
+            headBase64: "",
+          },
+          resizeAcks: false,
+          resizeSeqEcho: false,
+          sequenceBase: 0,
+          sinceSeq: 0,
+          socket: new Socket(),
+          terminalId: open.terminalId,
+        });
+        if (attachId === null) throw new Error("Direct terminal attach failed");
+        router.handleChildMessage({
+          v: TERMINAL_DATA_PLANE_IPC_VERSION,
+          type: "browser.attached",
+          attachId,
+        });
+        expect(router.hasBrowsers(open.terminalId)).toBe(true);
+        expect(
+          fixture.harness.hub.hasTerminalClients(open.terminalId),
+        ).toBe(false);
+        fixture.harness.deps.terminalSessions.setDirectTerminalViewerCheck(
+          (terminalId) => router.hasAttachInFlight(terminalId),
+        );
       }
       if (name === "pending permission" || name === "pending ask") {
         const waiting = await reportActivity(fixture, thread.id, {
@@ -455,6 +501,14 @@ describe("reaping a native Claude terminal", () => {
         expect(response.status).toBe(200);
         const result = await readJson(response);
         expect(result).toEqual({ approved: expected });
+        if (!expected) {
+          expect(
+            getTerminalSession(fixture.harness.db, {
+              kind: "terminal",
+              terminalId: open.terminalId,
+            })?.status,
+          ).toBe("running");
+        }
       } finally {
         vi.restoreAllMocks();
       }
