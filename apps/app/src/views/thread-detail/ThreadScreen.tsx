@@ -360,19 +360,20 @@ function useSentMessageEditing({
   const latestUserRowId = latestUserRow?.id ?? null;
   const latestUserRowStatus = latestUserRow?.turnRequest?.status ?? null;
   const seenLatestUserRowRef = useRef<{
-    baselineId: string;
-    id: string;
+    baselineId: string | null;
+    id: string | null;
     status: string | null;
     threadId: string;
   } | null>(null);
   useEffect(() => {
     const seen = seenLatestUserRowRef.current;
     const previous = seen?.threadId === threadId ? seen : null;
-    if (timelineLoading || latestUserRow === null || latestUserRowId === null) {
+    if (timelineLoading) {
       seenLatestUserRowRef.current = null;
       return;
     }
-    const baselineId = previous?.baselineId ?? latestUserRowId;
+    const baselineId =
+      previous === null ? latestUserRowId : previous.baselineId;
     seenLatestUserRowRef.current = {
       baselineId,
       id: latestUserRowId,
@@ -380,6 +381,7 @@ function useSentMessageEditing({
       threadId,
     };
     const becameUndelivered =
+      latestUserRow !== null &&
       latestUserRowStatus === "undelivered" &&
       previous !== null &&
       (previous.id === latestUserRowId
