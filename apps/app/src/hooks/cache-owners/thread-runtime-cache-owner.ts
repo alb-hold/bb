@@ -248,7 +248,8 @@ interface SendThreadMessageQueuedTransaction {
 }
 
 export type SendThreadMessageTransaction =
-  SendThreadMessageAcceptedTurnTransaction | SendThreadMessageQueuedTransaction;
+  | SendThreadMessageAcceptedTurnTransaction
+  | SendThreadMessageQueuedTransaction;
 
 export interface ReorderQueuedMessageTransaction {
   previousQueuedMessages: ThreadQueuedMessageListResponse | undefined;
@@ -782,12 +783,9 @@ export function applyThreadGoalClearResult({
   queryClient,
   threadId,
 }: ThreadIdCacheArgs): void {
-  for (const [
-    queryKey,
-    timeline,
-  ] of queryClient.getQueriesData<ThreadTimelineResponse>({
-    queryKey: threadTimelineQueryKeyPrefix(threadId),
-  })) {
+  for (const [queryKey, timeline] of queryClient.getQueriesData<ThreadTimelineResponse>(
+    { queryKey: threadTimelineQueryKeyPrefix(threadId) },
+  )) {
     if (!timeline) continue;
     queryClient.setQueryData<ThreadTimelineResponse>(queryKey, {
       ...timeline,
@@ -797,10 +795,7 @@ export function applyThreadGoalClearResult({
   const activity = getThreadEntity(queryClient, threadId)?.list?.activity;
   if (activity !== undefined) {
     patchThreadEntity(queryClient, threadId, {
-      activity: {
-        ...activity,
-        activeGoalCount: 0,
-      } satisfies ThreadListEntry["activity"],
+      activity: { ...activity, activeGoalCount: 0 } satisfies ThreadListEntry["activity"],
     });
   }
 }
