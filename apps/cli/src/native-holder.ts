@@ -1390,7 +1390,11 @@ export async function connectNativeHolder(
     socket.once("connect", () => resolve(socket));
     socket.once("error", (error: NodeJS.ErrnoException) => {
       socket.destroy();
-      if (error.code === "ECONNREFUSED" && socketIdentity !== null) {
+      if (
+        error.code === "ECONNREFUSED" &&
+        socketIdentity !== null &&
+        !nativeHolderProcessIsAlive(socketPath)
+      ) {
         removeSocketFile(socketPath, socketIdentity);
       }
       resolve(null);
