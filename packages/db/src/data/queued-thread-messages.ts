@@ -1288,7 +1288,7 @@ function manuallyStoppedQueuePauseQuery(
         sql`json_extract(${interruption.data}, '$.reason') = 'manual-stop'`,
         rowCreatedAt === undefined
           ? undefined
-          : sql`${rowCreatedAt} < ${interruption.createdAt}`,
+          : sql`${rowCreatedAt} <= ${interruption.createdAt}`,
         notExists(
           db
             .select({ sequence: laterInterruption.sequence })

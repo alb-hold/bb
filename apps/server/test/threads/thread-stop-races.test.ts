@@ -360,21 +360,22 @@ describe("repeated stops", () => {
   it.each([
     ["after", 1],
     ["before", 0],
+    ["in the same millisecond as", 0],
   ] as const)(
     "a retained stop pauses only follow-ups queued %s the stop was requested",
     async (when, expectedRequests) => {
       await withTestHarness(async (harness) => {
         const { host, session } = seedHostSession(harness.deps, {
-          id: `host-stop-races-retained-${when}`,
+          id: `host-stop-races-retained-${when.replaceAll(" ", "-")}`,
         });
         const { project } = seedProjectWithSource(harness.deps, {
           hostId: host.id,
-          path: `/tmp/stop-races-retained-${when}`,
+          path: `/tmp/stop-races-retained-${when.replaceAll(" ", "-")}`,
         });
         const environment = seedEnvironment(harness.deps, {
           hostId: host.id,
           projectId: project.id,
-          path: `/tmp/stop-races-retained-${when}`,
+          path: `/tmp/stop-races-retained-${when.replaceAll(" ", "-")}`,
           status: "ready",
         });
         const thread = seedThread(harness.deps, {
@@ -405,9 +406,8 @@ describe("repeated stops", () => {
           );
           expect(response.status, await response.clone().text()).toBe(200);
         };
-        if (when === "before") {
+        if (when !== "after") {
           await sendFollowUp("typed before the stop");
-          await new Promise((resolve) => setTimeout(resolve, 5));
         }
 
         requestThreadStopForCurrentState(harness.deps, thread);
@@ -416,6 +416,13 @@ describe("repeated stops", () => {
           ({ command }) =>
             command.type === "thread.stop" && command.threadId === thread.id,
         );
+        if (when === "in the same millisecond as") {
+          harness.db.$client
+            .prepare(
+              "update queued_thread_messages set created_at = (select max(created_at) from events where thread_id = ? and type = 'system/thread/interrupted') where thread_id = ?",
+            )
+            .run(thread.id, thread.id);
+        }
         await reportQueuedCommandSuccess(harness, stop, {
           providerCheckpointId: null,
           activeTurnRetained: true,

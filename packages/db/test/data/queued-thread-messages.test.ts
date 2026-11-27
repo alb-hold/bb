@@ -1317,6 +1317,7 @@ describe("queued thread messages", () => {
       return { ...row, createdAt };
     };
     const before = create(defaultInput, 1_000);
+    const tied = create(altInput, 2_000);
     const after = create(altInput, 3_000);
     insertEvents(db, noopNotifier, [
       {
@@ -1335,6 +1336,7 @@ describe("queued thread messages", () => {
       .run(thread.id);
 
     expect(isQueuedMessageAutoSendPaused(db, before)).toBe(true);
+    expect(isQueuedMessageAutoSendPaused(db, tied)).toBe(true);
     expect(isQueuedMessageAutoSendPaused(db, after)).toBe(false);
     expect(
       claimQueuedThreadMessageGroup(db, noopNotifier, before.id, {
@@ -1353,7 +1355,7 @@ describe("queued thread messages", () => {
     ).toEqual([after.id]);
     expect(
       listQueuedThreadMessages(db, thread.id).map((row) => row.id),
-    ).toEqual([before.id]);
+    ).toEqual([before.id, tied.id]);
   });
 
   it("keeps a paused thread off the idle drain when every row is an ordinary turn-end wait", () => {
