@@ -532,6 +532,51 @@ describe("ThreadTimelineRows actions", () => {
     );
   });
 
+  it("restores the screenshot of an undelivered message with its text", () => {
+    const onEditMessage = vi.fn();
+    renderWithRouter(
+      <ThreadTimelineRows
+        timelineRows={[
+          conversationRow({
+            role: "user",
+            text: "look at this",
+            sourceSeqStart: 4,
+            attachments: {
+              webImages: 0,
+              localImages: 1,
+              localFiles: 0,
+              imageUrls: [],
+              localImagePaths: ["uploads/screenshot.png"],
+              localFilePaths: [],
+              localFileDetails: [],
+            },
+            turnRequest: {
+              isGrouped: false,
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ]}
+        onEditMessage={onEditMessage}
+        threadRuntimeDisplayStatus="idle"
+        threadIsActive={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore to composer" }),
+    );
+    expect(onEditMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoreToComposer: true,
+        input: [
+          { type: "text", text: "look at this", mentions: [] },
+          { type: "localImage", path: "uploads/screenshot.png" },
+        ],
+      }),
+    );
+  });
+
   it("adds a copy action to a remote-image-only row", () => {
     const { container } = renderWithRouter(
       <ThreadTimelineRows

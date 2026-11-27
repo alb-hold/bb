@@ -17,7 +17,7 @@ import type { ThreadTimelineEditMessageHandler } from "@/components/thread/timel
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
-import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
+import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import type { ThreadDetailSentMessageEdit } from "./ThreadDetailPromptArea";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
@@ -484,20 +484,59 @@ describe("ThreadScreen", () => {
       });
     }
 
-    it("puts an undelivered message back into an empty composer once", () => {
+    function userRowAt(id: string, status: "accepted" | "undelivered") {
+      return conversationRow({
+        id,
+        role: "user",
+        text: "never reached the provider",
+        turnRequest: { isGrouped: false, kind: "message", status },
+      });
+    }
+    function timelineOf(
+      ...rows: UseThreadTimelineControllerResult["timelineRows"]
+    ): UseThreadTimelineControllerResult {
+      return { ...TIMELINE, timelineRows: rows };
+    }
+
+    it("leaves an empty composer empty when opening a thread that already holds an undelivered row", () => {
       renderScreen(
         { kind: "page" },
-        { timeline: undeliveredTimeline("undelivered_empty") },
+        { timeline: undeliveredTimeline("undelivered_old") },
       );
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("fills an empty composer once when the latest message becomes undelivered while open", () => {
+      const view = renderScreen(
+        { kind: "page" },
+        { timeline: timelineOf(userRowAt("live_row", "accepted")) },
+      );
+      expect(threadDraft().getCurrent().text).toBe("");
+      mocks.timeline = timelineOf(userRowAt("live_row", "undelivered"));
+      view.rerender(screenElement({ kind: "page" }));
       expect(threadDraft().getCurrent().text).toBe(
         "never reached the provider",
       );
       threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
-      cleanup();
-      renderScreen(
+      view.rerender(screenElement({ kind: "page" }));
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
+
+    it("never auto-restores an undelivered row that a later turn follows", () => {
+      const view = renderScreen(
         { kind: "page" },
-        { timeline: undeliveredTimeline("undelivered_empty") },
+        {
+          timeline: timelineOf(
+            userRowAt("older_row", "accepted"),
+            turnRow({ children: [] }),
+          ),
+        },
       );
+      mocks.timeline = timelineOf(
+        userRowAt("older_row", "undelivered"),
+        turnRow({ children: [] }),
+      );
+      view.rerender(screenElement({ kind: "page" }));
       expect(threadDraft().getCurrent().text).toBe("");
     });
 

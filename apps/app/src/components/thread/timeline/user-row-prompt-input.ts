@@ -27,33 +27,18 @@ export function userRowToPromptInput(
   return input;
 }
 
-export function findLatestUndeliveredUserRow(
+export function findLatestUserRow(
   rows: readonly TimelineRow[],
 ): UserConversationRow | null {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
     if (row === undefined) continue;
-    if (row.kind === "turn" && row.children !== null) {
-      const nested = findLatestUndeliveredUserRow(row.children);
-      if (nested !== null) return nested;
-      if (containsUserRow(row.children)) return null;
-      continue;
+    if (row.kind === "turn") {
+      return row.children === null ? null : findLatestUserRow(row.children);
     }
     if (row.kind === "conversation" && row.role === "user") {
-      return row.role === "user" && row.turnRequest?.status === "undelivered"
-        ? row
-        : null;
+      return row;
     }
   }
   return null;
-}
-
-function containsUserRow(rows: readonly TimelineRow[]): boolean {
-  return rows.some(
-    (row) =>
-      (row.kind === "conversation" && row.role === "user") ||
-      (row.kind === "turn" &&
-        row.children !== null &&
-        containsUserRow(row.children)),
-  );
 }

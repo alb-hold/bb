@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -37,7 +38,7 @@ import {
 } from "@/components/thread/timeline";
 import type { HostConnectionNotice } from "@/components/thread/timeline/ThreadTimelineSurface";
 import {
-  findLatestUndeliveredUserRow,
+  findLatestUserRow,
   userRowToPromptInput,
 } from "@/components/thread/timeline/user-row-prompt-input";
 import { ThreadTimelinePanelLoadingSkeleton } from "@/components/thread/timeline/ThreadChatLoading";
@@ -276,8 +277,6 @@ function useChildThreadsSection(
   }, [childThreadsSection, childPendingInteractions]);
 }
 
-const autoRestoredUndeliveredRowIds = new Set<string>();
-
 interface UseSentMessageEditingArgs {
   canStartEdit: boolean;
   projectId: string;
@@ -357,17 +356,34 @@ function useSentMessageEditing({
     setSentMessageEditSession(null);
     setDiscardedSentMessageEditId(sentMessageEditSession.operationId);
   }
-  const undeliveredRow = findLatestUndeliveredUserRow(timelineRows);
-  const undeliveredRowId = undeliveredRow?.id ?? null;
+  const latestUserRow = findLatestUserRow(timelineRows);
+  const latestUserRowId = latestUserRow?.id ?? null;
+  const latestUserRowStatus = latestUserRow?.turnRequest?.status ?? null;
+  const seenLatestUserRowRef = useRef<{
+    id: string;
+    status: string | null;
+    threadId: string;
+  } | null>(null);
   useEffect(() => {
-    if (
-      undeliveredRow === null ||
-      undeliveredRowId === null ||
-      autoRestoredUndeliveredRowIds.has(undeliveredRowId)
-    ) {
+    const previous = seenLatestUserRowRef.current;
+    if (timelineLoading || latestUserRow === null || latestUserRowId === null) {
+      seenLatestUserRowRef.current = null;
       return;
     }
-    autoRestoredUndeliveredRowIds.add(undeliveredRowId);
+    seenLatestUserRowRef.current = {
+      id: latestUserRowId,
+      status: latestUserRowStatus,
+      threadId,
+    };
+    const becameUndelivered =
+      latestUserRowStatus === "undelivered" &&
+      previous !== null &&
+      previous.threadId === threadId &&
+      previous.id === latestUserRowId &&
+      previous.status !== "undelivered";
+    if (!becameUndelivered) {
+      return;
+    }
     const promptDraft = getPromptDraftAccessor({
       kind: "thread",
       projectId,
@@ -376,11 +392,16 @@ function useSentMessageEditing({
     if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
       return;
     }
-    promptDraft.setDraft(
-      promptInputToDraft(userRowToPromptInput(undeliveredRow)),
-    );
+    promptDraft.setDraft(promptInputToDraft(userRowToPromptInput(latestUserRow)));
     requestComposerFocus(promptDraft.storageKey);
-  }, [projectId, threadId, undeliveredRow, undeliveredRowId]);
+  }, [
+    latestUserRow,
+    latestUserRowId,
+    latestUserRowStatus,
+    projectId,
+    threadId,
+    timelineLoading,
+  ]);
   useEffect(() => {
     if (discardedSentMessageEditId === null) {
       return;
