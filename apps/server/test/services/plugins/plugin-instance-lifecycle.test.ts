@@ -361,36 +361,36 @@ describe("plugin instance lifecycle on a running server", () => {
     control().rpcEntered = () => {
       entered += 1;
     };
-    const invoke = async (method: string, signal?: AbortSignal) =>
-      server.app.request(`/api/v1/plugins/lifecycle/rpc/${method}`, {
-        method: "POST",
-        body: "null",
-        headers: { "content-type": "application/json" },
-        signal,
-      });
-    const callers = Array.from({ length: 32 }, () => new AbortController());
-    const pending = callers.map((caller) => invoke("held", caller.signal));
+    const callers = Array.from({ length: 31 }, () => new AbortController());
+    const disconnected = callers.map((caller) =>
+      callRpc("held", caller.signal).catch(() => undefined),
+    );
+    const connected = callRpc("held");
     try {
       await expect.poll(() => entered).toBe(32);
       for (const caller of callers) caller.abort();
+      await Promise.all(disconnected);
       const status = await Promise.race([
-        invoke("held").then((response) => response.status),
+        Promise.resolve(
+          server.app.request("/api/v1/plugins/lifecycle/rpc/held", {
+            method: "POST",
+            body: "null",
+            headers: { "content-type": "application/json" },
+          }),
+        ).then((response) => response.status),
         new Promise<null>((resolve) => setImmediate(() => resolve(null))),
       ]);
       expect(status).toBe(503);
       expect(entered).toBe(32);
       releaseGate();
-      const responses = await Promise.all(pending);
-      for (const response of responses) {
-        expect(await response.json()).toEqual({ ok: true, result: 1 });
-      }
-      expect(await (await invoke("ping")).json()).toEqual({
+      expect(await (await connected).json()).toEqual({ ok: true, result: 1 });
+      expect(await (await callRpc("ping")).json()).toEqual({
         ok: true,
         result: 1,
       });
     } finally {
       releaseGate();
-      await Promise.allSettled(pending);
+      await Promise.allSettled([...disconnected, connected]);
     }
   });
 

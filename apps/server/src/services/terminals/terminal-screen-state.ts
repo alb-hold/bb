@@ -829,9 +829,7 @@ export class TerminalScreenState {
                   if (frameCallback && !this.disposed) {
                     if (this.terminal.modes.synchronizedOutputMode) {
                       this.synchronizedRenderCallback ??= frameCallback;
-                    } else if (
-                      isTerminalReplaySafeBoundary(this.parserState)
-                    ) {
+                    } else if (isTerminalReplaySafeBoundary(this.parserState)) {
                       const current = visibleFrameContent(this.terminal);
                       if (current && current !== this.frameBaseline)
                         frameCallback();
@@ -983,11 +981,15 @@ export class TerminalScreenStateCache {
 
   create(terminalId: string, cols: number, rows: number): void {
     if (this.states.has(terminalId)) return;
-    this.install(terminalId, new TerminalScreenState(cols, rows));
+    this.set(terminalId, new TerminalScreenState(cols, rows));
   }
 
   install(terminalId: string, state: TerminalScreenState): void {
     this.remove(terminalId);
+    this.set(terminalId, state);
+  }
+
+  private set(terminalId: string, state: TerminalScreenState): void {
     this.states.set(terminalId, state);
     if (this.states.size > TERMINAL_SCREEN_STATE_CACHE_LIMIT) {
       const oldest = this.states.keys().next().value;
