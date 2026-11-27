@@ -108,6 +108,7 @@ export const timelineConversationTurnRequestStatusValues = [
 export const timelineConversationTurnRequestSchema = z.object({
   isGrouped: z.boolean(),
   kind: z.enum(timelineConversationTurnRequestKindValues),
+  requestId: z.string().nullable(),
   status: z.enum(timelineConversationTurnRequestStatusValues),
 });
 export type TimelineConversationTurnRequest = z.infer<
@@ -633,9 +634,7 @@ export const timelineTurnRowSchema: z.ZodType<TimelineTurnRow> = z.lazy(() =>
 );
 
 export type TimelineSourceRow =
-  | TimelineConversationRow
-  | TimelineWorkRow
-  | TimelineSystemRow;
+  TimelineConversationRow | TimelineWorkRow | TimelineSystemRow;
 
 export type TimelineRow = TimelineSourceRow | TimelineTurnRow;
 

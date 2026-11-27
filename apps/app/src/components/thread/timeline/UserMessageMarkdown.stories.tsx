@@ -33,6 +33,7 @@ function TimelineStage({
 const resolveMentionLink = () => () => {};
 
 const acceptedMessage: TimelineConversationTurnRequest = {
+  requestId: null,
   isGrouped: false,
   kind: "message",
   status: "accepted",

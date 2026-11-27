@@ -493,6 +493,7 @@ export function conversationRow({
       systemMessageSubject,
       turnRequest: turnRequest ?? {
         isGrouped: false,
+        requestId: null,
         kind: "message",
         status: "accepted",
       },

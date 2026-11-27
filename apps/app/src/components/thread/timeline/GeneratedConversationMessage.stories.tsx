@@ -20,6 +20,7 @@ function TimelineStage({ children }: { children: ReactNode }) {
 
 const acceptedMessage = {
   isGrouped: false,
+  requestId: null,
   kind: "message" as const,
   status: "accepted" as const,
 };

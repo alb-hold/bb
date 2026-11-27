@@ -208,6 +208,7 @@ describe("code fence renderers in assistant messages", () => {
               timestamp={0}
               threadId="thr_a"
               turnRequest={{
+                requestId: null,
                 isGrouped: false,
                 kind: "message",
                 status: "accepted",

@@ -206,8 +206,18 @@ describe("user message parsing", () => {
       `${event.threadId}:user-seed:${meta.seq}-1`,
     ]);
     expect(messages.map((message) => message.turnRequest)).toEqual([
-      { isGrouped: true, kind: "message", status: "pending" },
-      { isGrouped: true, kind: "message", status: "pending" },
+      {
+        isGrouped: true,
+        kind: "message",
+        requestId: "creq_2222222223",
+        status: "pending",
+      },
+      {
+        isGrouped: true,
+        kind: "message",
+        requestId: "creq_2222222223",
+        status: "pending",
+      },
     ]);
   });
 
@@ -435,12 +445,22 @@ describe("user message parsing", () => {
       {
         id: "thread-1:user-seed:1",
         text: "First grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "pending" },
+        turnRequest: {
+          isGrouped: true,
+          kind: "steer",
+          requestId: "creq_2222222223",
+          status: "pending",
+        },
       },
       {
         id: "thread-1:user-seed:1-1",
         text: "Second grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "pending" },
+        turnRequest: {
+          isGrouped: true,
+          kind: "steer",
+          requestId: "creq_2222222223",
+          status: "pending",
+        },
       },
     ]);
     expect(
@@ -460,13 +480,23 @@ describe("user message parsing", () => {
         id: "thread-1:user-seed:1",
         sourceSeqStart: accepted.meta.seq,
         text: "First grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "accepted" },
+        turnRequest: {
+          isGrouped: true,
+          kind: "steer",
+          requestId: "creq_2222222223",
+          status: "accepted",
+        },
       },
       {
         id: "thread-1:user-seed:1-1",
         sourceSeqStart: accepted.meta.seq,
         text: "Second grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "accepted" },
+        turnRequest: {
+          isGrouped: true,
+          kind: "steer",
+          requestId: "creq_2222222223",
+          status: "accepted",
+        },
       },
     ]);
   });

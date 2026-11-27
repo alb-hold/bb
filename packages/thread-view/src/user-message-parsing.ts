@@ -253,6 +253,7 @@ function buildTurnRequest(
       acceptedClientRequest,
       decoded,
     }),
+    requestId: decoded.requestId,
     status,
   };
 }
@@ -516,7 +517,12 @@ export function parseProviderUserMessage(
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
-    turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      kind: "steer",
+      requestId: null,
+      status: "accepted",
+    },
     text,
     mentions: [],
   };

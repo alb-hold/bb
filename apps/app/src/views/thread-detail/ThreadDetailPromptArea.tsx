@@ -163,6 +163,7 @@ import {
 } from "@/components/promptbox/FollowUpPromptBox";
 import type { SendMessageMutationLike } from "./threadDetailMutationTypes";
 import { useTimeHasPassed } from "@/hooks/useTimeHasPassed";
+import { takeRetryOfClientRequestId } from "./restored-draft-retry";
 import {
   buildAutoFollowUpRequest,
   buildFollowUpSubmitMode,
@@ -1460,11 +1461,16 @@ export function ThreadDetailPromptArea({
         ? "queue_message"
         : "send_message";
       try {
+        const retryOfClientRequestId = takeRetryOfClientRequestId(
+          thread.id,
+          submittedDraft,
+        );
         const request = buildAutoFollowUpRequest({
           compactFirst: compactRequestFirst,
           threadId: thread.id,
           input: submittedInput,
           execution: followUpExecutionSelection,
+          retryOfClientRequestId,
         });
         if (request) {
           await sendMessage.mutateAsync({

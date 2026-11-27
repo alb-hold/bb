@@ -21,6 +21,7 @@ import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import type { ThreadDetailSentMessageEdit } from "./ThreadDetailPromptArea";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
+import { takeRetryOfClientRequestId } from "./restored-draft-retry";
 import type { ThreadResponse } from "@bb/server-contract";
 
 const mocks = vi.hoisted(() => ({
@@ -265,6 +266,7 @@ function startEditingMessage(messageId: string) {
       expectedRequestSequence: 1,
       input: [{ type: "text", text: "/compact", mentions: [] }],
       messageId,
+      requestId: null,
       restoreToComposer: false,
     });
   });
@@ -468,6 +470,7 @@ describe("ThreadScreen", () => {
             role: "user",
             text: "never reached the provider",
             turnRequest: {
+              requestId: null,
               isGrouped: false,
               kind: "message",
               status: "undelivered",
@@ -490,7 +493,12 @@ describe("ThreadScreen", () => {
         role: "user",
         text: "never reached the provider",
         turnId: "turn_own",
-        turnRequest: { isGrouped: false, kind: "message", status },
+        turnRequest: {
+          isGrouped: false,
+          requestId: `req_${id}`,
+          kind: "message",
+          status,
+        },
       });
     }
     function timelineOf(
@@ -651,6 +659,7 @@ describe("ThreadScreen", () => {
             { type: "text", text: "never reached the provider", mentions: [] },
           ],
           messageId: "undelivered_restore",
+          requestId: "req_original",
           restoreToComposer: true,
         });
       });
@@ -678,6 +687,7 @@ describe("ThreadScreen", () => {
             { type: "text", text: "never reached the provider", mentions: [] },
           ],
           messageId: "manual_restore_row",
+          requestId: "req_original",
           restoreToComposer: true,
         });
       });
@@ -703,6 +713,7 @@ describe("ThreadScreen", () => {
             { type: "text", text: "never reached the provider", mentions: [] },
           ],
           messageId: "manual_edited_row",
+          requestId: "req_original",
           restoreToComposer: true,
         });
       });
@@ -716,6 +727,149 @@ describe("ThreadScreen", () => {
       expect(threadDraft().getCurrent().text).toBe(
         "never reached the provider, edited",
       );
+    });
+  });
+
+  describe("retry of a restored message", () => {
+    function threadDraft() {
+      return getPromptDraftAccessor({
+        kind: "thread",
+        projectId: THREAD.projectId,
+        threadId: THREAD.id,
+      });
+    }
+
+    function restoreManually(rowId: string, requestId: string | null) {
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: {
+            ...TIMELINE,
+            timelineRows: [
+              conversationRow({
+                id: rowId,
+                role: "user",
+                text: "never reached the provider",
+                turnId: "turn_own",
+                turnRequest: {
+                  isGrouped: false,
+                  requestId,
+                  kind: "message",
+                  status: "undelivered",
+                },
+              }),
+            ],
+          },
+        },
+      );
+      const onEditMessage = mocks.surfaceProps.at(-1)!
+        .onEditMessage as ThreadTimelineEditMessageHandler;
+      act(() => {
+        onEditMessage({
+          expectedRequestSequence: 1,
+          input: [
+            { type: "text", text: "never reached the provider", mentions: [] },
+          ],
+          messageId: rowId,
+          requestId,
+          restoreToComposer: true,
+        });
+      });
+      return view;
+    }
+
+    it("names the original request when the restored draft is sent unedited", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      restoreManually("retry_unedited_row", "req_original");
+      expect(
+        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_original");
+    });
+
+    it("names no request when the restored draft was edited before sending", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      restoreManually("retry_edited_row", "req_original");
+      threadDraft().setDraft({
+        text: "never reached the provider, edited",
+        mentions: [],
+        attachments: [],
+      });
+      expect(
+        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+    });
+
+    it("names the original request when the auto-restored draft is sent unedited", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = renderScreen(
+        { kind: "page" },
+        {
+          timeline: {
+            ...TIMELINE,
+            timelineRows: [
+              conversationRow({
+                id: "auto_retry_row",
+                role: "user",
+                text: "never reached the provider",
+                turnId: "turn_own",
+                turnRequest: {
+                  isGrouped: false,
+                  requestId: "req_auto",
+                  kind: "message",
+                  status: "accepted",
+                },
+              }),
+            ],
+          },
+        },
+      );
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "auto_retry_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_auto",
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_auto");
+    });
+
+    it("forgets the request once the late echo clears the undelivered status", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_echo_row", "req_original");
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "retry_echo_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_original",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        takeRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
     });
   });
 

@@ -93,6 +93,10 @@ import type {
   ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
 import { DeferredThreadDetailPromptArea } from "./DeferredThreadDetailPromptArea";
+import {
+  clearRestoredDraftRetry,
+  registerRestoredDraftRetry,
+} from "./restored-draft-retry";
 
 const THREAD_DETAIL_COMPOSER_ID = "thread-detail-follow-up-composer";
 const EMPTY_CHILD_THREAD_ITEMS: readonly ChildThreadPendingAttentionSource[] =
@@ -328,6 +332,11 @@ function useSentMessageEditing({
           rowId: target.messageId,
           threadId,
         };
+        registerRestoredDraftRetry(
+          threadId,
+          promptDraft.getCurrent(),
+          target.requestId,
+        );
         requestComposerFocus(promptDraft.storageKey);
         return;
       }
@@ -406,6 +415,7 @@ function useSentMessageEditing({
         latestUserRowStatus !== "undelivered")
     ) {
       autoRestoredRef.current = null;
+      clearRestoredDraftRetry(restored.threadId);
       if (
         restored.threadId === threadId &&
         restored.rowId === latestUserRowId
@@ -436,7 +446,9 @@ function useSentMessageEditing({
     if (!isPromptDraftEmpty(promptDraft.getCurrent())) {
       return;
     }
-    const restoredDraft = promptInputToDraft(userRowToPromptInput(latestUserRow));
+    const restoredDraft = promptInputToDraft(
+      userRowToPromptInput(latestUserRow),
+    );
     const previousDraft = promptDraft.getCurrent();
     promptDraft.setDraft(restoredDraft);
     autoRestoredRef.current = {
@@ -445,6 +457,11 @@ function useSentMessageEditing({
       rowId: latestUserRowId ?? "",
       threadId,
     };
+    registerRestoredDraftRetry(
+      threadId,
+      promptDraft.getCurrent(),
+      latestUserRow.turnRequest?.requestId ?? null,
+    );
     requestComposerFocus(promptDraft.storageKey);
   }, [
     latestUserRow,

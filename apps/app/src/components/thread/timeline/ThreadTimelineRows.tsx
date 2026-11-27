@@ -1139,6 +1139,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
             messageId: row.id,
             expectedRequestSequence: row.sourceSeqStart,
             input,
+            requestId: row.turnRequest.requestId,
             restoreToComposer: row.turnRequest.status === "undelivered",
           });
         }
@@ -1834,6 +1835,7 @@ const NO_ATTACHMENTS: GeneratedMessageProps["attachmentItems"] = {
 };
 const NO_MENTIONS: GeneratedMessageProps["mentions"] = [];
 const ACCEPTED_MESSAGE: GeneratedMessageProps["turnRequest"] = {
+  requestId: null,
   isGrouped: false,
   kind: "message",
   status: "accepted",

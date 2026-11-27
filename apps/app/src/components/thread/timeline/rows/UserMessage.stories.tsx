@@ -40,6 +40,7 @@ const resolveImageSrc = (path: string) => path;
 
 const acceptedMessage = {
   isGrouped: false,
+  requestId: null,
   kind: "message" as const,
   status: "accepted" as const,
 };
@@ -52,11 +53,13 @@ const rawThreadIdTarget = makeThreadListEntry({
 });
 const pendingSteer = {
   isGrouped: false,
+  requestId: null,
   kind: "steer" as const,
   status: "pending" as const,
 };
 const acceptedSteer = {
   isGrouped: false,
+  requestId: null,
   kind: "steer" as const,
   status: "accepted" as const,
 };

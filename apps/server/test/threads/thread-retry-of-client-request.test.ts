@@ -177,6 +177,12 @@ describe("a re-send that names the request it retries", () => {
 
       expect(retry).toEqual({ ok: true, delivery: "alreadyDelivered" });
       expect(countSubmissions(harness, original.threadId)).toBe(1);
+      const queued = harness.db.$client
+        .prepare(
+          "select count(*) as n from queued_thread_messages where thread_id = ?",
+        )
+        .get(original.threadId) as { n: number };
+      expect(queued.n).toBe(0);
     });
   });
 

@@ -110,6 +110,7 @@ function userConversationRow(index = 1): TimelineConversationRow {
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
     turnRequest: {
+      requestId: null,
       isGrouped: false,
       kind: "message",
       status: "accepted",
@@ -390,7 +391,6 @@ describe("selectTocRailItems", () => {
   });
 });
 
-
 describe("isTocRailWarranted", () => {
   it.each([
     [1_000, 1_999, false],
@@ -618,7 +618,6 @@ describe("ThreadTableOfContents", () => {
     expect(wrapper.classList.contains("hidden")).toBe(false);
     expect(wrapper.hasAttribute("inert")).toBe(false);
   });
-
 
   it("shows the outline rail only once the thread is taller than two viewports", () => {
     const rows = [

@@ -136,7 +136,12 @@ function makeUserRow(
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
-    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "message",
+      status: "accepted",
+    },
   };
 }
 
@@ -1073,7 +1078,12 @@ describe("useThreadTimelineController", () => {
     const steerRow: TimelineUserConversationRow = {
       ...makeUserRow("thread-1:user-seed:5", 7),
       messageSeq: 5,
-      turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+      turnRequest: {
+        isGrouped: false,
+        requestId: null,
+        kind: "steer",
+        status: "accepted",
+      },
     };
     const { queryClient, wrapper: queryWrapper } = createQueryClientTestHarness(
       { queries: { staleTime: Infinity } },

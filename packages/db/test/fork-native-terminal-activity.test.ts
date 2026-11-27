@@ -22,6 +22,7 @@ import {
 } from "../src/index.js";
 import { ensureNativeTerminalThreadsTable } from "../src/fork-native-terminal-threads.js";
 import { createMigratedConnection } from "../src/testing.js";
+import { dropQueuedMessageResendOfColumn } from "./helpers/rewind.js";
 
 const MIGRATION_0166_CREATED_AT = 1795519008894;
 const STAGED_WAIT_COLUMN = "_bb_session_start_awaited_terminal_id_pending";
@@ -386,6 +387,7 @@ describe("native terminal session-start wait", () => {
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
+    dropQueuedMessageResendOfColumn(db);
 
     expect(() => migrate(db)).not.toThrow();
     expect(getNativeTerminalThread(db, threadId)?.awaitingSessionStart).toBe(
@@ -418,6 +420,7 @@ describe("native terminal session-start wait", () => {
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
+    dropQueuedMessageResendOfColumn(db);
 
     const originalExec = db.$client.exec.bind(db.$client);
     db.$client.exec = ((source: string) => {
@@ -487,6 +490,7 @@ describe("native terminal session-start wait", () => {
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
+    dropQueuedMessageResendOfColumn(db);
 
     const originalExec = db.$client.exec.bind(db.$client);
     db.$client.exec = ((source: string) => {
@@ -602,6 +606,7 @@ describe("native terminal session-start wait", () => {
     db.$client
       .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(MIGRATION_0166_CREATED_AT);
+    dropQueuedMessageResendOfColumn(db);
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads RENAME COLUMN session_start_awaited_terminal_id TO ${STAGED_WAIT_COLUMN}`,
     );

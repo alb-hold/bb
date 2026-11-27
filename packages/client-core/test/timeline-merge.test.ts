@@ -55,6 +55,7 @@ function userRow(args: TimelineTestRowArgs): TimelineUserConversationRow {
     mentions: [],
     attachments: null,
     turnRequest: {
+      requestId: null,
       isGrouped: false,
       kind: "message",
       status: args.turnRequestStatus ?? "accepted",

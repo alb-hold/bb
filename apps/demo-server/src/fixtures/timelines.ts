@@ -60,7 +60,12 @@ export function conversationRow(args: {
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
-    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+    turnRequest: {
+      isGrouped: false,
+      requestId: null,
+      kind: "message",
+      status: "accepted",
+    },
   };
 }
 

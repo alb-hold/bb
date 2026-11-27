@@ -96,6 +96,10 @@ const addedMigrations = [
     createdAt: 1795519008894,
     hash: "38b238d926f629a16ff0c9bd11e4e4f12fde1362bfe79aa814f9d93bffcbf911",
   },
+  {
+    createdAt: 1795771617817,
+    hash: "6b216e803d2b73c07eb49d380b1e6e80ea73bba633cd7c9d7742abae3a4bd5d7",
+  },
 ];
 const ignoredIndexName = "fork_events_item_completion_lookup_idx";
 

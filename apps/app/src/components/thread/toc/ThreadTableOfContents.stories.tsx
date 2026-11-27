@@ -47,6 +47,7 @@ function conversationRow({
       systemMessageKind: "unlabeled",
       systemMessageSubject: null,
       turnRequest: {
+        requestId: null,
         isGrouped: false,
         kind: "message",
         status: "accepted",

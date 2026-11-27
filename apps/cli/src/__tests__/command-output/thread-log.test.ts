@@ -543,6 +543,7 @@ describe("bb thread log command output", () => {
       text,
       turnRequest: {
         isGrouped: false,
+        requestId: null,
         kind: "message" as const,
         status: "accepted" as const,
       },
