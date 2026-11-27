@@ -7,10 +7,11 @@ import {
   type ThreadEvent,
 } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { requestThreadStopForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
   internalAuthHeaders,
+  listQueuedThreadCommands,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
@@ -146,6 +147,44 @@ function countSubmissions(harness: TestAppHarness, threadId: string): number {
     )
     .get(threadId, MESSAGE_TEXT) as { n: number };
   return row.n;
+}
+
+function holdWorkspaceRead(harness: TestAppHarness) {
+  let entered = false;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = harness.hub.requestHostOnlineRpc.bind(harness.hub);
+  const spy = vi.spyOn(harness.hub, "requestHostOnlineRpc");
+  spy.mockImplementation(async (args) => {
+    if (args.message.command.type === "host.read_workspace_agent_context") {
+      entered = true;
+      await released;
+    }
+    return request(args);
+  });
+  return {
+    wait: () => expect.poll(() => entered).toBe(true),
+    release: () => {
+      spy.mockRestore();
+      release();
+    },
+  };
+}
+
+async function acknowledgeStop(
+  harness: TestAppHarness,
+  threadId: string,
+): Promise<void> {
+  const stop = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "thread.stop" && command.threadId === threadId,
+  );
+  await reportQueuedCommandSuccess(harness, stop, {
+    providerCheckpointId: null,
+  });
 }
 
 async function interruptedRequest(
@@ -564,4 +603,114 @@ describe("a re-send that names the request it retries", () => {
       expect(queuedRows(harness, original.threadId)).toEqual([]);
     });
   });
+
+  it.each([
+    { mention: "original-mention", delivery: "alreadyDelivered", sends: 0 },
+    { mention: "changed-mention", delivery: "sent", sends: 1 },
+  ])(
+    "reports $delivery when the original echo lands during direct send preparation for $mention",
+    async ({ mention, delivery, sends }) => {
+      await withTestHarness(async (harness) => {
+        const original = await interruptedRequest(
+          harness,
+          "late-direct-" + mention,
+          mentionedInput("original-mention"),
+        );
+        const { threadId, clientRequestId } = original;
+        await acknowledgeStop(harness, threadId);
+        const submitted = () =>
+          listQueuedThreadCommands(harness, "turn.submit", threadId);
+        const before = submitted().length;
+        const barrier = holdWorkspaceRead(harness);
+        const input = mentionedInput(mention);
+        const pending = sendMessage(harness, threadId, clientRequestId, input);
+        try {
+          await barrier.wait();
+          expect(countSubmissions(harness, threadId)).toBe(1);
+          await echoOriginal(harness, original);
+        } finally {
+          barrier.release();
+        }
+
+        expect((await pending).delivery).toBe(delivery);
+        expect(countSubmissions(harness, threadId)).toBe(1 + sends);
+        expect(submitted().slice(before)).toEqual(
+          sends === 0 ? [] : [expect.objectContaining({ input })],
+        );
+        expect(queuedRows(harness, threadId)).toEqual([]);
+      });
+    },
+  );
+
+  it.each([
+    { name: "single", followUp: null },
+    { name: "grouped", followUp: "a distinct follow-up" },
+  ])(
+    "drops only the delivered row from a $name retry when the echo lands during queue dispatch preparation",
+    async ({ name, followUp }) => {
+      await withTestHarness(async (harness) => {
+        const original = await interruptedRequest(
+          harness,
+          "late-queue-" + name,
+          mentionedInput("original-mention"),
+        );
+        const { threadId, clientRequestId, input } = original;
+        const retry = await sendMessage(
+          harness,
+          threadId,
+          clientRequestId,
+          input,
+        );
+        if (retry.delivery !== "queued") {
+          throw new Error("expected the retry to queue, got " + retry.delivery);
+        }
+        if (followUp !== null) {
+          expect(
+            (await sendMessage(harness, threadId, undefined, followUp))
+              .delivery,
+          ).toBe("queued");
+          harness.db.$client
+            .prepare(
+              "update queued_thread_messages set group_with_next = 1 where id = ?",
+            )
+            .run(retry.queuedMessage.id);
+        }
+        const submitted = () =>
+          listQueuedThreadCommands(harness, "turn.submit", threadId);
+        const before = submitted().length;
+        const changes = vi.spyOn(harness.hub, "notifyThread");
+        const barrier = holdWorkspaceRead(harness);
+        try {
+          await acknowledgeStop(harness, threadId);
+          await barrier.wait();
+          const rows = queuedRows(harness, threadId);
+          expect(rows).toHaveLength(followUp === null ? 1 : 2);
+          expect(rows.every((row) => row.claimToken !== null)).toBe(true);
+          await echoOriginal(harness, original);
+          changes.mockClear();
+        } finally {
+          barrier.release();
+        }
+
+        await expect.poll(() => queuedRows(harness, threadId)).toEqual([]);
+        expect(
+          changes.mock.calls.some(
+            ([id, kinds]) => id === threadId && kinds.includes("queue-changed"),
+          ),
+        ).toBe(true);
+        expect(countSubmissions(harness, threadId)).toBe(1);
+        expect(submitted().slice(before)).toEqual(
+          followUp === null
+            ? []
+            : [
+                expect.objectContaining({
+                  input: [
+                    expect.objectContaining({ type: "text", text: followUp }),
+                  ],
+                }),
+              ],
+        );
+      });
+    },
+  );
 });

@@ -9,7 +9,6 @@ import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getQueuedThreadMessage,
   getStoredProviderSession,
-  hasStoredClientRequestEcho,
   getThread,
   getThreadSpawner,
   holdQueuedThreadMessageForEdit,
@@ -26,11 +25,13 @@ import {
   type QueuedThreadMessageGroupEligibility,
 } from "@bb/db";
 import {
-  clientTurnRequestIdSchema,
   flattenPromptInputGroups,
   isQueuedMessageFailedState,
 } from "@bb/domain";
-import { matchesStoredRequestInput } from "./delivered-retry.js";
+import {
+  DeliveredRetryDetected,
+  findDeliveredRetryRows,
+} from "./delivered-retry.js";
 import type {
   QueuedMessageDeliveryMode,
   QueuedMessageWaitingOn,
@@ -582,45 +583,43 @@ async function sendClaimedQueuedMessageForThread(
     assertSendNowDispatched(claimedArgs, outcome);
     return toThreadQueuedMessage(claimedArgs.queuedMessages[0]!);
   }
-  const duplicateRows = claimedArgs.queuedMessages.filter((row) => {
-    if (row.resendOfClientRequestId === null) return false;
-    const requestId = clientTurnRequestIdSchema.parse(
-      row.resendOfClientRequestId,
-    );
-    return (
-      hasStoredClientRequestEcho(deps.db, {
-        threadId: claimedArgs.thread.id,
-        requestId,
-      }) &&
-      matchesStoredRequestInput(deps.db, {
-        threadId: claimedArgs.thread.id,
-        requestId,
-        input: toThreadQueuedMessage(row).content,
-      })
-    );
-  });
-  if (duplicateRows.length > 0) {
-    const dropped = deps.db.transaction(
-      (tx) =>
-        deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
-          queuedMessages: duplicateRows,
-        }),
-      { behavior: "immediate" },
-    );
-    if (!dropped) {
-      throw createQueuedMessageClaimLostError();
+  let queuedMessages = claimedArgs.queuedMessages;
+  let duplicateRows = findDeliveredRetryRows(deps.db, queuedMessages);
+  while (true) {
+    if (duplicateRows.length > 0) {
+      const dropped = deps.db.transaction(
+        (tx) =>
+          deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
+            queuedMessages: duplicateRows,
+          }),
+        { behavior: "immediate" },
+      );
+      if (!dropped) throw createQueuedMessageClaimLostError();
+      deps.hub.notifyThread(claimedArgs.thread.id, ["queue-changed"]);
+      if (duplicateRows.length === queuedMessages.length) {
+        return toThreadQueuedMessage(queuedMessages[0]!);
+      }
+      queuedMessages = queuedMessages.filter(
+        (row) => !duplicateRows.includes(row),
+      );
     }
-    deps.hub.notifyThread(claimedArgs.thread.id, ["queue-changed"]);
-    if (duplicateRows.length === claimedArgs.queuedMessages.length) {
-      return toThreadQueuedMessage(claimedArgs.queuedMessages[0]!);
+    try {
+      return await dispatchClaimedQueuedMessages(deps, {
+        ...claimedArgs,
+        queuedMessages,
+      });
+    } catch (error) {
+      if (!(error instanceof DeliveredRetryDetected) || error.rows.length === 0)
+        throw error;
+      duplicateRows = error.rows;
     }
   }
-  const args = {
-    ...claimedArgs,
-    queuedMessages: claimedArgs.queuedMessages.filter(
-      (row) => !duplicateRows.includes(row),
-    ),
-  };
+}
+
+async function dispatchClaimedQueuedMessages(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: SendClaimedQueuedMessageForThreadArgs,
+): Promise<ThreadQueuedMessage> {
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
   const inputGroups = queuedMessages.map(
@@ -650,6 +649,11 @@ async function sendClaimedQueuedMessageForThread(
       claimed: args.queuedMessages,
       respectManualStopPause: respectsManualStopPause(args),
       sendNow: args.sendNow,
+      beforeAppendInTransaction: ({ tx }) => {
+        const duplicateRows = findDeliveredRetryRows(tx, args.queuedMessages);
+        if (duplicateRows.length > 0)
+          throw new DeliveredRetryDetected(duplicateRows);
+      },
     },
     queuePayload: queuedMessage.payload,
     pluginSubmission: null,
@@ -668,26 +672,14 @@ async function sendClaimedQueuedMessageForThread(
     onTurnRequestCreated: args.onTurnRequestCreated,
     trigger: "auto-dispatch",
   });
-  if (
-    args.sendNow &&
-    args.mode !== "steer" &&
-    outcome.kind === "queued" &&
-    outcome.entry.waitingOn?.kind !== "stopping"
-  ) {
-    throw new ApiError(
-      409,
-      "queued_message_still_waiting",
-      `This message cannot be sent yet: ${describeCoreWait(outcome.entry.waitingOn)}.`,
-    );
-  }
+  assertSendNowDispatched(args, outcome);
   return queuedMessage;
 }
 
 function assertSendNowDispatched(
   args: SendClaimedQueuedMessageForThreadArgs,
   outcome:
-    | { kind: "dispatched" }
-    | { kind: "queued"; entry: ThreadQueuedMessage },
+    { kind: "dispatched" } | { kind: "queued"; entry: ThreadQueuedMessage },
 ): void {
   if (
     args.sendNow &&

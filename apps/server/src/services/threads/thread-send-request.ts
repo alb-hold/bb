@@ -17,14 +17,21 @@ import {
   resolveNativeTerminalSendInput,
   runNativeTerminalAdmittedWork,
 } from "./native-terminal-admission.js";
-import { matchesStoredRequestInput } from "./delivered-retry.js";
+import {
+  DeliveredRetryDetected,
+  isDeliveredRetry,
+  matchesStoredRequestInput,
+} from "./delivered-retry.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
 import type {
   SendMessageRequest,
   SendMessageResponse,
 } from "@bb/server-contract";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
-import { attemptDispatch } from "./dispatch-attempt.js";
+import {
+  attemptDispatch,
+  type DispatchAttemptArgs,
+} from "./dispatch-attempt.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import { runWithTurnTrace } from "../system/turn-trace.js";
@@ -159,7 +166,7 @@ export async function acceptThreadSendRequest(
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,
     });
-    await attemptDispatch(deps, {
+    const outcome = await attemptSendDispatch(deps, {
       thread: args.thread,
       payload: request,
       source: { kind: "operation", environment },
@@ -173,7 +180,8 @@ export async function acceptThreadSendRequest(
     });
     return {
       ok: true,
-      delivery: "sent",
+      delivery:
+        outcome.kind === "already-delivered" ? "alreadyDelivered" : "sent",
     };
   }
 
@@ -196,7 +204,7 @@ export async function acceptThreadSendRequest(
     deps,
     { threadId: args.thread.id },
     () =>
-      attemptDispatch(deps, {
+      attemptSendDispatch(deps, {
         thread: args.thread,
         payload,
         source: { kind: "inline" },
@@ -216,6 +224,9 @@ export async function acceptThreadSendRequest(
         trigger: "user",
       }),
   );
+  if (outcome.kind === "already-delivered") {
+    return { ok: true, delivery: "alreadyDelivered" };
+  }
   if (outcome.kind === "dispatched") {
     return {
       ok: true,
@@ -231,6 +242,34 @@ export async function acceptThreadSendRequest(
     delivery: "queued",
     queuedMessage: outcome.entry,
   };
+}
+
+async function attemptSendDispatch(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: DispatchAttemptArgs,
+) {
+  const { input, retryOfClientRequestId: requestId } = args.payload;
+  if (requestId === undefined) return attemptDispatch(deps, args);
+  try {
+    return await attemptDispatch(deps, {
+      ...args,
+      source: {
+        ...args.source,
+        beforeAppendInTransaction: ({ tx }) => {
+          if (
+            isDeliveredRetry(tx, { threadId: args.thread.id, requestId, input })
+          ) {
+            throw new DeliveredRetryDetected();
+          }
+        },
+      },
+    });
+  } catch (error) {
+    if (error instanceof DeliveredRetryDetected) {
+      return { kind: "already-delivered" } as const;
+    }
+    throw error;
+  }
 }
 
 function throwInvalidCompactFirst(reason: string): never {

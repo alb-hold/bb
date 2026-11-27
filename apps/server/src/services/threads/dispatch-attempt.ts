@@ -52,6 +52,7 @@ import {
   throwThreadNotWritable,
 } from "../lib/lifecycle-api-errors.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
+import { DeliveredRetryDetected } from "./delivered-retry.js";
 import {
   dispatchEnvironmentAndHost,
   dispatchExecutionSources,
@@ -270,7 +271,7 @@ export function listRunningThreadsWithIntendedHosts(
   );
 }
 
-export type DispatchAttemptSource =
+export type DispatchAttemptSource = (
   | { kind: "inline" }
   | {
       kind: "drain";
@@ -281,12 +282,12 @@ export type DispatchAttemptSource =
   | {
       kind: "operation";
       environment: EnvironmentRow;
-      beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
       historyReplacement?: {
         forkSourceProviderThreadId: string | null;
         onCommandSettled?: () => void | Promise<void>;
       };
-    };
+    }
+) & { beforeAppendInTransaction?: SendThreadMessageTransactionPreflight };
 
 export interface DispatchAttemptArgs {
   thread: Thread;
@@ -792,6 +793,7 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         author,
+        beforeAppendInTransaction: args.source.beforeAppendInTransaction,
         originPluginId: args.originPluginId,
         claimed,
         assertExplicitModel:
@@ -871,6 +873,10 @@ async function runDispatchAttempt(
       await continueThroughCoreWaits();
     }
   } catch (error) {
+    if (error instanceof DeliveredRetryDetected) {
+      releaseWorkspaceForThread(deps, thread);
+      throw error;
+    }
     if (
       !(error instanceof ThreadQueueScopeChangedError) &&
       !(error instanceof DispatchThreadScopeChangedError)
@@ -954,6 +960,7 @@ async function runDispatchAttempt(
           }
           throw new DispatchThreadScopeChangedError();
         }
+        args.source.beforeAppendInTransaction?.({ tx });
         if (claimed !== null) {
           consumeClaimedRows(claimed, respectManualStopPause)({ tx });
         }
@@ -971,7 +978,12 @@ async function runDispatchAttempt(
         : {}),
     };
   } catch (error) {
-    releaseWorkspaceForThread(deps, thread);
+    if (
+      !(error instanceof DeliveredRetryDetected) ||
+      thread.status !== "active"
+    ) {
+      releaseWorkspaceForThread(deps, thread);
+    }
     if (
       error instanceof DispatchThreadStatusChangedError ||
       error instanceof DispatchThreadScopeChangedError
@@ -1039,6 +1051,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   author: DispatchAuthor;
+  beforeAppendInTransaction: SendThreadMessageTransactionPreflight | undefined;
   originPluginId: string | null;
   claimed: ClaimedQueuedThreadMessageRow[] | null;
   assertExplicitModel: boolean;
@@ -1104,11 +1117,9 @@ async function admitPendingThread(
           }
           throw new PendingThreadAdmissionLost(true);
         }
+        args.beforeAppendInTransaction?.({ tx });
         if (args.claimed !== null && args.claimed.length > 0) {
-          consumeClaimedRows(
-            args.claimed,
-            args.respectManualStopPause,
-          )({ tx });
+          consumeClaimedRows(args.claimed, args.respectManualStopPause)({ tx });
         }
         const prepared = runThreadLifecycleInTransaction(
           { db: tx, hub: deps.hub, logger: deps.logger },
