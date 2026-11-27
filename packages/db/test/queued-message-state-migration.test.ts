@@ -14,7 +14,7 @@ import {
   rewindQueuedMessageStateMigration,
   dropQueuedMessageDeliveryColumns,
   dropThreadStatusChangedAtColumn,
-  dropTerminalFirstLiveFrameColumn,
+  rewindTerminalSessionColumns,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
@@ -68,7 +68,7 @@ function rewoundDatabase(): { db: DbConnection; threadId: string } {
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   return { db, threadId: thread.id };

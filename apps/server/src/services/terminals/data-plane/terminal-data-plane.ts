@@ -60,6 +60,7 @@ export interface TerminalDataPlane {
   readonly state: DataPlaneState;
   isSessionAttached(daemonSessionId: string): boolean;
   isTerminalRouted(terminalId: string): boolean;
+  hasAttachInFlight(terminalId: string): boolean;
   stop(): void;
 }
 
@@ -209,6 +210,7 @@ export function startTerminalDataPlane(
     isSessionAttached: (daemonSessionId) =>
       dataSockets.isAttached(daemonSessionId),
     isTerminalRouted: (terminalId) => dataSockets.isRouted(terminalId),
+    hasAttachInFlight: (terminalId) => router.hasAttachInFlight(terminalId),
     stop: () => {
       unsubscribe();
       dataSockets.stop();

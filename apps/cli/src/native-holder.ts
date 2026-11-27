@@ -253,6 +253,13 @@ export interface NativeHolderPty {
 export interface NativeHolderProcess {
   command: string;
   args: string[];
+  idleReap?: {
+    exitCode: number;
+    check(lastInputAt: number): Promise<{
+      canReap(): boolean;
+      release(): Promise<void>;
+    } | null>;
+  };
 }
 
 export interface RunNativeHolderOptions {
@@ -423,6 +430,7 @@ export async function runNativeHolder(
   let starting = false;
   let finished = false;
   let ptyExited = false;
+  let lastInputAt = Date.now();
   let pausedFor: string | null = null;
   let terminalCheckSettledSinceDetach = false;
   let mainSocketIdentity: { dev: number; ino: number } | null = null;
@@ -577,19 +585,73 @@ export async function runNativeHolder(
     pty.onData((data) => {
       sendOutput(Buffer.from(data, "utf8"));
     });
+    const idleReap = child.idleReap;
     pty.onExit(({ exitCode, signal }) => {
       ptyExited = true;
       logNativeHolderEvent(options.socketPath, "pty-child-exit", {
         exitCode,
         signal: signal ?? null,
       });
-      finish(
+      const processExitCode =
         Number.isInteger(exitCode) && exitCode >= 0
           ? exitCode
-          : 128 + (signal ?? 0),
+          : 128 + (signal ?? 0);
+      finish(
+        finishReason === "idle" && idleReap !== undefined
+          ? idleReap.exitCode
+          : processExitCode === idleReap?.exitCode
+            ? 1
+            : processExitCode,
         finishReason,
       );
     });
+    if (idleReap !== undefined) {
+      let checking = false;
+      timers.push(
+        setInterval(() => {
+          if (pty === null || finished || checking || finishReason === "idle")
+            return;
+          const inputAt = lastInputAt;
+          checking = true;
+          void idleReap.check(inputAt)
+            .then((claim) => {
+              if (claim === null) return;
+              if (
+                pty === null ||
+                finished ||
+                inputAt !== lastInputAt ||
+                !claim.canReap()
+              )
+                return claim.release();
+              finishReason = "idle";
+              try {
+                pty.kill("SIGHUP");
+              } catch {
+                finishReason = "process exit";
+                return claim.release();
+              }
+              timers.push(
+                setTimeout(() => {
+                  if (ptyExited) return;
+                  try {
+                    pty?.kill("SIGKILL");
+                  } catch {
+                    logNativeHolderEvent(
+                      options.socketPath,
+                      "idle-reap-kill-failed",
+                      {},
+                    );
+                  }
+                }, 2_000),
+              );
+            })
+            .catch(() => undefined)
+            .finally(() => {
+              checking = false;
+            });
+        }, NATIVE_HOLDER_REAP_CHECK_MS),
+      );
+    }
   };
 
   server.on("connection", (socket) => {
@@ -612,6 +674,7 @@ export async function runNativeHolder(
         if (message.type === NativeHolderFrame.input) {
           const input = text.write(message.payload);
           if (input.length === 0) continue;
+          lastInputAt = Date.now();
           if (pty === null) pendingInput += input;
           else pty.write(input);
         } else if (message.type === NativeHolderFrame.credential) {

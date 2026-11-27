@@ -115,6 +115,7 @@ const CLAUDE_CLI: ProviderNativeTerminal = {
     transcript: "projects/*/{sessionId}.jsonl",
   },
   activity: providerNativeTerminalActivitySchema.parse({
+    idleReapEvidence: "claude-stop-v1",
     hooks: {
       args: ["--settings", "{settings}"],
       working: ["UserPromptSubmit", "PreToolUse"],
@@ -659,6 +660,97 @@ describe("NativeActivityReader session rotation", () => {
 });
 
 describe("NativeActivityReader", () => {
+  it.each([
+    { name: "completed turn", tasks: [], crons: [], result: true },
+    {
+      name: "background shell",
+      tasks: [{ type: "shell", status: "running" }],
+      crons: [],
+      result: false,
+    },
+    {
+      name: "background subagent",
+      tasks: [{ type: "subagent", status: "running" }],
+      crons: [],
+      result: false,
+    },
+    { name: "session cron", tasks: [], crons: [{ id: "cron" }], result: false },
+    {
+      name: "unavailable task registry",
+      tasks: undefined,
+      crons: [],
+      result: false,
+    },
+    { name: "unmatched tool", tasks: [], crons: [], result: false },
+    { name: "Stop hook still running", tasks: [], crons: [], result: false },
+  ])(
+    "only offers Claude idle evidence for a quiescent session ($name)",
+    ({ name, tasks, crons, result }) => {
+      const home = tempHome();
+      const directory = path.join(home, ".claude", "projects", "work");
+      mkdirSync(directory, { recursive: true });
+      const transcript = path.join(directory, `${SESSION_ID}.jsonl`);
+      const hooks = path.join(home, "hooks");
+      publishHooks(
+        hooks,
+        jsonl([
+          {
+            hook_event_name: "Stop",
+            session_id: SESSION_ID,
+            transcript_path: transcript,
+            background_tasks: tasks,
+            session_crons: crons,
+          },
+        ]),
+      );
+      const timestamp = new Date(
+        statSync(path.join(hooks, "000000000001")).mtimeMs + 20,
+      ).toISOString();
+      writeFileSync(
+        transcript,
+        jsonl([
+          {
+            type: "assistant",
+            sessionId: SESSION_ID,
+            message: { content: [{ type: "tool_use", id: "tool-1" }] },
+          },
+          ...(name === "unmatched tool"
+            ? []
+            : [
+                {
+                  type: "user",
+                  sessionId: SESSION_ID,
+                  message: {
+                    content: [{ type: "tool_result", tool_use_id: "tool-1" }],
+                  },
+                },
+              ]),
+          ...(name === "Stop hook still running"
+            ? []
+            : [
+                {
+                  type: "system",
+                  subtype: "stop_hook_summary",
+                  timestamp,
+                  preventedContinuation: false,
+                },
+                { type: "system", subtype: "turn_duration", timestamp },
+              ]),
+        ]),
+      );
+      const reader = new NativeActivityReader(
+        CLAUDE_CLI,
+        { HOME: home },
+        hooks,
+        { kind: "start", id: SESSION_ID },
+      );
+      reader.read();
+      expect(reader.claudeIdleEvidence()?.nativeSessionId ?? null).toBe(
+        result ? SESSION_ID : null,
+      );
+    },
+  );
+
   it("does not recover from a matching Stop, unknown event, or unmatched permission close", () => {
     const fixture = claudeFixture();
     fixture.hook([

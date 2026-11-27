@@ -28,7 +28,7 @@ import {
   rewindThreadPruningWork,
   dropQueuedMessageDeliveryColumns,
   dropThreadStatusChangedAtColumn,
-  dropTerminalFirstLiveFrameColumn,
+  rewindTerminalSessionColumns,
   dropThreadRunStateTables,
   dropPluginFailureLabelColumns,
 } from "./helpers/rewind.js";
@@ -88,7 +88,7 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
     dropTerminalDefaultColorsColumn(db);
     dropQueuedMessageDeliveryColumns(db);
     dropThreadStatusChangedAtColumn(db);
-    dropTerminalFirstLiveFrameColumn(db);
+    rewindTerminalSessionColumns(db);
     dropThreadRunStateTables(db);
     dropPluginFailureLabelColumns(db);
     db.$client
@@ -222,7 +222,7 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     dropTerminalDefaultColorsColumn(db);
     dropQueuedMessageDeliveryColumns(db);
     dropThreadStatusChangedAtColumn(db);
-    dropTerminalFirstLiveFrameColumn(db);
+    rewindTerminalSessionColumns(db);
     dropThreadRunStateTables(db);
     dropPluginFailureLabelColumns(db);
     db.$client
@@ -355,7 +355,7 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     dropTerminalDefaultColorsColumn(db);
     dropQueuedMessageDeliveryColumns(db);
     dropThreadStatusChangedAtColumn(db);
-    dropTerminalFirstLiveFrameColumn(db);
+    rewindTerminalSessionColumns(db);
     dropThreadRunStateTables(db);
     dropPluginFailureLabelColumns(db);
     db.$client

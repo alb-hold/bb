@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +13,10 @@ import {
   withSocketCredential,
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
-import { fillNativeTerminalTemplate } from "@bb/domain";
+import {
+  fillNativeTerminalTemplate,
+  NATIVE_TERMINAL_IDLE_EXIT_CODE,
+} from "@bb/domain";
 import { createSessionDiscoverer } from "../../native-session-discovery.js";
 import {
   createNativeActivityPump,
@@ -462,6 +466,73 @@ export async function holdNativeHarness(
       report(reader?.finish() ?? null);
     };
     let pty: ReturnType<typeof nodePty.spawn> | null = null;
+    let unusedReap: { token: string; nativeSessionId: string } | null = null;
+    const releaseIdleReap = async () => {
+      const unused = unusedReap;
+      const credential = currentCredential();
+      if (unused === null || credential === null) return;
+      await sdk.nativeTerminals.updateIdleReap({
+        ...unused,
+        phase: "release",
+        authorization: `Bearer ${credential}`,
+        signal: AbortSignal.timeout(5_000),
+        threadId,
+      });
+      unusedReap = null;
+    };
+    const mayReapIdle = async (lastInputAt: number) => {
+      if (unusedReap !== null) {
+        await releaseIdleReap();
+        return null;
+      }
+      readActivity();
+      const evidence = reader?.claudeIdleEvidence();
+      const credential = currentCredential();
+      if (!evidence || credential === null) return null;
+      const attempt = {
+        authorization: `Bearer ${credential}`,
+        nativeSessionId: evidence.nativeSessionId,
+        token: randomUUID(),
+        threadId,
+      };
+      const { approved } = await sdk.nativeTerminals.updateIdleReap({
+        ...attempt,
+        phase: "claim",
+        idleForMs: Math.max(
+          0,
+          Date.now() - Math.ceil(Math.max(evidence.activityAt, lastInputAt)),
+        ),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!approved) return null;
+      unusedReap = {
+        token: attempt.token,
+        nativeSessionId: attempt.nativeSessionId,
+      };
+      const startedAt = performance.now();
+      const committed = await sdk.nativeTerminals.updateIdleReap({
+        ...attempt,
+        phase: "commit",
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!committed.approved) {
+        await releaseIdleReap();
+        return null;
+      }
+      return {
+        release: releaseIdleReap,
+        canReap: () => {
+          readActivity();
+          const latest = reader?.claudeIdleEvidence();
+          return (
+            latest?.nativeSessionId === evidence.nativeSessionId &&
+            latest.activityAt === evidence.activityAt &&
+            performance.now() - startedAt < 5_000 &&
+            credential === currentCredential()
+          );
+        },
+      };
+    };
     const exitCode = await runNativeHolder({
       socketPath,
       holderMarkerGeneration,
@@ -624,7 +695,18 @@ export async function holdNativeHarness(
             }, ACTIVITY_HEARTBEAT_INTERVAL_MS),
           );
         }
-        return { command: launch.command, args: launch.args };
+        return {
+          command: launch.command,
+          args: launch.args,
+          ...(activity?.idleReapEvidence === "claude-stop-v1"
+            ? {
+                idleReap: {
+                  exitCode: NATIVE_TERMINAL_IDLE_EXIT_CODE,
+                  check: mayReapIdle,
+                },
+              }
+            : {}),
+        };
       },
       spawnPty: (child, options) => {
         pty = nodePty.spawn(child.command, child.args, {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createConnection, migrate } from "../src/index.js";
 import {
   dropPluginFailureLabelColumns,
-  dropTerminalFirstLiveFrameColumn,
+  rewindTerminalSessionColumns,
   dropThreadRunStateTables,
   restoreDiffViewedFilesTable,
 } from "./helpers/rewind.js";
@@ -15,7 +15,7 @@ function databaseBeforeHandoff(
   const db = createConnection(":memory:");
   migrate(db);
   restoreDiffViewedFilesTable(db);
-  dropTerminalFirstLiveFrameColumn(db);
+  rewindTerminalSessionColumns(db);
   dropThreadRunStateTables(db);
   dropPluginFailureLabelColumns(db);
   db.$client.pragma("foreign_keys = OFF");

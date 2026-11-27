@@ -7,6 +7,7 @@ import type { Hono } from "hono";
 import { ApiError } from "../errors.js";
 import { runAgentToolCall } from "../internal/tool-calls.js";
 import {
+  updateNativeTerminalIdleReap,
   findNativeTerminalThreadView,
   listNativeTerminalAgentTools,
   requireNativeTerminalAgentToolCall,
@@ -102,6 +103,16 @@ export function registerNativeTerminalThreadRoutes(
     });
     return context.json({ ok: true as const });
   });
+
+  post(routes.updateIdleReap, (context, payload) =>
+    context.json({
+      approved: updateNativeTerminalIdleReap(deps, {
+        authorization: context.req.header("authorization"),
+        threadId: context.req.param("id"),
+        ...payload,
+      }),
+    }),
+  );
 
   post(routes.recordSession, (context, payload) =>
     context.json(

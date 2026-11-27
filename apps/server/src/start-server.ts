@@ -781,6 +781,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
           spawn: createTerminalDataPlaneSpawn(),
         })
       : null;
+  if (terminalDataPlane !== null) {
+    terminalSessions.setDirectTerminalViewerCheck(
+      terminalDataPlane.hasAttachInFlight,
+    );
+  }
 
   logger.info(
     {

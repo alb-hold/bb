@@ -888,6 +888,17 @@ function updateTerminalById(
 export class TerminalSessionLifecycle {
   private readonly lastThreadAttentionAt = new Map<string, number>();
   private readonly nativeTerminalRepaintsOnAttach = new Set<string>();
+  private readonly nativeIdleReaps = new Map<
+    string,
+    {
+      token: string;
+      settled: Promise<void>;
+      settle: () => void;
+      cancelExpiry: () => void;
+    }
+  >();
+  private readonly awaitingNativeIdleReap = new WeakSet<TerminalClientSocket>();
+  private hasDirectTerminalViewer?: (terminalId: string) => boolean;
   private readonly pendingAttaches: PendingRpcRegistry<
     PendingTerminalAttachKey,
     TerminalReplayMessage
@@ -2090,7 +2101,10 @@ export class TerminalSessionLifecycle {
         "Terminal session not found",
       );
     }
-    if (!isRunningBrowserTerminalSession(current)) {
+    if (
+      !isRunningBrowserTerminalSession(current) ||
+      this.nativeIdleReapInFlight(args.terminalId, current)
+    ) {
       throw new ApiError(
         409,
         "terminal_not_running",
@@ -3238,6 +3252,7 @@ export class TerminalSessionLifecycle {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
+      this.nativeIdleReapInFlight(terminalId, current) ||
       current.status !== "running" ||
       current.daemonSessionId === null
     ) {
@@ -3253,6 +3268,85 @@ export class TerminalSessionLifecycle {
 
   markDirectOutputSocket(socket: TerminalClientSocket): void {
     this.directOutputSockets.add(socket);
+  }
+
+  setDirectTerminalViewerCheck(
+    hasViewer: (terminalId: string) => boolean,
+  ): void {
+    this.hasDirectTerminalViewer = hasViewer;
+  }
+
+  claimNativeIdleReap(terminalId: string, token: string): boolean {
+    if (
+      this.options.hub.hasTerminalClients(terminalId) ||
+      this.frameObservers.has(terminalId) ||
+      this.hasDirectTerminalViewer?.(terminalId) === true
+    )
+      return false;
+    const now = Date.now();
+    const claimed = updateTerminalSession(this.options.db, {
+      now,
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "claim-native-idle-reap", token, until: now + 15_000 },
+    });
+    if (claimed === null) return false;
+    this.nativeIdleReapInFlight(terminalId, claimed);
+    return true;
+  }
+
+  updateNativeIdleReap(
+    terminalId: string,
+    token: string,
+    phase: "commit" | "release",
+  ): boolean {
+    const updated = updateTerminalSession(this.options.db, {
+      scope: { kind: "terminal", terminalId },
+      update: {
+        kind:
+          phase === "commit" ? "commit-native-idle-reap" : "release-native-idle-reap",
+        token,
+      },
+    });
+    if (updated === null) return false;
+    this.nativeIdleReapInFlight(terminalId, updated);
+    return true;
+  }
+
+  nativeIdleReapInFlight(
+    terminalId: string,
+    current = getTerminalById(this.options.db, terminalId),
+  ): Promise<void> | null {
+    const token = current?.nativeIdleReapToken ?? null;
+    const remaining =
+      current?.nativeIdleReapUntil == null
+        ? null
+        : current.nativeIdleReapUntil - Date.now();
+    const pending = this.nativeIdleReaps.get(terminalId);
+    if (token === null || (remaining !== null && remaining <= 0)) {
+      pending?.settle();
+      return null;
+    }
+    if (pending?.token === token) {
+      if (remaining === null) pending.cancelExpiry();
+      return pending.settled;
+    }
+    pending?.settle();
+    let resolve!: () => void;
+    const settled = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const cancelExpiry = () => {
+      if (expiry !== null) clearTimeout(expiry);
+    };
+    const settle = () => {
+      cancelExpiry();
+      this.nativeIdleReaps.delete(terminalId);
+      resolve();
+    };
+    const expiry = remaining === null ? null : setTimeout(settle, remaining);
+    expiry?.unref();
+    this.nativeIdleReaps.set(terminalId, { token, settled, settle, cancelExpiry });
+    return settled;
   }
 
   setDaemonSessionDirectOutput(args: {
@@ -3393,6 +3487,27 @@ export class TerminalSessionLifecycle {
   }
 
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
+    const reaping = this.nativeIdleReapInFlight(args.terminalId);
+    if (reaping !== null) {
+      this.awaitingNativeIdleReap.add(args.socket);
+      void reaping.then(() => {
+        if (!this.awaitingNativeIdleReap.delete(args.socket)) return;
+        try {
+          this.attachBrowserTerminal(args);
+        } catch (error) {
+          this.sendTerminalSocketError({
+            socket: args.socket,
+            code:
+              error instanceof ApiError
+                ? error.body.code
+                : "terminal_attach_failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+          args.socket.close(1013, "attach-failed");
+        }
+      });
+      return;
+    }
     if (args.rawReplay) this.rawReplaySockets.add(args.socket);
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
@@ -3543,6 +3658,7 @@ export class TerminalSessionLifecycle {
   }
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
+    this.awaitingNativeIdleReap.delete(args.socket);
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
     this.removeFrameObserver(args.terminalId, args.socket);
     this.outputFlow.removeClient(args.terminalId, args.socket);
@@ -4254,6 +4370,23 @@ export class TerminalSessionLifecycle {
     if (args.message.type !== "terminal.exited") {
       return;
     }
+    let closeReason = args.message.closeReason;
+    if (closeReason === "native-idle-reaped") {
+      const current = getTerminalById(this.options.db, args.message.terminalId);
+      const native =
+        current?.threadId == null
+          ? null
+          : getNativeTerminalThread(this.options.db, current.threadId);
+      if (
+        current === null ||
+        native === null ||
+        native.terminalSessionId !== current.id ||
+        current.nativeIdleReapToken === null ||
+        current.nativeIdleReapUntil !== null
+      ) {
+        closeReason = "process-exit";
+      }
+    }
     const exited = updateTerminalSession(this.options.db, {
       scope: {
         daemonSessionId: args.sessionId,
@@ -4261,7 +4394,7 @@ export class TerminalSessionLifecycle {
         terminalId: args.message.terminalId,
       },
       update: {
-        closeReason: args.message.closeReason,
+        closeReason,
         exitCode: args.message.exitCode,
         kind: "exit",
         retainDaemonSession: this.directOutputSessionIds.has(args.sessionId),
@@ -4270,6 +4403,7 @@ export class TerminalSessionLifecycle {
     if (!exited) {
       return;
     }
+    this.nativeIdleReaps.get(exited.id)?.settle();
     this.clearDeviceHandoffAttention(exited.id);
     this.forgetForwardedNextSeq(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
@@ -4408,6 +4542,7 @@ export class TerminalSessionLifecycle {
     args: NotifyExitedTerminalSessionArgs,
   ): void {
     if (this.terminalOutputWritesStopped) return;
+    this.nativeIdleReaps.get(args.session.id)?.settle();
     this.clearDeviceHandoffAttention(args.session.id);
     this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
@@ -4590,7 +4725,10 @@ export class TerminalSessionLifecycle {
     if (!current) {
       return null;
     }
-    if (!isRunningBrowserTerminalSession(current)) {
+    if (
+      !isRunningBrowserTerminalSession(current) ||
+      this.nativeIdleReapInFlight(args.terminalId, current)
+    ) {
       if (current.status !== "disconnected") {
         this.sendTerminalSocketError({
           socket: args.socket,

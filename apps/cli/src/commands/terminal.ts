@@ -1568,7 +1568,7 @@ export async function attachTerminal(args: {
 
   const previousRawMode = process.stdin.isRaw;
   let cleanup = () => {};
-  await new Promise<void>((resolve, reject) => {
+  const exit = await new Promise<TerminalSession | null>((resolve, reject) => {
     const transport = new TerminalWebSocketTransport({
       url: terminalWebsocketUrl(args),
       terminalId: args.terminalId,
@@ -1592,7 +1592,7 @@ export async function attachTerminal(args: {
       shouldReconnect: () => false,
       onInputOverflow: () => reject(new Error("Terminal input queue is full")),
       onConnectionState: (state) => {
-        if (state === "closed") resolve();
+        if (state === "closed") resolve(null);
       },
       onMessage: (message) => {
         switch (message.type) {
@@ -1613,6 +1613,7 @@ export async function attachTerminal(args: {
             transport.acknowledgeOutput(message.chunk.seq + 1);
             return;
           case "exited":
+            resolve(message.session);
             transport.dispose();
             return;
           case "error":
@@ -1647,6 +1648,19 @@ export async function attachTerminal(args: {
     transport.markLayoutSettled();
     transport.start();
   }).finally(() => cleanup());
+  if (exit?.closeReason !== "native-idle-reaped" || exit.threadId === null) {
+    return;
+  }
+  const sdk = createCliBbSdk(args.baseUrl);
+  const native = await sdk.nativeTerminals.get({ threadId: exit.threadId });
+  if (!native?.terminal) return;
+  const reopened =
+    native.terminal.id === args.terminalId
+      ? await sdk.nativeTerminals.open({ threadId: exit.threadId })
+      : native;
+  if (reopened.terminal && reopened.terminal.id !== args.terminalId) {
+    await attachTerminal({ ...args, terminalId: reopened.terminal.id });
+  }
 }
 
 function chunkTerminalInput(data: Buffer): Buffer[] {

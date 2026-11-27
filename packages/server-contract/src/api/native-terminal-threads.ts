@@ -128,6 +128,32 @@ export type ReportNativeTerminalActivityRequest = z.infer<
   typeof reportNativeTerminalActivityRequestSchema
 >;
 
+const nativeIdleReapIdentity = {
+  nativeSessionId: z.string().min(1).max(256),
+  token: z.uuid(),
+};
+export const nativeTerminalIdleReapRequestSchema = z.discriminatedUnion(
+  "phase",
+  [
+    z.strictObject({
+      ...nativeIdleReapIdentity,
+      phase: z.literal("claim"),
+      idleForMs: z.number().int().nonnegative(),
+    }),
+    z.strictObject({
+      ...nativeIdleReapIdentity,
+      phase: z.literal("commit"),
+    }),
+    z.strictObject({
+      ...nativeIdleReapIdentity,
+      phase: z.literal("release"),
+    }),
+  ],
+);
+export type NativeTerminalIdleReapRequest = z.infer<
+  typeof nativeTerminalIdleReapRequestSchema
+>;
+
 export const recordNativeSessionRequestSchema = z
   .object({
     nativeSessionId: z
