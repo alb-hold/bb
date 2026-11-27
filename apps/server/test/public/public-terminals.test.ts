@@ -1368,12 +1368,13 @@ describe("public terminal routes", () => {
   });
 
   it.each([
-    { early: true, paintSpace: false },
-    { early: false, paintSpace: false },
-    { early: false, paintSpace: true },
+    { early: true, paintSpace: false, evicted: false },
+    { early: false, paintSpace: false, evicted: false },
+    { early: false, paintSpace: true, evicted: false },
+    { early: true, paintSpace: false, evicted: true },
   ])(
-    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace)",
-    async ({ early, paintSpace }) => {
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted)",
+    async ({ early, paintSpace, evicted }) => {
       const fixture = await createTerminalRouteFixture();
       harnesses.push(fixture.harness);
       const stored = createTerminalSession(fixture.harness.db, {
@@ -1409,6 +1410,28 @@ describe("public terminal routes", () => {
           service.getTerminal({ terminalId: stored.id }).firstLiveFrame?.seq,
         ).toBe(1),
       );
+      if (evicted) {
+        service.flushAllRetainedOutput();
+        for (let index = 0; index < 32; index += 1) {
+          const other = createTerminalSession(fixture.harness.db, {
+            cols: 80,
+            daemonSessionId: fixture.session.id,
+            environmentId: null,
+            hostId: fixture.host.id,
+            initialCwd: "/tmp",
+            rows: 24,
+            status: "running",
+            threadId: null,
+            title: "Terminal used to evict the observed screen",
+          });
+          service.recordDirectTerminalOutputBatch({
+            daemonSessionId: fixture.session.id,
+            terminalId: other.id,
+            chunks: [{ seq: 0, dataBase64: "eA==" }],
+          });
+        }
+        expect(await service.readTerminalPromptScreen(stored.id)).toBeNull();
+      }
       const browserSocket = createFakeBrowserSocket();
 
       fixture.harness.deps.terminalSessions.attachBrowserTerminal({
