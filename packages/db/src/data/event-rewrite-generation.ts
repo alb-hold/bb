@@ -1,17 +1,47 @@
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { deleteThreadConversationOutlineRecord } from "./thread-conversation-outlines.js";
 
-const generationsByThreadId = new Map<string, number>();
-const conversationOutlineGenerationsByThreadId = new Map<string, number>();
+const THREAD_REWRITE_GENERATION_LIMIT = 4_096;
+
+class ThreadRewriteGenerations {
+  private readonly entries = new Map<string, number>();
+  private floor = 0;
+  private highest = 0;
+
+  get(threadId: string): number {
+    return this.entries.get(threadId) ?? this.floor;
+  }
+
+  bump(threadId: string): void {
+    if (
+      this.entries.size >= THREAD_REWRITE_GENERATION_LIMIT &&
+      !this.entries.has(threadId)
+    ) {
+      this.clear();
+    }
+    const generation = this.get(threadId) + 1;
+    this.entries.set(threadId, generation);
+    this.highest = Math.max(this.highest, generation);
+  }
+
+  clear(): void {
+    this.highest += 1;
+    this.floor = this.highest;
+    this.entries.clear();
+  }
+}
+
+const eventRewriteGenerations = new ThreadRewriteGenerations();
+const conversationOutlineRewriteGenerations = new ThreadRewriteGenerations();
 
 export function getThreadEventRewriteGeneration(threadId: string): number {
-  return generationsByThreadId.get(threadId) ?? 0;
+  return eventRewriteGenerations.get(threadId);
 }
 
 export function getThreadConversationOutlineRewriteGeneration(
   threadId: string,
 ): number {
-  return conversationOutlineGenerationsByThreadId.get(threadId) ?? 0;
+  return conversationOutlineRewriteGenerations.get(threadId);
 }
 
 export function bumpThreadEventRewriteGeneration(
@@ -20,23 +50,17 @@ export function bumpThreadEventRewriteGeneration(
 ): void {
   deleteThreadConversationOutlineRecord(db, threadId);
   bumpThreadEventRewriteGenerationOutsideConversationOutline(threadId);
-  conversationOutlineGenerationsByThreadId.set(
-    threadId,
-    getThreadConversationOutlineRewriteGeneration(threadId) + 1,
-  );
+  conversationOutlineRewriteGenerations.bump(threadId);
 }
 
 export function bumpThreadEventRewriteGenerationOutsideConversationOutline(
   threadId: string,
 ): void {
-  generationsByThreadId.set(
-    threadId,
-    getThreadEventRewriteGeneration(threadId) + 1,
-  );
+  eventRewriteGenerations.bump(threadId);
 }
 
 export function forgetThreadEventRewriteGenerations(): void {
-  generationsByThreadId.clear();
+  eventRewriteGenerations.clear();
 }
 
 export function getDatabaseDataVersion(db: DbConnection): number {

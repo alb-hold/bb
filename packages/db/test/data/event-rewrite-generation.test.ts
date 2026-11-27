@@ -4,11 +4,13 @@ import type { DbConnection } from "../../src/connection.js";
 import {
   getThreadConversationOutlineRewriteGeneration,
   getThreadEventRewriteGeneration,
+  bumpThreadEventRewriteGeneration,
 } from "../../src/data/event-rewrite-generation.js";
 import {
   appendDaemonEventsInTransaction,
   deleteThreadEventSuffixInTransaction,
   insertEvents,
+  listLatestThreadStateEventRowsByThreadIds,
   type InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
@@ -247,6 +249,41 @@ function insertCommandOutput(
 }
 
 describe("thread event rewrite generation", () => {
+  it("retires old rewrite generations without reusing a stale event checkpoint", () => {
+    const { db, threadId } = setup();
+    try {
+      const latestGoal = () =>
+        listLatestThreadStateEventRowsByThreadIds(db, {
+          threadIds: [threadId],
+          kind: "goal",
+        }).at(0)?.sequence;
+      insertEvents(db, noopNotifier, [1, 2, 3].map((sequence) =>
+        row(threadId, sequence, "thread/goal/updated", {}, { scope: threadScope() }),
+      ));
+      expect(deleteSuffix(db, threadId, 3)).toBe(1);
+      const previous = getThreadEventRewriteGeneration(threadId);
+      const previousOutline = getThreadConversationOutlineRewriteGeneration(threadId);
+      expect(latestGoal()).toBe(2);
+      expect(deleteSuffix(db, threadId, 2)).toBe(1);
+      db.transaction((tx) => {
+        for (let index = 0; index < 4_096; index += 1) {
+          bumpThreadEventRewriteGeneration(tx, `heap-audit-rewrite-${index}`);
+        }
+      });
+      expect(getThreadEventRewriteGeneration(threadId)).toBe(
+        getThreadEventRewriteGeneration("never-rewritten"),
+      );
+      expect(getThreadEventRewriteGeneration(threadId)).toBeGreaterThan(previous);
+      expect(getThreadConversationOutlineRewriteGeneration(threadId)).toBe(
+        getThreadConversationOutlineRewriteGeneration("never-rewritten"),
+      );
+      expect(getThreadConversationOutlineRewriteGeneration(threadId)).toBeGreaterThan(previousOutline);
+      expect(latestGoal()).toBe(1);
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it.each<RewriteCase>([
     {
       name: "a suffix delete",

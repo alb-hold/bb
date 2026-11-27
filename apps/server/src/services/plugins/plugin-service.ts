@@ -266,6 +266,9 @@ export interface OpenPluginDatabase {
   pluginId: string;
 }
 
+const MAX_RPC_INVOCATIONS = 128;
+const MAX_RPC_INVOCATIONS_PER_PLUGIN = 32;
+
 export interface PluginService {
   isBuiltin(id: string): boolean;
   events: PluginThreadEventEmitter;
@@ -448,7 +451,8 @@ export interface PluginService {
     caller: ExperimentalPluginRpcCaller,
     signal: AbortSignal | null,
   ): Promise<
-    { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
+    | { ok: true; result: JsonValue }
+    | { ok: false; error: PluginRpcError; status?: 503 }
   >;
   httpToken(
     id: string,
@@ -671,6 +675,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
   const artifactRetentionMs =
     deps.artifactRetentionMs ?? DEFAULT_ARTIFACT_RETENTION_MS;
   const now = deps.now ?? Date.now;
+  let activeRpcInvocations = 0;
+  const activeRpcInvocationsByPlugin = new Map<string, number>();
   const marketplaceManifestCache = new Map<
     string,
     { manifestJson: string; manifest: MarketplaceManifest | null }
@@ -2248,45 +2254,75 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     },
 
     async invokeRpcHandler(owner, method, handler, input, caller, signal) {
+      const id = owner.pluginId;
+      const activeForPlugin = activeRpcInvocationsByPlugin.get(id) ?? 0;
+      if (
+        activeRpcInvocations >= MAX_RPC_INVOCATIONS ||
+        activeForPlugin >= MAX_RPC_INVOCATIONS_PER_PLUGIN
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "handler_error",
+            message: "Plugin RPC is busy. Retry the request.",
+          },
+          status: 503,
+        };
+      }
+      const execute = async (invocationSignal: AbortSignal) => {
+        const parsedInput = await validateRpcValue(
+          handler.inputSchema,
+          input,
+          "input",
+          throwRpcBoundaryError,
+        );
+        let result: unknown;
+        try {
+          result = await handler.handler(parsedInput, {
+            experimental_caller: caller,
+            experimental_signal: invocationSignal,
+          });
+        } catch (error) {
+          const refusal = readPluginRpcRefusal(error);
+          if (refusal === null) throw error;
+          return { ok: false as const, error: refusal };
+        }
+        const parsedOutput = await validateRpcValue(
+          handler.outputSchema,
+          result,
+          "output",
+          throwRpcBoundaryError,
+        );
+        const resultValue = normalizeRpcJsonResult(
+          parsedOutput,
+          throwRpcBoundaryError,
+        );
+        const { invalidated } = rpcResponseTags(
+          handler.declarations,
+          parsedInput,
+          parsedOutput,
+        );
+        if (invalidated.length > 0)
+          deps.hub.notifyPluginChanged(owner.pluginId, invalidated);
+        return { ok: true as const, result: resultValue };
+      };
       const outcome = await invokeWrapped(
         owner,
         `rpc ${method}`,
         async (invocationSignal) => {
-          const parsedInput = await validateRpcValue(
-            handler.inputSchema,
-            input,
-            "input",
-            throwRpcBoundaryError,
-          );
-          let result: unknown;
+          activeRpcInvocations += 1;
+          activeRpcInvocationsByPlugin.set(id, activeForPlugin + 1);
           try {
-            result = await handler.handler(parsedInput, {
-              experimental_caller: caller,
-              experimental_signal: invocationSignal,
-            });
-          } catch (error) {
-            const refusal = readPluginRpcRefusal(error);
-            if (refusal === null) throw error;
-            return { ok: false as const, error: refusal };
+            return await execute(invocationSignal);
+          } finally {
+            activeRpcInvocations -= 1;
+            const active = activeRpcInvocationsByPlugin.get(id);
+            if (active === undefined || active <= 1) {
+              activeRpcInvocationsByPlugin.delete(id);
+            } else {
+              activeRpcInvocationsByPlugin.set(id, active - 1);
+            }
           }
-          const parsedOutput = await validateRpcValue(
-            handler.outputSchema,
-            result,
-            "output",
-            throwRpcBoundaryError,
-          );
-          const resultValue = normalizeRpcJsonResult(
-            parsedOutput,
-            throwRpcBoundaryError,
-          );
-          const { invalidated } = rpcResponseTags(
-            handler.declarations,
-            parsedInput,
-            parsedOutput,
-          );
-          if (invalidated.length > 0)
-            deps.hub.notifyPluginChanged(owner.pluginId, invalidated);
-          return { ok: true as const, result: resultValue };
         },
         signal ?? undefined,
       );

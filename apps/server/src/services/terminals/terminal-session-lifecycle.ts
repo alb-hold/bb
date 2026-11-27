@@ -117,6 +117,7 @@ import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.
 import {
   TerminalScreenState,
   TerminalScreenStateCache,
+  TERMINAL_SCREEN_STATE_CACHE_LIMIT,
   TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT,
 } from "./terminal-screen-state.js";
 import {
@@ -203,6 +204,7 @@ interface TerminalScreenStateRebuild {
   cancelled: boolean;
   cols: number;
   daemonSessionId: string | null;
+  liveFromSequence: number | null;
   nextSeq: number;
   rows: number;
   terminalId: string;
@@ -1053,11 +1055,15 @@ export class TerminalSessionLifecycle {
 
   private scheduleTerminalScreenStateRebuild(
     session: TerminalSessionRow,
+    liveFromSequence: number | null = null,
   ): void {
     if (
       this.terminalOutputWritesStopped ||
       this.terminalScreenStates.has(session.id) ||
       this.terminalScreenStateRebuilds.has(session.id) ||
+      (liveFromSequence !== null &&
+        this.terminalScreenStateRebuilds.size >=
+          TERMINAL_SCREEN_STATE_CACHE_LIMIT) ||
       session.status !== "running"
     ) {
       return;
@@ -1068,6 +1074,7 @@ export class TerminalSessionLifecycle {
       cancelled: false,
       cols: session.cols,
       daemonSessionId: session.daemonSessionId,
+      liveFromSequence,
       nextSeq: 0,
       rows: session.rows,
       terminalId: session.id,
@@ -1092,6 +1099,9 @@ export class TerminalSessionLifecycle {
   ): Promise<void> {
     let state: TerminalScreenState | null = null;
     try {
+      if (rebuild.liveFromSequence !== null) {
+        await this.waitForTerminalReplay(session.id);
+      }
       await yieldToEventLoop();
       if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
       const current = getTerminalById(this.options.db, session.id);
@@ -1102,14 +1112,25 @@ export class TerminalSessionLifecycle {
       ) {
         return;
       }
-      const chunks = getRetainedTerminalOutput(this.options.db, {
+      const liveFrom = rebuild.liveFromSequence;
+      const retained = getRetainedTerminalOutput(this.options.db, {
         hostId: current.hostId,
         terminalSessionId: current.id,
         now: Date.now(),
+        wholeChunksOnly: liveFrom !== null,
       });
-      if (chunks !== null && chunks[0]?.seq !== 0) return;
+      if (liveFrom === null && retained !== null && retained[0]?.seq !== 0)
+        return;
+      const chunks =
+        liveFrom === null
+          ? (retained ?? [])
+          : this.readLiveFrameHistory(current, retained ?? [], liveFrom);
+      if (chunks === null) {
+        this.terminalScreenStates.markHistoryUnavailable(session.id);
+        return;
+      }
       state = new TerminalScreenState(rebuild.cols, rebuild.rows);
-      for (const chunk of chunks ?? []) {
+      for (const chunk of chunks) {
         if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
         state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
         rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
@@ -1144,6 +1165,34 @@ export class TerminalSessionLifecycle {
         this.terminalScreenStateRebuilds.delete(session.id);
       }
     }
+  }
+
+  private readLiveFrameHistory(
+    session: TerminalSessionRow,
+    retained: TerminalOutputChunk[],
+    liveFrom: number,
+  ): TerminalOutputChunk[] | null {
+    if (liveFrom > TERMINAL_SCREEN_REPLAY_BYTES) return null;
+    const bySequence = new Map<number, TerminalOutputChunk>();
+    const add = (chunks: TerminalOutputChunk[]) => {
+      for (const chunk of chunks) {
+        if (chunk.seq < liveFrom) bySequence.set(chunk.seq, chunk);
+      }
+    };
+    add(retained);
+    for (const batch of this.pendingRetainedOutput.get(session.id) ?? []) {
+      if (batch.hostId === session.hostId) add(batch.chunks);
+    }
+    const history: TerminalOutputChunk[] = [];
+    let bytes = 0;
+    for (let sequence = 0; sequence < liveFrom; sequence += 1) {
+      const chunk = bySequence.get(sequence);
+      if (chunk === undefined) return null;
+      bytes += Buffer.byteLength(chunk.dataBase64, "base64");
+      if (bytes > TERMINAL_SCREEN_REPLAY_BYTES) return null;
+      history.push(chunk);
+    }
+    return history;
   }
 
   private isTerminalScreenStateRebuildActive(
@@ -2400,6 +2449,18 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
+    const rendered = this.frameCallback(session, chunk.seq);
+    if (
+      rendered !== undefined &&
+      chunk.seq !== 0 &&
+      chunk.seq <= TERMINAL_SCREEN_REPLAY_BYTES &&
+      !this.terminalScreenStates.has(session.id) &&
+      !this.terminalScreenStates.isHistoryUnavailable(session.id) &&
+      (!this.activeTerminalReplays.has(session.id) ||
+        this.frameObservers.has(session.id))
+    ) {
+      this.scheduleTerminalScreenStateRebuild(session, chunk.seq);
+    }
     const rebuild = this.terminalScreenStateRebuilds.get(session.id);
     if (rebuild === undefined) {
       this.terminalScreenStates.pushBase64(
@@ -2408,7 +2469,7 @@ export class TerminalSessionLifecycle {
         session.rows,
         chunk.seq,
         chunk.dataBase64,
-        this.frameCallback(session, chunk.seq),
+        rendered,
       );
     } else if (!rebuild.cancelled) {
       const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
