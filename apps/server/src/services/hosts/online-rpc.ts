@@ -81,6 +81,28 @@ export async function callHostOnlineRpcForWork(
 ): Promise<HostDaemonRpcResultForCommand> {
   await waitForReconnectingDaemon(deps, args.hostId);
   await prepareHostForWork(deps, args, false);
+  return sendPreparedHostWorkRpc(deps, args);
+}
+
+export async function prepareTurnHostOnlineRpc<
+  TCommand extends Extract<
+    HostDaemonRpcCommand,
+    { type: "thread.start" | "turn.submit" }
+  >,
+>(
+  deps: WorkSessionDeps,
+  args: CallHostOnlineRpcArgs<TCommand>,
+): Promise<() => Promise<HostDaemonRpcResultForCommand<TCommand>>> {
+  await waitForReconnectingDaemon(deps, args.hostId);
+  await prepareHostForWork(deps, args, false);
+  return () => sendPreparedHostWorkRpc(deps, args);
+}
+
+function sendPreparedHostWorkRpc<TCommand extends HostDaemonRpcCommand>(
+  deps: WorkSessionDeps,
+  args: CallHostOnlineRpcArgs<TCommand>,
+): Promise<HostDaemonRpcResultForCommand<TCommand>> {
+  assertTurnCommandCanProceed(deps, args);
   return callHostOnlineRpcWithRetry(deps, args, {
     retryOnTransportFailure: false,
     waitForTransportFailure: false,
@@ -133,6 +155,7 @@ export async function callHostRetryableOnlineRpcForWork(
 ): Promise<HostDaemonOnlineRpcResultForCommand> {
   await waitForReconnectingDaemon(deps, args.hostId);
   await prepareHostForWork(deps, args, true);
+  assertTurnCommandCanProceed(deps, args);
   return callHostOnlineRpcWithRetry(deps, args, {
     retryOnTransportFailure: true,
     waitForTransportFailure: true,
@@ -213,6 +236,12 @@ async function prepareHostForWork(
     },
   );
   assertMachineLifecycleAdmission(deps, args.hostId);
+}
+
+function assertTurnCommandCanProceed(
+  deps: WorkSessionDeps,
+  args: CallHostOnlineRpcArgs<HostDaemonRpcCommand>,
+): void {
   if (
     (args.command.type === "thread.start" ||
       args.command.type === "turn.submit") &&
@@ -229,14 +258,16 @@ async function prepareHostForWork(
   }
 }
 
-async function callHostOnlineRpcWithRetry(
+async function callHostOnlineRpcWithRetry<
+  TCommand extends HostDaemonRpcCommand,
+>(
   deps: WorkSessionDeps,
-  args: CallHostOnlineRpcArgs<HostDaemonRpcCommand>,
+  args: CallHostOnlineRpcArgs<TCommand>,
   options: {
     retryOnTransportFailure: false;
     waitForTransportFailure: false;
   },
-): Promise<HostDaemonRpcResultForCommand>;
+): Promise<HostDaemonRpcResultForCommand<TCommand>>;
 async function callHostOnlineRpcWithRetry(
   deps: WorkSessionDeps,
   args: CallHostRetryableOnlineRpcArgs<HostDaemonRetryableOnlineRpcCommand>,

@@ -255,7 +255,7 @@ async function attemptSendDispatch(
       ...args,
       source: {
         ...args.source,
-        beforeAppendInTransaction: ({ tx }) => {
+        checkDeliveredRetry: ({ tx }) => {
           if (
             isDeliveredRetry(tx, { threadId: args.thread.id, requestId, input })
           ) {

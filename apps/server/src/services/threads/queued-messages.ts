@@ -632,6 +632,9 @@ async function dispatchClaimedQueuedMessages(
       ? sendModeForDeliveryMode(args.queuedMessages)
       : args.mode;
   const systemNotice = parseStoredQueuedThreadMessageSystemNotice(lead);
+  const hasRetry = args.queuedMessages.some(
+    (row) => row.resendOfClientRequestId !== null,
+  );
   const outcome = await attemptDispatch(deps, {
     thread: args.thread,
     payload: {
@@ -649,11 +652,18 @@ async function dispatchClaimedQueuedMessages(
       claimed: args.queuedMessages,
       respectManualStopPause: respectsManualStopPause(args),
       sendNow: args.sendNow,
-      beforeAppendInTransaction: ({ tx }) => {
-        const duplicateRows = findDeliveredRetryRows(tx, args.queuedMessages);
-        if (duplicateRows.length > 0)
-          throw new DeliveredRetryDetected(duplicateRows);
-      },
+      ...(hasRetry
+        ? {
+            checkDeliveredRetry: ({ tx }) => {
+              const duplicateRows = findDeliveredRetryRows(
+                tx,
+                args.queuedMessages,
+              );
+              if (duplicateRows.length > 0)
+                throw new DeliveredRetryDetected(duplicateRows);
+            },
+          }
+        : {}),
     },
     queuePayload: queuedMessage.payload,
     pluginSubmission: null,

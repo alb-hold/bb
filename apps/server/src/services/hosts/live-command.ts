@@ -37,6 +37,7 @@ interface RunLiveHostCommandArgs<TType extends HostDaemonSettledCommandType> {
   command: Extract<HostDaemonCommand, { type: TType }>;
   execution?: HostDaemonCommandExecutionRecord;
   hostId: string;
+  preparedRpc?: () => Promise<HostDaemonCommandResult<TType>>;
   preserveOnHostUnavailable?: boolean;
   timeoutMs: number;
 }
@@ -267,11 +268,12 @@ export async function runLiveHostCommand<
         : {}),
     };
     noteTurnTraceCommandSent({ command: sourceCommand, hostId: args.hostId });
-    const result = await call(deps, {
-      command,
-      hostId: args.hostId,
-      timeoutMs: args.timeoutMs,
-    });
+    const result = await (args.preparedRpc?.() ??
+      call(deps, {
+        command,
+        hostId: args.hostId,
+        timeoutMs: args.timeoutMs,
+      }));
     noteTurnTraceCommandSettled({ command: sourceCommand, result });
     await applyLiveHostCommandReport(deps, {
       command: args.command,

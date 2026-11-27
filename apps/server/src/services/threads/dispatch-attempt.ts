@@ -282,12 +282,13 @@ export type DispatchAttemptSource = (
   | {
       kind: "operation";
       environment: EnvironmentRow;
+      beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
       historyReplacement?: {
         forkSourceProviderThreadId: string | null;
         onCommandSettled?: () => void | Promise<void>;
       };
     }
-) & { beforeAppendInTransaction?: SendThreadMessageTransactionPreflight };
+) & { checkDeliveredRetry?: SendThreadMessageTransactionPreflight };
 
 export interface DispatchAttemptArgs {
   thread: Thread;
@@ -354,6 +355,9 @@ async function runOperationDispatch(
     payload: args.payload,
     thread: args.thread,
     trigger: args.trigger,
+    ...(source.checkDeliveredRetry !== undefined
+      ? { checkDeliveredRetry: source.checkDeliveredRetry }
+      : {}),
     ...(source.beforeAppendInTransaction !== undefined
       ? { beforeAppendInTransaction: source.beforeAppendInTransaction }
       : {}),
@@ -793,7 +797,7 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         author,
-        beforeAppendInTransaction: args.source.beforeAppendInTransaction,
+        checkDeliveredRetry: args.source.checkDeliveredRetry,
         originPluginId: args.originPluginId,
         claimed,
         assertExplicitModel:
@@ -933,6 +937,9 @@ async function runDispatchAttempt(
       ...(systemNotice !== null ? { systemNotice } : {}),
       onTurnRequestCreated: args.onTurnRequestCreated,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+      ...(args.source.checkDeliveredRetry !== undefined
+        ? { checkDeliveredRetry: args.source.checkDeliveredRetry }
+        : {}),
       beforeAppendInTransaction: ({ tx }) => {
         const current = getThread(tx, thread.id);
         if (current === null || current.status !== thread.status) {
@@ -960,7 +967,6 @@ async function runDispatchAttempt(
           }
           throw new DispatchThreadScopeChangedError();
         }
-        args.source.beforeAppendInTransaction?.({ tx });
         if (claimed !== null) {
           consumeClaimedRows(claimed, respectManualStopPause)({ tx });
         }
@@ -980,7 +986,7 @@ async function runDispatchAttempt(
   } catch (error) {
     if (
       !(error instanceof DeliveredRetryDetected) ||
-      thread.status !== "active"
+      getThread(deps.db, thread.id)?.status !== "active"
     ) {
       releaseWorkspaceForThread(deps, thread);
     }
@@ -1051,7 +1057,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   author: DispatchAuthor;
-  beforeAppendInTransaction: SendThreadMessageTransactionPreflight | undefined;
+  checkDeliveredRetry: SendThreadMessageTransactionPreflight | undefined;
   originPluginId: string | null;
   claimed: ClaimedQueuedThreadMessageRow[] | null;
   assertExplicitModel: boolean;
@@ -1117,7 +1123,7 @@ async function admitPendingThread(
           }
           throw new PendingThreadAdmissionLost(true);
         }
-        args.beforeAppendInTransaction?.({ tx });
+        args.checkDeliveredRetry?.({ tx });
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(args.claimed, args.respectManualStopPause)({ tx });
         }

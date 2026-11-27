@@ -58,6 +58,7 @@ import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   startLiveHostCommand,
 } from "../hosts/live-command.js";
+import { prepareTurnHostOnlineRpc } from "../hosts/online-rpc.js";
 import {
   inactiveHostUnavailableDetails,
   threadNotWritableReasonForStatus,
@@ -103,6 +104,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
 
 interface SendThreadMessageArgs {
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
+  checkDeliveredRetry?: SendThreadMessageTransactionPreflight;
   onTurnRequestCreated?: (requestId: string, turnId?: string) => void;
   retryOf?: TurnRequestRetryMarker;
   environment: EnvironmentRow;
@@ -604,9 +606,10 @@ export async function sendThreadMessage(
   assertNotNativeTerminalThread(deps.db, args.thread.id);
   if (isStandaloneBuiltinClearCommand(args.payload.input)) {
     await clearThreadContext(deps, {
-      ...(args.beforeAppendInTransaction !== undefined
-        ? { beforeCommitInTransaction: args.beforeAppendInTransaction }
-        : {}),
+      beforeCommitInTransaction: ({ tx }) => {
+        args.checkDeliveredRetry?.({ tx });
+        args.beforeAppendInTransaction?.({ tx });
+      },
       environment: args.environment,
       thread: args.thread,
       beforeClearInTransaction: (tx) => {
@@ -682,6 +685,7 @@ async function sendThreadMessageWithoutContextClear(
   const beforeAppendInTransaction: SendThreadMessageTransactionPreflight = ({
     tx,
   }) => {
+    args.checkDeliveredRetry?.({ tx });
     args.beforeAppendInTransaction?.({ tx });
     if (deferredFirstTurnContext) {
       requireDeferredFirstTurnContextCurrent(tx, {
@@ -855,6 +859,13 @@ async function sendThreadMessageWithoutContextClear(
             args.retryOf === undefined &&
             !hasCommandMention(input),
         });
+    const preparedRpc =
+      args.checkDeliveredRetry &&
+      (await prepareTurnHostOnlineRpc(deps, {
+        command: command.command,
+        hostId: readyEnvironment.hostId,
+        timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+      }).catch((error: unknown) => () => Promise.reject(error)));
     const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       beforeAppendInTransaction: ({ tx }) => {
@@ -906,6 +917,7 @@ async function sendThreadMessageWithoutContextClear(
     startLiveHostCommand(deps, {
       command: command.command,
       hostId: readyEnvironment.hostId,
+      ...(preparedRpc !== undefined ? { preparedRpc } : {}),
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
       onSettled: async () => {
         acceptance?.settle();
@@ -966,6 +978,13 @@ async function sendThreadMessageWithoutContextClear(
     preparedCommand,
     requestId,
   });
+  const preparedRpc =
+    args.checkDeliveredRetry &&
+    (await prepareTurnHostOnlineRpc(deps, {
+      command,
+      hostId: readyEnvironment.hostId,
+      timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+    }).catch((error: unknown) => () => Promise.reject(error)));
   const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
     ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
     beforeAppendInTransaction,
@@ -1009,6 +1028,7 @@ async function sendThreadMessageWithoutContextClear(
   startLiveHostCommand(deps, {
     command,
     hostId: readyEnvironment.hostId,
+    ...(preparedRpc !== undefined ? { preparedRpc } : {}),
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
     onSettled: () => {
       acceptance.settle();

@@ -173,6 +173,53 @@ function holdWorkspaceRead(harness: TestAppHarness) {
   };
 }
 
+function holdReconnectAfterWorkspaceRead(
+  harness: TestAppHarness,
+  hostId: string,
+) {
+  let workspaceRead = false;
+  let reconnecting = false;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = harness.hub.requestHostOnlineRpc.bind(harness.hub);
+  const requestSpy = vi.spyOn(harness.hub, "requestHostOnlineRpc");
+  requestSpy.mockImplementation(async (args) => {
+    const result = await request(args);
+    if (
+      args.hostId === hostId &&
+      args.message.command.type === "host.read_workspace_agent_context"
+    ) {
+      workspaceRead = true;
+    }
+    return result;
+  });
+  const connected = harness.hub.hasDaemonForHost.bind(harness.hub);
+  const connectedSpy = vi.spyOn(harness.hub, "hasDaemonForHost");
+  connectedSpy.mockImplementation((id) =>
+    id === hostId && workspaceRead ? false : connected(id),
+  );
+  const wait = harness.hub.waitForDaemonForHost.bind(harness.hub);
+  const waitSpy = vi.spyOn(harness.hub, "waitForDaemonForHost");
+  waitSpy.mockImplementation(async (id, timeoutMs) => {
+    if (id === hostId && workspaceRead) {
+      reconnecting = true;
+      await released;
+    }
+    return wait(id, timeoutMs);
+  });
+  return {
+    wait: () => expect.poll(() => reconnecting).toBe(true),
+    release: () => {
+      requestSpy.mockRestore();
+      connectedSpy.mockRestore();
+      waitSpy.mockRestore();
+      release();
+    },
+  };
+}
+
 async function acknowledgeStop(
   harness: TestAppHarness,
   threadId: string,
@@ -616,17 +663,16 @@ describe("a re-send that names the request it retries", () => {
           "late-direct-" + mention,
           mentionedInput("original-mention"),
         );
-        const { threadId, clientRequestId } = original;
+        const { threadId, clientRequestId, hostId } = original;
         await acknowledgeStop(harness, threadId);
         const submitted = () =>
           listQueuedThreadCommands(harness, "turn.submit", threadId);
         const before = submitted().length;
-        const barrier = holdWorkspaceRead(harness);
+        const barrier = holdReconnectAfterWorkspaceRead(harness, hostId);
         const input = mentionedInput(mention);
         const pending = sendMessage(harness, threadId, clientRequestId, input);
         try {
           await barrier.wait();
-          expect(countSubmissions(harness, threadId)).toBe(1);
           await echoOriginal(harness, original);
         } finally {
           barrier.release();
