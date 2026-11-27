@@ -1373,9 +1373,16 @@ describe("public terminal routes", () => {
     { early: false, paintSpace: true, evicted: false, truncated: false },
     { early: true, paintSpace: false, evicted: true, truncated: false },
     { early: true, paintSpace: false, evicted: true, truncated: true },
+    {
+      early: false,
+      paintSpace: false,
+      evicted: true,
+      truncated: false,
+      atLimit: true,
+    },
   ])(
-    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted, truncated: $truncated)",
-    async ({ early, paintSpace, evicted, truncated }) => {
+    "observes only complete live frames after the attach replay boundary (early: $early, painted space: $paintSpace, evicted: $evicted, truncated: $truncated, at limit: $atLimit)",
+    async ({ early, paintSpace, evicted, truncated, atLimit }) => {
       const fixture = await createTerminalRouteFixture();
       harnesses.push(fixture.harness);
       const stored = createTerminalSession(fixture.harness.db, {
@@ -1400,14 +1407,17 @@ describe("public terminal routes", () => {
             chunk: { seq, dataBase64: Buffer.from(data).toString("base64") },
           },
         });
-      await output(0, "   ");
+      await output(0, atLimit ? "\x1b[0m".repeat(8_192) : "   ");
       await service.readTerminalPromptScreen(stored.id);
       expect(
         service.getTerminal({ terminalId: stored.id }).firstLiveFrame,
       ).toBeUndefined();
+      const visibleOutput = atLimit
+        ? `${"\x1b[0m".repeat(8_190)}first   `
+        : "first";
       await output(
         1,
-        truncated ? `first\x1b[2;1H${"\x1b[0m".repeat(17_000)}` : "first",
+        truncated ? `first\x1b[2;1H${"\x1b[0m".repeat(17_000)}` : visibleOutput,
       );
       await vi.waitFor(() =>
         expect(
@@ -1416,16 +1426,28 @@ describe("public terminal routes", () => {
       );
       if (evicted) {
         service.flushAllRetainedOutput();
-        if (truncated) {
+        if (truncated || atLimit) {
           const retained = getRetainedTerminalOutput(fixture.harness.db, {
             hostId: fixture.host.id,
             terminalSessionId: stored.id,
             now: Date.now(),
           });
-          expect(retained?.[0]?.seq).toBe(1);
-          expect(
-            Buffer.from(retained![0]!.dataBase64, "base64").includes("first"),
-          ).toBe(false);
+          if (truncated) {
+            expect(retained?.[0]?.seq).toBe(1);
+            expect(
+              Buffer.from(retained![0]!.dataBase64, "base64").includes("first"),
+            ).toBe(false);
+          } else {
+            expect(
+              retained?.map(({ seq, dataBase64 }) => [
+                seq,
+                Buffer.byteLength(dataBase64, "base64"),
+              ]),
+            ).toEqual([
+              [0, 32_768],
+              [1, 32_768],
+            ]);
+          }
         }
         for (let index = 0; index < 32; index += 1) {
           const other = createTerminalSession(fixture.harness.db, {
