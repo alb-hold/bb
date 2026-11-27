@@ -871,6 +871,107 @@ describe("ThreadScreen", () => {
         peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
       ).toBeNull();
     });
+
+    it("keeps the request when a newer user row arrives while the restored draft is unsent", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_newer_row", "req_original");
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          conversationRow({
+            id: "retry_newer_row",
+            role: "user",
+            text: "never reached the provider",
+            turnId: "turn_own",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_original",
+              kind: "message",
+              status: "undelivered",
+            },
+          }),
+          conversationRow({
+            id: "newer_row",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_row",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBe("req_original");
+      expect(threadDraft().getCurrent().text).toBe(
+        "never reached the provider",
+      );
+    });
+
+    it("forgets the request and reverts the draft once the restored row is echoed after a newer row arrived", () => {
+      threadDraft().setDraft({ text: "", mentions: [], attachments: [] });
+      const view = restoreManually("retry_newer_echo_row", "req_original");
+      const restoredRow = (status: "undelivered" | "accepted") =>
+        conversationRow({
+          id: "retry_newer_echo_row",
+          role: "user",
+          text: "never reached the provider",
+          turnId: "turn_own",
+          turnRequest: {
+            isGrouped: false,
+            requestId: "req_original",
+            kind: "message",
+            status,
+          },
+        });
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          restoredRow("undelivered"),
+          conversationRow({
+            id: "newer_echo_other",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_echo_other",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      mocks.timeline = {
+        ...TIMELINE,
+        timelineRows: [
+          restoredRow("accepted"),
+          conversationRow({
+            id: "newer_echo_other",
+            role: "user",
+            text: "sent from another device",
+            turnId: "turn_newer_echo_other",
+            turnRequest: {
+              isGrouped: false,
+              requestId: "req_newer",
+              kind: "message",
+              status: "accepted",
+            },
+          }),
+        ],
+      };
+      view.rerender(screenElement({ kind: "page" }));
+      expect(
+        peekRetryOfClientRequestId(THREAD.id, threadDraft().getCurrent()),
+      ).toBeNull();
+      expect(threadDraft().getCurrent().text).toBe("");
+    });
   });
 
   it("keeps a submitted edit quiet when its own rewrite removes the edited message first", async () => {

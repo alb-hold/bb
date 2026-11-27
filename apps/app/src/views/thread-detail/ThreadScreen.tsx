@@ -153,6 +153,21 @@ interface SentMessageEditSession {
   threadId: string;
 }
 
+function findUserRowStatusById(
+  rows: readonly TimelineRow[],
+  rowId: string,
+): string | null {
+  for (const row of rows) {
+    if (row.kind === "turn" && row.children !== null) {
+      const nested = findUserRowStatusById(row.children, rowId);
+      if (nested !== "missing") return nested;
+    } else if (row.kind === "conversation" && row.id === rowId) {
+      return row.turnRequest?.status ?? null;
+    }
+  }
+  return "missing";
+}
+
 function hasTimelineRowId(
   rows: readonly TimelineRow[],
   rowId: string,
@@ -408,30 +423,28 @@ function useSentMessageEditing({
         ? previous.status !== "undelivered"
         : latestUserRowId !== baselineId);
     const restored = autoRestoredRef.current;
-    if (
-      restored !== null &&
-      (restored.threadId !== threadId ||
-        restored.rowId !== latestUserRowId ||
-        latestUserRowStatus !== "undelivered")
-    ) {
-      autoRestoredRef.current = null;
-      clearRestoredDraftRetry(restored.threadId);
-      if (
-        restored.threadId === threadId &&
-        restored.rowId === latestUserRowId
-      ) {
-        const restoredDraftAccessor = getPromptDraftAccessor({
-          kind: "thread",
-          projectId,
-          threadId,
-        });
-        if (
-          arePromptDraftStatesEqual(
-            restoredDraftAccessor.getCurrent(),
-            restored.draft,
-          )
-        ) {
-          restoredDraftAccessor.setDraft(restored.previousDraft);
+    if (restored !== null && restored.threadId === threadId) {
+      const restoredRowStatus = findUserRowStatusById(
+        timelineRows,
+        restored.rowId,
+      );
+      if (restoredRowStatus !== "undelivered") {
+        autoRestoredRef.current = null;
+        clearRestoredDraftRetry(restored.threadId);
+        if (restoredRowStatus !== "missing") {
+          const restoredDraftAccessor = getPromptDraftAccessor({
+            kind: "thread",
+            projectId,
+            threadId,
+          });
+          if (
+            arePromptDraftStatesEqual(
+              restoredDraftAccessor.getCurrent(),
+              restored.draft,
+            )
+          ) {
+            restoredDraftAccessor.setDraft(restored.previousDraft);
+          }
         }
       }
     }
@@ -470,6 +483,7 @@ function useSentMessageEditing({
     projectId,
     threadId,
     timelineLoading,
+    timelineRows,
   ]);
   useEffect(() => {
     if (discardedSentMessageEditId === null) {
