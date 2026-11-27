@@ -243,6 +243,37 @@ describe("event projection fold", () => {
     }
   });
 
+  it("resumes warm for a late echo of a request the fold already counts as delivered", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const requestId = "creq_abcdefghjk";
+    const settled = fromRows([
+      event.clientTurnRequested({ requestId, text: "hello" }),
+      event.turnStarted({ turnId: "turn-1" }),
+      event.inputAccepted({ clientRequestId: requestId, turnId: "turn-1" }),
+      event.assistantDelta({
+        delta: "Hi",
+        itemId: "assistant-1",
+        turnId: "turn-1",
+      }),
+      event.turnCompleted({ turnId: "turn-1", status: "interrupted" }),
+    ]);
+    const [echo] = fromRows([
+      event.providerUserMessage({
+        clientRequestId: requestId,
+        text: "hello",
+        turnId: "turn-1",
+      }),
+    ]);
+    const fold = startThreadTimelineProjectionFold({
+      acceptedClientRequestContext: EMPTY_ACCEPTED_CLIENT_REQUEST_CONTEXT,
+      events: settled,
+      options,
+    });
+    const all = [...settled, echo!];
+    expect(resumeEventProjectionFold(fold, [echo!])).toBe(true);
+    expect(build(all, fold)).toEqual(build(all));
+  });
+
   it("refuses events that change the fold's request and turn lookups", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const events = fromRows([

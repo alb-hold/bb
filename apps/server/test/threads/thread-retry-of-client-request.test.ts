@@ -195,6 +195,36 @@ describe("a re-send that names the request it retries", () => {
     });
   });
 
+  it("stays queued when the original never got an echo and the queue is drained", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(harness, "queued-undelivered");
+      const retry = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+      );
+      if (retry.delivery !== "queued") {
+        throw new Error(`expected the retry to queue, got ${retry.delivery}`);
+      }
+
+      const drained = await harness.app.request(
+        `/api/v1/threads/${original.threadId}/queued-messages/${retry.queuedMessage.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "auto" }),
+        },
+      );
+      expect(drained.status, await drained.clone().text()).toBe(200);
+      const remaining = harness.db.$client
+        .prepare(
+          "select resend_of_client_request_id as resendOf from queued_thread_messages where thread_id = ?",
+        )
+        .all(original.threadId) as { resendOf: string | null }[];
+      expect(remaining).toEqual([{ resendOf: original.clientRequestId }]);
+    });
+  });
+
   it("is dropped from the queue when the original echo lands before the retry dispatches", async () => {
     await withTestHarness(async (harness) => {
       const original = await interruptedRequest(harness, "queued");
