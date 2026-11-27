@@ -1,18 +1,37 @@
 import { chmodSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { StringDecoder } from "node:string_decoder";
+import {
+  BRIDGE_NOTIFICATION_METHODS,
+  sessionReplacedNotificationSchema,
+} from "../notifications.js";
+import { BRIDGE_REQUEST_METHODS } from "../requests.js";
+import {
+  backgroundScopedDeltaItemShapeSchema,
+  bridgeOpenWorkSnapshotSchema,
+  deltaItemKeySchema,
+  deltaPresentationSchema,
+  formatDeltaItemKey,
+  THREAD_DELTA_NOTIFICATION_METHOD,
+  type BridgeOpenWorkItem,
+  type BridgeOpenWorkSnapshot,
+} from "../thread-delta.js";
 import { readBoundedLines } from "./bounded-line-reader.js";
 import { BridgeReplayBuffer } from "./bridge-replay-buffer.js";
 
 export const BRIDGE_SOCKET_ENV = "BB_BRIDGE_SOCKET";
 export const BRIDGE_SPILL_ENV = "BB_BRIDGE_SPILL";
-export const BRIDGE_SOCKET_TRANSPORT_VERSION = 2 as const;
+export const BRIDGE_SOCKET_MIN_ADOPTABLE_TRANSPORT_VERSION = 2 as const;
+export const BRIDGE_SOCKET_TRANSPORT_VERSION = 3 as const;
 export const BRIDGE_SHUTDOWN_METHOD = "bridge/shutdown";
 export const BRIDGE_RESUME_METHOD = "bridge/resume";
 export const BRIDGE_ACK_METHOD = "bridge/ack";
+export const BRIDGE_OPEN_WORK_METHOD = "bridge/open-work";
 export const BRIDGE_REATTACH_TTL_MS = 30 * 60 * 1000;
 export const BRIDGE_REPLAY_MEMORY_CAP_BYTES = 64 * 1024 * 1024;
 export const BRIDGE_REPLAY_HARD_CAP_BYTES = 1024 * 1024 * 1024;
+
+const INTERNAL_RELEASE_ID_PREFIX = "__bb_bridge_release_";
 
 export type BridgeSocketShutdownReason = "requested" | "abandoned";
 
@@ -40,8 +59,13 @@ export interface BridgeSocketServer {
 
 type BridgeControlMessage =
   | { kind: "shutdown" }
-  | { kind: "resume"; afterWseq: number }
+  | { kind: "resume"; afterWseq: number; reportOpenWork: boolean }
   | { kind: "ack"; through: number; keep: number[] };
+
+interface PendingThreadRelease {
+  originalId: string | number;
+  threadId: string | null;
+}
 
 export function parseBridgeControlMessage(
   line: string,
@@ -68,7 +92,13 @@ export function parseBridgeControlMessage(
   if (method === BRIDGE_SHUTDOWN_METHOD) return { kind: "shutdown" };
   if (method === BRIDGE_RESUME_METHOD) {
     const afterWseq = numberParam("afterWseq");
-    return afterWseq === null ? null : { kind: "resume", afterWseq };
+    const reportOpenWork =
+      typeof params === "object" &&
+      params !== null &&
+      Reflect.get(params, "reportOpenWork") === true;
+    return afterWseq === null
+      ? null
+      : { kind: "resume", afterWseq, reportOpenWork };
   }
   if (method === BRIDGE_ACK_METHOD) {
     const through = numberParam("through");
@@ -78,6 +108,24 @@ export function parseBridgeControlMessage(
       : { kind: "ack", through, keep };
   }
   return null;
+}
+
+export function parseBridgeOpenWorkMessage(
+  line: string,
+): BridgeOpenWorkSnapshot | null {
+  if (!line.includes(BRIDGE_OPEN_WORK_METHOD)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  if (Reflect.get(parsed, "method") !== BRIDGE_OPEN_WORK_METHOD) return null;
+  const snapshot = bridgeOpenWorkSnapshotSchema.safeParse(
+    Reflect.get(parsed, "params"),
+  );
+  return snapshot.success ? snapshot.data : null;
 }
 
 function wseqListParam(params: unknown, name: string): number[] | null {
@@ -113,6 +161,12 @@ export function decodeBridgeFrame(
   return { wseq, line: frame.slice(tab + 1) };
 }
 
+function isOpenBackgroundItem(item: BridgeOpenWorkItem["item"]): boolean {
+  return item.type === "backgroundTask"
+    ? item.status === "pending"
+    : item.background;
+}
+
 export function createBridgeSocketServer(
   args: BridgeSocketServerArgs,
 ): BridgeSocketServer {
@@ -123,14 +177,221 @@ export function createBridgeSocketServer(
   let closed = false;
   let listenArgs: BridgeSocketListenArgs | null = null;
   let nextWseq = 1;
+  let nextInternalReleaseSeq = 1;
   let paused = false;
   let kept: readonly number[] = [];
   const decoder = new StringDecoder("utf8");
   let partialLine = "";
+  const openWorkByThread = new Map<string, Map<string, BridgeOpenWorkItem>>();
+  const pendingThreadReleases = new Map<string, PendingThreadRelease>();
   const buffer = new BridgeReplayBuffer({
     spillPath: args.spillPath,
     memoryCapBytes: args.memoryCapBytes,
   });
+
+  function setThreadOpenWorkItem(
+    threadId: string,
+    keyStr: string,
+    entry: BridgeOpenWorkItem | null,
+  ): void {
+    const existing = openWorkByThread.get(threadId);
+    if (entry === null) {
+      if (existing === undefined) return;
+      existing.delete(keyStr);
+      if (existing.size === 0) {
+        openWorkByThread.delete(threadId);
+      }
+      return;
+    }
+    if (existing !== undefined) {
+      existing.set(keyStr, entry);
+      return;
+    }
+    openWorkByThread.set(threadId, new Map([[keyStr, entry]]));
+  }
+
+  function recordPendingRelease(entry: PendingThreadRelease): string {
+    const internalId = `${INTERNAL_RELEASE_ID_PREFIX}${nextInternalReleaseSeq}`;
+    nextInternalReleaseSeq += 1;
+    pendingThreadReleases.set(internalId, entry);
+    return internalId;
+  }
+
+  function rewriteInboundLine(line: string): string {
+    if (
+      !line.includes(BRIDGE_REQUEST_METHODS.threadStop) &&
+      !line.includes(BRIDGE_REQUEST_METHODS.threadDiscard) &&
+      !line.includes(INTERNAL_RELEASE_ID_PREFIX)
+    ) {
+      return line;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return line;
+    }
+    if (typeof parsed !== "object" || parsed === null) return line;
+    const id: unknown = Reflect.get(parsed, "id");
+    if (typeof id !== "string" && typeof id !== "number") return line;
+    const method: unknown = Reflect.get(parsed, "method");
+    if (typeof method !== "string") return line;
+    const isReleaseMethod =
+      method === BRIDGE_REQUEST_METHODS.threadStop ||
+      method === BRIDGE_REQUEST_METHODS.threadDiscard;
+    const usesReservedPrefix =
+      typeof id === "string" && id.startsWith(INTERNAL_RELEASE_ID_PREFIX);
+    if (!isReleaseMethod && !usesReservedPrefix) {
+      return line;
+    }
+    let threadId: string | null = null;
+    if (isReleaseMethod) {
+      const params: unknown = Reflect.get(parsed, "params");
+      if (typeof params === "object" && params !== null) {
+        const rawThreadId: unknown = Reflect.get(params, "threadId");
+        if (typeof rawThreadId === "string" && rawThreadId.length > 0) {
+          threadId = rawThreadId;
+        }
+      }
+    }
+    const internalId = recordPendingRelease({ originalId: id, threadId });
+    return JSON.stringify({
+      ...(parsed as Record<string, unknown>),
+      id: internalId,
+    });
+  }
+
+  function rewriteAndObserveOutboundLine(line: string): string {
+    if (
+      !line.includes(INTERNAL_RELEASE_ID_PREFIX) &&
+      !line.includes(THREAD_DELTA_NOTIFICATION_METHOD) &&
+      !line.includes(BRIDGE_NOTIFICATION_METHODS.sessionReplaced)
+    ) {
+      return line;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return line;
+    }
+    if (typeof parsed !== "object" || parsed === null) return line;
+    const method: unknown = Reflect.get(parsed, "method");
+    if (method === undefined) {
+      const id: unknown = Reflect.get(parsed, "id");
+      if (typeof id !== "string" || !id.startsWith(INTERNAL_RELEASE_ID_PREFIX)) {
+        return line;
+      }
+      const pendingRelease = pendingThreadReleases.get(id);
+      if (pendingRelease === undefined) return line;
+      pendingThreadReleases.delete(id);
+      if (
+        pendingRelease.threadId !== null &&
+        Reflect.has(parsed, "result") &&
+        Reflect.get(parsed, "error") === undefined
+      ) {
+        openWorkByThread.delete(pendingRelease.threadId);
+      }
+      return JSON.stringify({
+        ...(parsed as Record<string, unknown>),
+        id: pendingRelease.originalId,
+      });
+    }
+    const params: unknown = Reflect.get(parsed, "params");
+    if (method === BRIDGE_NOTIFICATION_METHODS.sessionReplaced) {
+      const replaced = sessionReplacedNotificationSchema.safeParse(params);
+      if (
+        replaced.success &&
+        (replaced.data.contextLost || replaced.data.providerThreadId === null)
+      ) {
+        openWorkByThread.delete(replaced.data.threadId);
+      }
+      return line;
+    }
+    if (method !== THREAD_DELTA_NOTIFICATION_METHOD) return line;
+    if (typeof params !== "object" || params === null) return line;
+    const threadId: unknown = Reflect.get(params, "threadId");
+    const deltas: unknown = Reflect.get(params, "deltas");
+    if (
+      typeof threadId !== "string" ||
+      threadId.length === 0 ||
+      !Array.isArray(deltas)
+    ) {
+      return line;
+    }
+    for (const rawDelta of deltas) {
+      if (typeof rawDelta !== "object" || rawDelta === null) continue;
+      const kind: unknown = Reflect.get(rawDelta, "kind");
+      if (kind === "session.reset") {
+        openWorkByThread.delete(threadId);
+        continue;
+      }
+      if (
+        kind !== "item.open" &&
+        kind !== "item.progress" &&
+        kind !== "item.close"
+      ) {
+        continue;
+      }
+      const keyResult = deltaItemKeySchema.safeParse(
+        Reflect.get(rawDelta, "key"),
+      );
+      if (!keyResult.success) continue;
+      const keyStr = formatDeltaItemKey(keyResult.data);
+      if (kind === "item.close") {
+        setThreadOpenWorkItem(threadId, keyStr, null);
+        continue;
+      }
+      if (kind === "item.open") {
+        const itemResult = backgroundScopedDeltaItemShapeSchema.safeParse(
+          Reflect.get(rawDelta, "item"),
+        );
+        if (!itemResult.success || !isOpenBackgroundItem(itemResult.data)) {
+          setThreadOpenWorkItem(threadId, keyStr, null);
+          continue;
+        }
+        const presentationResult = deltaPresentationSchema.safeParse(
+          Reflect.get(rawDelta, "presentation"),
+        );
+        setThreadOpenWorkItem(threadId, keyStr, {
+          key: keyResult.data,
+          item: itemResult.data,
+          ...(presentationResult.success
+            ? { presentation: presentationResult.data }
+            : {}),
+        });
+        continue;
+      }
+      const rawSnapshot: unknown = Reflect.get(rawDelta, "snapshot");
+      if (rawSnapshot === undefined) continue;
+      const snapshotResult =
+        backgroundScopedDeltaItemShapeSchema.safeParse(rawSnapshot);
+      if (!snapshotResult.success) continue;
+      if (!isOpenBackgroundItem(snapshotResult.data)) {
+        setThreadOpenWorkItem(threadId, keyStr, null);
+        continue;
+      }
+      const previous = openWorkByThread.get(threadId)?.get(keyStr);
+      setThreadOpenWorkItem(threadId, keyStr, {
+        key: keyResult.data,
+        item: snapshotResult.data,
+        ...(previous?.presentation !== undefined
+          ? { presentation: previous.presentation }
+          : {}),
+      });
+    }
+    return line;
+  }
+
+  function snapshotOpenWork(): BridgeOpenWorkSnapshot["threads"] {
+    const threads = Object.create(null) as BridgeOpenWorkSnapshot["threads"];
+    for (const [threadId, items] of openWorkByThread) {
+      if (items.size > 0) {
+        threads[threadId] = [...items.values()];
+      }
+    }
+    return threads;
+  }
 
   function clearReattachTimer(): void {
     if (reattachTimer === null) return;
@@ -180,6 +441,15 @@ export function createBridgeSocketServer(
     for (const frame of buffer.framesAfter(message.afterWseq, kept)) {
       socket.write(frame.bytes);
     }
+    if (message.reportOpenWork) {
+      socket.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: BRIDGE_OPEN_WORK_METHOD,
+          params: { threads: snapshotOpenWork() },
+        })}\n`,
+      );
+    }
     resumed = true;
     updateBackpressure();
   }
@@ -212,16 +482,17 @@ export function createBridgeSocketServer(
           handleControl(socket, control);
           return;
         }
-        handlers.onLine(line);
+        handlers.onLine(rewriteInboundLine(line));
       },
       onOverflow: args.onOverflow,
     });
   }
 
   function appendLine(line: string): void {
+    const outboundLine = rewriteAndObserveOutboundLine(line);
     const wseq = nextWseq;
     nextWseq += 1;
-    const bytes = encodeBridgeFrame(wseq, line);
+    const bytes = encodeBridgeFrame(wseq, outboundLine);
     buffer.append({ wseq, bytes });
     if (current !== null && resumed && current.writable) {
       current.write(bytes);
@@ -268,6 +539,8 @@ export function createBridgeSocketServer(
     if (closed) return;
     closed = true;
     clearReattachTimer();
+    pendingThreadReleases.clear();
+    openWorkByThread.clear();
     current?.destroy();
     current = null;
     updateBackpressure();

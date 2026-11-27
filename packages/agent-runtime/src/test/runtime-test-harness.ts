@@ -81,6 +81,7 @@ export interface ScriptedEchoLaunchScript {
   approvalEnforcedBy?: "runtime" | "provider";
   identifyProcess?: boolean;
   failStopForThreadIds?: string[];
+  hangStopOnceForThreadIds?: string[];
   emitIdentityOnSigterm?: boolean;
 }
 

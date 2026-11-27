@@ -25,6 +25,8 @@ import {
 import {
   ASSEMBLER_GRAMMAR_VERSIONS,
   createDeltaAssembler,
+  type SeededOpenBackgroundItem,
+  type SeedOpenBackgroundItemsArgs,
   type SeedOpenTurnArgs,
 } from "@bb/provider-bridge-protocol/assembler";
 import type {
@@ -72,6 +74,9 @@ export interface BridgeProtocolAdapter {
   hasPendingOutput(): boolean;
   flushPendingEvents(): { threadId: string; events: ThreadEvent[] }[];
   seedOpenTurn(args: SeedOpenTurnArgs): void;
+  seedOpenBackgroundItems(
+    args: SeedOpenBackgroundItemsArgs,
+  ): SeededOpenBackgroundItem[];
   getProviderTurnId(threadId: string, bbTurnId: string): string | null;
   onDeferredEvents(listener: DeferredThreadEventsListener): void;
   decodeRecoveryHint(event: ProviderRuntimeEvent): ProviderRecoveryHint | null;
@@ -509,6 +514,10 @@ export function createBridgeProtocolAdapter(
 
     seedOpenTurn(args) {
       deltaAssembler.seedOpenTurn(args);
+    },
+
+    seedOpenBackgroundItems(args) {
+      return deltaAssembler.seedOpenBackgroundItems(args);
     },
 
     getProviderTurnId(threadId, bbTurnId) {

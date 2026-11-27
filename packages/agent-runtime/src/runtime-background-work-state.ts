@@ -4,6 +4,7 @@ import {
   threadScope,
   type ThreadEvent,
   type ThreadEventBackgroundTaskItem,
+  type ThreadEventItem,
 } from "@bb/domain";
 
 interface OpenBackgroundTask {
@@ -46,6 +47,28 @@ export class RuntimeBackgroundWorkState {
     this.openWorkByThreadId.delete(threadId);
   }
 
+  replaceThreadOpenWork(
+    threadId: string,
+    entries: readonly { item: ThreadEventItem; providerThreadId: string }[],
+  ): void {
+    this.openWorkByThreadId.delete(threadId);
+    for (const entry of entries) {
+      if (entry.item.type === "backgroundTask") {
+        this.setBackgroundTask(threadId, {
+          item: entry.item,
+          providerThreadId: entry.providerThreadId,
+        });
+      } else if (entry.item.type === "delegation") {
+        this.setWork({
+          isOpen: entry.item.status === "pending",
+          taskId: entry.item.id,
+          threadId,
+          work: null,
+        });
+      }
+    }
+  }
+
   hasOpenWork(): boolean {
     return this.openWorkByThreadId.size > 0;
   }
@@ -57,8 +80,12 @@ export class RuntimeBackgroundWorkState {
     }));
   }
 
+  openThreadWorkCount(threadId: string): number {
+    return this.openWorkByThreadId.get(threadId)?.size ?? 0;
+  }
+
   hasOpenThreadWork(threadId: string): boolean {
-    return (this.openWorkByThreadId.get(threadId)?.size ?? 0) > 0;
+    return this.openThreadWorkCount(threadId) > 0;
   }
 
   settleThread(threadId: string): ThreadEvent[] {

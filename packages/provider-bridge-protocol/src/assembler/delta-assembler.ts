@@ -9,6 +9,7 @@ import type {
 import { threadScope, turnScope } from "@bb/domain";
 import type { BridgeGrammarVersions } from "../handshake.js";
 import type {
+  BridgeOpenWorkItem,
   DeltaFileChange,
   DeltaItemKey,
   DeltaItemShape,
@@ -213,12 +214,25 @@ export interface DeltaAssembler {
   hasPendingOutput(): boolean;
   flushPending(): { threadId: string; events: ThreadEvent[] }[];
   seedOpenTurn(args: SeedOpenTurnArgs): void;
+  seedOpenBackgroundItems(
+    args: SeedOpenBackgroundItemsArgs,
+  ): SeededOpenBackgroundItem[];
 }
 
 export interface SeedOpenTurnArgs {
   threadId: string;
   bbTurnId: string;
   providerTurnId: string | null;
+}
+
+export interface SeedOpenBackgroundItemsArgs {
+  threadId: string;
+  items: readonly BridgeOpenWorkItem[];
+}
+
+export interface SeededOpenBackgroundItem {
+  bbItemId: string;
+  item: ThreadEventItem;
 }
 
 const SEP = THREAD_DELTA_KEY_SEPARATOR;
@@ -1438,9 +1452,11 @@ export function createDeltaAssembler(
           detachAssistantStreams(state, delta.key.parentRef);
         }
         const bbItemId =
+          state.openItemsByKey.get(keyStr)?.bbItemId ??
           (delta.key.providerItemId !== undefined
             ? state.bbItemIdByProviderItemId.get(delta.key.providerItemId)
-            : undefined) ?? mintItemId();
+            : undefined) ??
+          mintItemId();
         if (delta.key.providerItemId !== undefined) {
           registerItemId(state, delta.key.providerItemId, bbItemId);
         }
@@ -2278,6 +2294,71 @@ export function createDeltaAssembler(
         state.bbTurnIdByProviderTurnId.set(args.providerTurnId, args.bbTurnId);
         state.providerTurnIdByBbTurnId.set(args.bbTurnId, args.providerTurnId);
       }
+    },
+
+    seedOpenBackgroundItems(args) {
+      const state = stateFor(args.threadId);
+      const previousBackground = new Map<string, OpenItemState>();
+      for (const [keyStr, open] of [...state.openItemsByKey]) {
+        const isBackgroundItem =
+          open.item.type === "backgroundTask" ||
+          (open.item.type === "delegation" && open.item.background);
+        if (!isBackgroundItem) continue;
+        previousBackground.set(keyStr, open);
+        state.openItemsByKey.delete(keyStr);
+      }
+      const nextBackgroundKeys = new Set<string>();
+      const seeded: SeededOpenBackgroundItem[] = [];
+      for (const entry of args.items) {
+        const keyStr = itemKeyString(entry.key);
+        nextBackgroundKeys.add(keyStr);
+        state.settledItemKeys.delete(keyStr);
+        const previousOpen = previousBackground.get(keyStr);
+        const bbItemId =
+          previousOpen?.bbItemId ??
+          (entry.key.providerItemId !== undefined
+            ? state.bbItemIdByProviderItemId.get(entry.key.providerItemId)
+            : undefined) ??
+          mintItemId();
+        if (entry.key.providerItemId !== undefined) {
+          registerItemId(state, entry.key.providerItemId, bbItemId);
+        }
+        const parentToolCallId =
+          mapParentRef(state, entry.key.parentRef) ??
+          previousOpen?.item.parentToolCallId;
+        const builtItem = buildOpenedItem(
+          bbItemId,
+          entry.item,
+          parentToolCallId,
+          entry.presentation ?? presentationOf(previousOpen?.item),
+        );
+        const item =
+          builtItem.type === "delegation" &&
+          builtItem.summary === undefined &&
+          previousOpen?.item.type === "delegation" &&
+          previousOpen.item.summary !== undefined
+            ? { ...builtItem, summary: previousOpen.item.summary }
+            : builtItem;
+        state.openItemsByKey.set(keyStr, {
+          bbItemId,
+          key: entry.key,
+          item,
+          threadAttached: true,
+          text: previousOpen?.text ?? "",
+          summaryText: previousOpen?.summaryText ?? "",
+        });
+        if (!state.progressLastEmitByKey.has(keyStr)) {
+          rememberProgressEmit(state, keyStr);
+        }
+        seeded.push({ bbItemId, item });
+      }
+      for (const keyStr of previousBackground.keys()) {
+        if (!nextBackgroundKeys.has(keyStr)) {
+          state.pendingProgressByKey.delete(keyStr);
+          state.progressLastEmitByKey.delete(keyStr);
+        }
+      }
+      return seeded;
     },
 
     hasPendingOutput() {

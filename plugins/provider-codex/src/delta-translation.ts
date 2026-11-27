@@ -338,10 +338,16 @@ export function normalizeCodexRateLimits(
 type CodexErrorEvent = Extract<CodexHandledEvent, { method: "error" }>;
 type CodexErrorParams = CodexErrorEvent["params"];
 
+type CodexForegroundDeltaItemShape =
+  | Exclude<DeltaItemShape, { type: "backgroundTask" | "delegation" }>
+  | (Omit<Extract<DeltaItemShape, { type: "delegation" }>, "background"> & {
+      background: false;
+    });
+
 type CodexItemTranslationResult =
   | {
       kind: "translated";
-      shape: DeltaItemShape;
+      shape: CodexForegroundDeltaItemShape;
       presentation: DeltaPresentation;
       status: ThreadEventItemStatus;
       approvalDenied: boolean;
@@ -677,7 +683,7 @@ function normalizeCodexUrl(args: CodexUrlArgs): string | null {
 }
 
 interface CodexWebItemTranslation {
-  shape: DeltaItemShape;
+  shape: CodexForegroundDeltaItemShape;
   presentation: DeltaPresentation;
 }
 

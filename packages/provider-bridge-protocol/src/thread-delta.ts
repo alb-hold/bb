@@ -45,6 +45,14 @@ export const deltaItemKeySchema = z.object({
 });
 export type DeltaItemKey = z.infer<typeof deltaItemKeySchema>;
 
+export function formatDeltaItemKey(key: DeltaItemKey): string {
+  return [
+    key.providerItemId ?? "",
+    key.channel ?? "",
+    key.parentRef ?? "",
+  ].join(THREAD_DELTA_KEY_SEPARATOR);
+}
+
 const providerTurnIdSchema = deltaKeyPartSchema;
 
 export const deltaFileChangeSchema = z.object({
@@ -101,6 +109,36 @@ export const deltaDelegationShapeSchema = z.object({
   summary: z.string().optional(),
 });
 export type DeltaDelegationShape = z.infer<typeof deltaDelegationShapeSchema>;
+
+export const deltaBackgroundDelegationShapeSchema =
+  deltaDelegationShapeSchema.extend({
+    background: z.literal(true),
+  });
+export type DeltaBackgroundDelegationShape = z.infer<
+  typeof deltaBackgroundDelegationShapeSchema
+>;
+
+export const backgroundScopedDeltaItemShapeSchema = z.discriminatedUnion(
+  "type",
+  [deltaBackgroundTaskShapeSchema, deltaBackgroundDelegationShapeSchema],
+);
+export type BackgroundScopedDeltaItemShape = z.infer<
+  typeof backgroundScopedDeltaItemShapeSchema
+>;
+
+export const bridgeOpenWorkItemSchema = z.object({
+  key: deltaItemKeySchema,
+  item: backgroundScopedDeltaItemShapeSchema,
+  presentation: deltaPresentationSchema.optional(),
+});
+export type BridgeOpenWorkItem = z.infer<typeof bridgeOpenWorkItemSchema>;
+
+export const bridgeOpenWorkSnapshotSchema = z.object({
+  threads: z.record(z.string().min(1), z.array(bridgeOpenWorkItemSchema)),
+});
+export type BridgeOpenWorkSnapshot = z.infer<
+  typeof bridgeOpenWorkSnapshotSchema
+>;
 
 export const deltaPlanStepsShapeSchema = z.object({
   type: z.literal("planSteps"),

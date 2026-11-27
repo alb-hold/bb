@@ -1,5 +1,4 @@
 import type { AvailableModel } from "@bb/domain";
-import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
 import { basename } from "node:path";
 import { z } from "zod";
 import {
@@ -113,7 +112,7 @@ function grokClassifyToolCall(
   const input = parsed.success ? parsed.data : undefined;
   const label =
     input?.description ?? input?.prompt ?? event.title ?? "Subagent";
-  const shape: DeltaItemShape = {
+  const shape: AcpClassifiedToolCall["item"] = {
     type: "delegation",
     childRef: event.toolCallId,
     label,
@@ -239,7 +238,7 @@ function cursorClassifyToolCall(
     return undefined;
   }
   const label = event.title ?? "Subagent task";
-  const shape: DeltaItemShape = {
+  const shape: AcpClassifiedToolCall["item"] = {
     type: "delegation",
     childRef: event.toolCallId,
     label,

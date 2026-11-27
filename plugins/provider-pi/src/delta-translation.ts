@@ -337,11 +337,16 @@ function thinkingStreamChannel(contentIndex: number): string {
   return `thinking-${contentIndex}`;
 }
 
+type PiForegroundDeltaItemShape = Exclude<
+  DeltaItemShape,
+  { type: "backgroundTask" | "delegation" }
+>;
+
 function classifyPiToolUse(
   toolName: string,
   args: unknown,
   sessionCwd: string | undefined,
-): DeltaItemShape {
+): PiForegroundDeltaItemShape {
   if (PI_COMMAND_TOOL_NAMES.has(toolName)) {
     const parsed = bashArgsSchema.safeParse(args);
     const command = parsed.success
@@ -432,7 +437,9 @@ function resolvePiImageReadPath(
     : null;
 }
 
-function classifyPiToolResultFallback(toolName: string): DeltaItemShape {
+function classifyPiToolResultFallback(
+  toolName: string,
+): PiForegroundDeltaItemShape {
   if (PI_FILE_CHANGE_TOOL_NAMES.has(toolName)) {
     return { type: "fileChange", changes: [] };
   }
@@ -509,7 +516,7 @@ interface CreatePiDeltaTranslatorOptions {
 const MAX_STARTED_TOOL_SHAPES = 1024;
 
 interface StartedPiTool {
-  shape: DeltaItemShape;
+  shape: PiForegroundDeltaItemShape;
   deferredImageReadPath: string | null;
 }
 
@@ -1144,7 +1151,7 @@ export function createPiDeltaTranslator(
         const started = startedToolShapes.get(shapeKey);
         startedToolShapes.delete(shapeKey);
         const deferredImageReadPath = started?.deferredImageReadPath ?? null;
-        const terminalShape: DeltaItemShape =
+        const terminalShape: PiForegroundDeltaItemShape =
           deferredImageReadPath !== null &&
           !piEvent.data.isError &&
           hasPiImageContent(piEvent.data.result)

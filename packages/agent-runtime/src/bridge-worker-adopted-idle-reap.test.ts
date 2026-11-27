@@ -1,17 +1,32 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ThreadEvent } from "@bb/domain";
 import {
+  bridgeCapabilitiesSchema,
+  PROVIDER_BRIDGE_PROTOCOL_VERSION,
+  THREAD_DELTA_GRAMMAR_V3,
+} from "@bb/provider-bridge-protocol";
+import { BRIDGE_SOCKET_TRANSPORT_VERSION } from "@bb/provider-bridge-protocol/bridge-kit";
+import {
+  BRIDGE_WORKER_REGISTRY_FORMAT_VERSION,
   readBridgeWorkerEntries,
+  readProcessIdentityAsync,
+  writeBridgeWorkerEntry,
   type BridgeWorkerRegistryEntry,
 } from "./bridge-worker-registry.js";
+import { allocateBridgeWorkerPaths } from "./bridge-worker-socket.js";
 import { promptTextInput } from "./test/prompt-input.js";
 import {
+  createScriptedEchoLaunch,
+  createScriptedEchoProcessLog,
   createScriptedEchoRuntime,
   type LaunchBoundAgentRuntime,
   fullRuntimeOptions,
+  scriptedEchoBridgeModulePath,
   scriptedEchoProcessEnv,
   waitForRuntimeState,
   waitForThreadTurnCompleted,
@@ -30,6 +45,128 @@ function isPidAlive(pid: number): boolean {
     return false;
   }
 }
+
+const LEGACY_PROVIDER_CHILD_SOURCE = `
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [childMode, controlDir] = process.argv.slice(2);
+process.stdin.resume();
+process.stdin.on("end", () => process.exit(0));
+
+let descendant = null;
+if (childMode === "with-descendant") {
+  descendant = spawn(
+    process.execPath,
+    [
+      "-e",
+      "process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); setInterval(() => {}, 60_000);",
+    ],
+    { stdio: ["pipe", "ignore", "ignore"] },
+  );
+  descendant.once("exit", () => {
+    writeFileSync(join(controlDir, "descendant-exited"), "1", "utf8");
+  });
+  const poll = setInterval(() => {
+    if (existsSync(join(controlDir, "stop-descendant"))) {
+      clearInterval(poll);
+      descendant.kill("SIGKILL");
+    }
+  }, 25);
+  poll.unref();
+}
+
+writeFileSync(join(controlDir, "ready"), "1", "utf8");
+setInterval(() => {}, 60_000);
+`;
+
+const LEGACY_V2_WORKER_SOURCE = `
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { pathToFileURL } from "node:url";
+
+const [modulePath, pluginId, dataDir, socketPath, childScriptPath, childMode, controlDir] = process.argv.slice(2);
+let current = null;
+let resumed = false;
+let nextWseq = 1;
+const frames = [];
+
+const providerChild =
+  childMode === "idle" || childMode === "with-descendant"
+    ? spawn(process.execPath, [childScriptPath, childMode, controlDir], {
+        stdio: ["pipe", "ignore", "ignore"],
+      })
+    : null;
+
+function writeFrame(line) {
+  const wseq = nextWseq++;
+  const raw = \`\${wseq}\\t\${line}\\n\`;
+  frames.push({ wseq, raw });
+  if (current && resumed && current.writable) {
+    current.write(raw);
+  }
+}
+
+process.stdout.write = (chunk) => {
+  const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+  for (const line of text.split("\\n")) {
+    if (line.length > 0) writeFrame(line);
+  }
+  return true;
+};
+
+const mod = await import(pathToFileURL(modulePath).href);
+const bridge = mod.experimental_providerBridge;
+bridge.start?.({ pluginId, dataDir, tempDir: dataDir });
+
+const server = createServer((socket) => {
+  if (current) current.destroy();
+  current = socket;
+  resumed = false;
+  let buf = "";
+  socket.on("error", () => {});
+  socket.on("data", (chunk) => {
+    buf += chunk.toString("utf8");
+    let idx = buf.indexOf("\\n");
+    while (idx !== -1) {
+      const line = buf.slice(0, idx);
+      buf = buf.slice(idx + 1);
+      idx = buf.indexOf("\\n");
+      if (!line) continue;
+      let parsed = null;
+      try { parsed = JSON.parse(line); } catch {}
+      if (parsed && parsed.method === "bridge/shutdown") {
+        server.close();
+        bridge.onClose?.();
+        providerChild?.kill("SIGTERM");
+        process.exit(0);
+      }
+      if (parsed && parsed.method === "bridge/resume") {
+        const afterWseq = parsed.params?.afterWseq ?? 0;
+        for (const f of frames) {
+          if (f.wseq > afterWseq) socket.write(f.raw);
+        }
+        resumed = true;
+        continue;
+      }
+      if (parsed && parsed.method === "bridge/ack") {
+        const through = parsed.params?.through ?? 0;
+        const keep = new Set(parsed.params?.keep ?? []);
+        for (let i = frames.length - 1; i >= 0; i -= 1) {
+          if (frames[i].wseq <= through && !keep.has(frames[i].wseq)) {
+            frames.splice(i, 1);
+          }
+        }
+        continue;
+      }
+      bridge.handleLine(line);
+    }
+  });
+});
+
+server.listen(socketPath);
+`;
 
 describe("idle reaping of adopted provider sessions", () => {
   let root: string;
@@ -71,12 +208,15 @@ describe("idle reaping of adopted provider sessions", () => {
     return entries;
   }
 
-  function createRuntime(events: ThreadEvent[]): LaunchBoundAgentRuntime {
+  function createRuntime(
+    events: ThreadEvent[],
+    extraEnv?: Record<string, string>,
+  ): LaunchBoundAgentRuntime {
     const runtime = createScriptedEchoRuntime({
       runtime: {
         workspacePath,
         bridgeWorkers,
-        env,
+        env: { ...env, ...extraEnv },
         onInteractiveRequest: () => new Promise(() => {}),
         onEvent: (event, delivery) => {
           events.push(event);
@@ -88,8 +228,11 @@ describe("idle reaping of adopted provider sessions", () => {
     return runtime;
   }
 
-  async function startPreSwapThread(events: ThreadEvent[]) {
-    const before = createRuntime(events);
+  async function startPreSwapThread(
+    events: ThreadEvent[],
+    extraEnv?: Record<string, string>,
+  ) {
+    const before = createRuntime(events, extraEnv);
     const { providerThreadId } = await before.startThread({
       environmentId: "env-1",
       threadId: "t1",
@@ -110,6 +253,212 @@ describe("idle reaping of adopted provider sessions", () => {
     });
     expect(adopted.map((thread) => thread.threadId)).toEqual(["t1"]);
     runtime.completeBridgeWorkerAdoption(new Map([["t1", null]]));
+  }
+
+  function mutateStoredThreadEntry(
+    mutator: (thread: Record<string, unknown>) => void,
+  ): void {
+    const [entry] = readBridgeWorkerEntries(bridgeWorkers.dir).entries;
+    if (entry === undefined) throw new Error("no registered worker");
+    const rawThread = { ...entry.threads.t1 } as Record<string, unknown>;
+    mutator(rawThread);
+    writeBridgeWorkerEntry(bridgeWorkers.dir, {
+      ...entry,
+      threads: { t1: rawThread as BridgeWorkerRegistryEntry["threads"][string] },
+    });
+  }
+
+  async function spawnLegacyUnansweredWorker(args: {
+    pluginId: string;
+    providerId?: string;
+    transportVersion?: number;
+    openBackgroundWorkCount?: number;
+    providerChildMode?: "none" | "idle" | "with-descendant";
+  }): Promise<{
+    pid: number;
+    providerThreadId: string;
+    stopProviderDescendant: () => Promise<void>;
+  }> {
+    const providerId = args.providerId ?? PROVIDER_ID;
+    const childMode = args.providerChildMode ?? "none";
+    const controlDir = mkdtempSync(join(root, "legacy-ctrl-"));
+    const scriptPath = join(controlDir, `legacy-worker-${args.pluginId}.mjs`);
+    const childScriptPath = join(controlDir, "legacy-provider-child.mjs");
+    writeFileSync(scriptPath, LEGACY_V2_WORKER_SOURCE, "utf8");
+    writeFileSync(childScriptPath, LEGACY_PROVIDER_CHILD_SOURCE, "utf8");
+    const launch = createScriptedEchoLaunch({ pluginId: args.pluginId });
+    const paths = allocateBridgeWorkerPaths(bridgeWorkers.dir);
+    const child = spawn(
+      process.execPath,
+      [
+        scriptPath,
+        scriptedEchoBridgeModulePath,
+        args.pluginId,
+        launch.dataDir,
+        paths.socketPath,
+        childScriptPath,
+        childMode,
+        controlDir,
+      ],
+      {
+        cwd: workspacePath,
+        detached: true,
+        env: { ...process.env, ...env },
+        stdio: "ignore",
+      },
+    );
+    child.unref();
+    const pid = child.pid;
+    if (pid === undefined) throw new Error("legacy worker did not spawn");
+    startedPids.add(pid);
+
+    await waitForRuntimeState({
+      label: "legacy worker socket listening",
+      predicate: () =>
+        existsSync(paths.socketPath) &&
+        (childMode === "none" || existsSync(join(controlDir, "ready"))),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+
+    const providerThreadId = await new Promise<string>((resolve, reject) => {
+      const sock = connect(paths.socketPath);
+      let buf = "";
+      sock.on("error", reject);
+      sock.on("connect", () => {
+        sock.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "bridge/resume", params: { afterWseq: 0 } })}\n`,
+        );
+        sock.write(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
+              client: { name: "test", version: "0.0.1" },
+              grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+            },
+          })}\n`,
+        );
+        sock.write(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "thread/start",
+            params: {
+              threadId: "t1",
+              cwd: workspacePath,
+              instructionMode: "append",
+              options: {
+                model: fullRuntimeOptions.model,
+                serviceTier: fullRuntimeOptions.serviceTier,
+                reasoningLevel: fullRuntimeOptions.reasoningLevel,
+                providerOptions: {},
+                permissionMode: fullRuntimeOptions.permissionMode,
+                permissionScope: fullRuntimeOptions.permissionScope,
+                approvalReviewer: null,
+                permissionEscalation: null,
+              },
+            },
+          })}\n`,
+        );
+      });
+      sock.on("data", (chunk) => {
+        buf += chunk.toString("utf8");
+        let idx = buf.indexOf("\n");
+        while (idx !== -1) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          idx = buf.indexOf("\n");
+          const tab = raw.indexOf("\t");
+          if (tab <= 0) continue;
+          const wseq = Number(raw.slice(0, tab));
+          const msg = JSON.parse(raw.slice(tab + 1)) as {
+            id?: number;
+            result?: { providerThreadId?: string };
+          };
+          if (msg.id === 2 && msg.result?.providerThreadId) {
+            sock.write(
+              `${JSON.stringify({ jsonrpc: "2.0", method: "bridge/ack", params: { through: wseq, keep: [] } })}\n`,
+            );
+            const found = msg.result.providerThreadId;
+            setTimeout(() => {
+              sock.destroy();
+              resolve(found);
+            }, 25);
+          }
+        }
+      });
+    });
+
+    const processIdentity = await readProcessIdentityAsync(pid);
+    if (processIdentity === null) {
+      throw new Error("legacy worker exited before registration");
+    }
+
+    const entry: BridgeWorkerRegistryEntry = {
+      id: paths.id,
+      formatVersion: BRIDGE_WORKER_REGISTRY_FORMAT_VERSION,
+      pid,
+      processIdentity,
+      socketPath: paths.socketPath,
+      pluginId: args.pluginId,
+      providerId,
+      processKey: `${providerId}:${args.pluginId}`,
+      environmentId: bridgeWorkers.environmentId,
+      bridgeProtocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
+      transportVersion: args.transportVersion ?? 2,
+      capabilities: bridgeCapabilitiesSchema.parse({
+        sessionRestore: true,
+        threadArchive: true,
+        threadRename: true,
+        threadGoalClear: true,
+        fork: "checkpoint",
+        approvalEnforcedBy: "runtime",
+        grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+        steerMode: "inject",
+        skills: { configure: true },
+      }),
+      capabilitiesSource: "negotiated",
+      startedAt: new Date().toISOString(),
+      workspace: bridgeWorkers.workspace,
+      threads: {
+        t1: {
+          providerThreadId,
+          activeTurnId: null,
+          activeProviderTurnId: null,
+          ...(args.openBackgroundWorkCount === undefined
+            ? {}
+            : { openBackgroundWorkCount: args.openBackgroundWorkCount }),
+          config: {
+            bridgeLaunch: launch,
+            skillRoots: [],
+            contributedEnv: [],
+            environmentId: bridgeWorkers.environmentId,
+            envVars: {},
+            instructionMode: "append",
+            options: fullRuntimeOptions,
+            processKey: `${providerId}:${args.pluginId}`,
+            projectId: "p1",
+            providerId,
+            sessionRestorable: true,
+          },
+        },
+      },
+    };
+    writeBridgeWorkerEntry(bridgeWorkers.dir, entry);
+    return {
+      pid,
+      providerThreadId,
+      stopProviderDescendant: async () => {
+        writeFileSync(join(controlDir, "stop-descendant"), "1", "utf8");
+        await waitForRuntimeState({
+          label: "legacy provider child descendant exited",
+          predicate: () => existsSync(join(controlDir, "descendant-exited")),
+          timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+        });
+      },
+    };
   }
 
   it("reaps an adopted idle session, exits its worker, and resumes on a new worker", async () => {
@@ -152,6 +501,562 @@ describe("idle reaping of adopted provider sessions", () => {
     const [fresh] = trackWorkers();
     expect(fresh?.id).not.toBe(worker.id);
     expect(fresh?.pid).not.toBe(worker.pid);
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("reaps an adopted worker with no reported count whose thread stays idle, and writes verified 0 back to the registry", async () => {
+    const events: ThreadEvent[] = [];
+    const { worker } = await startPreSwapThread(events);
+    mutateStoredThreadEntry((thread) => {
+      delete thread.openBackgroundWorkCount;
+    });
+
+    const second = createRuntime(events);
+    adoptAll(second);
+    const beforeThreshold = await second.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + 1_000,
+    });
+    expect(beforeThreshold.reapedSessions).toEqual([]);
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBe(0);
+    await second.detach();
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBe(0);
+
+    const third = createRuntime(events);
+    adoptAll(third);
+    const result = await third.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(result.reapedSessions.map((session) => session.threadId)).toEqual([
+      "t1",
+    ]);
+    await waitForRuntimeState({
+      label: "adopted worker exited after reap",
+      predicate: () => !isPidAlive(worker.pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it.each([
+    { label: "backgroundTask", prompt: "bg_task", clientRequestId: "creq_adptt4444c" },
+    { label: "background delegation", prompt: "bg_delegation", clientRequestId: "creq_adptt4444d" },
+  ])(
+    "never reaps an adopted worker that reports open $label at adoption even if the registry says 0, and writes the verified count back",
+    async ({ prompt, clientRequestId }) => {
+      const events: ThreadEvent[] = [];
+      const before = createRuntime(events);
+      await before.startThread({
+        environmentId: "env-1",
+        threadId: "t1",
+        projectId: "p1",
+        providerId: PROVIDER_ID,
+        options: fullRuntimeOptions,
+      });
+      const [worker] = trackWorkers();
+      if (worker === undefined) throw new Error("no registered worker");
+      await before.runTurn({
+        clientRequestId,
+        threadId: "t1",
+        input: [promptTextInput({ text: prompt })],
+        options: fullRuntimeOptions,
+      });
+      await waitForThreadTurnCompleted({ events, threadId: "t1" });
+      expect(before.hasOpenBackgroundWork()).toBe(true);
+      await before.detach();
+
+      mutateStoredThreadEntry((thread) => {
+        thread.openBackgroundWorkCount = 0;
+      });
+
+      const after = createRuntime(events);
+      adoptAll(after);
+      const result = await after.reapIdleProviderSessions({
+        idleForMs: IDLE_FOR_MS,
+        nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+      });
+
+      expect(result.reapedSessions).toEqual([]);
+      expect(after.hasThread("t1")).toBe(true);
+      expect(isPidAlive(worker.pid)).toBe(true);
+      expect(
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount,
+      ).toBe(1);
+    },
+    WORKER_EXIT_TIMEOUT_MS,
+  );
+
+  it("never reaps an adopted worker whose unanswered thread/stop request ID was reused after daemon swap", async () => {
+    const events: ThreadEvent[] = [];
+    const processLog = createScriptedEchoProcessLog();
+    const extraEnv = {
+      ...processLog.env,
+      ...scriptedEchoProcessEnv({
+        sessionRestorable: true,
+        hangStopOnceForThreadIds: ["t1"],
+      }),
+    };
+    const before = createRuntime(events, extraEnv);
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptt4444e",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    expect(before.hasOpenBackgroundWork()).toBe(true);
+
+    const unansweredStop = before.stopThread({ threadId: "t1" });
+    void unansweredStop.catch(() => undefined);
+    await waitForRuntimeState({
+      label: "unanswered thread/stop reached worker",
+      predicate: () =>
+        processLog.read().includes(`thread/stop:${worker.pid}:t1`),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+    await before.detach();
+
+    const middle = createRuntime(events, extraEnv);
+    adoptAll(middle);
+    for (const seq of ["1", "2", "3", "4"]) {
+      await middle.renameThread({
+        threadId: "t1",
+        title: `reuse-id-${seq}`,
+      });
+    }
+    expect(trackWorkers().map((entry) => entry.pid)).toEqual([worker.pid]);
+    await middle.detach();
+
+    mutateStoredThreadEntry((thread) => {
+      thread.openBackgroundWorkCount = 0;
+    });
+
+    const after = createRuntime(events, extraEnv);
+    adoptAll(after);
+    const whileOpen = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(whileOpen.reapedSessions).toEqual([]);
+    expect(after.hasOpenBackgroundWork()).toBe(true);
+    expect(after.hasThread("t1")).toBe(true);
+    expect(isPidAlive(worker.pid)).toBe(true);
+
+    await after.stopThread({ threadId: "t1" });
+    expect(after.hasThread("t1")).toBe(false);
+    await waitForRuntimeState({
+      label: "adopted worker exited once actual release succeeded",
+      predicate: () => !isPidAlive(worker.pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("reaps an adopted session once background work that was still open at adoption settles, after a fresh idle window", async () => {
+    const events: ThreadEvent[] = [];
+    const processLog = createScriptedEchoProcessLog();
+    const before = createRuntime(events, processLog.env);
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptt5555c",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task_ms:600" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    expect(before.hasOpenBackgroundWork()).toBe(true);
+    await before.detach();
+
+    const after = createRuntime(events, processLog.env);
+    adoptAll(after);
+    const whileOpen = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+    expect(whileOpen.reapedSessions).toEqual([]);
+    expect(after.hasOpenBackgroundWork()).toBe(true);
+
+    await waitForRuntimeState({
+      label: "adopted background work settled on new runtime",
+      predicate: () => !after.hasOpenBackgroundWork(),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+
+    const beforeWindow = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS - 5_000,
+    });
+    expect(beforeWindow.reapedSessions).toEqual([]);
+
+    const afterWindow = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+    expect(afterWindow.reapedSessions.map((session) => session.threadId)).toEqual([
+      "t1",
+    ]);
+    await waitForRuntimeState({
+      label: "adopted worker exited after post-adoption settle reap",
+      predicate: () => !isPidAlive(worker.pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("preserves replayed open foreground items across adoption open-work seeding so later progress and close complete cleanly", async () => {
+    const beforeEvents: ThreadEvent[] = [];
+    const before = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath,
+        bridgeWorkers,
+        env,
+        onInteractiveRequest: () => new Promise(() => {}),
+        onEvent: (event, delivery) => {
+          beforeEvents.push(event);
+          const isUnackedForeground =
+            (event.type === "item/started" &&
+              (event.item.type === "commandExecution" ||
+                event.item.type === "agentMessage")) ||
+            event.type === "item/agentMessage/delta";
+          if (!isUnackedForeground) {
+            delivery?.onSettled();
+          }
+        },
+      },
+    });
+    runtimes.push(before);
+
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptfg555a",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task fg_hold" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForRuntimeState({
+      label: "turn, background work, and unacked foreground items emitted before detach",
+      predicate: () =>
+        before.getActiveTurnId("t1") !== null &&
+        before.hasOpenBackgroundWork() &&
+        beforeEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "commandExecution",
+        ) &&
+        beforeEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "agentMessage",
+        ),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+    const activeTurnId = before.getActiveTurnId("t1");
+    if (activeTurnId === null) throw new Error("expected active turn");
+    await before.detach();
+
+    const afterEvents: ThreadEvent[] = [];
+    const after = createRuntime(afterEvents);
+    const adopted = after.adoptBridgeWorkers({
+      dir: bridgeWorkers.dir,
+      entries: readBridgeWorkerEntries(bridgeWorkers.dir).entries,
+    });
+    expect(adopted).toEqual([{ threadId: "t1", activeTurnId }]);
+    after.completeBridgeWorkerAdoption(new Map([["t1", activeTurnId]]));
+
+    await waitForRuntimeState({
+      label: "replayed foreground items and open-work snapshot processed",
+      predicate: () =>
+        after.hasOpenBackgroundWork() &&
+        afterEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "commandExecution",
+        ) &&
+        afterEvents.some(
+          (e) => e.type === "item/started" && e.item.type === "agentMessage",
+        ),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+
+    const steerResult = await after.steerTurn({
+      clientRequestId: "creq_adptfg555b",
+      expectedTurnId: activeTurnId,
+      input: [promptTextInput({ text: "fg_settle" })],
+      options: fullRuntimeOptions,
+      threadId: "t1",
+    });
+    expect(steerResult).toEqual({ status: "steered" });
+    await waitForThreadTurnCompleted({ events: afterEvents, threadId: "t1", timeoutMs: WORKER_EXIT_TIMEOUT_MS });
+
+    const cmdStarted = afterEvents.filter(
+      (e): e is Extract<ThreadEvent, { type: "item/started" }> =>
+        e.type === "item/started" && e.item.type === "commandExecution",
+    );
+    const msgStarted = afterEvents.filter(
+      (e): e is Extract<ThreadEvent, { type: "item/started" }> =>
+        e.type === "item/started" && e.item.type === "agentMessage",
+    );
+    expect(cmdStarted).toHaveLength(1);
+    expect(msgStarted).toHaveLength(1);
+    const cmdId = cmdStarted[0]!.item.id;
+    const msgId = msgStarted[0]!.item.id;
+
+    expect(
+      afterEvents.find((e) => e.type === "item/toolCall/progress"),
+    ).toMatchObject({
+      type: "item/toolCall/progress",
+      itemId: cmdId,
+      message: "fg progress",
+    });
+    expect(
+      afterEvents.find((e) => e.type === "item/commandExecution/outputDelta"),
+    ).toMatchObject({
+      type: "item/commandExecution/outputDelta",
+      itemId: cmdId,
+      delta: "fg out\n",
+    });
+    expect(
+      afterEvents.find(
+        (e) => e.type === "item/completed" && e.item.type === "commandExecution",
+      ),
+    ).toMatchObject({
+      type: "item/completed",
+      item: {
+        type: "commandExecution",
+        id: cmdId,
+        status: "completed",
+        exitCode: 0,
+        aggregatedOutput: "fg out\n",
+        presentation: {
+          label: { pending: "Running fg", completed: "Ran fg" },
+          icon: { glyph: "FileText" },
+          title: "echo fg",
+        },
+      },
+    });
+    expect(
+      afterEvents.find(
+        (e) => e.type === "item/completed" && e.item.type === "agentMessage",
+      ),
+    ).toMatchObject({
+      type: "item/completed",
+      item: {
+        type: "agentMessage",
+        id: msgId,
+        text: "Hello world",
+      },
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("stops blocking reaping once work that settled while the daemon was down is reported by the worker", async () => {
+    const events: ThreadEvent[] = [];
+    const processLog = createScriptedEchoProcessLog();
+    const before = createRuntime(events, processLog.env);
+    await before.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: PROVIDER_ID,
+      options: fullRuntimeOptions,
+    });
+    const [worker] = trackWorkers();
+    if (worker === undefined) throw new Error("no registered worker");
+    await before.runTurn({
+      clientRequestId: "creq_adptt5555b",
+      threadId: "t1",
+      input: [promptTextInput({ text: "bg_task_ms:150" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({ events, threadId: "t1" });
+    expect(before.hasOpenBackgroundWork()).toBe(true);
+    await before.detach();
+
+    const [detachedEntry] = readBridgeWorkerEntries(bridgeWorkers.dir).entries;
+    expect(detachedEntry?.threads.t1?.openBackgroundWorkCount).toBe(1);
+
+    await waitForRuntimeState({
+      label: "background task settled while daemon was detached",
+      predicate: () =>
+        processLog.read().some((line) => line.startsWith("bg_task/closed:")),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+
+    const after = createRuntime(events, processLog.env);
+    adoptAll(after);
+    const result = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(result.reapedSessions.map((session) => session.threadId)).toEqual([
+      "t1",
+    ]);
+    await waitForRuntimeState({
+      label: "adopted worker exited after gap-settled reap",
+      predicate: () => !isPidAlive(worker.pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it.each([
+    { label: "legacy transport", pluginId: "provider-scripted-echo", transportVersion: 2 },
+    { label: "unanswered current transport", pluginId: "provider-scripted-echo", transportVersion: BRIDGE_SOCKET_TRANSPORT_VERSION },
+    { label: "inherited prototype key toString", pluginId: "toString", transportVersion: 2 },
+  ])(
+    "never reaps an old worker ($label) that cannot answer the open-work query and does not write a guessed count",
+    async ({ pluginId, transportVersion }) => {
+      const events: ThreadEvent[] = [];
+      const { pid } = await spawnLegacyUnansweredWorker({
+        pluginId,
+        transportVersion,
+      });
+
+      const after = createRuntime(events);
+      adoptAll(after);
+      const result = await after.reapIdleProviderSessions({
+        idleForMs: IDLE_FOR_MS,
+        nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+      });
+
+      expect(result.reapedSessions).toEqual([]);
+      expect(after.hasThread("t1")).toBe(true);
+      expect(isPidAlive(pid)).toBe(true);
+      expect(
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount,
+      ).toBeUndefined();
+    },
+    WORKER_EXIT_TIMEOUT_MS,
+  );
+
+  it.each(["provider-codex", "provider-acp", "provider-pi"])(
+    "reaps a legacy %s worker whose adapter never emits background-scoped items",
+    async (pluginId) => {
+      const events: ThreadEvent[] = [];
+      const { pid } = await spawnLegacyUnansweredWorker({
+        pluginId,
+      });
+
+      const after = createRuntime(events);
+      adoptAll(after);
+      await waitForRuntimeState({
+        label: `legacy ${pluginId} verified 0 count written back`,
+        predicate: () =>
+          readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+            ?.openBackgroundWorkCount === 0,
+        timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+      });
+      const result = await after.reapIdleProviderSessions({
+        idleForMs: IDLE_FOR_MS,
+        nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+      });
+
+      expect(result.reapedSessions.map((session) => session.threadId)).toEqual([
+        "t1",
+      ]);
+      await waitForRuntimeState({
+        label: `legacy ${pluginId} worker exited after reap`,
+        predicate: () => !isPidAlive(pid),
+        timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+      });
+    },
+    WORKER_EXIT_TIMEOUT_MS,
+  );
+
+  it("reaps a legacy claude-code worker with no reported count when its provider child has no live descendants, and writes verified 0 back", async () => {
+    const events: ThreadEvent[] = [];
+    const { pid } = await spawnLegacyUnansweredWorker({
+      pluginId: "provider-claude-code",
+      providerChildMode: "idle",
+    });
+
+    const after = createRuntime(events);
+    adoptAll(after);
+    await waitForRuntimeState({
+      label: "legacy claude-code verified 0 count written back",
+      predicate: () =>
+        readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+          ?.openBackgroundWorkCount === 0,
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+    const result = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(result.reapedSessions.map((session) => session.threadId)).toEqual([
+      "t1",
+    ]);
+    await waitForRuntimeState({
+      label: "legacy claude-code worker exited after reap",
+      predicate: () => !isPidAlive(pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
+  }, WORKER_EXIT_TIMEOUT_MS);
+
+  it("never reaps a legacy claude-code worker while its provider child has a live descendant, then reaps it at reap time once the descendant exits", async () => {
+    const events: ThreadEvent[] = [];
+    const { pid, stopProviderDescendant } = await spawnLegacyUnansweredWorker({
+      pluginId: "provider-claude-code",
+      openBackgroundWorkCount: 0,
+      providerChildMode: "with-descendant",
+    });
+
+    const after = createRuntime(events);
+    adoptAll(after);
+    const whileDescendantAlive = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(whileDescendantAlive.reapedSessions).toEqual([]);
+    expect(after.hasThread("t1")).toBe(true);
+    expect(isPidAlive(pid)).toBe(true);
+    expect(
+      readBridgeWorkerEntries(bridgeWorkers.dir).entries[0]?.threads.t1
+        ?.openBackgroundWorkCount,
+    ).toBeUndefined();
+
+    await stopProviderDescendant();
+
+    const afterDescendantExited = await after.reapIdleProviderSessions({
+      idleForMs: IDLE_FOR_MS,
+      nowMs: Date.now() + IDLE_FOR_MS + 60_000,
+    });
+
+    expect(
+      afterDescendantExited.reapedSessions.map((session) => session.threadId),
+    ).toEqual(["t1"]);
+    await waitForRuntimeState({
+      label: "legacy claude-code worker exited after descendant settled",
+      predicate: () => !isPidAlive(pid),
+      timeoutMs: WORKER_EXIT_TIMEOUT_MS,
+    });
   }, WORKER_EXIT_TIMEOUT_MS);
 
   const neverReaped = [

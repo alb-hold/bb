@@ -1813,7 +1813,9 @@ function parseCodexSubAgentActivityEvent(
 
 function buildSubAgentDelegationShape(
   tracked: CodexTrackedSubAgent,
-): DeltaItemShape {
+): Omit<Extract<DeltaItemShape, { type: "delegation" }>, "background"> & {
+  background: false;
+} {
   return {
     type: "delegation",
     childRef: tracked.agentThreadId,
