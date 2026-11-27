@@ -30,6 +30,7 @@ import {
   flattenPromptInputGroups,
   isQueuedMessageFailedState,
 } from "@bb/domain";
+import { matchesStoredRequestInput } from "./delivered-retry.js";
 import type {
   QueuedMessageDeliveryMode,
   QueuedMessageWaitingOn,
@@ -570,39 +571,56 @@ async function sendClaimedQueuedMessage(
 
 async function sendClaimedQueuedMessageForThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
-  args: SendClaimedQueuedMessageForThreadArgs,
+  claimedArgs: SendClaimedQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
-  if (isNativeTerminalThread(deps.db, args.thread.id)) {
+  if (isNativeTerminalThread(deps.db, claimedArgs.thread.id)) {
     const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
-      thread: args.thread,
-      claimed: args.queuedMessages,
-      sendNow: args.sendNow,
+      thread: claimedArgs.thread,
+      claimed: claimedArgs.queuedMessages,
+      sendNow: claimedArgs.sendNow,
     });
-    assertSendNowDispatched(args, outcome);
-    return toThreadQueuedMessage(args.queuedMessages[0]!);
+    assertSendNowDispatched(claimedArgs, outcome);
+    return toThreadQueuedMessage(claimedArgs.queuedMessages[0]!);
   }
-  const alreadyDelivered = args.queuedMessages.some(
-    (row) =>
-      row.resendOfClientRequestId !== null &&
+  const duplicateRows = claimedArgs.queuedMessages.filter((row) => {
+    if (row.resendOfClientRequestId === null) return false;
+    const requestId = clientTurnRequestIdSchema.parse(
+      row.resendOfClientRequestId,
+    );
+    return (
       hasStoredClientRequestEcho(deps.db, {
-        threadId: args.thread.id,
-        requestId: clientTurnRequestIdSchema.parse(row.resendOfClientRequestId),
-      }),
-  );
-  if (alreadyDelivered) {
+        threadId: claimedArgs.thread.id,
+        requestId,
+      }) &&
+      matchesStoredRequestInput(deps.db, {
+        threadId: claimedArgs.thread.id,
+        requestId,
+        input: toThreadQueuedMessage(row).content,
+      })
+    );
+  });
+  if (duplicateRows.length > 0) {
     const dropped = deps.db.transaction(
       (tx) =>
         deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
-          queuedMessages: args.queuedMessages,
+          queuedMessages: duplicateRows,
         }),
       { behavior: "immediate" },
     );
     if (!dropped) {
       throw createQueuedMessageClaimLostError();
     }
-    deps.hub.notifyThread(args.thread.id, ["queue-changed"]);
-    return toThreadQueuedMessage(args.queuedMessages[0]!);
+    deps.hub.notifyThread(claimedArgs.thread.id, ["queue-changed"]);
+    if (duplicateRows.length === claimedArgs.queuedMessages.length) {
+      return toThreadQueuedMessage(claimedArgs.queuedMessages[0]!);
+    }
   }
+  const args = {
+    ...claimedArgs,
+    queuedMessages: claimedArgs.queuedMessages.filter(
+      (row) => !duplicateRows.includes(row),
+    ),
+  };
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
   const inputGroups = queuedMessages.map(

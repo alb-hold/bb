@@ -17,6 +17,7 @@ import {
   resolveNativeTerminalSendInput,
   runNativeTerminalAdmittedWork,
 } from "./native-terminal-admission.js";
+import { matchesStoredRequestInput } from "./delivered-retry.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
 import type {
   SendMessageRequest,
@@ -38,17 +39,28 @@ interface AcceptThreadSendRequestArgs {
 
 export async function acceptThreadSendRequest(
   deps: LoggedPendingInteractionWorkSessionDeps,
-  args: AcceptThreadSendRequestArgs,
+  received: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
-  if (
-    args.payload.retryOfClientRequestId !== undefined &&
+  const { retryOfClientRequestId, ...payloadWithoutRetry } = received.payload;
+  const echoed =
+    retryOfClientRequestId !== undefined &&
     hasStoredClientRequestEcho(deps.db, {
-      threadId: args.thread.id,
-      requestId: args.payload.retryOfClientRequestId,
+      threadId: received.thread.id,
+      requestId: retryOfClientRequestId,
+    });
+  if (
+    echoed &&
+    matchesStoredRequestInput(deps.db, {
+      threadId: received.thread.id,
+      requestId: retryOfClientRequestId,
+      input: received.payload.input,
     })
   ) {
     return { ok: true, delivery: "alreadyDelivered" };
   }
+  const args = echoed
+    ? { ...received, payload: payloadWithoutRetry }
+    : received;
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
     if (args.payload.sendAt !== undefined) {
       throw new ApiError(

@@ -48,6 +48,7 @@ async function sendMessage(
   harness: TestAppHarness,
   threadId: string,
   retryOfClientRequestId?: ClientTurnRequestId,
+  text: string = MESSAGE_TEXT,
 ) {
   const response = await harness.app.request(
     `/api/v1/threads/${threadId}/send`,
@@ -56,7 +57,7 @@ async function sendMessage(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         mode: "auto",
-        input: [{ type: "text", text: MESSAGE_TEXT }],
+        input: [{ type: "text", text }],
         model: "gpt-5",
         permissionMode: "full",
         reasoningLevel: "medium",
@@ -69,6 +70,51 @@ async function sendMessage(
   );
   expect(response.status, await response.clone().text()).toBe(200);
   return sendMessageResponseSchema.parse(await response.json());
+}
+
+async function echoOriginal(
+  harness: TestAppHarness,
+  original: Awaited<ReturnType<typeof interruptedRequest>>,
+): Promise<void> {
+  await postDaemonEvents(harness, {
+    hostId: original.hostId,
+    sessionId: original.sessionId,
+    events: [
+      {
+        type: "item/completed",
+        threadId: original.threadId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        scope: turnScope(TURN_ID),
+        item: {
+          type: "userMessage",
+          id: "echo-item",
+          content: [{ type: "text", text: MESSAGE_TEXT }],
+          clientRequestId: original.clientRequestId,
+        },
+      },
+    ],
+  });
+}
+
+function queuedRows(
+  harness: TestAppHarness,
+  threadId: string,
+): {
+  content: string;
+  resendOf: string | null;
+  state: string;
+  claimToken: string | null;
+}[] {
+  return harness.db.$client
+    .prepare(
+      "select content, resend_of_client_request_id as resendOf, state, claim_token as claimToken from queued_thread_messages where thread_id = ? order by created_at, id",
+    )
+    .all(threadId) as {
+    content: string;
+    resendOf: string | null;
+    state: string;
+    claimToken: string | null;
+  }[];
 }
 
 function countSubmissions(harness: TestAppHarness, threadId: string): number {
@@ -304,6 +350,103 @@ describe("a re-send that names the request it retries", () => {
         .get(original.threadId) as { n: number };
       expect(remaining.n).toBe(0);
       expect(countSubmissions(harness, original.threadId)).toBe(1);
+    });
+  });
+
+  it("removes only the echoed retry and keeps a distinct follow-up claimed with it, unclaimed and intact", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(harness, "mixed");
+      const retry = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+      );
+      if (retry.delivery !== "queued") {
+        throw new Error(`expected the retry to queue, got ${retry.delivery}`);
+      }
+      const followUp = await sendMessage(
+        harness,
+        original.threadId,
+        undefined,
+        "a distinct follow-up",
+      );
+      if (followUp.delivery !== "queued") {
+        throw new Error(
+          `expected the follow-up to queue, got ${followUp.delivery}`,
+        );
+      }
+      harness.db.$client
+        .prepare(
+          "update queued_thread_messages set group_with_next = 1 where id = ?",
+        )
+        .run(retry.queuedMessage.id);
+      const followUpState = queuedRows(harness, original.threadId)[1]?.state;
+      await echoOriginal(harness, original);
+
+      const drained = await harness.app.request(
+        `/api/v1/threads/${original.threadId}/queued-messages/${retry.queuedMessage.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "auto" }),
+        },
+      );
+      expect(drained.status, await drained.clone().text()).toBe(200);
+
+      expect(countSubmissions(harness, original.threadId)).toBe(1);
+      const rows = queuedRows(harness, original.threadId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.content).toContain("a distinct follow-up");
+      expect(rows[0]?.resendOf).toBeNull();
+      expect(rows[0]?.claimToken).toBeNull();
+      expect(rows[0]?.state).toBe(followUpState);
+    });
+  });
+
+  it("keeps a queued retry whose payload differs from the echoed original instead of dropping it", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(harness, "changed-queued");
+      const retry = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+        "the merged and edited text",
+      );
+      if (retry.delivery !== "queued") {
+        throw new Error(`expected the retry to queue, got ${retry.delivery}`);
+      }
+      await echoOriginal(harness, original);
+
+      const drained = await harness.app.request(
+        `/api/v1/threads/${original.threadId}/queued-messages/${retry.queuedMessage.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "auto" }),
+        },
+      );
+      expect(drained.status, await drained.clone().text()).toBe(200);
+      const rows = queuedRows(harness, original.threadId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.content).toContain("the merged and edited text");
+    });
+  });
+
+  it("queues a send normally, without the retry id, when it names a delivered request but the payload differs", async () => {
+    await withTestHarness(async (harness) => {
+      const original = await interruptedRequest(harness, "changed-direct");
+      await echoOriginal(harness, original);
+      const response = await sendMessage(
+        harness,
+        original.threadId,
+        original.clientRequestId,
+        "the merged and edited text",
+      );
+      expect(response.delivery).not.toBe("alreadyDelivered");
+      const rows = queuedRows(harness, original.threadId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.content).toContain("the merged and edited text");
+      expect(rows[0]?.resendOf).toBeNull();
     });
   });
 });
