@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import {
+  access,
   mkdtemp,
   readFile,
+  symlink,
   rm,
   writeFile,
   copyFile,
@@ -193,11 +195,21 @@ describe("device handoff command shims", () => {
   });
 
   it("fails clearly when delivery fails and no native pbcopy exists", async () => {
-    const { shimBin, realBin } = await createFixture();
+    const { directory, shimBin, realBin } = await createFixture();
+    const toolsBin = join(directory, "tools-bin");
+    await mkdir(toolsBin);
+    for (const tool of ["dirname", "mktemp", "grep", "cat", "rm"]) {
+      for (const source of [`/usr/bin/${tool}`, `/bin/${tool}`]) {
+        if (await access(source).then(() => true, () => false)) {
+          await symlink(source, join(toolsBin, tool));
+          break;
+        }
+      }
+    }
     const result = spawnSync(join(shimBin, "pbcopy"), [], {
       env: {
         ...process.env,
-        PATH: `${shimBin}:${realBin}:/usr/bin:/bin`,
+        PATH: `${shimBin}:${realBin}:${toolsBin}`,
         BB_HANDOFF_STATUS: "7",
       },
       input: "clipboard fixture",

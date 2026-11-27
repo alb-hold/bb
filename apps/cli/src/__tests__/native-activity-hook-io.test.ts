@@ -21,6 +21,7 @@ import {
   statSync,
   symlinkSync,
   truncateSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -87,6 +88,13 @@ function recordOf(pid: number): string {
   return start === null ? String(pid) : `${pid}:${start}`;
 }
 
+function reusedRecordOf(pid: number): string {
+  const start = processStartTime(pid);
+  return start !== null && start.startsWith("s")
+    ? `${pid}:sMon_Jan_1_00:00:00_1970`
+    : `${pid}:p1`;
+}
+
 function claudeDeclaration(): ProviderNativeTerminal {
   const host = createFakePluginHost({ pluginId: "provider-claude-code" });
   claudeCodePlugin(host.bb);
@@ -129,6 +137,17 @@ function record(event: string, extra: Record<string, unknown> = {}): string {
     session_id: SESSION_ID,
     ...extra,
   });
+}
+
+function removeLock(lock: string): void {
+  let stats;
+  try {
+    stats = lstatSync(lock);
+  } catch {
+    return;
+  }
+  if (stats.isDirectory()) rmSync(lock, { force: true, recursive: true });
+  else unlinkSync(lock);
 }
 
 function startHook(
@@ -880,7 +899,7 @@ describe.skipIf(process.platform === "win32")(
       await until(() => markers(directory).length === 1, "the hook marker");
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(statSync(file).size).toBe(0);
-      rmSync(lock);
+      removeLock(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Held",
@@ -902,7 +921,7 @@ describe.skipIf(process.platform === "win32")(
           (name) => name.startsWith(".lost.") || name.startsWith(".late."),
         ),
       ).toBe(false);
-      rmSync(lock);
+      removeLock(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Patient",
@@ -1003,7 +1022,7 @@ describe.skipIf(process.platform === "win32")(
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(statSync(file).size).toBe(0);
       expect(lstatSync(lock).isDirectory()).toBe(true);
-      rmSync(lock, { force: true, maxRetries: 10, recursive: true });
+      removeLock(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Dir",
@@ -1191,7 +1210,7 @@ describe.skipIf(process.platform === "win32")(
         file,
         `${record("PermissionRequest", { tool_name: "Winner" })}\n`,
       );
-      rmSync(lock, { force: true, recursive: true });
+      removeLock(lock);
       await exited;
       expect(
         readdirSync(directory).filter(
@@ -1559,7 +1578,7 @@ describe.skipIf(process.platform === "win32")(
       const reader = new HookAppendReader(file, () => {
         calls += 1;
         if (calls === 1) {
-          rmSync(lock);
+          removeLock(lock);
           symlinkSync(String(holder), lock);
         }
         symlinkTaker(third);
@@ -1579,7 +1598,7 @@ describe.skipIf(process.platform === "win32")(
       const reader = new HookAppendReader(file, () => {
         calls += 1;
         if (calls === 1) {
-          rmSync(lock, { force: true, recursive: true });
+          removeLock(lock);
           mkdirSync(lock);
         }
         directoryTaker();
@@ -1601,7 +1620,7 @@ describe.skipIf(process.platform === "win32")(
       const reader = new HookAppendReader(file, () => {
         calls += 1;
         if (calls === 1) {
-          rmSync(lock, { force: true, recursive: true });
+          removeLock(lock);
           mkdirSync(lock);
           writeFileSync(path.join(lock, "pid"), String(holder));
         }
@@ -1626,11 +1645,11 @@ describe.skipIf(process.platform === "win32")(
       writeFileSync(path.join(lock, "pid"), String(holder));
       expect(new HookAppendReader(file).read(aged).unreadable).toBe(0);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(String(holder));
-      writeFileSync(path.join(lock, "pid"), `${holder}:p1`);
+      writeFileSync(path.join(lock, "pid"), reusedRecordOf(holder));
       expect(new HookAppendReader(file).read().unreadable).toBe(1);
       expect(existsSync(lock)).toBe(false);
       mkdirSync(lock);
-      writeFileSync(path.join(lock, "pid"), `${gone}:p1`);
+      writeFileSync(path.join(lock, "pid"), reusedRecordOf(gone));
       expect(new HookAppendReader(file).read().unreadable).toBe(1);
       expect(existsSync(lock)).toBe(false);
       symlinkSync(recorded, lock);
@@ -1644,7 +1663,7 @@ describe.skipIf(process.platform === "win32")(
     it("breaks a lock whose pid was reused by a process with a different start time, and keeps it when the start time cannot be read", async () => {
       const { file, live, lock } = readerKit();
       const holder = live();
-      const reused = `${holder}:p1`;
+      const reused = reusedRecordOf(holder);
       mkdirSync(lock);
       writeFileSync(path.join(lock, "pid"), reused);
       expect(
@@ -1652,7 +1671,11 @@ describe.skipIf(process.platform === "win32")(
       ).toBe(0);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(reused);
       expect(
-        new HookAppendReader(file, undefined, () => "s1").read().unreadable,
+        new HookAppendReader(
+          file,
+          undefined,
+          () => (reused.includes(":s") ? "p1" : "s1"),
+        ).read().unreadable,
       ).toBe(0);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(reused);
       expect(new HookAppendReader(file).read().unreadable).toBe(1);
@@ -1693,13 +1716,13 @@ describe.skipIf(process.platform === "win32")(
           utimesSync(lock, longAgo, longAgo);
           expect(reader.read().unreadable).toBe(0);
           expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(text);
-          rmSync(lock, { force: true, recursive: true });
+          removeLock(lock);
         }
         symlinkSync(text, lock);
         lutimesSync(lock, longAgo, longAgo);
         expect(new HookAppendReader(file).read().unreadable).toBe(0);
         expect(readlinkSync(lock)).toBe(text);
-        rmSync(lock, { force: true });
+        removeLock(lock);
       }
       mkdirSync(lock);
       writeFileSync(path.join(lock, "pid"), `${gone}:pgarbage`);
@@ -1757,13 +1780,13 @@ describe.skipIf(process.platform === "win32")(
         expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
           `${holder}${suffix}`,
         );
-        rmSync(lock, { force: true, recursive: true });
+        removeLock(lock);
       }
       symlinkSync(`${holder}x`, lock);
       lutimesSync(lock, longAgo, longAgo);
       expect(new HookAppendReader(file).read().unreadable).toBe(0);
       expect(readlinkSync(lock)).toBe(`${holder}x`);
-      rmSync(lock, { force: true });
+      removeLock(lock);
       for (const suffix of ["x", ":garbage", " "]) {
         mkdirSync(lock);
         writeFileSync(path.join(lock, "pid"), `${gone}${suffix}`);
@@ -1881,7 +1904,12 @@ describe.skipIf(process.platform === "win32")(
       const longAgo = new Date(Date.now() - 11 * 60_000);
       utimesSync(lock, longAgo, longAgo);
       const second = start("Second");
-      const reader = new HookAppendReader(file);
+      const reader = new HookAppendReader(file, undefined, (pid) => {
+        const text = expected(pid);
+        return text.length > String(pid).length + 1
+          ? text.slice(String(pid).length + 1)
+          : null;
+      });
       expect(reader.read().unreadable).toBe(0);
       expect(
         await Promise.race([
@@ -2227,7 +2255,7 @@ describe.skipIf(process.platform === "win32")(
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(statSync(file).size).toBe(0);
       expect(readlinkSync(lock)).toBe(elsewhere);
-      rmSync(lock);
+      removeLock(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Foreign",
@@ -2317,7 +2345,7 @@ describe.skipIf(process.platform === "win32")(
       expect(lstatSync(lock).isDirectory()).toBe(true);
       expect(readdirSync(lock)).toContain(recordOf(hook.pid ?? -1));
 
-      rmSync(lock, { recursive: true });
+      removeLock(lock);
       symlinkSync(String(process.pid), lock);
       writeFileSync(gate, "");
       await until(
@@ -2328,7 +2356,7 @@ describe.skipIf(process.platform === "win32")(
       expect(callCount()).toBeGreaterThanOrEqual(2);
       expect(readlinkSync(lock)).toBe(String(process.pid));
 
-      rmSync(lock);
+      removeLock(lock);
       await exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Interleave",
