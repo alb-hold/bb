@@ -35,7 +35,10 @@ import {
 } from "../rows/SidebarInlineRename.js";
 import { useDialogState } from "@/components/ui/use-dialog-state";
 import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
-import { SidebarProvidersContext } from "../rows/ThreadRow.js";
+import {
+  SidebarProvidersContext,
+  SidebarProvidersLoadingContext,
+} from "../rows/ThreadRow.js";
 import {
   buildProjectThreadGroups,
   buildSectionGroupItem,
@@ -1476,7 +1479,7 @@ function ProjectListComponent({
 }: ProjectListProps) {
   const sdk = useSdk();
   const navigate = useBbNavigate();
-  const { providers } = experimental_useProviders();
+  const { providers, status: providersStatus } = experimental_useProviders();
   const {
     status,
     sections: loadedSections,
@@ -2131,11 +2134,17 @@ function ProjectListComponent({
   );
   return (
     <SidebarProjectNamesContext.Provider value={projectNamesById}>
-      <SidebarProvidersContext.Provider value={providers}>
-        <SidebarActivePagesOverviewContext.Provider value={activePagesOverview}>
-          {content}
-        </SidebarActivePagesOverviewContext.Provider>
-      </SidebarProvidersContext.Provider>
+      <SidebarProvidersLoadingContext.Provider
+        value={providersStatus === "loading"}
+      >
+        <SidebarProvidersContext.Provider value={providers}>
+          <SidebarActivePagesOverviewContext.Provider
+            value={activePagesOverview}
+          >
+            {content}
+          </SidebarActivePagesOverviewContext.Provider>
+        </SidebarProvidersContext.Provider>
+      </SidebarProvidersLoadingContext.Provider>
     </SidebarProjectNamesContext.Provider>
   );
 }

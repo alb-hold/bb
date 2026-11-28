@@ -57,6 +57,7 @@ import {
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
   experimental_ThreadRowMetadata as ThreadRowMetadata,
   experimental_THREAD_ACTION_GROUPS,
+  experimental_useProviders,
   experimental_useThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_ProviderIcon as ProviderIcon,
@@ -99,7 +100,10 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron.js";
 import { useSidebarRename } from "./SidebarInlineRename.js";
 import { SidebarRowControls } from "./SidebarRowControls.js";
-import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "./thread-row-height.js";
+import {
+  DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+  MOBILE_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+} from "./thread-row-height.js";
 import {
   SIDEBAR_CONTROL_BUTTON_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
@@ -155,6 +159,25 @@ const NO_THREAD_IDS: readonly { id: string }[] = [];
 export const SidebarProvidersContext = createContext<
   PluginProvidersState["providers"]
 >([]);
+
+export const SidebarProvidersLoadingContext = createContext<boolean | null>(
+  null,
+);
+
+const THREAD_LEADING_SLOT_CLASS =
+  "relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 self-start mt-0.5 text-muted-foreground";
+
+function StandalonePendingProviderSlot() {
+  const { status } = experimental_useProviders();
+  if (status !== "loading") return null;
+  return (
+    <span
+      data-sidebar-thread-leading=""
+      aria-hidden="true"
+      className={cn("pointer-events-none", THREAD_LEADING_SLOT_CLASS)}
+    />
+  );
+}
 
 let lastSidebarTitleClick: { at: number; threadId: string } | null = null;
 
@@ -635,9 +658,12 @@ function ThreadRowComponent({
   const showRowMetadata =
     useAtomValue(sidebarShowRowMetadataAtom) && rowMetadataEnabled;
   const providers = useContext(SidebarProvidersContext);
+  const providersLoading = useContext(SidebarProvidersLoadingContext);
   const provider = showProviderIcons
     ? providers.find((candidate) => candidate.id === thread.providerId)
     : undefined;
+  const reserveProviderLeadingSlot =
+    showProviderIcons && Boolean(thread.providerId) && providersLoading === true;
   const shortcut = useSidebarThreadShortcut(thread.id);
   const pluginThreadRowStatus = useSidebarThreadRowStatus(thread.id);
   const { hasUnsubmittedDraft: hasComposerDraft } = useSidebarThreadDraft(
@@ -892,6 +918,7 @@ function ThreadRowComponent({
     SIDEBAR_ROW_BASE_CLASS,
     "gap-1 py-1 md:py-0.5",
     DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+    MOBILE_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
     !hasRowState &&
       "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
@@ -903,9 +930,11 @@ function ThreadRowComponent({
         : COARSE_POINTER_ROW_HEIGHT_CLASS,
     hasRowState && parentOptions?.stickyLevel !== undefined &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
-    showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
+    showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:max-md:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     "max-md:pointer-coarse:min-h-11",
-    "max-md:h-auto max-md:pointer-coarse:h-auto",
+    hasRowState
+      ? "max-md:h-auto max-md:pointer-coarse:h-auto"
+      : "max-md:h-(--bb-sidebar-mobile-row-height) max-md:min-h-(--bb-sidebar-mobile-row-height) max-md:pointer-coarse:h-(--bb-sidebar-mobile-row-height)",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -1063,7 +1092,10 @@ function ThreadRowComponent({
                     data-sidebar-thread-leading=""
                     role={provider && !hasModeGlyph ? "img" : undefined}
                     aria-label={provider && !hasModeGlyph ? provider.displayName : undefined}
-                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 self-start mt-0.5 text-muted-foreground [&_*]:text-inherit! [&_[data-thread-mode-badge]]:text-foreground!"
+                    className={cn(
+                      "pointer-events-auto [&_*]:text-inherit! [&_[data-thread-mode-badge]]:text-foreground!",
+                      THREAD_LEADING_SLOT_CLASS,
+                    )}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -1077,6 +1109,16 @@ function ThreadRowComponent({
                   {provider ? (hasModeGlyph ? `${provider.displayName}, ${(threadModeLabel({ nativeTerminal: thread.experimental_nativeTerminal === true, isWorktree: thread.environment?.isWorktree === true }) ?? "").toLowerCase()}` : provider.displayName) : (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
                 </TooltipContent>
               </Tooltip>
+            ) : reserveProviderLeadingSlot ? (
+              <span
+                data-sidebar-thread-leading=""
+                aria-hidden="true"
+                className={cn("pointer-events-none", THREAD_LEADING_SLOT_CLASS)}
+              />
+            ) : showProviderIcons &&
+              Boolean(thread.providerId) &&
+              providersLoading === null ? (
+              <StandalonePendingProviderSlot />
             ) : null}
             {isEditing ? (
               <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
@@ -1099,14 +1141,14 @@ function ThreadRowComponent({
                   }
                   className="bb-thread-title leading-5 md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
                 >
-                  <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
+                  <span className="min-w-0 truncate leading-5 [&_span]:leading-5 md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
                     <ThreadTitle threadId={thread.id} experimental_fallbackTitle={thread.displayTitle} />
                   </span>
                 </span>
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "flex min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit max-md:[&_[data-thread-row-project]]:shrink",
+                    "flex min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 [&_span]:leading-4 [&_time]:leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit max-md:[&_[data-thread-row-project]]:shrink",
                     phoneBranch !== null &&
                       "max-md:[&>[data-thread-context-metadata]]:flex-initial max-md:[&>[data-thread-context-metadata]]:max-w-[55%]",
                     thread.experimental_nativeTerminal &&
@@ -1168,7 +1210,7 @@ function ThreadRowComponent({
           <span
             className={cn(
               "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
-              provider !== undefined && "pl-6",
+              (provider !== undefined || reserveProviderLeadingSlot) && "pl-6",
             )}
           >
             <ThreadRowMetadata thread={thread} />
@@ -1197,6 +1239,7 @@ function ThreadRowComponent({
           className={cn(
             SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
             "flex min-w-0 shrink-0 items-center gap-0.5 md:opacity-100! [@media(hover:none)]:opacity-100!",
+            thread.archivedAt === null && "max-md:w-21 max-md:justify-end",
           )}
         >
           <SidebarThreadPullRequestChip thread={thread} />

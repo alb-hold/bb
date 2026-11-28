@@ -8,6 +8,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
+import {
+  DESKTOP_THREAD_ROW_HEIGHT_PX,
+  MOBILE_THREAD_ROW_HEIGHT_PX,
+} from "../rows/thread-row-height.js";
 import {
   SIDEBAR_CONTENT_SELECTOR,
   useSidebarContentElementRef,
@@ -17,14 +23,18 @@ import {
   SIDEBAR_WINDOWED_NAV_ATTRIBUTE,
   type SidebarWindowedNavigationEntry,
 } from "./sidebarThreadShortcuts.js";
-import { observeSharedResize } from "@/lib/shared-resize-observer";
 
 const WINDOW_VIEWPORT_MARGIN_PX = 240;
-const DEFAULT_ROW_HEIGHT_PX = 30;
 
 interface MeasuredItemHeight {
+  compact: boolean;
   height: number;
   rows: number;
+}
+
+interface CalibratedRowHeight {
+  compact: boolean;
+  value: number;
 }
 
 interface SidebarWindowedItemsProps {
@@ -92,11 +102,17 @@ export function SidebarWindowedItems({
   "use no memo";
   const scrollElementRef = useSidebarContentElementRef();
   const windowingEnabled = itemKeys.length > 0 && scrollElementRef !== null;
+  const isCompactViewport = useIsCompactViewport();
+  const defaultRowHeightPx = isCompactViewport
+    ? MOBILE_THREAD_ROW_HEIGHT_PX
+    : DESKTOP_THREAD_ROW_HEIGHT_PX;
 
   const [realizedKeys, setRealizedKeys] =
     useState<ReadonlySet<string>>(EMPTY_KEY_SET);
   const measuredHeightsRef = useRef(new Map<string, MeasuredItemHeight>());
-  const rowHeightRef = useRef(DEFAULT_ROW_HEIGHT_PX);
+  const rowHeightRef = useRef<CalibratedRowHeight | null>(null);
+  const isCompactViewportRef = useRef(isCompactViewport);
+  isCompactViewportRef.current = isCompactViewport;
   const wrapperByKeyRef = useRef(new Map<string, HTMLDivElement>());
   const keyByWrapperRef = useRef(new Map<Element, string>());
   const wrapperRefCallbacksRef = useRef(
@@ -158,12 +174,13 @@ export function SidebarWindowedItems({
     if (height <= 0) {
       return;
     }
+    const compact = isCompactViewportRef.current;
     const rows = rowsByKeyRef.current.get(key) ?? 0;
-    measuredHeightsRef.current.set(key, { height, rows });
+    measuredHeightsRef.current.set(key, { compact, height, rows });
     if (rows > 0) {
       const perRow = height / rows;
       if (perRow >= 20 && perRow <= 80) {
-        rowHeightRef.current = perRow;
+        rowHeightRef.current = { compact, value: perRow };
       }
     }
   }, []);
@@ -338,10 +355,16 @@ export function SidebarWindowedItems({
         let navigationValue: string | undefined;
         if (!isRealized) {
           const measured = measuredHeightsRef.current.get(key);
+          const calibratedRowHeight =
+            rowHeightRef.current?.compact === isCompactViewport
+              ? rowHeightRef.current.value
+              : defaultRowHeightPx;
           placeholderHeight =
-            measured && measured.rows === rows
+            measured &&
+            measured.compact === isCompactViewport &&
+            measured.rows === rows
               ? measured.height
-              : rows * rowHeightRef.current;
+              : rows * calibratedRowHeight;
           const entries = getNavigationEntries?.(index);
           navigationValue =
             entries && entries.length > 0
