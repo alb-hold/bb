@@ -318,17 +318,34 @@ function withHostThreadTitleMarkup(html: string): string {
   );
 }
 
-function stubFinePointerMatchMedia() {
-  vi.stubGlobal("matchMedia", (query: string): MediaQueryList => ({
-    matches: query === "(pointer: fine)",
-    media: query,
-    onchange: null,
-    addListener() {},
-    removeListener() {},
-    addEventListener() {},
-    removeEventListener() {},
-    dispatchEvent: () => false,
-  }));
+type TestPointerMode = "coarse" | "fine" | "none";
+
+const BLINK_POINTER_SETTINGS: Record<TestPointerMode, string> = {
+  coarse:
+    "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
+  fine: "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2",
+  none: "--blink-settings=primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1",
+};
+
+function stubPointerMatchMedia(pointerMode: TestPointerMode) {
+  vi.stubGlobal("matchMedia", (query: string): MediaQueryList => {
+    const matches =
+      (query === "(pointer: coarse)" && pointerMode === "coarse") ||
+      (query === "(pointer: fine)" && pointerMode === "fine") ||
+      (query === "(pointer: none)" && pointerMode === "none") ||
+      (query === "(hover: hover)" && pointerMode === "fine") ||
+      (query === "(hover: none)" && pointerMode !== "fine");
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addListener() {},
+      removeListener() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent: () => false,
+    };
+  });
 }
 
 beforeEach(() => {
@@ -377,6 +394,7 @@ afterEach(() => {
 
 describe("phone home sidebar reserved geometry", () => {
   it("reserves final mobile row heights, leading icon slots, and status-slot widths before late data arrives", async () => {
+    stubPointerMatchMedia("coarse");
     const { slot, deferredPr } = await renderPhoneHomeSidebar({
       providers: { status: "loading", providers: [] },
     });
@@ -486,6 +504,7 @@ interface PhoneSidebarSnapshot {
   name: string;
   coarse: boolean;
   fine: boolean;
+  pointerNone: boolean;
   seahavenSectionTop: number;
   placeholderHeights: number[];
   pallium: PhoneRowSnapshot | null;
@@ -536,6 +555,7 @@ const measureSection = (section) => {
     name: section.getAttribute('data-snapshot'),
     coarse: matchMedia('(pointer: coarse)').matches,
     fine: matchMedia('(pointer: fine)').matches,
+    pointerNone: matchMedia('(pointer: none)').matches,
     seahavenSectionTop: box(seahavenSection).top - originTop,
     placeholderHeights: placeholders,
     pallium: rowSnapshot('thr_pallium'),
@@ -559,7 +579,7 @@ document.getElementById('layout').textContent = JSON.stringify(results);
 async function measurePhoneSidebarSnapshots(
   snapshots: Record<string, string>,
   sidebarWidth: number,
-  coarsePointer = true,
+  pointerMode: TestPointerMode = "coarse",
 ): Promise<Record<string, PhoneSidebarSnapshot>> {
   const dir = await mkdtemp(join(tmpdir(), "bb-phone-cls-"));
   try {
@@ -600,11 +620,7 @@ ${sections}
       "--disable-background-networking",
       "--no-first-run",
       "--hide-scrollbars",
-      ...(coarsePointer
-        ? [
-            "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
-          ]
-        : []),
+      BLINK_POINTER_SETTINGS[pointerMode],
       "--window-size=390,844",
       "--virtual-time-budget=2000",
       "--dump-dom",
@@ -631,6 +647,7 @@ describe.skipIf(
   it.each([258, 320, 390])(
     "keeps row height, section position, icon slot, and status-slot width unchanged across late arrivals and wide PR chips at %spx sidebar width",
     async (sidebarWidth) => {
+      stubPointerMatchMedia("coarse");
       const { slot: loadingSlot, deferredPr: deferredLoading } =
         await renderPhoneHomeSidebar({
           providers: { status: "loading", providers: [] },
@@ -727,6 +744,7 @@ describe.skipIf(
           afterWidePr: afterWidePrHtml,
         },
         sidebarWidth,
+        "coarse",
       );
 
       const beforeRealize = measured.beforeRealize!;
@@ -738,8 +756,10 @@ describe.skipIf(
 
       expect(beforeRealize.coarse).toBe(true);
       expect(beforeRealize.fine).toBe(false);
+      expect(beforeRealize.pointerNone).toBe(false);
       expect(beforeLateData.coarse).toBe(true);
       expect(beforeLateData.fine).toBe(false);
+      expect(beforeLateData.pointerNone).toBe(false);
       expect(afterIconsAndPr.coarse).toBe(true);
       expect(afterWidePr.coarse).toBe(true);
       expect(beforeLateData.pallium).not.toBeNull();
@@ -828,10 +848,10 @@ describe.skipIf(
     40_000,
   );
 
-  it(
-    "keeps compact fine-pointer no-state rows under 45px while matching fine-pointer windowed placeholders",
-    async () => {
-      stubFinePointerMatchMedia();
+  it.each<TestPointerMode>(["fine", "none"])(
+    "keeps compact %s-pointer no-state rows under 45px while matching non-coarse windowed placeholders",
+    async (pointerMode) => {
+      stubPointerMatchMedia(pointerMode);
       const { slot } = await renderPhoneHomeSidebar({
         providers: { status: "ready", providers: [CLAUDE_PROVIDER] },
       });
@@ -859,13 +879,14 @@ describe.skipIf(
           afterRealize: afterRealizeHtml,
         },
         390,
-        false,
+        pointerMode,
       );
 
       const beforeRealize = measured.beforeRealize!;
       const afterRealize = measured.afterRealize!;
       expect(afterRealize.coarse).toBe(false);
-      expect(afterRealize.fine).toBe(true);
+      expect(afterRealize.fine).toBe(pointerMode === "fine");
+      expect(afterRealize.pointerNone).toBe(pointerMode === "none");
       expect(beforeRealize.placeholderHeights).toEqual([132, 44]);
       expect(afterRealize.pallium!.row.height).toBeLessThan(45);
       expect(afterRealize.seahaven!.row.height).toBeLessThan(45);

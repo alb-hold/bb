@@ -27,7 +27,7 @@ import {
 } from "./sidebarThreadShortcuts.js";
 
 const WINDOW_VIEWPORT_MARGIN_PX = 240;
-const FINE_POINTER_QUERY = "(pointer: fine)";
+const COARSE_POINTER_QUERY = "(pointer: coarse)";
 
 type RowSizingMode = "desktop" | "compact-fine" | "compact-coarse";
 
@@ -108,12 +108,14 @@ export function SidebarWindowedItems({
   const scrollElementRef = useSidebarContentElementRef();
   const windowingEnabled = itemKeys.length > 0 && scrollElementRef !== null;
   const isCompactViewport = useIsCompactViewport();
-  const isFinePointer = useMediaQuery(FINE_POINTER_QUERY);
+  const isCoarsePointer = useMediaQuery(COARSE_POINTER_QUERY);
+  const hasMatchMedia =
+    typeof window !== "undefined" && typeof window.matchMedia === "function";
   const rowSizingMode: RowSizingMode = !isCompactViewport
     ? "desktop"
-    : isFinePointer
-      ? "compact-fine"
-      : "compact-coarse";
+    : isCoarsePointer || !hasMatchMedia
+      ? "compact-coarse"
+      : "compact-fine";
   const defaultRowHeightPx =
     rowSizingMode === "desktop"
       ? DESKTOP_THREAD_ROW_HEIGHT_PX
