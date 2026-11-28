@@ -485,6 +485,7 @@ interface PhoneRowSnapshot {
 interface PhoneSidebarSnapshot {
   name: string;
   coarse: boolean;
+  fine: boolean;
   seahavenSectionTop: number;
   placeholderHeights: number[];
   pallium: PhoneRowSnapshot | null;
@@ -534,18 +535,24 @@ const measureSection = (section) => {
   return {
     name: section.getAttribute('data-snapshot'),
     coarse: matchMedia('(pointer: coarse)').matches,
+    fine: matchMedia('(pointer: fine)').matches,
     seahavenSectionTop: box(seahavenSection).top - originTop,
     placeholderHeights: placeholders,
     pallium: rowSnapshot('thr_pallium'),
     seahaven: rowSnapshot('thr_seahaven'),
   };
 };
-const results = Object.fromEntries(
-  [...document.querySelectorAll('section[data-snapshot]')].map((section) => {
-    const measured = measureSection(section);
-    return [measured.name, measured];
-  }),
-);
+const sections = [...document.querySelectorAll('section[data-snapshot]')];
+for (const section of sections) {
+  section.style.display = 'none';
+}
+const results = {};
+for (const section of sections) {
+  section.style.display = 'block';
+  const measured = measureSection(section);
+  results[measured.name] = measured;
+  section.style.display = 'none';
+}
 document.getElementById('layout').textContent = JSON.stringify(results);
 `;
 
@@ -558,7 +565,7 @@ async function measurePhoneSidebarSnapshots(
   try {
     const page = join(dir, "phone-home.html");
     const themeCss = await readFile(
-      new URL("../../../apps/app/src/components/ui/theme.css", import.meta.url),
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
       "utf8",
     );
     const sections = Object.entries(snapshots)
@@ -729,7 +736,12 @@ describe.skipIf(
       const afterIconsAndPr = measured.afterIconsAndPr!;
       const afterWidePr = measured.afterWidePr!;
 
+      expect(beforeRealize.coarse).toBe(true);
+      expect(beforeRealize.fine).toBe(false);
       expect(beforeLateData.coarse).toBe(true);
+      expect(beforeLateData.fine).toBe(false);
+      expect(afterIconsAndPr.coarse).toBe(true);
+      expect(afterWidePr.coarse).toBe(true);
       expect(beforeLateData.pallium).not.toBeNull();
       expect(beforeLateData.seahaven).not.toBeNull();
       expect(afterIconsAndPr.pallium).not.toBeNull();
@@ -853,6 +865,7 @@ describe.skipIf(
       const beforeRealize = measured.beforeRealize!;
       const afterRealize = measured.afterRealize!;
       expect(afterRealize.coarse).toBe(false);
+      expect(afterRealize.fine).toBe(true);
       expect(beforeRealize.placeholderHeights).toEqual([132, 44]);
       expect(afterRealize.pallium!.row.height).toBeLessThan(45);
       expect(afterRealize.seahaven!.row.height).toBeLessThan(45);
