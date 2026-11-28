@@ -462,7 +462,7 @@ function ThreadTrailingIndicator({
         experimental_queuedFailedCount={state.queuedFailedCount}
       />
       {statusText === null ? null : (
-        <span data-sidebar-status-full="" className="text-right">
+        <span data-sidebar-status-full="" className="text-right max-md:hidden">
           {statusText}
         </span>
       )}
@@ -595,11 +595,11 @@ function SidebarThreadPullRequestChip({ thread }: { thread: SidebarThread }) {
           aria-label={accessibleLabel}
           onClick={(event) => event.stopPropagation()}
           className={cn(
-            "relative z-20 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1.5 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline",
+            "relative z-20 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1.5 text-xs font-medium tabular-nums no-underline outline-none focus-visible:ring-1 focus-visible:ring-ring hover:underline max-md:max-w-full max-md:shrink max-md:overflow-hidden",
             PULL_REQUEST_STATE_CLASS[pullRequest.state],
           )}
         >
-          #{pullRequest.number}
+          <span className="min-w-0 truncate">#{pullRequest.number}</span>
         </UrlLink>
       </TooltipTrigger>
       <TooltipContent side="top">
@@ -931,10 +931,10 @@ function ThreadRowComponent({
     hasRowState && parentOptions?.stickyLevel !== undefined &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:max-md:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
-    "max-md:pointer-coarse:min-h-11",
+    "max-md:h-auto max-md:pointer-coarse:min-h-11",
     hasRowState
-      ? "max-md:h-auto max-md:pointer-coarse:h-auto"
-      : "max-md:h-(--bb-sidebar-mobile-row-height) max-md:min-h-(--bb-sidebar-mobile-row-height) max-md:pointer-coarse:h-(--bb-sidebar-mobile-row-height)",
+      ? "max-md:pointer-coarse:h-auto"
+      : "max-md:pointer-coarse:h-(--bb-sidebar-mobile-row-height)",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -1139,9 +1139,9 @@ function ThreadRowComponent({
                     trailingIndicatorKind === "check-terminal" ||
                     trailingIndicatorKind === "waiting-for-input"
                   }
-                  className="bb-thread-title leading-5 md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
+                  className="bb-thread-title items-center! leading-5 md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
                 >
-                  <span className="min-w-0 truncate leading-5 [&_span]:leading-5 md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
+                  <span className="flex min-w-0 items-center truncate leading-5 [&_span]:leading-5 md:flex md:items-center md:leading-5 md:[&_span]:leading-5 [&>[data-thread-title]]:min-w-0 [&>[data-thread-title]]:truncate">
                     <ThreadTitle threadId={thread.id} experimental_fallbackTitle={thread.displayTitle} />
                   </span>
                 </span>
@@ -1239,7 +1239,8 @@ function ThreadRowComponent({
           className={cn(
             SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
             "flex min-w-0 shrink-0 items-center gap-0.5 md:opacity-100! [@media(hover:none)]:opacity-100!",
-            thread.archivedAt === null && "max-md:w-21 max-md:justify-end",
+            thread.archivedAt === null &&
+              "max-md:w-21 max-md:justify-end max-md:overflow-hidden",
           )}
         >
           <SidebarThreadPullRequestChip thread={thread} />
